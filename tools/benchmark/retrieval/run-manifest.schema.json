@@ -53,7 +53,9 @@
           "type": "object", "additionalProperties": false,
           "required": ["mapping_proof_digest"],
           "properties": {
-            "mapping_proof_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            "mapping_proof_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "candidate_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "independent_census_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
           }
         },
         "perf": {
@@ -137,6 +139,8 @@
           "description": "One symlink-free pinned model cache manifest per Semble capture root."
         },
         "symbol_preflights": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "symbol_candidate_manifest": {"type": "string", "minLength": 1},
+        "symbol_independent_census": {"type": "string", "minLength": 1},
         "phase_metrics_digests": {
           "type": "object",
           "description": "Exact manifest-relative phase path to SHA256 of captured file bytes; keys must match phase_metrics.",
@@ -254,6 +258,22 @@
     }
   },
   "allOf": [
+    {
+      "if": {"properties": {"evidence": {"properties": {"pair": {"required": ["candidate_manifest_sha256"]}}}}},
+      "then": {"properties": {"artifacts": {"required": ["symbol_candidate_manifest"]}}},
+      "else": {"properties": {"artifacts": {"not": {"required": ["symbol_candidate_manifest"]}}}}
+    },
+    {
+      "if": {"properties": {"evidence": {"properties": {"pair": {"required": ["independent_census_sha256"]}}}}},
+      "then": {
+        "properties": {
+          "scope": {"const": "qualified"},
+          "evidence": {"properties": {"pair": {"required": ["candidate_manifest_sha256"]}}},
+          "artifacts": {"required": ["symbol_independent_census"]}
+        }
+      },
+      "else": {"properties": {"artifacts": {"not": {"required": ["symbol_independent_census"]}}}}
+    },
     {
       "if": {"properties": {"blinding": {"const": "isolated"}}, "required": ["blinding"]},
       "then": {

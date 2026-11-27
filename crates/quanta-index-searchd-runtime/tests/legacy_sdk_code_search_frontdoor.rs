@@ -173,9 +173,24 @@ fn sdk_default_code_search_matches_terms_across_chunks_as_one_file() -> TestResu
                 let hit = response.results.first().ok_or("missing path hit")?;
                 if hit.preview.as_ref().map(|preview| preview.kind)
                     != Some(quanta_index_contract::PreviewKind::Path)
-                    || hit.snippet != "src/beta.rs"
-                    || hit.snippet_hit_offset != Some(4)
-                    || hit.highlights != [quanta_index_contract::HighlightSpan { start: 4, len: 7 }]
+                    || hit
+                        .excerpt
+                        .as_ref()
+                        .expect("fixture row carries a match excerpt")
+                        .snippet
+                        != "src/beta.rs"
+                    || hit
+                        .excerpt
+                        .as_ref()
+                        .expect("fixture row carries a match excerpt")
+                        .snippet_hit_offset
+                        != Some(4)
+                    || hit
+                        .excerpt
+                        .as_ref()
+                        .expect("fixture row carries a match excerpt")
+                        .highlights
+                        != [quanta_index_contract::HighlightSpan { start: 4, len: 7 }]
                 {
                     return Err(format!("CodeSearch path match position drift: {hit:?}").into());
                 }

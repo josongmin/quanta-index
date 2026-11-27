@@ -6,6 +6,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use quanta_index_contract::index::{
@@ -831,177 +835,195 @@ impl SqliteCatalog {
         drop(authority_keys);
         drop(frontier_keys);
         let mut guard = self.lock_native_budget(budget)?;
-        let tx = begin(&mut guard)?;
-        super::boot_manifest::require_open_protected_route_ingress(&tx, ingress, budget)?;
-        if super::boot_manifest::protected_route_operation_exists(&tx, ingress.operation, budget)? {
-            return Err(IndexError::Conflict);
-        }
-        super::boot_record::with_protected_operation(&tx, primary, budget, |row, _budget| {
-            if !matches!(&row.status, OperationStatus::Published(_)) {
+        // SQLite requires callbacks to be installed before the transaction borrows
+        // the connection. Enable cancellation only during the two integrity scans.
+        let scan_active = Arc::new(AtomicBool::new(false));
+        let scan_callback = Arc::clone(&scan_active);
+        let request = budget.request().clone();
+        guard
+            .progress_handler(
+                1024,
+                Some(move || {
+                    scan_callback.load(Ordering::Relaxed)
+                        && request
+                            .checkpoint("restore protected Native heads")
+                            .is_err()
+                }),
+            )
+            .map_err(|error| sql(&error))?;
+        let imported: Result<(), IndexError> = (|| {
+            let tx = begin(&mut guard)?;
+            super::boot_manifest::require_open_protected_route_ingress(&tx, ingress, budget)?;
+            if super::boot_manifest::protected_route_operation_exists(
+                &tx,
+                ingress.operation,
+                budget,
+            )? {
                 return Err(IndexError::Conflict);
             }
-            Ok(())
-        })?;
-        {
-            let mut statement = tx
-                .prepare(
-                    "SELECT CASE WHEN typeof(workspace)!='blob' THEN 0
-                                 WHEN length(workspace) > 4096 THEN X'' ELSE workspace END,
-                            CASE WHEN typeof(workspace)='blob' THEN length(workspace) END
-                     FROM native_workspace_v1 ORDER BY workspace",
-                )
-                .map_err(|error| sql(&error))?;
-            let mut workspaces = statement.query([]).map_err(|error| sql(&error))?;
-            while let Some(row) = workspaces.next().map_err(|error| sql(&error))? {
-                budget.checkpoint()?;
-                let encoded = blob(row, 0)?;
-                let stored_bytes: i64 = row.get(1).map_err(|error| sql(&error))?;
-                if stored_bytes > 4096 {
+            super::boot_record::with_protected_operation(&tx, primary, budget, |row, _budget| {
+                if !matches!(&row.status, OperationStatus::Published(_)) {
                     return Err(IndexError::Conflict);
                 }
-                let workspace: WorkspaceKey = decode(encoded)?;
-                if encoded != workspace_key(workspace)?.as_slice()
-                    || (workspace != primary.workspace
-                        && !expected.current.contains_key(&workspace))
-                {
-                    return Err(IndexError::Conflict);
-                }
-            }
-        }
-        let new_route = {
-            let children_bytes = source_routes
-                .children_backing_bytes()
-                .map_err(|_| IndexError::DigestConflict)?;
-            let route_scratch = u64::try_from(children_bytes)
-                .map_err(|_| IndexError::ResourceLimited)?
-                .checked_add(4096)
-                .ok_or(IndexError::ResourceLimited)?;
-            let _route_memory = budget
-                .reserve_memory(route_scratch, MemoryLifetime::Temporary)?
-                .ok_or(IndexError::ResourceLimited)?;
-            let (reference, bytes, _) = source_routes
-                .object_identity_with_work_v1(&mut || budget.checkpoint())
-                .map_err(|cause| cause.into_error(|_| IndexError::DigestConflict))?;
-            budget.charge(WorkUsage {
-                bytes: u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
-                ..WorkUsage::default()
+                Ok(())
             })?;
-            reference
-        };
-        let mut required_roots = BTreeSet::new();
-        for view in expected.views.values() {
-            required_roots.extend(super::distinct_roots(view));
-        }
-        required_roots.extend(
-            expected
-                .operations
-                .values()
-                .map(|(operation, _)| operation.request),
-        );
-        for root in required_roots {
-            if !confirmed_ingress_object(&tx, ingress.operation, root)? {
-                return Err(IndexError::DigestConflict);
+            {
+                let mut statement = tx
+                    .prepare(
+                        "SELECT CASE WHEN typeof(workspace)!='blob' THEN 0
+                                     WHEN length(workspace) > 4096 THEN X'' ELSE workspace END,
+                                CASE WHEN typeof(workspace)='blob' THEN length(workspace) END
+                         FROM native_workspace_v1 ORDER BY workspace",
+                    )
+                    .map_err(|error| sql(&error))?;
+                let mut workspaces = statement.query([]).map_err(|error| sql(&error))?;
+                while let Some(row) = workspaces.next().map_err(|error| sql(&error))? {
+                    budget.checkpoint()?;
+                    let encoded = blob(row, 0)?;
+                    let stored_bytes: i64 = row.get(1).map_err(|error| sql(&error))?;
+                    if stored_bytes > 4096 {
+                        return Err(IndexError::Conflict);
+                    }
+                    let workspace: WorkspaceKey = decode(encoded)?;
+                    if encoded != workspace_key(workspace)?.as_slice()
+                        || (workspace != primary.workspace
+                            && !expected.current.contains_key(&workspace))
+                    {
+                        return Err(IndexError::Conflict);
+                    }
+                }
             }
-        }
-        if !confirmed_ingress_object(&tx, ingress.operation, origin.snapshot)?
-            || !confirmed_ingress_object(&tx, ingress.operation, new_route)?
-        {
-            return Err(IndexError::DigestConflict);
-        }
-        for root in &snapshot.roots {
-            if !confirmed_ingress_object(&tx, ingress.operation, *root)? {
-                return Err(IndexError::DigestConflict);
-            }
-        }
-        // The import may be an exact retry or a first import into a file with
-        // leftover rows. Scan before either path can return success or mutate.
-        let request = budget.request().clone();
-        tx.progress_handler(
-            1024,
-            Some(move || {
-                request
-                    .checkpoint("restore protected Native heads")
-                    .is_err()
-            }),
-        )
-        .map_err(|error| sql(&error))?;
-        let attached = require_attached_event_claims_v1(&tx, budget)
-            .and_then(|()| require_registered_workspace_rows_v1(&tx, budget));
-        tx.progress_handler(0, None::<fn() -> bool>)
-            .map_err(|error| sql(&error))?;
-        attached?;
-        let already = validate_existing_v1(&tx, &expected, &operations, &claims, snapshot, budget)?;
-        if !already {
+            let new_route = {
+                let children_bytes = source_routes
+                    .children_backing_bytes()
+                    .map_err(|_| IndexError::DigestConflict)?;
+                let route_scratch = u64::try_from(children_bytes)
+                    .map_err(|_| IndexError::ResourceLimited)?
+                    .checked_add(4096)
+                    .ok_or(IndexError::ResourceLimited)?;
+                let _route_memory = budget
+                    .reserve_memory(route_scratch, MemoryLifetime::Temporary)?
+                    .ok_or(IndexError::ResourceLimited)?;
+                let (reference, bytes, _) = source_routes
+                    .object_identity_with_work_v1(&mut || budget.checkpoint())
+                    .map_err(|cause| cause.into_error(|_| IndexError::DigestConflict))?;
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
+                    ..WorkUsage::default()
+                })?;
+                reference
+            };
+            let mut required_roots = BTreeSet::new();
             for view in expected.views.values() {
-                ensure_roots(&tx, view)?;
-                write_view(&tx, view)?;
+                required_roots.extend(super::distinct_roots(view));
             }
-            for (workspace, terminal) in &expected.current {
-                let payload = encode(terminal)?;
-                exactly_one(
-                    tx.execute(
-                        "INSERT INTO native_workspace_v1(workspace,epoch,sequence,payload,row_digest) VALUES (?1,?2,?3,?4,?5)",
-                        params![workspace_key(*workspace)?, int(terminal.identity.epoch)?, int(terminal.identity.sequence)?, &payload, digest(b"qidx.native.view.v1", &payload).to_vec()],
-                    ).map_err(|error| sql(&error))?,
-                    "import protected workspace",
-                )?;
+            required_roots.extend(
+                expected
+                    .operations
+                    .values()
+                    .map(|(operation, _)| operation.request),
+            );
+            for root in required_roots {
+                if !confirmed_ingress_object(&tx, ingress.operation, root)? {
+                    return Err(IndexError::DigestConflict);
+                }
             }
-            for input in &operations {
-                // SQLite owns the bound BLOB and can copy it again when
-                // building the record. The validated input remains borrowed.
-                let backing = u64::try_from(input.payload.len())
-                    .ok()
-                    .and_then(|bytes| bytes.checked_mul(2))
-                    .and_then(|bytes| bytes.checked_add(8192))
-                    .ok_or(IndexError::ResourceLimited)?;
-                let _sqlite_row = budget
-                    .reserve_memory(backing, MemoryLifetime::Temporary)?
-                    .ok_or(IndexError::ResourceLimited)?;
-                write_operation_payload(&tx, input.key, input.payload, true, true)?;
+            if !confirmed_ingress_object(&tx, ingress.operation, origin.snapshot)?
+                || !confirmed_ingress_object(&tx, ingress.operation, new_route)?
+            {
+                return Err(IndexError::DigestConflict);
             }
-            for claim in &claims {
-                write_event_claim(&tx, *claim, true)?;
+            for root in &snapshot.roots {
+                if !confirmed_ingress_object(&tx, ingress.operation, *root)? {
+                    return Err(IndexError::DigestConflict);
+                }
             }
-            for row in &snapshot.frontiers {
-                let workspace = workspace_key(row.workspace)?;
-                let epoch = int(row.stream_epoch)?;
-                let sequence = int(row.sequence)?;
-                let producer = row.producer.0.to_vec();
-                let stream = row.stream.0.to_vec();
-                exactly_one(tx.execute(
-                    "INSERT INTO native_frontier_v1(workspace,producer,stream,stream_epoch,sequence,row_digest) VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![&workspace, &producer, &stream, epoch, sequence,
-                        fields_digest(b"qidx.native.frontier.v1", &(&workspace, &producer, &stream, epoch, sequence))?],
-                ).map_err(|error| sql(&error))?, "import protected frontier")?;
+            // The import may be an exact retry or a first import into a file with
+            // leftover rows. Scan before either path can return success or mutate.
+            scan_active.store(true, Ordering::Relaxed);
+            let attached = require_attached_event_claims_v1(&tx, budget)
+                .and_then(|()| require_registered_workspace_rows_v1(&tx, budget));
+            scan_active.store(false, Ordering::Relaxed);
+            attached?;
+            let already =
+                validate_existing_v1(&tx, &expected, &operations, &claims, snapshot, budget)?;
+            if !already {
+                for view in expected.views.values() {
+                    ensure_roots(&tx, view)?;
+                    write_view(&tx, view)?;
+                }
+                for (workspace, terminal) in &expected.current {
+                    let payload = encode(terminal)?;
+                    exactly_one(
+                        tx.execute(
+                            "INSERT INTO native_workspace_v1(workspace,epoch,sequence,payload,row_digest) VALUES (?1,?2,?3,?4,?5)",
+                            params![workspace_key(*workspace)?, int(terminal.identity.epoch)?, int(terminal.identity.sequence)?, &payload, digest(b"qidx.native.view.v1", &payload).to_vec()],
+                        ).map_err(|error| sql(&error))?,
+                        "import protected workspace",
+                    )?;
+                }
+                for input in &operations {
+                    // SQLite owns the bound BLOB and can copy it again when
+                    // building the record. The validated input remains borrowed.
+                    let backing = u64::try_from(input.payload.len())
+                        .ok()
+                        .and_then(|bytes| bytes.checked_mul(2))
+                        .and_then(|bytes| bytes.checked_add(8192))
+                        .ok_or(IndexError::ResourceLimited)?;
+                    let _sqlite_row = budget
+                        .reserve_memory(backing, MemoryLifetime::Temporary)?
+                        .ok_or(IndexError::ResourceLimited)?;
+                    write_operation_payload(&tx, input.key, input.payload, true, true)?;
+                }
+                for claim in &claims {
+                    write_event_claim(&tx, *claim, true)?;
+                }
+                for row in &snapshot.frontiers {
+                    let workspace = workspace_key(row.workspace)?;
+                    let epoch = int(row.stream_epoch)?;
+                    let sequence = int(row.sequence)?;
+                    let producer = row.producer.0.to_vec();
+                    let stream = row.stream.0.to_vec();
+                    exactly_one(tx.execute(
+                        "INSERT INTO native_frontier_v1(workspace,producer,stream,stream_epoch,sequence,row_digest) VALUES (?1,?2,?3,?4,?5,?6)",
+                        params![&workspace, &producer, &stream, epoch, sequence,
+                            fields_digest(b"qidx.native.frontier.v1", &(&workspace, &producer, &stream, epoch, sequence))?],
+                    ).map_err(|error| sql(&error))?, "import protected frontier")?;
+                }
+                for row in &snapshot.source_authorities {
+                    let workspace = workspace_key(row.workspace)?;
+                    let workspace_epoch = int(row.workspace_epoch)?;
+                    let source_epoch = int(row.source_epoch)?;
+                    let producer = row.producer.0.to_vec();
+                    exactly_one(tx.execute(
+                        "INSERT INTO native_source_authority_v1(workspace,workspace_epoch,producer,source_epoch,row_digest) VALUES (?1,?2,?3,?4,?5)",
+                        params![&workspace, workspace_epoch, &producer, source_epoch,
+                            fields_digest(b"qidx.native.sourceauthority.v1", &(&workspace, workspace_epoch, &producer, source_epoch))?],
+                    ).map_err(|error| sql(&error))?, "import protected source authority")?;
+                }
             }
-            for row in &snapshot.source_authorities {
-                let workspace = workspace_key(row.workspace)?;
-                let workspace_epoch = int(row.workspace_epoch)?;
-                let source_epoch = int(row.source_epoch)?;
-                let producer = row.producer.0.to_vec();
-                exactly_one(tx.execute(
-                    "INSERT INTO native_source_authority_v1(workspace,workspace_epoch,producer,source_epoch,row_digest) VALUES (?1,?2,?3,?4,?5)",
-                    params![&workspace, workspace_epoch, &producer, source_epoch,
-                        fields_digest(b"qidx.native.sourceauthority.v1", &(&workspace, workspace_epoch, &producer, source_epoch))?],
-                ).map_err(|error| sql(&error))?, "import protected source authority")?;
-            }
-        }
-        drop(claims);
-        drop(claim_memory);
-        drop(operations);
-        drop(expected);
-        drop(indices_memory);
-        let _verified_route = super::boot_manifest::validate_protected_routes(
-            &tx,
-            primary,
-            new_route,
-            source_routes,
-            true,
-            Some(ingress),
-            budget,
-        )?;
-        budget.checkpoint()?;
-        tx.commit().map_err(|error| sql(&error))?;
-        Ok(())
+            drop(claims);
+            drop(claim_memory);
+            drop(operations);
+            drop(expected);
+            drop(indices_memory);
+            let _verified_route = super::boot_manifest::validate_protected_routes(
+                &tx,
+                primary,
+                new_route,
+                source_routes,
+                true,
+                Some(ingress),
+                budget,
+            )?;
+            budget.checkpoint()?;
+            tx.commit().map_err(|error| sql(&error))?;
+            Ok(())
+        })();
+        let cleared = guard
+            .progress_handler(0, None::<fn() -> bool>)
+            .map_err(|error| sql(&error));
+        imported?;
+        cleared
     }
 }

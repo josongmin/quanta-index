@@ -4,7 +4,9 @@
 
 ## 현재 코드와 실행 판정
 
-2026-11-22 KST, Q HEAD `252ec2ec7`의 작업 트리를 대조했다. 아래 검증은 각 실행의 입력과 타깃에 귀속한다.
+**11월 26일 최신 상태.** 이전 후보의 ANN4K는 **VERIFIED · 1/1**, Product4K는 4,096개 게시 뒤 materialization 1,200초 기한에서 **FAILED**다. 현 후보의 결합 Off는 입장 대기 중 종료해 두 본문이 **NOT_RUN**이다. 마지막 후기 Record PID 89072도 종료했다. 상태에는 대기가 남았고 child PID·본문 로그·qtrace·terminal 없이 진단·제품 직렬 잠금 세 개가 비어 있었다. 원 로그에서 종료 원인은 확인되지 않았다. 슬롯의 마지막 preflight는 05:40 KST에 부하 20.30/상한 8로 거절됐고, 이번 감사의 동일 preflight도 부하 96.49/8로 **BLOCKED**였다. 후기 Record 본문은 **NOT_RUN**이다. [마지막 Record](/Users/songmin/Library/Caches/quanta-index/ann4k-late-record-5w6y78vu/state.json) · [슬롯 입장 로그](/Users/songmin/Library/Caches/quanta-index/ann4k-late-record-5w6y78vu/LATE4K_RECORD-preflight.txt) · [직전 Off 상태](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/off-pair-VspciXA3/state.json) · [다음 착수](00-final-audit.md#작업과-종료-조건)
+
+아래 표의 11월 22일 코드 대조는 Q `252ec2ec7` 작업 트리로 수행했다. 각 실행 결과는 당시 입력과 타깃에 귀속한다.
 
 | 코드 경계 | 현행 구현 | 확인 범위와 잔여 |
 | --- | --- | --- |
@@ -12,7 +14,7 @@
 | Worker → Kernel → Catalog | Worker의 별도 상태 조회를 제거했다. `execute_owned_work`가 Catalog의 원 요청·claim 검사 결과로 신규·Pending·terminal을 분기한다. `claim_recovery`, `prepared_work`, `stage_work`는 원 `WorkBudget`으로 락 대기와 반환 또는 commit 직전 경계를 검사한다. | Catalog lib 집중 **VERIFIED 7/7**. 작업 트리의 Kernel terminal 재생 및 Runtime worker 통합 본문은 별도 검증이 필요하다. [Worker](../../../crates/quanta-index-searchd-runtime/src/native_worker.rs#L1042) · [Kernel](../../../crates/quanta-index-kernel/src/update.rs#L2234) · [Catalog](../../../crates/quanta-index-catalog/src/native/authority.rs#L3809) |
 | Immutable operation 조회 기한 | Kernel의 재생·복구·실행 네 경로와 Runtime overlay 저장 두 경로는 `operation_request`에 원 `WorkBudget`을 전달한다. Catalog는 연결 대기와 성공 반환 직전을 검사한다. 실행 전 조회에서 발생한 기한·취소는 곧바로 전파하고, 실행 뒤 확정 결과를 확인하는 사후 조정은 유지한다. | 기존 읽기 청구를 보존했다. 최초 집중 검증은 Catalog 1/1, Kernel 3/3, Runtime overlay 1/1 PASS였다. 후속 감사에서 최초 거부 사유가 실행 전 취소를 가릴 수 있는 반례를 찾아 아래 같은 선택자로 RED→GREEN을 확인했다. 4K 지연에 대한 기여도는 미측정이다. [Catalog 조회](../../../crates/quanta-index-catalog/src/native/authority.rs#L3809) · [Kernel 조회](../../../crates/quanta-index-kernel/src/update.rs#L2069) · [경쟁 회귀](../../../crates/quanta-index-catalog/src/native/authority.rs#L16959) |
 | 후기 창 점유 판정 | `closed-workers --occupancy-only --window-ns START END`는 포함 표본이 0개여도 닫힌 root의 시간 합집합과 미분류 시간을 출력한다. 기본 단계별 비용 보고에는 최소 표본이 필요하다. 열린 root를 창 전과 창 안의 시작 건수로 나누고 실행 시간은 추정하지 않는다. | Causal Python 1,421 PASS·2 skip, 최종 worker·ingest 집중 44 PASS, Ruff 통과. [점유 리포터](../../../tools/benchmark/retrieval/causal_cost_worker_scopes.py#L147) · [CLI](../../../tools/benchmark/retrieval/causal_cost_diagnostic.py#L1114) |
-| 후기 계측과 제품 수용 | SourceAdvance와 worker의 동일 qtrace 클록으로 측정한다. 정식 수용은 단일 SourceAdvance, 100만 읽기, `4,096×64/Q64/K10`, 1,200초, 오버레이 종료·두 번째 재시작이다. | 새 후기 진단도 admission 대기 중 디스크 `ENOSPC`로 종료됐다. 본문은 **NOT_RUN**이다. 마지막 제품은 **FAILED 0/1·exit 100**이다. 후기 RCA와 수정 후 두 원 본문의 동일 입력 수용은 남아 있다. [후기 실행 기록](#후기-worker-계측-준비) · [이전 4K 결과](#기존-실행기-결과) |
+| 후기 계측과 제품 수용 | SourceAdvance와 worker의 동일 qtrace 클록으로 측정한다. 정식 수용은 단일 SourceAdvance, 100만 읽기, `4,096×64/Q64/K10`, 1,200초, 오버레이 종료·두 번째 재시작이다. | 이전 후기 진단 슬롯은 admission 대기 중 `ENOSPC`로 종료됐다. 본문은 **NOT_RUN**이다. 마지막 제품은 **FAILED 0/1·exit 100**이다. 후기 RCA와 수정 후 두 원 본문의 동일 입력 수용은 남아 있다. [후기 실행 기록](#후기-worker-계측-준비) · [이전 4K 결과](#기존-실행기-결과) |
 
 ## 고정한 실행과 판정
 
@@ -39,12 +41,12 @@
 **11월 22일 16:00 KST B 수정 후보.** Native Worker는 Kernel의 `execute_owned_work`를 호출한다. Kernel은 기존 Catalog 권한 검증에서 얻은 operation 상태로 신규 요청·Pending 복구·terminal을 분기한다. Catalog 잠금 대기 기한과 exact terminal 재생 회귀가 추가됐다. Catalog 회귀는 **VERIFIED 7/7**이다. 현 작업 트리의 Kernel/Worker 통합과 전체 PRODUCT4K는 **NOT_RUN**이다. 후반 처리 비용과 원 한도의 실제 재검증으로 병목 기여도를 판정한다. [Worker 호출](../../../crates/quanta-index-searchd-runtime/src/native_worker.rs#L1042) · [Kernel 분기](../../../crates/quanta-index-kernel/src/update.rs#L2233) · [Catalog 검증](../../../crates/quanta-index-catalog/src/native/authority/owned_work.rs#L827)
 
 - **초기 게시 거절.** 실제 거절 axis·stage·누적 사용량과 남은 기한을 [01](01-attribution.md)의 닫힌 구간에 대조한다. 읽기 한도나 파일 수를 바꾸거나 여러 SourceAdvance로 분할하면 원 제품 실패 재검증이 성립하지 않는다.
-- **게시 이후 watchdog.** 원 실행 로그의 실패 phase·seed, SDK 왕복과 provider 관측, 남은 기한으로 원인을 좁힌다. 128 완료 prefix는 후반 오버레이·두 번째 재시작을 실행하지 않는다. 수정한 뒤 기존 제품 본문을 처음부터 재검증한다. [기존 watchdog 기록](../nov-12-native-cutover/tickets/NC-B-semantic.md#L687)
+- **게시 이후 watchdog.** 원 실행 로그의 실패 phase·seed, SDK 왕복과 provider 관측, 남은 기한으로 원인을 좁힌다. 128 완료 prefix는 후반 오버레이·두 번째 재시작을 실행하지 않는다. 수정한 뒤 기존 제품 본문을 처음부터 재검증한다. [기존 watchdog 기록](../nov-12-native-cutover/tickets/NC-B-semantic.md#b143--4k-product-watchdog-attribution)
 - **ANN 품질 실패.** 기존 LanceDB 실행의 `correlated_gt10pct`는 적격 2,048개에서 raw 8/10·파일 506/640이었다. 같은 seed·필터에서 exact 상위 owner가 속하는 리전과 8개 리전의 실제 방문·미처리 사유, 리전 내부 후보, 1,024 owner 한도 도달 여부, 재채점과 파일별 중복 제거 결과를 대조해 최초 누락 지점을 찾는다. 그 실행에서는 비어 있지 않은 구간의 리전 수와 당시 라우팅 상한이 모두 8이었다. 9번째 리전 제외 사례를 이 실패의 원인으로 인계하지 않는다. 이 경로의 Semantic 수리와 동일 ANN 본문 재검증도 기존 B 범위다. [선택/탐색 손실을 구분하는 회귀](../../../crates/quanta-index-semantic/src/native/embedding/tests/ann_product_tests/ann4k_tests.rs#L581)
 
 ### Lance 조회 취소 · 구현과 완료 기준
 
-현재 `settle_query_batches`는 첫 오류를 보존하지만 다음 배치가 영원히 pending이면 반환하지 않는다. 결정적 스트림 회귀로 이 경계를 재현했다. 실제 Lance 정체와 제품 materialization 실패의 인과관계는 미확인이다. `scan`, `take`, scheduler I/O와 flat·IVF CPU 작업은 스트림을 drop한 뒤에도 살아 있을 수 있다. 동시에 Native는 조회가 반환되면 실행 예약과 티켓을 정산한다. 작업 종료를 확인하기 전에 반환하면 물리 작업에 대한 비용과 수명 보장이 깨진다. [스트림 정산](../../../crates/quanta-index-semantic/src/native/ann_lance.rs#L765) · [비동기 scan](../../../vendor/lance-7.0.0/src/io/exec/scan.rs#L287) · [scheduler I/O](../../../vendor/lance-io-7.0.0/src/scheduler.rs#L432) · [실행 예약](../../../crates/quanta-index-searchd-runtime/src/native.rs#L447) · [티켓 정산](../../../crates/quanta-index-kernel/src/update.rs#L779)
+현재 `settle_query_batches`는 첫 오류를 보존하지만 다음 배치가 영원히 pending이면 반환하지 않는다. 결정적 스트림 회귀로 이 경계를 재현했다. 실제 Lance 정체와 제품 materialization 실패의 인과관계는 미확인이다. `scan`, `take`, scheduler I/O와 flat·IVF CPU 작업은 스트림을 drop한 뒤에도 살아 있을 수 있다. 동시에 Native는 조회가 반환되면 실행 예약과 티켓을 정산한다. 작업 종료를 확인하기 전에 반환하면 물리 작업에 대한 비용과 수명 보장이 깨진다. [스트림 정산](../../../crates/quanta-index-semantic/src/native/ann_lance.rs#L765) · [Lance 조회 수명](../nov-23-vendor-retirement/10-execution-work-breakdown.md#lance) · [scheduler I/O](../../../vendor/lance-io-7.0.0/src/scheduler.rs#L432) · [실행 예약](../../../crates/quanta-index-searchd-runtime/src/native.rs#L447) · [티켓 정산](../../../crates/quanta-index-kernel/src/update.rs#L779)
 
 1. **실제 Lance 경로에서 재현을 고정한다.** flat과 trained IVF를 각각 실행하고 작업이 시작된 뒤 테스트 barrier를 잡는다. 최초 배치 전 취소·원 deadline 만료, 후보 처리의 첫 오류 뒤 다음 배치 대기를 재현한다. 원 요청 ID로 중단 감지, 마지막 물리 작업 종료, 실행 예약 반환을 연결한다. 시작과 반환 순서는 barrier 및 자원 카운터로 검사한다.
 2. **실행을 시작한 곳에서 중단과 완료를 관리한다.** Native에서 선택한 Lance 실행 경로의 async·CPU·I/O 작업을 등록한다. 요청의 기존 취소·절대 기한 또는 첫 치명적 오류를 한 번 기록하고 신규 작업 및 후보 채택을 닫는다. 중단 가능한 async 작업은 취소하고 CPU 작업은 배치·파티션 경계에서 협력적으로 중단한다. 기존 실행 grant, private session과 scratch는 등록 작업이 종료될 때까지 보유한다. 작업이 원본 객체·맵을 읽는 동안에는 티켓도 보유한다. 물리 작업을 남긴 채 응답할 필요가 확인된 경로에 한해 같은 grant를 작업 소유자에게 이전하고 마지막 작업 종료에서 반환한다. [요청 취소 권한](../../../crates/quanta-index-core/src/request_budget.rs#L726) · [기존 물리 실행 예약 패턴](../../../crates/quanta-index-searchd-runtime/src/native_provider_custody.rs#L35) · [private Lance 저장소](../../../crates/quanta-index-semantic/src/native/ann_store/selected.rs#L19)
@@ -234,6 +236,12 @@ Prefix 게시가 확인되고 ANN4K와 제품 4K가 모두 종료되면 `product
 
 현 후보의 후기 Record와 정식 Product4K는 **NOT_RUN**이다. 기존 결합 결과는 ANN4K 1 PASS, Product4K 1 FAIL의 `quality_incomplete`다.
 
+원 B 실행기의 SHA와 두 selector 인자 해시를 재검증하고 같은 직렬 잠금에서 현 후보 실행을 접수했다. 복구한 터미널 판독은 실제 일반·slow PASS, 실패, 잘못된 본문·exit 및 불완전 로그 **8/8**을 통과했다. ANN4K는 원 host preflight 대기이며 tracing Off Product4K는 ANN 실행 이후 같은 입력으로 검증한다. 두 본문은 **NOT_RUN**이다. [복구 실행기](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/restored-20261124-2345/controller.py) · [현재 B 상태](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/restored-20261124-2345/state.json)
+
+같은 컨트롤러는 11월 25일 00:22 KST에 원 입장 대기 1,800초를 소진해 **exit 1**로 종료했다. 마지막 사전 검사는 외부 Rust 9개, 1분 부하 **994.783691 / 상한 8.0**이었다. ANN4K와 tracing Off Product4K의 자식 실행과 입력 캡처는 각 0건이다. [종료 상태](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/restored-20261124-2345/state.json)
+
+11월 24일 19:47 KST 재감사에서 기존 `run_quality.py`와 종전 `quality_incomplete` 상태를 확인했다. 현 후보의 두 본문을 실행하는 프로세스는 없었다. `python3 tools/ci/timing/check_host_contention.py --expected-os darwin`은 외부 Rust 프로세스 18개, 1분 부하 323.79 / 상한 8.0으로 **BLOCKED · exit 1**이었다. 기존 B 실행기와 원래 admission에 귀속한다. [기존 실행기](/Users/songmin/Library/Caches/quanta-index/ann4k-resume-20261117/run_quality.py)
+
 ## 후기 worker 계측 준비
 
 - 실제 worker queue를 채널 전달 직전부터 worker의 command 처리 진입까지 계측하고, 같은 worker의 grant와 별도 span으로 연결했다. 기존 Record는 `closed-workers`의 `linked_control_phases.worker_queue`로 읽는다. 아직 queue에 도달하지 않은 ready·assignment 시간은 이 수치에 포함되지 않는다. 수정 전 Python 회귀는 queue 링크 누락으로 실패했다. 수정 후 Python **45/45 PASS**, Runtime Nextest `99b3262a-93c2-4f29-b9d5-9a498142a193` **2/2 PASS·exit 0**으로 실제 dispatch에서 queue 종료가 grant 시작보다 앞서고 원 deadline·취소가 유지되는지 확인했다. [실제 dispatch 회귀](../../../crates/quanta-index-searchd-runtime/src/native_worker.rs#L2252)
@@ -258,6 +266,22 @@ Prefix 게시가 확인되고 ANN4K와 제품 4K가 모두 종료되면 `product
 - **점유 전용 실파일 확인.** 기존 부분 prefix에서 SourceAdvance 응답 직후 1,062,167ns 창을 골랐다. 기본 리포트는 완전 포함 worker 0개로 거절했고, 점유 전용 리포트는 창을 가로지른 닫힌 worker 1개의 관측 합집합 1,062,167ns와 미분류 0ns를 반환했다. 이 실측은 후기 4K의 원인 판정에 사용하지 않는다.
 - **새 Catalog 집중 회귀.** 넓은 패키지 합성 실행은 관계없는 Runtime 테스트 빌드까지 진행해 본문 전에 종료했다. 정확한 Catalog lib 선택자로 좁힌 첫 실행은 공유 락 300초 후 exit 124·본문 0이었다. 같은 선택자의 재실행은 228.57초 후 락을 취득했고 Nextest `fdf6c877-a0e6-4cf1-8102-e8af505d620f`에서 **1 PASS·exit 0**이었다. 락 해제 전 deadline·취소 반환, exact Pending과 추가 읽기 0, 미존재 키 오류를 확인했다. [Catalog 로그](/private/tmp/qidx-owned-operation-request.p1kCJZ/catalog-retry.log#L104)
 - **NOT_RUN · 후기 Record 재접수 종료.** PID `99430`은 원 호스트 admission 대기 중 사라졌다. 원 로그에는 preflight 파일 쓰기와 terminal `state.tmp` 저장에 각각 `ENOSPC`가 있다. `state.json`의 대기 상태는 남아 있지만 child·본문·trace는 없다. 내부 볼륨 여유와 기존 admission이 회복된 뒤 기존 controller 한 건으로 이어간다. [controller 예외](/Users/songmin/Library/Caches/quanta-index/ann4k-late-record-h4a2lcwt/controller.log#L16)
+
+후기 Record의 기존 `quality_receipts.py`를 보존된 원본 출력에서 복구했다. 세 출력 구간의 중첩과 원 파일 크기 11,292바이트를 대조했으며, 복구본 SHA-256은 `7d3a653a0bbe40ff5e83955a16c4a3092ee477a9da1573e7806b9be1b96153f0`이다. 기존 controller `--check`는 import를 통과한 뒤 동일 소스에 결속된 `source-bound-local/build-env.json` 누락으로 exit 1을 반환했다. 후기 Record는 **BLOCKED**이며 제품 본문은 **NOT_RUN**이다. [기존 진단 controller](/Users/songmin/Library/Caches/quanta-index/ann4k-late-record-1Be7zwOY/controller.py) · [복구 모듈](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/quality_receipts.py)
+
+후기 Record의 누락된 빌드 경로 설정을 현재 `test-workspace-lane` target과 macOS 사용자 temp 디렉터리로 발급했다. 기존 진단·제품 잠금 안에서 파일을 새로 게시하고 기존 controller의 `--check`로 원 Product4K selector와 진단 전용 1 GiB trace 상한을 확인했다. 원 호스트 입장 검사는 외부 Rust 4개, 1분 load 44.000488/8로 **BLOCKED · exit 1**이었다. 후기 Record와 공식 Off 제품 본문은 **NOT_RUN**이다. [빌드 경로 설정](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/source-bound-local/build-env.json)
+
+기존 B Off controller의 원 runner·두 selector digest와 terminal parser 회귀 **8/8**을 `--check`에서 확인했다. 같은 controller를 새 슬롯에 접수해 ANN4K→Product4K 직렬 잠금을 획득했다. 첫 ANN4K가 원래의 청정 호스트 입장을 기다린다. 실행기는 각 본문 전후 및 두 본문 사이에 Source·Cargo resolver의 동일성을 검사한다. [Off 직렬 실행](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/off-pair-VspciXA3/controller.log)
+
+이 Off 실행은 11월 25일 09:30 KST에 공통 입장 대기 1,800초를 소진하여 **exit 1**로 종료했다. 마지막 ANN4K 사전 검사는 외부 Rust 2개와 부하 48.092285/8을 기록했다. 두 타깃은 모두 `runner_error`이며 자식 실행과 본문은 0건으로 **NOT_RUN**이다. [Off 종료 상태](/Users/songmin/Library/Caches/quanta-index/ann4k-owner-budget-repair-uls30q9w/off-pair-VspciXA3/state.json)
+
+Lance 통계 JSON의 네 금지 derive를 명시적 역직렬화로 교체했다. 기존 유형 별칭과 거리 이름, map의 선택 필드, 위치 기반 레코드, 확장 필드 처리와 중복 필드 거절을 유지한다. `test-workspace-lane`의 Semantic lib 집중 Nextest `fead55b3-f556-4a3c-9a60-27c90c4a803a`는 **2/2 `VERIFIED` · exit 0**이다. ANN4K·Product4K는 위 직렬 실행에서 확인한다. [Lance 통계 codec](../../../crates/quanta-index-semantic/src/vector_index.rs#L75)
+
+- 현행 작업 트리에서 `just rust-derive-allowlist`는 위반 0건으로 종료했다. 복구된 Record와 Off 컨트롤러는 각각 `--check`를 통과했다. 기존 Record 컨트롤러를 새 슬롯에서 한 건 시작했고, 기존 진단 잠금과 두 제품 직렬 잠금을 확보한 상태에서 원 호스트 admission을 기다린다. 후기 Record 및 Off 두 본문은 **NOT_RUN**이다. [Record 로그](/Users/songmin/Library/Caches/quanta-index/ann4k-late-record-zjT2kiis/controller.log) · [호스트 사전 검사](/Users/songmin/Library/Caches/quanta-index/ann4k-late-record-zjT2kiis/LATE4K_RECORD-preflight.txt)
+
+- **11월 26일 후기 판독기 · VERIFIED.** `closed-workers`는 잘못된 window·최소 표본·점유 조합을 qtrace 파일을 열기 전에 거절한다. 59 MiB prefix에서 window 없는 최소 표본 옵션이 전체 디코딩 뒤 거절되는 동작을 확인했다. 누락 입력을 사용한 네 반례는 수정 전 4 FAIL, 수정 후 worker·native-ingest와 합쳐 49 PASS·exit 0이다. CLI와 리포터 호출이 같은 옵션 검증을 사용한다. [CLI](../../../tools/benchmark/retrieval/causal_cost_diagnostic.py#L1173) · [회귀](../../../tools/ci/tests/test_causal_cost_worker_scopes.py#L468)
+- **Causal-cost 전체 회귀 · FAILED.** `pytest -q -p no:cacheprovider tools/ci/tests/test_causal_cost*.py`는 1,424 PASS·2 FAIL·2 skip이다. 별도 capture subprocess 회귀의 timeout·interrupt가 실패했다. 두 케이스만 다시 실행한 결과 interrupt는 통과했고, timeout은 2초 만료 전에 fixture daemon의 PID 파일이 생성되지 않아 다시 실패했다. 이 두 테스트 경로는 변경한 `closed-workers` 옵션 검증을 호출하지 않는다. [capture subprocess 회귀](../../../tools/ci/tests/test_causal_cost_capture.py#L1927)
+- **11월 26일 후속 재검증 · VERIFIED.** `test_causal_cost_worker_scopes.py`, `test_causal_cost_native_ingest.py`, `test_causal_cost_capture.py`에서 `-k 'not test_capture or capture_owns_descendants_and_retains_execution_failure'`를 적용해 190 PASS·2 skip·14 deselected·exit 0을 확인했다. 종전 timeout·interrupt 두 케이스도 통과했다. 앞선 전체 실패 기록은 해당 실행에 귀속한다. timeout fixture는 2초 안에 자식 시작까지 요구하므로 실패가 재현되면 자식 시작과 deadline·정리 검사를 분리하는 회귀 수정을 검토한다. 현재 생산 코드의 타임아웃 또는 process cleanup 결함은 미확정이다.
 
 ## 실행 전 조회 취소 재감사
 

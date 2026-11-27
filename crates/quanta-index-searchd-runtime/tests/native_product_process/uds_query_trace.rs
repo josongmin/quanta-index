@@ -106,7 +106,7 @@ fn stage_one_owner(
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec(), semantic.clone()],
+            instances: vec![literal_spec(), text_spec(), semantic.clone()],
         },
         &budget(),
     )?;
@@ -246,12 +246,11 @@ fn run_queries(
         "Fixed8 durable Deep cosine",
     )?;
 
-    let publisher = client
-        .begin_interaction_publisher(Duration::from_secs(30), &budget())
+    let live = LivePublisher::begin(client, Duration::from_secs(30))
         .map_err(|error| format!("overlay publisher begin: {error}"))?;
     let session = NativeOverlaySession {
         workspace: workspace(),
-        publisher,
+        publisher: live.id(),
         epoch: 1,
     };
     require_equal(
@@ -262,6 +261,7 @@ fn run_queries(
         "overlay session begin",
     )?;
     let document = NativeOverlayDocument { session, owner };
+    live.renew()?;
     require_equal(
         &client
             .update_overlay_at_path(
@@ -270,6 +270,7 @@ fn run_queries(
                 1,
                 Some("needle".into()),
                 Some("overlay.rs".into()),
+                None,
                 &budget(),
             )
             .map_err(|error| format!("overlay document update: {error}"))?,
@@ -281,6 +282,7 @@ fn run_queries(
     )?;
     let mut overlay_fast = None;
     let mut overlay_deep = None;
+    live.renew()?;
     let overlay_done = client
         .query_effort_stream(
             NativeEffortStreamQuery {
@@ -365,6 +367,7 @@ fn run_queries(
         &Some(&overlay_fast.corpus),
         "overlay effort corpus",
     )?;
+    live.renew()?;
     require_equal(
         &client.overlay(NativeOverlayRequest::Close { session }, &budget())?,
         &NativeOverlayReply::Closed(session),

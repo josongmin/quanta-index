@@ -1911,3 +1911,6 @@ fn read_session_profile_preserves_original_cancellation() -> TestResult {
     assert_eq!(native_pin_count(&catalog)?, 1);
     Ok(())
 }
+
+#[path = "native_query_session/pin_release_settlement.rs"]
+mod pin_release_settlement;

@@ -10,15 +10,35 @@ use quanta_index_contract::{
 };
 use quanta_index_core::index::IndexError;
 use quanta_index_lq_text_normalizer::is_token_char;
+use quanta_index_lq_trigram::NecessaryGramExpr;
 
 const MAX_QUERY_NODES: usize = 256;
 const MAX_QUERY_DEPTH: usize = 32;
 const MAX_CONTENT_TERMS: usize = 64;
 const MAX_LITERAL_BYTES: usize = 4_096;
 const MAX_TOTAL_LITERAL_BYTES: usize = 16 * 1_024;
-const MAX_REGEX_LEAVES: usize = super::text_regex::MAX_NATIVE_CONTENT_REGEX;
-pub(super) const MAX_FILE_CONTAINS_LEAVES: usize = 4;
-const MAX_PATH_FILTERS: usize = super::text_regex::MAX_NATIVE_PATH_FILTERS;
+const MAX_REGEX_LEAVES: usize = quanta_index_contract::MAX_NATIVE_CONTENT_REGEX_LEAVES;
+// The contract owns these fan-out limits so clients refuse before any I/O.
+pub(super) use quanta_index_contract::{
+    MAX_NATIVE_FILE_CONTAINS_LEAVES as MAX_FILE_CONTAINS_LEAVES,
+    MAX_NATIVE_PATH_CONTAINS_LEAVES as MAX_PATH_CONTAINS_LEAVES,
+    MAX_NATIVE_PATH_FILTERS as MAX_PATH_FILTERS,
+    MAX_NATIVE_PATH_REGEX_LEAVES as MAX_PATH_REGEX_LEAVES,
+};
+const MAX_REPO_FILTERS: usize = super::text_regex::MAX_NATIVE_REPO_FILTERS;
+
+/// The plan-backing grants the native text route acquires around planning.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeTextPlanBacking {
+    /// Held while the plan lives: the plan trees, child vectors, strings and
+    /// phrase tokens, and each regex plan's necessary-gram condition, which
+    /// the planner caps at `MAX_NECESSARY_GRAM_NODES` nodes.
+    pub retained: u64,
+    /// Held only while the planner runs: the regex HIR and the short-lived
+    /// engine sets it builds for each regex, path, source and repository
+    /// predicate, and drops before the plan is returned.
+    pub planning: u64,
+}
 
 #[derive(Default)]
 struct Shape {
@@ -27,8 +47,10 @@ struct Shape {
     literal_bytes: usize,
     regexes: usize,
     file_contains: usize,
+    path_contains: usize,
     repo_has_file: usize,
     path_regexes: usize,
+    path_regex_leaves: usize,
 }
 
 impl Shape {
@@ -96,6 +118,52 @@ impl Shape {
                     return Err(IndexError::ResourceLimited);
                 }
                 Ok(false)
+            }
+            // Decided from Source path metadata; its exact matching-path
+            // census bounds the candidates, so it anchors like a term.
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) if name == "path.contains" => {
+                let [LqPredicateArg::RawString(needle)] = args.as_slice() else {
+                    return Err(IndexError::InvalidInput(
+                        "native path.contains requires one raw string".into(),
+                    ));
+                };
+                if !file_contains_raw_literal_supported(needle) {
+                    return Err(IndexError::InvalidInput(
+                        "native path.contains requires a bounded literal raw substring".into(),
+                    ));
+                }
+                self.literal(needle)?;
+                self.path_contains = self
+                    .path_contains
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if self.path_contains > MAX_PATH_CONTAINS_LEAVES {
+                    return Err(IndexError::ResourceLimited);
+                }
+                Ok(true)
+            }
+            // A regex over Source path metadata: its exact census bounds the
+            // candidates like `path.contains`.
+            LqExpr::Leaf(LqLeaf::Predicate { name, args }) if name == "path.regex" => {
+                let [LqPredicateArg::RawString(source)] = args.as_slice() else {
+                    return Err(IndexError::InvalidInput(
+                        "native path.regex requires one raw pattern".into(),
+                    ));
+                };
+                if source.is_empty() {
+                    return Err(IndexError::InvalidInput(
+                        "native path.regex requires a pattern".into(),
+                    ));
+                }
+                self.literal(source)?;
+                self.path_regex_leaves = self
+                    .path_regex_leaves
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if self.path_regex_leaves > MAX_PATH_REGEX_LEAVES {
+                    return Err(IndexError::ResourceLimited);
+                }
+                Ok(true)
             }
             LqExpr::Leaf(LqLeaf::Predicate { name, args })
                 if matches!(
@@ -205,12 +273,11 @@ impl Shape {
         Ok(())
     }
 
-    fn plan_backing_bytes(&self) -> Result<u64, IndexError> {
+    fn plan_backing(&self) -> Result<NativeTextPlanBacking, IndexError> {
         // Logical reservation for the two plan trees, child vectors, trace
-        // strings, phrase tokens and temporary normalization. The fixed node
-        // allowance also covers the planner's short-lived engine sets. This
-        // is a route admission policy, not a physical RSS/allocator ceiling.
-        let bytes = self
+        // strings, phrase tokens and temporary normalization. This is a route
+        // admission policy, not a physical RSS/allocator ceiling.
+        let structural = self
             .nodes
             .checked_mul(4_096)
             .and_then(|total| {
@@ -225,20 +292,32 @@ impl Shape {
             })
             .and_then(|total| {
                 self.regexes
-                    .checked_add(self.path_regexes)?
-                    .checked_add(self.file_contains)?
-                    .checked_add(self.repo_has_file.checked_mul(4)?)?
-                    .checked_mul(
-                        match usize::try_from(quanta_index_lq_regex::MAX_NFA_STATES) {
-                            Ok(value) => value,
-                            Err(_overflow) => return None,
-                        }
-                        .checked_mul(32)?,
-                    )
-                    .and_then(|regex| total.checked_add(regex))
+                    .checked_mul(quanta_index_lq_regex::MAX_NECESSARY_GRAM_NODES)?
+                    .checked_mul(std::mem::size_of::<NecessaryGramExpr>())
+                    .and_then(|grams| total.checked_add(grams))
             })
             .ok_or(IndexError::ResourceLimited)?;
-        u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)
+        let engines = self
+            .regexes
+            .checked_add(self.path_regexes)
+            .and_then(|engines| engines.checked_add(self.path_regex_leaves))
+            .and_then(|engines| engines.checked_add(self.file_contains))
+            .and_then(|engines| engines.checked_add(self.path_contains))
+            .and_then(|engines| {
+                self.repo_has_file
+                    .checked_mul(4)
+                    .and_then(|predicates| engines.checked_add(predicates))
+            })
+            .ok_or(IndexError::ResourceLimited)?;
+        let planning = u64::try_from(engines)
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .checked_mul(quanta_index_lq_regex::MAX_NFA_STATES)
+            .and_then(|bytes| bytes.checked_mul(32))
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(NativeTextPlanBacking {
+            retained: u64::try_from(structural).map_err(|_error| IndexError::ResourceLimited)?,
+            planning,
+        })
     }
 }
 
@@ -258,8 +337,8 @@ fn token_runs(text: &str) -> Result<usize, IndexError> {
 }
 
 /// Refuse unsupported native capabilities before the general planner allocates.
-/// Returns the logical plan-backing reservation to acquire before planning.
-pub fn validate_native_text_input(query: &LqQuery) -> Result<u64, IndexError> {
+/// Returns the plan-backing grants to acquire before planning.
+pub fn validate_native_text_input(query: &LqQuery) -> Result<NativeTextPlanBacking, IndexError> {
     if !query.directives.is_empty()
         || !matches!(
             query.options.pattern_type,
@@ -279,9 +358,42 @@ pub fn validate_native_text_input(query: &LqQuery) -> Result<u64, IndexError> {
     }
     let mut shape = Shape::default();
     let mut path_filters = 0usize;
+    let mut repo_filters = 0usize;
     let mut path_selection = false;
     for filter in &query.filters {
         match filter {
+            // `repo:` and `lang:` are verified against authenticated Source
+            // record metadata; see `text_regex::RecordMetadataFilters`.
+            LqFilter::Repo { pattern, revs } => {
+                if !revs.is_empty() {
+                    return Err(IndexError::InvalidInput(
+                        "native repo filter revisions require a history producer".into(),
+                    ));
+                }
+                if pattern.is_empty() {
+                    return Err(IndexError::InvalidInput(
+                        "native repo filter requires a pattern".into(),
+                    ));
+                }
+                repo_filters = repo_filters
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if repo_filters > MAX_REPO_FILTERS {
+                    return Err(IndexError::ResourceLimited);
+                }
+                shape.literal(pattern)?;
+            }
+            // Language ids carry no engine; the literal byte budget bounds
+            // their number. A blank id would be dropped by the planner, so it
+            // is refused here rather than silently widening the filter.
+            LqFilter::Lang { id } => {
+                if id.trim().is_empty() {
+                    return Err(IndexError::InvalidInput(
+                        "native lang filter requires a language id".into(),
+                    ));
+                }
+                shape.literal(id)?;
+            }
             LqFilter::File { pattern, .. } => {
                 path_filters = path_filters
                     .checked_add(1)
@@ -303,12 +415,24 @@ pub fn validate_native_text_input(query: &LqQuery) -> Result<u64, IndexError> {
             }
         }
     }
-    shape.path_regexes = path_filters;
+    shape.path_regexes = path_filters
+        .checked_add(repo_filters)
+        .ok_or(IndexError::ResourceLimited)?;
     // The selected member's admitted document count is available only after
     // planning and pinning. Keep the shape cap here; search_content refuses an
     // unanchored query above its finite-universe bound before scanning pages.
-    let _anchored = shape.visit(&query.expr, 0)?;
-    shape.plan_backing_bytes()
+    // An empty expression is a path-only query: its path filters supply
+    // and bound the candidates from Source path metadata.
+    if matches!(query.expr, LqExpr::Empty) {
+        if path_filters == 0 {
+            return Err(IndexError::InvalidInput(
+                "native path-only query requires a path filter".into(),
+            ));
+        }
+    } else {
+        let _anchored = shape.visit(&query.expr, 0)?;
+    }
+    shape.plan_backing()
 }
 
 #[cfg(test)]
@@ -337,7 +461,7 @@ mod tests {
         let one_bytes = validate_native_text_input(&one);
         let two_bytes = validate_native_text_input(&two);
         assert!(
-            matches!((one_bytes, two_bytes), (Ok(one), Ok(two)) if one.checked_add(256) == Some(two))
+            matches!((one_bytes, two_bytes), (Ok(one), Ok(two)) if one.retained.checked_add(256) == Some(two.retained))
         );
     }
 
@@ -538,7 +662,9 @@ mod tests {
     #[test]
     fn rejects_unsupported_filters_and_options_but_admits_unanchored_shape() {
         let mut filtered = query(LqExpr::Leaf(LqLeaf::Keyword("alpha".into())));
-        filtered.filters.push(LqFilter::Lang { id: "rs".into() });
+        filtered.filters.push(LqFilter::Rev {
+            spec: "main".into(),
+        });
         assert!(validate_native_text_input(&filtered).is_err());
 
         let mut unbounded_count = query(LqExpr::Leaf(LqLeaf::Keyword("alpha".into())));
@@ -574,6 +700,83 @@ mod tests {
         }
         assert!(matches!(
             validate_native_text_input(&selected),
+            Err(IndexError::ResourceLimited)
+        ));
+    }
+
+    #[test]
+    fn admits_path_contains_and_path_only_shapes() {
+        let path_leaf = |needle: &str| {
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "path.contains".into(),
+                args: vec![LqPredicateArg::RawString(needle.into())],
+            })
+        };
+        assert!(validate_native_text_input(&query(path_leaf("src/"))).is_ok());
+        assert!(matches!(
+            validate_native_text_input(&query(LqExpr::Leaf(LqLeaf::Predicate {
+                name: "path.contains".into(),
+                args: vec![LqPredicateArg::Keyword("src".into())],
+            }))),
+            Err(IndexError::InvalidInput(_))
+        ));
+        let many = query(LqExpr::Any(
+            (0..=MAX_PATH_CONTAINS_LEAVES)
+                .map(|_| path_leaf("src"))
+                .collect(),
+        ));
+        assert!(matches!(
+            validate_native_text_input(&many),
+            Err(IndexError::ResourceLimited)
+        ));
+        let mut path_only = query(LqExpr::Empty);
+        assert!(matches!(
+            validate_native_text_input(&path_only),
+            Err(IndexError::InvalidInput(_))
+        ));
+        path_only.filters.push(LqFilter::File {
+            pattern: "^src/".into(),
+            scope: LqFileScope::PathOnly,
+        });
+        assert!(validate_native_text_input(&path_only).is_ok());
+    }
+
+    #[test]
+    fn admits_metadata_filters_and_refuses_unexecutable_shapes() {
+        let mut filtered = query(LqExpr::Leaf(LqLeaf::Keyword("alpha".into())));
+        filtered.filters.push(LqFilter::Lang { id: "rust".into() });
+        filtered.filters.push(LqFilter::Repo {
+            pattern: "^org/alpha$".into(),
+            revs: Vec::new(),
+        });
+        assert!(validate_native_text_input(&filtered).is_ok());
+        for refused in [
+            LqFilter::Lang { id: " ".into() },
+            LqFilter::Repo {
+                pattern: "alpha".into(),
+                revs: vec!["main".into()],
+            },
+            LqFilter::Repo {
+                pattern: String::new(),
+                revs: Vec::new(),
+            },
+        ] {
+            let mut shaped = query(LqExpr::Leaf(LqLeaf::Keyword("alpha".into())));
+            shaped.filters.push(refused);
+            assert!(matches!(
+                validate_native_text_input(&shaped),
+                Err(IndexError::InvalidInput(_))
+            ));
+        }
+        let mut many = query(LqExpr::Leaf(LqLeaf::Keyword("alpha".into())));
+        for _ in 0..=MAX_REPO_FILTERS {
+            many.filters.push(LqFilter::Repo {
+                pattern: "alpha".into(),
+                revs: Vec::new(),
+            });
+        }
+        assert!(matches!(
+            validate_native_text_input(&many),
             Err(IndexError::ResourceLimited)
         ));
     }

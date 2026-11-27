@@ -173,7 +173,8 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         "selected durable text fixture did not contain the fixed source",
     )?;
 
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(30))?;
+    let publisher = live.id();
     let session = NativeOverlaySession {
         workspace: workspace(),
         publisher,
@@ -187,11 +188,13 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         session,
         owner: other_owner(),
     };
+    live.renew()?;
     require(
         client.overlay(NativeOverlayRequest::Begin { session }, &budget())?
             == NativeOverlayReply::Begun(session),
         "overlay query session did not begin",
     )?;
+    live.renew()?;
     let baseline = query_overlay(&client, selected, session, "typed", None)?;
     require(
         baseline.view == selected
@@ -208,6 +211,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
             && baseline.corpus.revisions.is_empty(),
         "empty overlay corpus changed the selected durable row",
     )?;
+    live.renew()?;
     let empty_regex = query_overlay(&client, selected, session, "/typed/", None)?;
     require(
         empty_regex.matched == 1
@@ -218,6 +222,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                 .is_some_and(|hit| hit.source == NativeOverlayTextSource::Durable(source)),
         "empty overlay corpus lost the selected regex match",
     )?;
+    live.renew()?;
     let empty_file = query_overlay(&client, selected, session, "typed file:a", None)?;
     require(
         empty_file.matched == 1
@@ -229,9 +234,11 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         "empty overlay corpus lost the selected file filter",
     )?;
 
-    for (document, text, path) in [
-        (old_document, "draft replacement", "src/a.rs"),
-        (new_document, "draft novel", "src/new.rs"),
+    // The new file joins the durable owner's repository in the selected view.
+    live.renew()?;
+    for (document, text, path, witness) in [
+        (old_document, "draft replacement", "src/a.rs", None),
+        (new_document, "draft novel", "src/new.rs", Some(owner())),
     ] {
         require(
             client.update_overlay_at_path(
@@ -240,6 +247,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                 1,
                 Some(text.into()),
                 Some(path.into()),
+                witness,
                 &budget(),
             )? == NativeOverlayReply::Updated {
                 document,
@@ -248,6 +256,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
             "overlay query revision was not accepted",
         )?;
     }
+    live.renew()?;
     let masked = query_overlay(&client, selected, session, "typed", None)?;
     require(
         masked.view == selected
@@ -256,6 +265,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
             && masked.hits.is_empty(),
         "overlay replacement failed to mask the selected durable term",
     )?;
+    live.renew()?;
     let drafts = query_overlay(&client, selected, session, "draft", None)?;
     require(
         drafts.view == selected
@@ -281,6 +291,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
             }),
         "overlay query did not return both exact unsaved revisions",
     )?;
+    live.renew()?;
     let regex = query_overlay(&client, selected, session, "/draft/", None)?;
     require(
         regex.matched == 2
@@ -291,11 +302,13 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                 .all(|hit| matches!(hit.source, NativeOverlayTextSource::Overlay { revision: 1 })),
         "content regex did not evaluate both unsaved bodies",
     )?;
+    live.renew()?;
     let masked_regex = query_overlay(&client, selected, session, "/durable/", None)?;
     require(
         masked_regex.matched == 0 && masked_regex.hits.is_empty(),
         "content regex read the masked durable body",
     )?;
+    live.renew()?;
     let union = query_overlay(&client, selected, session, "draft OR NOT typed", None)?;
     require(
         union.matched == 2
@@ -306,11 +319,13 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                 .all(|hit| matches!(hit.source, NativeOverlayTextSource::Overlay { revision: 1 })),
         "OR NOT used the durable universe instead of the overlay corpus",
     )?;
+    live.renew()?;
     let negative = query_overlay(&client, selected, session, "NOT draft", None)?;
     require(
         negative.matched == 0 && negative.hits.is_empty(),
         "NOT included an unsaved document containing the excluded term",
     )?;
+    live.renew()?;
     for source in ["draft path:new", "draft file:new"] {
         let filtered = query_overlay(&client, selected, session, source, None)?;
         require(
@@ -325,10 +340,12 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         )?;
     }
     let stamp = drafts.corpus.identity;
+    live.renew()?;
     require(
         query_overlay(&client, selected, session, "draft", Some(stamp))?.corpus == drafts.corpus,
         "unchanged corpus identity was not replayable",
     )?;
+    live.renew()?;
     require(
         client.overlay(
             NativeOverlayRequest::Snapshot {
@@ -342,12 +359,14 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                     revision: 1,
                     text: Some("draft novel".into()),
                     path: Some("src/new.rs".into()),
+                    repository_witness: Some(owner()),
                 },
             ),
         },
         "overlay query changed the retained unsaved document",
     )?;
 
+    live.renew()?;
     require(
         client.overlay(
             NativeOverlayRequest::Update {
@@ -356,6 +375,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                 revision: 2,
                 text: Some("fresh novel".into()),
                 path: Some("src/new.rs".into()),
+                repository_witness: Some(owner()),
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -364,13 +384,12 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         },
         "new document did not advance its overlay revision",
     )?;
-    require_overlay_conflict(query_overlay(
-        &client,
-        selected,
-        session,
-        "draft",
-        Some(stamp),
-    ))?;
+    live.renew()?;
+    live.refused(
+        query_overlay(&client, selected, session, "draft", Some(stamp)).map_err(|error| *error),
+        NativeIndexErrorCode::Conflict,
+    )?;
+    live.renew()?;
     let fresh = query_overlay(&client, selected, session, "fresh", None)?;
     require(
         fresh.matched == 1
@@ -381,6 +400,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
             }),
         "query used a stale overlay revision",
     )?;
+    live.renew()?;
     require(
         client.overlay(
             NativeOverlayRequest::Update {
@@ -389,6 +409,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                 revision: 2,
                 text: None,
                 path: None,
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -397,6 +418,7 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         },
         "overlay deletion was not accepted",
     )?;
+    live.renew()?;
     require(
         client.overlay(
             NativeOverlayRequest::Snapshot {
@@ -410,11 +432,13 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
                     revision: 2,
                     text: None,
                     path: None,
+                    repository_witness: None,
                 },
             ),
         },
         "tombstone snapshot attempted a zero-byte allocation or lost its mask",
     )?;
+    live.renew()?;
     let deleted = query_overlay(&client, selected, session, "typed", None)?;
     require(
         deleted.matched == 0
@@ -441,16 +465,22 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         "overlay query or deletion changed the immutable durable view",
     )?;
 
+    live.renew()?;
     require(
         client.overlay(NativeOverlayRequest::Close { session }, &budget())?
             == NativeOverlayReply::Closed(session),
         "overlay query session did not close",
     )?;
-    require_overlay_conflict(query_overlay(&client, selected, session, "typed", None))?;
+    live.renew()?;
+    live.refused(
+        query_overlay(&client, selected, session, "typed", None).map_err(|error| *error),
+        NativeIndexErrorCode::Conflict,
+    )?;
     let next_session = NativeOverlaySession {
         epoch: 2,
         ..session
     };
+    live.renew()?;
     require(
         client.overlay(
             NativeOverlayRequest::Begin {
@@ -460,7 +490,8 @@ fn overlay_text_query_masks_selected_rows_and_fences_exact_corpus() -> TestResul
         )? == NativeOverlayReply::Begun(next_session),
         "second overlay query session did not begin",
     )?;
-    client.end_interaction_publisher(publisher, 1, &budget())?;
+    // Refusals after End are attributed to that explicit protocol event.
+    live.end()?;
     require_overlay_conflict(query_overlay(
         &client,
         selected,
@@ -520,7 +551,8 @@ fn interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen() -> TestR
         "the exact original request lost its sealed receipt",
     )?;
 
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(30))?;
+    let publisher = live.id();
     let session = NativeOverlaySession {
         workspace: workspace(),
         publisher,
@@ -535,6 +567,7 @@ fn interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen() -> TestR
             == NativeOverlayReply::Begun(session),
         "replacement overlay session did not begin",
     )?;
+    live.renew()?;
     require(
         client.overlay(
             NativeOverlayRequest::Update {
@@ -543,6 +576,7 @@ fn interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen() -> TestR
                 revision: 1,
                 text: Some(CANDIDATE.into()),
                 path: Some(SOURCE_PATH.into()),
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -552,6 +586,7 @@ fn interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen() -> TestR
         "replacement overlay edit was not accepted",
     )?;
     let (candidate, request) = stage_fixture_source(&client, selected, 3, Some(source), CANDIDATE)?;
+    live.renew()?;
     let candidate_key = request.operation;
     let candidate_path = native_object_files::object_file(&object_root, candidate)?;
     require(
@@ -615,6 +650,83 @@ fn interrupted_overlay_save_preserves_sealed_view_bytes_across_reopen() -> TestR
             && invisible.matched == 0
             && invisible.hits.is_empty(),
         "the staged overlay became visible without Source publication",
+    )?;
+    // Unsaved text is process-local: the pre-restart session and its
+    // publisher lost authority, so a client must resubmit in a new session.
+    require_overlay_conflict(query_overlay(
+        &client,
+        selected,
+        session,
+        "interrupted",
+        None,
+    ))?;
+    expect_conflict(client.overlay(NativeOverlayRequest::Snapshot { document }, &budget()))?;
+    // Those refusals are attributed to the restart: the old lease itself no
+    // longer exists, so it cannot be renewed either.
+    require(
+        live.renew().is_err(),
+        "a pre-restart publisher lease survived the restart",
+    )?;
+    let renewed_live = LivePublisher::begin(&client, Duration::from_secs(30))?;
+    let renewed = NativeOverlaySession {
+        workspace: workspace(),
+        publisher: renewed_live.id(),
+        epoch: 1,
+    };
+    let renewed_document = NativeOverlayDocument {
+        session: renewed,
+        owner: owner(),
+    };
+    require(
+        client.overlay(NativeOverlayRequest::Begin { session: renewed }, &budget())?
+            == NativeOverlayReply::Begun(renewed)
+            && client.overlay(
+                NativeOverlayRequest::Snapshot {
+                    document: renewed_document,
+                },
+                &budget(),
+            )? == NativeOverlayReply::Snapshot {
+                document: renewed_document,
+                overlay: None,
+            },
+        "a post-restart session inherited pre-restart unsaved text",
+    )?;
+    renewed_live.renew()?;
+    let published_only = query_overlay(&client, selected, renewed, "typed", None)?;
+    require(
+        published_only.matched == 1
+            && published_only.corpus.revisions.is_empty()
+            && published_only
+                .hits
+                .first()
+                .is_some_and(|hit| hit.source == NativeOverlayTextSource::Durable(source)),
+        "a resubmission-free session did not mark its published-only origin",
+    )?;
+    renewed_live.renew()?;
+    require(
+        client.update_overlay_at_path(
+            renewed_document,
+            None,
+            1,
+            Some(CANDIDATE.into()),
+            None,
+            None,
+            &budget(),
+        )? == NativeOverlayReply::Updated {
+            document: renewed_document,
+            revision: 1,
+        },
+        "the resubmitted unsaved revision was refused",
+    )?;
+    renewed_live.renew()?;
+    let resubmitted = query_overlay(&client, selected, renewed, "interrupted", None)?;
+    require(
+        resubmitted.matched == 1
+            && resubmitted.hits.first().is_some_and(|hit| {
+                hit.owner == owner()
+                    && hit.source == NativeOverlayTextSource::Overlay { revision: 1 }
+            }),
+        "the resubmitted unsaved revision did not mark its overlay origin",
     )?;
     reopened.stop()
 }

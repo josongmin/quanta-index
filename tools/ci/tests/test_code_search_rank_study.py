@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 import jsonschema
@@ -53,13 +54,18 @@ def fixture():
         return {"planner_trace": [{"stage": "merge", "detail": item} for item in items]}
 
     def page(item, eligible, exhausted):
+        outcome = (
+            {"kind": "exact_exhausted"}
+            if exhausted
+            else {"kind": "lower_bound", "continuation": True}
+        )
         return {
             "generation": pin,
             "rank_unit": "file",
             "results": [item],
             "window": {
                 "returned": 1,
-                "outcome": {"kind": "exact_exhausted" if exhausted else "lower_bound"},
+                "outcome": outcome,
             },
             "next_cursor": None if exhausted else "opaque-cursor",
             "explanation": details(
@@ -209,6 +215,67 @@ def fixture():
 
 def validate(artifact, record, pack):
     return study.validate_artifact(artifact, record, "a" * 64, pack)
+
+
+def test_cli_binds_report_to_the_input_bytes_it_validated(tmp_path, monkeypatch):
+    artifact, record, pack, suite = fixture()
+    suite["repository_commit"] = "commit"
+    pack["file_universe_digest"] = "universe"
+    record["query_pack_sha256"] = "pack"
+    suite_path = tmp_path / "suite.json"
+    record_path = tmp_path / "record.json"
+    study_path = tmp_path / "study.json"
+    out = tmp_path / "report.json"
+    artifact["record_sha256"] = hashlib.sha256(json.dumps(record).encode()).hexdigest()
+    inputs = {
+        "suite": (suite_path, suite),
+        "record": (record_path, record),
+        "study": (study_path, artifact),
+    }
+    expected = {}
+    for name, (path, value) in inputs.items():
+        raw = json.dumps(value).encode()
+        path.write_bytes(raw)
+        expected[name] = {"path": str(path.resolve()), "sha256": hashlib.sha256(raw).hexdigest()}
+
+    def validate_suite(_repo, value):
+        assert value == suite
+        suite_path.write_text("{}", encoding="utf-8")
+        return value, pack, None
+
+    def validate_record(_repo, _suite, _pack, _source, value):
+        assert value == record
+        record_path.write_text("{}", encoding="utf-8")
+        return value
+
+    def compose(suite, rows):
+        study_path.write_text("{}", encoding="utf-8")
+        return compose_report(suite, rows)
+
+    compose_report = study.compose
+    monkeypatch.setattr(study.ev, "validate_suite", validate_suite)
+    monkeypatch.setattr(study.ev, "validate_evidence_against_suite", validate_record)
+    monkeypatch.setattr(study, "compose", compose)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "code_search_rank_study",
+            "--repo",
+            str(tmp_path / "corpus"),
+            "--suite",
+            str(suite_path),
+            "--record",
+            str(record_path),
+            "--study",
+            str(study_path),
+            "--out",
+            str(out),
+        ],
+    )
+
+    assert study.main() == 0
+    assert json.loads(out.read_bytes())["inputs"] == expected
 
 
 def test_native_diagnostic_budget_refusal_preserves_baseline_and_excludes_ablation():
@@ -371,6 +438,60 @@ def test_complete_pool_accepts_ordinary_mode_and_rejects_contradictory_modes():
     )
     with pytest.raises(ValueError, match="ordinary execution mode"):
         validate(duplicate, record, pack)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"kind": "lower_bound", "continuation": False},
+        {"kind": "lower_bound"},
+        {"kind": "interrupted_partial", "reason": "cancelled"},
+        {"kind": "capped_unknown", "cap": 1},
+    ],
+)
+def test_complete_pool_rejects_cursor_without_observed_continuation(outcome):
+    artifact, record, pack, _ = fixture()
+    artifact["results"][0]["collection"]["pages"][0]["window"]["outcome"] = outcome
+    with pytest.raises(ValueError, match="continuation"):
+        validate(artifact, record, pack)
+
+
+def test_complete_pool_rejects_a_nonprogressing_page():
+    artifact, record, pack, _ = fixture()
+    pages = artifact["results"][0]["collection"]["pages"]
+    empty = copy.deepcopy(pages[0])
+    empty["results"] = []
+    empty["window"]["returned"] = 0
+    empty["next_cursor"] = "another-cursor"
+    trace = empty["explanation"]["planner_trace"]
+    trace[2]["detail"] = "code_search.execution.cursor_eligible_files=1"
+    trace[3]["detail"] = "code_search.execution.returned_files=0"
+    pages.insert(1, empty)
+    with pytest.raises(ValueError, match="continuation"):
+        validate(artifact, record, pack)
+
+
+def test_complete_pool_rejects_repeated_cursor_even_when_each_page_has_new_rows():
+    artifact, record, pack, _ = fixture()
+    pages = artifact["results"][0]["collection"]["pages"]
+    middle = copy.deepcopy(pages[1])
+    middle["window"]["outcome"] = {"kind": "lower_bound", "continuation": True}
+    middle["next_cursor"] = "second-cursor"
+    pages.insert(1, middle)
+    last = copy.deepcopy(pages[2]["results"][0])
+    pages[2]["results"][0] = last
+    last["candidate_id"] = "file:" + "0" * 64
+    last["score"] = 99
+    last["repo_relative_path"] = last["source"]["file"]["repo_relative_path"] = "other.rs"
+    pack["file_universe"].append({"path": "other.rs", "file_sha256": "02" * 32})
+    for page, eligible in zip(pages, (3, 2, 1), strict=True):
+        trace = page["explanation"]["planner_trace"]
+        trace[1]["detail"] = "code_search.execution.verified_matching_files=3"
+        trace[2]["detail"] = f"code_search.execution.cursor_eligible_files={eligible}"
+    assert len(validate(artifact, record, pack)["T1"]["candidates"]) == 3
+    middle["next_cursor"] = pages[0]["next_cursor"]
+    with pytest.raises(ValueError, match="continuation"):
+        validate(artifact, record, pack)
 
 
 @pytest.mark.parametrize(

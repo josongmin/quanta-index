@@ -52,6 +52,7 @@ SCHEMA = "quanta-paired-r5-runner-candidate/v1"
 INDEX = "paired-r5-result.json"
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 CASES = r5_cases({}, allow_legacy=True)
+INSTALLED_Q_SHA_ENV = "QUANTA_NATIVE_INSTALLED_Q_SHA256_V1"
 
 
 def _sha(raw: bytes) -> str:
@@ -71,7 +72,9 @@ def _frozen(root: Path, expected: str) -> None:
         raise ValueError(f"source changed or is dirty: {root}")
 
 
-def validate_selected(inventory_raw: bytes, events_raw: bytes, case: R5Case) -> dict[str, Any]:
+def validate_selected(
+    inventory_raw: bytes, events_raw: bytes, case: R5Case
+) -> dict[str, Any]:
     """Require one exact collected and executed test, with independent bytes."""
     _, package, _, binary, kind, test = case
     expected_name = f"{package}::{binary}${test}"
@@ -262,9 +265,7 @@ def _qbc_modules(root: Path, expected_head: str) -> tuple[Any, Any, Any]:
     module_paths = {
         name: directory / (name + ".py")
         for name in (
-            "qbc_completed_run_v1",
-            "quanta_build_cli",
-            "verification_completion_locator_v1",
+            "qbc_completed_run_v1", "quanta_build_cli", "verification_completion_locator_v1",
         )
     }
     sys.path.insert(0, str(directory))
@@ -302,7 +303,7 @@ def _execute_qbc_phase(
     """
     if case not in cases or phase not in ("list", "run"):
         raise ValueError("unregistered paired R5 recipe phase")
-    label = case[0]
+    label, package = case[:2]
     if cargo != phase_command(case, phase):
         raise ValueError("paired R5 owner recipe command drift")
     admission_owner = owner._CARGO_INVOCATION_ADMISSION_OWNER_V1
@@ -331,6 +332,8 @@ def _execute_qbc_phase(
     if label == "caller" and phase == "run":
         compile_environment[WITNESS_DIR_ENV] = environment[WITNESS_DIR_ENV]
         compile_environment[WITNESS_NONCE_ENV] = environment[WITNESS_NONCE_ENV]
+        if package == "quanta-sdk-runtime-executor":
+            compile_environment[INSTALLED_Q_SHA_ENV] = environment[INSTALLED_Q_SHA_ENV]
     completion_environment = {
         name: environment[name]
         for name in (
@@ -427,6 +430,7 @@ def _one(
             completion.REQUEST_ENV_DIGEST_ENV_V1,
             completion.EXPECTED_SOURCE_HEAD_ENV_V1,
             "NEXTEST_EXPERIMENTAL_LIBTEST_JSON",
+            INSTALLED_Q_SHA_ENV,
         ):
             environment.pop(name, None)
         environment.update(
@@ -444,6 +448,8 @@ def _one(
         if witness_required:
             environment[WITNESS_DIR_ENV] = str(evidence)
             environment[WITNESS_NONCE_ENV] = nonce
+            if package == "quanta-sdk-runtime-executor":
+                environment[INSTALLED_Q_SHA_ENV] = daemon_digest
         # Hash the caller request environment before adding its own digest.
         # QBC separately binds its prepared child artifact_env_digest.
         request_sha = _sha(
@@ -794,8 +800,7 @@ def main(*, standalone: bool = False) -> int:
     git_no_replace = os.environ.get("GIT_NO_REPLACE_OBJECTS")
     os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
     removed_witness = {
-        key: os.environ.pop(key)
-        for key in (WITNESS_DIR_ENV, WITNESS_NONCE_ENV)
+        key: os.environ.pop(key) for key in (WITNESS_DIR_ENV, WITNESS_NONCE_ENV)
         if key in os.environ
     }
     python_cache = (sys.pycache_prefix, sys.dont_write_bytecode)
@@ -941,9 +946,7 @@ def _main(signer_socket: str | None) -> int:
     parent = _open_repo_output_parent(output, INDEX, create=False)
     try:
         verify_runner_capture(
-            payload,
-            lambda name: read_runner_capture(output, name),
-            cases=registered_cases,
+            payload, lambda name: read_runner_capture(output, name), cases=registered_cases,
         )
         publish_paired_output(output, Path(INDEX), parent, _canonical(payload) + b"\n")
     finally:

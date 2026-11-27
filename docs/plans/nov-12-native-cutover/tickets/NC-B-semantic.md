@@ -173,167 +173,39 @@ coverage checks, the corrected cap expectation and source hashes.
 
 ### B-OLD-VIEW-AND-POST-OVERLAY-OBSERVATION-AUDIT-120
 
-The repeat review found no additional confirmed production P0–P2 in persisted graph/directory validation, selected source/member/chunk binding, cache custody, or file/raw/overlay failure paths. The actual storage port authenticates the complete object digest; `load_seal`'s header-only validation remains confined to maintenance. A fake port that breaks that storage contract is not a production reproducer.
-
-Two missing observations remained in the original4K product acceptance body. After SourceAdvance/materialization it checked the new replacement/deletion but did not re-query the old Exact view. After overlay Close it checked durable exact paths but did not repeat an ordinary ANN query. These are missing product-proof obligations, not demonstrated bad production output.
-
-The same4K body now performs two old-view exact-path queries after the changed view is materialized: `src/0000.rs` must still match original row0 and `src/0122.rs` must still match original row122. The existing changed-view checks independently require replacement row0 and absence of row122. The fixture already requires retention to be disabled, so these historical Exact reads are within its existing contract; no new active-pin/retention-GC claim is made.
-
-After overlay Close, one ordinary query0 against changed_view is checked with the existing independent durable `delta.rows` score/order/source oracle. Its owner page must equal the same view/query's pre-overlay `changed_sweep.pages[0]`. The original post-Close exact-path checks remain. This observes ANN-route durable output after the unsaved contribution; it is not a claim that every overlay lifecycle variant was executed. All three added semantic requests and the selected-view read use the existing changed_deadline. The original4096x64/Q64/K10, recall floor, work/read policies and absolute1200s watchdog are unchanged; no second Q64 sweep or new fixture is added.
-
-Changed code is limited to `tests/native_product_process/ann_quality.rs`; source SHA256 is `804065590c96a8220e6da45209048193afd4ef74d5077fe80ded767cc8ce890e`. The test source was unchanged during verification. Other writers changed Harness feature/source routing, Runtime Cargo/configuration and unrelated files during the wider capture; those hunks were preserved. The focused result below is not a clean, frozen full-product qualification.
-
-VERIFIED compilation and reused checkers/deadline rails: nextest `213907e1-e19f-4fc0-8a60-1553686ef73f` ran4/4 PASS in0.210s (46 skipped, exit0). It executed the base score/order and overlay-order counterexamples plus both original-deadline cases: expired input refuses before work and a live handoff preserves the same Instant/result. The native_product_process target, including the added4K SDK calls, compiled. An earlier2-test oracle pass overlaps this four-test selection and is not counted again. None of these four bodies executes the added lifecycle requests.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-searchd-runtime --test native_product_process --no-tests fail -E 'test(quality_result_oracle_rejects_wrong_score_and_owner_order) | test(overlay_quality_oracle_rejects_misordered_page) | test(selected_change_phase_)' --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate --status-level fail --final-status-level fail
-```
-
-Scoped rustfmt, `just rust-hexagonal`, and `git diff --check` passed. Disposable records remain outside the checkout at `/tmp/qidx-ann-lifecycle-audit-9_z6xlag`. The own admission-only4K waiter was stopped before editing, with no test body active, and restored after the focused check. It still uses the original host gate and serial owning commands at `/tmp/qidx-session-hardening-691a9ukw/quality/state.json`.
-
-Residual/state: partial. The added old-view and post-overlay SDK observations are NOT_RUN as part of `product_native_ann_quality_4096x64_reopens_at_fixed_recall`; owner-local `native_ann4k_selected_file_recall_matches_independent_exact` is also NOT_RUN. Compiler success and the four helper bodies do not close those product obligations. No additional actual behavioral failure, cap/threshold/deadline relaxation, external chat access or unrelated process interruption is claimed.
+Source-scoped old-view/post-overlay oracle passed 4/4 in `213907e1-e19f-4fc0-8a60-1553686ef73f`; whole-product second restart remained unexecuted. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-ANN4K-AND-PRODUCT-EXECUTION-121
 
-State: partial. The user resumed both original4K bodies in this chat with the existing admission and no threshold, budget or watchdog changes. The existing single serial controller was retained; no parallel or duplicate Rust runner was submitted. External chat messages were not requested or answered.
-
-VERIFIED owner-local ANN4K: nextest `4953c891-02a8-4c07-bd75-dc2c0d84b7ff`, discovered/executed1, passed1, failed0, skipped325, exit0, 39.288s. It ran the actual4096x64/Q64/K10 native graph body, independent exact recall640/640, empty eligibility, all six nonempty uniform/correlated eligibility strata640/640, and each nonempty raw sibling10/10. This is not a whole SDK product result.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(native_ann4k_selected_file_recall_matches_independent_exact)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-The original `python3 tools/ci/timing/check_host_contention.py` admitted execution without an override; the canonical build-test resource lock was acquired and released. HEAD remained `ade5fadc1a084fbb81eba831861e996081d80867` on shared dirty main. The controller's relevant Rust/Cargo snapshot had `source_drift=[]`; ANN4K test SHA256 remained `f635b538f12e21ff6bed42bd02f7470a78f2ac0c6e7d089c85a027fbf45d99bd`. Disposable state and complete output remain outside the checkout at `/tmp/qidx-session-hardening-691a9ukw/quality`.
-
-The same controller then advanced to the original product command, passed the unchanged admission and acquired the same resource lock. FAILED: nextest `e10a9dc8-bccd-4425-a20e-f4ab096a1cf6`, discovered/executed1, passed0, failed1, skipped49, exit100, 1216.696s including failure cleanup.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-searchd-runtime --test native_product_process -E 'test(product_native_ann_quality_4096x64_reopens_at_fixed_recall)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-Observed failure: `ANN quality incremental selected ANN quality sweep failed` at query seed55, IPC Read timed out with788ms remaining on the original absolute1200s deadline. Initial4096 materializations completed, initial and cold-reopen Q64/provider checks passed, the one-owner incremental materialization completed in1.979s, and B120's two old-Exact observations were reached before the failed sweep. Changed-view exact paths and overlay/post-Close did not execute. B124 later found that the original fixture also omitted a restart after the changes.
-
-Initial readiness took902.756s;7002 WorkStatus RPCs consumed53.982s direct RPC wall time (5.98%). The observer recorded444 distinct receipts at421s and4096 at902s. Its round-robin census uses a different order from the Catalog ready queue, so these samples do not measure instantaneous worker throughput. SourceAdvance submit alone took19.386s. It excludes source staging, leaving other deadline consumption unattributed. Two renewal fence-loss samples reconciled Terminal(Published)/finish Ok. Static review found no demonstrated full4096 scan per scheduler claim. The readiness/worker/semantic persisted-I/O costs require phase diagnosis before changing production semantics.
-
-The product controller recorded source drift only in `crates/quanta-index-core/src/index/records.rs`; the failure must not be presented as a frozen current-source qualification or attributed to that edit without evidence. Between ANN4K and product launches only RepoMap `native/file_map.rs` changed in the captured cohort; RepoMap is not an ANN4K library dependency. The product test source retained SHA256 `804065590c96a8220e6da45209048193afd4ef74d5077fe80ded767cc8ce890e`. The controller exited after the failure and released its lock; any next proof remains serial and subject to the original admission. State remains partial with structural RCA open.
+ANN4K `4953c891-02a8-4c07-bd75-dc2c0d84b7ff` passed 1/1 with independent 640/640 selected-file recall. Product `e10a9dc8-bccd-4425-a20e-f4ab096a1cf6` failed 1/1 at seed55 IPC Read timeout with 788ms left on the original 1,200s watchdog; initial 4,096 materializations and first reopen checks had completed. Readiness dominated observed wall, but the worker-stage cause was unproved. The product capture had source drift, so the two results were not combined into one current qualification. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-MATERIALIZATION-PHASE-RCA-122
 
-State: partial; production cause and repair remain unproved. Read-only review of owned pump, Catalog ready/claim/status, Semantic materialization and the readiness observer found no demonstrated per-tick4096-entry pending scan. WorkStatus uses indexed single-work reads. Fixed-policy worker/resource observations are bounded constant work. Semantic live-region maintenance repeats authenticated graph-object reads, but removing body/header validation would weaken an existing authority boundary and no timing attribution identifies those reads as the dominant cost. No speculative production patch was applied.
-
-The existing ignored `diagnostic_native_ann_4096_source_128_completed_prefix` fixture was selected to retain the4K source inventory and original worker/resource policies while observing the first128 exact public completion receipts. Its existing180s diagnostic watchdog and256MiB trace cap were preserved; it cannot qualify full4K quality. Command uses the B121 Runtime target/front door/lane with `--run-ignored only`, selector `test(diagnostic_native_ann_4096_source_128_completed_prefix)` and explicit `QIDX_NATIVE_ANN_TRACE_DIR`, `QIDX_NATIVE_ANN_DIAGNOSTIC_TRACE_MODE=record`, `QIDX_NATIVE_TRACE_MAX_OUTPUT_BYTES=268435456`.
-
-Two admitted compile attempts executed zero bodies (exit101). First, Scratch `edit_write::ordinal_fields` called the new `key/expected_wire/next_wire` API before the concurrent Core producer exposed it. The Core input then changed to expose those methods, justifying the second attempt. It progressed to Storage, where `prepare_resident_roots` still mixed MapEdit/OrdinalMapEdit and two map cursor consumers still accessed the retired `position.edit` field. These shared files were visibly being edited by another writer; this chat preserved them. The resident helper has since changed to a generic borrowed-edit input, while the known field consumers are monitored before any further Rust retry. No same-input failure loop or external chat contact is used.
-
-Disposable compile logs/source manifests are at `/tmp/qidx-ann-materialization-rca-t9bu2q50/compile-1-failed` and `compile-2-failed`. Those attempts had no body or trace. The known Storage cursor field consumers were subsequently updated by the existing writer, so the changed cohort was admitted and compiled on the third attempt (51.06s).
-
-Actual prefix diagnosis FAILED: nextest `e8bbcb60-5d68-4c13-b23b-2df6de901cdc`, executed1/failed1/skipped49, exit100, 193.066s including cleanup. The original180s diagnostic watchdog expired after39/128 exact observed completion receipts; the provider had processed759 distinct source inputs with no duplicates. Those counts measure different authorities and must not be substituted for one another. Readiness RPC377 calls/5.319s direct time over148.354s. A93,235,895-byte daemon capture was saved outside the checkout; it is not an Off/Record comparison or whole-product proof. Source drift was confined to Lexical edit-spool production/tests, so it is not a frozen cohort qualification.
-
-The unchanged canonical trace reader rejected that capture with `ANN region observation targets wrong owner stage`. RCA found the Native producer in `ann_materialization::seal_delta` emits Installed on a SemanticBuild span, while the public trace contract requires SemanticSeal. Legacy ann_files uses the correct stage. This is a confirmed Native trace producer/caller contract defect, separate from the product watchdog's still-open dominant cause. The unchanged reader's16 ANN-region tests pass, including wrong-stage rejection. Repair is scoped to the Native producer and an actual Native seal regression; reader validation, full graph validation, product budgets and quality oracles remain intact. A fresh valid capture is required before worker-stage attribution.
+The 128-completion prefix `e8bbcb60-5d68-4c13-b23b-2df6de901cdc` failed its 180s diagnostic watchdog after 39 exact receipts; provider processed 759 distinct source inputs. Those are different authorities. Its trace exposed Native Installed under SemanticBuild instead of SemanticSeal, so worker-stage attribution was invalid until the producer repair. No full-4K or Off/Record claim follows. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-NATIVE-SEAL-OBSERVATION-OWNER-REPAIR-123
 
-The pre-patch Native capture is a real failing input to the unchanged canonical reader; its Installed event targets a SemanticBuild owner, violating the required SemanticSeal contract. A focused pre-patch unit-test waiter was stopped while still admission-only (exit143, executed0); it is NOT_RUN, not an additional RED execution. The observed capture rejection remains the behavioral RED evidence.
-
-The canonical `AnnDirectory::append_region` now owns the seal span and Installed event. Its private inner function preserves the prior full graph-body/seal, descriptor, recipe, row, generation, COW map-root and next-directory checks unchanged. Only a successful inner return emits the exact returned descriptor reference, validated fileset and pre-mutation ordinal, then closes SemanticSeal with Ok. Failure emits no Installed event and closes with Error before returning the original error. `seal_delta` keeps graph build/install in SemanticBuild and no longer emits an incorrectly owned region event. This is a trace contract repair; it does not by itself establish the product timeout's dominant cause or change graph bytes, budgets, admission or quality checks.
-
-Two actual Native regressions are added in the existing maintenance test module:64-owner materialization validates the loaded region's exact fileset/descriptor identity and successful seal owner; a genuine one-row graph with a two-row descriptor requires CorruptObject, unchanged directory, zero writes, no Installed observation and a non-aborted Seal Error terminal. Source review found no weakened validation or duplicate Native installed emitter. Scoped rustfmt and diff checks pass; Python's unchanged ANN-region reader selection passed16/16.
-
-The initial eight-test queue unnecessarily composed the contract-only regressions with timing-bearing ANN4K, making the seven ordinary regressions wait for the quality gate. That admission-only waiter was stopped before any Rust body (exit143/executed0). The scopes were separated: ordinary contract regressions retain canonical cargow resource admission; ANN4K/product/timing diagnosis retain the original quiet-host admission. No timing body was run under relaxed admission.
-
-VERIFIED contracts: nextest `aa49b1b2-ab83-45ec-9770-970fa0e78b8a`, discovered/executed7, passed7, failed0, skipped321, exit0,0.278s. Both new Native success/refusal regressions, existing fileset install/carry diagnostics and region-append refusal/admission regressions ran. Canonical resource admission waited84.686s; compilation took2m51s. The captured relevant Rust/Cargo source snapshot had `source_drift=[]`. This is contract proof, not ANN4K quality or latency proof. HEAD remained `ade5fadc1a084fbb81eba831861e996081d80867` on shared dirty main.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(native_materialization_installed_region_observation_has_seal_owner) | test(native_append_rejected_descriptor_has_failed_seal_without_installed_observation) | test(fileset_install_trace_has_balanced_terminal_without_changing_result_or_work) | test(carry_trace_) | test(region_append_rejects_missing_map_root_without_changing_directory) | test(region_append_admits_map_key_before_installing_descriptor)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-Disposable contract state/output: `/tmp/qidx-native-ann-seal-contract-v79ve0c_/contract`. The queued prefix diagnosis was stopped before admission and before any Rust body to integrate B124's schema and product-oracle audit. The restart of this diagnosis retains source4096, prefix128, diagnostic180s, cap256MiB and original host admission. A valid current capture is still required for worker-stage cost attribution.
+The canonical append path emits successful Installed under SemanticSeal and emits no Installed on failure. Nextest `aa49b1b2-ab83-45ec-9770-970fa0e78b8a` passed 7/7 contract bodies; the unchanged reader's 16/16 check also passed. This corrected trace ownership without changing graph bytes, budgets or the product timeout verdict. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-ANN-ACCEPTANCE-ORACLE-AUDIT-124
 
-Parallel source review covered the graph/ANN4K selected-strata oracles, Runtime selected views and overlay, and the trace producer/reader. The new Native Installed event exposed a schema assumption that all installed events had a null descriptor. Replaying its HNSW event with a real descriptor reference failed at the schema boundary. The schema now requires the descriptor for Native HNSW and keeps the file-based rule for legacy Flat/IVF. The v5 packed-event replay exercises accepted descriptor identity and rejected null. `.venv/bin/python -m pytest -q tools/ci/tests/test_causal_cost_timeline.py tools/ci/tests/test_causal_cost_diagnostic.py tools/ci/tests/test_causal_cost_native_ingest.py` ran651/651 PASS.
-
-The Runtime WorkStatus observer accepted the same publication sequence for distinct tracked intents, although Catalog publishes at most one completion in each transaction. It also accepted malformed Claim identity and did not reconcile the highest observed completion with Latest. The shared checker now rejects duplicate sequences, wrong Claim identity, zero fence/lease, a regressed Latest, and a conflicting view identity at the observed highest sequence. The64-owner managed and4K readiness paths both consume this checker. The64-owner readiness probe also uses its existing absolute deadline.
-
-Durable and overlay exact-path checks now require Exhausted traversal, exhaustive output, and zero stale hits for the fixture's complete bounded SourceLocal path. The original4K body now performs a second managed restart after change publication and overlay Close. It compares the changed view's full ANN query0 result with the validated pre-restart result, and checks replacement/deletion paths in both the original and changed historical views. Every added query uses the original1200s deadline. Ordinary Exact reads acquire request pins, so the restart check covers historical view availability. The active-pin/reclaim contract has separate owning runtime/kernel coverage.
-
-Runtime `native_product_process` VERIFIED: nextest `7ca33d2c-8aeb-4d88-a81f-003ec1b4ac20` ran16/16 PASS in30.720s,38 skipped, exit0. This ran the new oracle counterexamples and actual64-owner daemon/reopen. The test files remained stable on the passing attempt. The broader captured cohort changed in Catalog read-only authority, Search Plane history, and one Lexical test, so this is a focused execution, with no frozen product claim. Earlier attempts ended with zero bodies at a restart error-conversion type mismatch and a denied unused insert result. Both were corrected before the16-body pass. Disposable state/output is under `/tmp/qidx-ann-proof-oracles-w11m0jva`.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-searchd-runtime --test native_product_process -E 'test(ann_quality::work_status::tests::) | test(exact_path_completion_oracle_rejects_capped_approximate_and_stale_results) | test(quality_result_oracle_rejects_wrong_score_and_owner_order) | test(overlay_quality_oracle_rejects_misordered_page) | test(selected_change_phase_) | test(sealed_region_oracle_rejects_wrong_coverage_binding) | test(product_daemon_seals_managed_ann_region_and_reopens_selected_view)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-The Kernel's managed ANN reopen test now requires the persisted sealed graph's Approximate path before/after a replacement and after re-opening storage, validates the held pin and observes its count1 before release and0 after. The real UDS Hybrid test observes exactly one pin on Open and after the query, zero after Release, and exact exhausted output with zero stale hits on the filtered SourceLocal path.
-
-Kernel/Runtime integration VERIFIED: nextest `80e7e6e6-2bd8-4c6a-9684-4e473675efe0` ran4/4 PASS in98.203s,79 skipped, exit0. Both actual Native pinned reopens and both actual UDS Hybrid bodies ran. The changed test files were stable. The shared cohort recorded unrelated-to-these-changes Lexical source edits in `native/literal_blocks.rs` and `native/text_spool/posting_case_pages.rs`, so these are selected integration results.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-kernel -p quanta-index-searchd-runtime --test native_query_session_real --test native_index_uds -E 'test(managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned) | test(managed_ann_second_seal_preserves_prior_selected_view_across_reopen) | test(hybrid_dense_only_original_view_partial_coverage_and_provider_refusal_keep_one_pin) | test(hybrid_spends_one_cumulative_work_budget_across_both_actual_readers)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-The original4K prefix trace was queued serially after those four tests released the resource lock. Its state and capture are outside the checkout under `/tmp/qidx-ann-materialization-rca-t9bu2q50/diagnostic-b124` and `trace-b124`. It uses the original quiet-host admission. The earlier full product failure and its dominant latency cause remain open, with the strengthened full4K product and changed-cohort ANN4K pending.
+Independent graph/selected-strata, Runtime view/overlay and trace oracles passed their recorded 651/651, 16/16 and 4/4 scopes, including `7ca33d2c-8aeb-4d88-a81f-003ec1b4ac20` and `80e7e6e6-2bd8-4c6a-9684-4e473675efe0`. These were not a combined 4K product run. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-ANN-PREFIX-OBSERVATION-RCA-125
 
-Read-only inspection of the original prefix trace isolated the observer gap. The pre-fix capture cannot pass the canonical reader because eleven Native installed-region events carry the wrong stage and descriptor shape. The stored bytes were left intact. A diagnostic examination of packed begin/end records checked the worker ancestry and one capture clock. It found759 successful worker-owned `native_publish` lane3 spans and one aborted worker without a publication. Two publish spans under nonworker requests are outside this count. The harness observed39 exact public WorkStatus receipts in that run. The two observations have different clocks and boundaries, so the difference does not measure per-owner observation latency.
-
-The prefix observer previously scanned source order, advancing at most two unready owner intents per page before waiting500–1,000ms. With the full180s available to it, a pending prefix can prevent it from reaching any of the completed intents beyond slot361. The fixture spends part of that same deadline on staging and SourceAdvance. The production queue orders equal-due initial work by intent digest and can defer work, while a prefix diagnostic needs the exact identities already completed. This explains how a run that published well over128 owner jobs could fail the observation target. It does not diagnose the full4K product deadline.
-
-In that old trace the 760 worker intervals occupied138.638s. `native_coverage_save` was the largest direct repeated worker phase at55.771s across759 calls. Its direct reserve/install/confirm spans accounted for10.983/15.701/28.584s. Within those spans the SQLite COMMIT and write windows overlapped. Worker lane22 reported2,990,458,448 requested bytes, of which1,243,766,784 were in lane25 checkpoint descendants. Those are requested callback bytes. Neither they nor the inclusive spans establish completed device writes or make a durability step removable. The current Kernel `Materialize` coverage save calls `install_with_map` and the managed Storage/Catalog reserve/install/confirm path. A fresh valid capture is required to attribute current costs before changing that authority path.
-
-The B124 prefix controller was still checking original admission when stopped for the candidate-selection repair. It executed zero bodies. No other process or validation lock was interrupted.
-
-The ignored diagnostic now selects candidates from the live Catalog through a read-only connection and its created-view index. The created Source view, original operation, and exact intent digest inventory bind each candidate. Foreign or duplicate key, creator mismatch, and scoped terminal failure are errors. The connection closes before the existing SDK `CompletionProgress` authenticates the chosen128 distinct public receipts. It still enforces the original180s deadline and64/2 probe limits. Selection time and SDK receipt time are logged separately. This diagnostic does not change the4K product readiness path.
-
-Two ordinary counterexamples exercise selection of128 completed rows beyond a3968-row pending source prefix and reject wrong-scope, duplicate or failed terminal records. One supplies Pending through the SDK-facing receipt checker after successful candidate selection and requires zero completed receipts. Nextest `07317ed2-c311-41b2-8554-5c3b78564ae3` executed11/11 PASS (7.777s,45 skipped, exit0), covering those two bodies and nine existing receipt regressions. The two changed test files stayed stable. Other shared Catalog, Contract, IPC, Lexical and Runtime inputs changed during the broader source capture, so the result covers this execution's selected test scope. The serial original-admission prefix controller and its output are under `/tmp/qidx-ann-materialization-rca-t9bu2q50/diagnostic-b125`. It has no body result at this checkpoint.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-searchd-runtime --test native_product_process -E 'test(prefix_catalog_) | test(ann_quality::work_status::tests::)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-The current coverage-save audit traced the Kernel owner-map preparation through Core `install_with_map` and Storage's original-base coverage CAS. An available prepared scope installs the reachable owner, searchable delta, and coverage DAG in one group. The standalone Storage grouping tests count a synthetic sink group. The real managed phase still owns reserve, physical install and confirm. The Catalog has separately changed its confirm-to-next-reserve transaction to reuse confirmed child authority within the same attempt and transaction. Its current regression checks10 fewer reads and152 fewer bytes with unchanged writes, plus rollback/reopen; B125's Runtime run did not execute that Catalog regression. These facts prevent attributing the earlier trace or a standalone group count to the current managed durability cost. The independent review of the prefix candidate cursor found agreement with the actual created-view index and public receipt identity. Current trace and full4K execution remain the deciding evidence.
+The Native trace producer correction passed 11/11 in `07317ed2-c311-41b2-8554-5c3b78564ae3`. The rejected pre-fix trace was retained; a valid new prefix capture, not repaired historical bytes, was required for phase attribution. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-CATALOG-CONFIRM-REGRESSION-126
 
-Nextest `3d9f0cdd-7a6c-4c23-94fe-6fb8f330a336` executed6/6 Catalog library bodies (1.198s,381 skipped, exit0). The cases cover exact trace registration, atomic confirmation and next reservation, protection reuse in the same transaction, replay refusal for invalid lifecycle, queue digest authentication and late rollback, and durable protection when the queue is absent. The wider source snapshot changed only in `quanta-index-storage/src/map.rs`, outside the Catalog dependency closure. This run verifies the selected Catalog tests.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-catalog --lib -E 'test(managed_attempt_phase_trace_preserves_off_work_and_exact_registration) | test(attempt_advance_commits_confirmed_child_and_next_reservation_together) | test(attempt_advance_reuses_protected_children_in_the_same_transaction) | test(managed_confirm_replay_still_refuses_corrupt_or_retiring_lifecycle) | test(confirming_child_queue_is_authenticated_and_late_failure_rolls_back) | test(confirming_child_without_queue_keeps_durable_protection_without_candidate)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-.venv/bin/python -m pytest -q tools/ci/tests/test_causal_cost_worker_scopes.py tools/ci/tests/test_causal_cost_native_triage.py tools/ci/tests/test_causal_cost_native_staging.py
-.venv/bin/python -m pytest -q tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_native_process_monitor.py
-```
-
-The trace diagnostics passed59/59 (0.21s) and the host admission and process monitor tests passed43/43 (0.41s). The serial order originally required the optional prefix and canonical replay before either quality body. Both quality bodies create independent fixtures. The prefix wait was deferred with zero Rust bodies started, and the existing quality runner was launched directly. It checks the original quiet-host gate before each body and preserves the fixed4096×64 input and product1200s deadline. The proof logs and state are outside the checkout at `/tmp/qidx-ann-materialization-rca-t9bu2q50/quality-b126`. Both current quality bodies are pending at this checkpoint.
+Catalog `3d9f0cdd-7a6c-4c23-94fe-6fb8f330a336` passed 6/6 for trace registration, atomic confirm/reserve and replay refusal on that source. It did not establish ANN4K/product completion. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-QUALITY-COHORT-AND-INDEPENDENT-TERMINALS-127
 
-The B126 quality runner's hard-coded Rust inventory omitted resolved local dependencies and build inputs. It also exited after a failed ANN4K body, preventing execution of the independently selected product body. The outside-checkout B127 runner uses the repository's Cargo metadata closure and tracked/untracked file inventory, records deleted source paths, and captures manifest/config inputs before and after each execution. A second original preflight runs immediately before starting Cargo after source capture. The same cooperative resource lock, selectors, 4096×64 fixture, quality thresholds and product deadline apply. The runner records each terminal separately and attempts the next admitted body after either test result.
-
-A mocked ANN4K failure preserved exit100 and still dispatched the product body with its own original preflight. Live read-only snapshots resolved16 local roots and1,037 paths for Semantic, and38 local roots and2,637 paths for Runtime, including an SQLite build script, the installed-artifact trust package and the tracked deletion. These checks verify orchestration and observed source inputs. The B126 runner was superseded during admission with zero bodies launched. B127 state and logs are under `/tmp/qidx-ann-materialization-rca-t9bu2q50/quality-b127`. Runner `passed` records the actual Nextest terminal. A current-source qualification also depends on reviewing `source_drift` and `resolution_drift` against the affected proof inputs.
-
-Independent source review checked the normal ANN search cache path and interleaved member memory regression, and the mounted `ExistingFileIdentityV1` path through existing object I/O, Runtime revalidation and Semantic file projection. No new concrete P0–P2 was found in those paths. The current 4K body results and installed Linux recovery remain unverified.
-
-The Core module snapshot matched the current source and the hexagonal boundary check passed. Source closure and module snapshot unit tests passed88/88 (44.24s).
-
-```sh
-CARGO_NET_OFFLINE=true python3 tools/ci/lint/check-cargo-modules-snapshot.py --packages quanta-index-core
-just rust-hexagonal
-.venv/bin/python -m pytest -q tools/ci/tests/test_benchmark_source_closure.py tools/ci/tests/test_check_cargo_modules_snapshot.py
-```
+The quality runner was corrected to include resolved local build inputs and to run the independently selected product body even after ANN4K failure. Each terminal remained source-scoped; a runner repair was not a body pass. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-OLD-VIEW-ANN-SECOND-RESTART-128
 
-The second restart exercised the changed view's ordinary ANN path and both views' exact-path lookup. It could pass if retained original-view ANN traversal failed after the changed publication while original exact lookup still worked. Initial and first-reopen ANN sweeps precede that publication. The second restart now requests original-view ANN query0 using the original deadline, checks it against the original source owner root and independent vector oracle, and compares its ordered owner page to the original sweep. The second restart has one additional search and reuses the captured source root. Existing exact-path checks and the changed-view ANN result comparison remain in the fixture.
-
-The test also checks provider input after the reopened daemon exits. This interval starts after the prior daemon has stopped. Only the requested query input is legitimate, and persisted rows must not be re-embedded. The focused oracle accepts a cache hit and repeated valid query input and rejects a corpus row or a foreign query. Fixed input, the existing Q64 sweeps, recall floor, timeout and admission remain in effect. The fixture has retention disabled. An original exact view surviving this scenario establishes the selected historical view within that configuration.
-
-`rustfmt --edition 2024 --check --config skip_children=true` and scoped `git diff --check` passed. Nextest `74fe3328-4008-43ae-bc45-3429f333380d` compiled the Runtime product target and ran5/5 focused bodies (0.154s,52 skipped,exit0), including the provider counterexample and the existing quality, overlay and deadline oracles. The edited test source hash remained `e37428e32a96dbf8395a23eda23b198cf46dba6e761d6b88615db5c9814dce83`. The independent second-restart requests execute only in the whole4K body, which remains pending alongside the current ANN4K. The old seed55 report attributes the IPC timeout to the remaining788ms of the original deadline. It does not identify a seed-specific or storage-path defect.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-searchd-runtime --test native_product_process -E 'test(restart_provider_oracle_rejects_reembedded_corpus) | test(quality_result_oracle_rejects_wrong_score_and_owner_order) | test(overlay_quality_oracle_rejects_misordered_page) | test(selected_change_phase_)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-`just rust-test-authority` passed on the current worktree. The product target is registered under `pr-workspace-nextest`, and the exact product test name matches the default exclusive pool override. Source review confirmed the fixed workload, independent reference and per-stratum denominators, original funding, SDK and worker deadlines, and unchanged 1200s product watchdog.
+The focused provider/quality/overlay/deadline oracle passed 5/5 in `74fe3328-4008-43ae-bc45-3429f333380d`. It checks that the original selected view survives restart without re-embedding persisted corpus rows; the actual second restart remained in the whole-4K product body. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-PRODUCT-COMPACTION-DEADLINE-129
 
@@ -409,184 +281,31 @@ CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --la
 
 ### B-STATIC-DEADLINE-AND-FACADE-AUDIT-135
 
-The static pass traced selected artifact cache identity and eviction, file provenance/ranking, compaction original-root CAS and failure atomicity, ExistingFileIdentityV1 wiring, and both original 4K test oracles. No additional confirmed P0/P1 or ANN production correctness defect was identified. The stale-heavy active-region hard cap and hypothetical allocator excess capacity were not promoted to defects without a supported contract violation.
-
-The product test's last exact-path request already checked completion against the original watchdog. The remaining P2 validation gap was the final restart startup and cleanup/provider tail, where a successful return could occur after the original absolute deadline. `with_original_quality_deadline` now checks successful phase completion too. After `stub.finish`, final completion checks that same deadline. A deterministic regression exercises one nanosecond before, exactly at and after the deadline. Failed phase results retain their original errors.
-
-Semantic Legacy DATA decoding moved from its facade to private `legacy/generation_data.rs`, retaining the public `legacy::with_decoded_generation_data` path. Lexical preview admission definitions moved from its facade to private `preview/budget.rs`, retaining the crate-visible reexports and feature gates. Both moved implementation bodies were checked byte-for-byte. No persisted or wire contract changed.
-
-The pass began on shared dirty `857aa3e7a` and ended on shared dirty `c36e45e46`. VERIFIED static checks included module discipline (52 facades), Hexagonal boundaries, scoped rustfmt, diff checks, and `CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true just rust-cargo-modules` (Contract/Core/Kernel trees unchanged,exit0). The whole module-cycle checker failed because its crate-local inventory rejects Runtime's existing `../../../quanta-index-kernel/tests/common/native_catalog_profile.rs` reference. The referenced file exists. A scoped Semantic/Lexical scan also observes five existing source cycles. The two Semantic cycles are already present in HEAD. Those observations do not qualify the global cycle gate.
-
-The focused deadline command below did not enter Cargo or any test body. Cooperative resource admission waited1800s and returned exit124. Its three selected tests are NOT_RUN. The five captured moved/helper inputs remained stable. Output is at `/Users/songmin/Library/Caches/quanta-index/ann4k-resume-20261117/STATIC-DEADLINE.log`. The original full4K controller remains the only quality runner, with repaired-cohort ANN4K and whole-product results still pending original quiet-host admission.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-searchd-runtime --test native_product_process -E 'test(=ann_quality::quality_completion_refuses_the_original_deadline_boundary) | test(=ann_quality::selected_change_phase_refuses_expired_original_deadline_before_work) | test(=ann_quality::selected_change_phase_preserves_live_original_deadline_and_result)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-On 2026-11-18 the same command acquired the original cooperative lock and ran 3/3 PASS (Nextest `fd37295b-95a1-4b65-bb13-499d42ebd4e9`,0.066s,56 skipped,exit0). Three captured test inputs retained their hashes. The shared dirty checkout ended at `40cd6dc5b`. Output is at `/Users/songmin/Library/Caches/quanta-index/ann4k-resume-20261117/STATIC-DEADLINE-retry.log`. This verifies the watchdog helpers. The full product and ANN4K selectors still await the original admission in the existing controller.
+Selected artifact cache/file provenance, original-root CAS and both product oracles were reviewed. Focused deadline/facade run `fd37295b-95a1-4b65-bb13-499d42ebd4e9` passed 3/3; full product remained separate. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-SEMANTIC-MODULE-CYCLES-136
 
-`native::recipe` now owns provider-independent recipe identity, limits and output-policy digests. Embedding and certified chunk decoding both consume that module. The public `native` recipe paths remain stable. The recipe fingerprint body is byte-identical to the prior implementation, and all hash domains and validation limits were retained.
-
-`native::embedding::lexical_eligibility` now owns the selected lexical set and its retained backing. Lexical scope and overlay both consume it. View and entry access is read-only. The constructor, duplicate refusal and overlay membership checks retain their prior bodies. Existing partial raw-vector exact-path behavior consumes the same owner cap in exact and approximate traversal, and cap truncation is visible. The file path continues to apply eligibility before the admitted owner window.
-
-The repository module-cycle checker on archived `a68062c26b3c1797d321e4ad3f8beca7508f5d99` Semantic source found both prior cycles. The same checker on current Semantic source found zero (exit0). Module discipline (52 facades), Hexagonal boundaries, `just rust-test-authority`, the guarded Contract/Core/Kernel module snapshots, scoped rustfmt and diff checks passed. The global cycle inventory failure recorded in B135 remains outside the Semantic ownership change.
-
-The focused proof uses the existing recipe goldens and lexical scope tests. The first attempt reached the compiler but exited101 because the Legacy test fixture still imported `generation_contract` and `manifest` through the old facade. The fixture now imports both from their defining modules. Before the first build reached Semantic, the shared checkout also supplied a missing `entries()` accessor at the durable owner count call site.
-
-The same selector then executed 5/5 PASS (Nextest `1c7a6c91-2e66-4c71-ad42-53f2106d2c3b`, 0.203s,325 skipped,exit0). The 11 recorded Semantic inputs retained their hashes between retry submission and terminal. The shared dirty checkout ended at `ea5137dd4`. The run proves the moved recipe fingerprints and limits, same-view overlay membership, duplicate rejection and forged eligibility refusal. Terminal output is at `/Users/songmin/Library/Caches/quanta-index/ann4k-resume-20261117/SEMANTIC-CYCLES-retry.log`.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(pure_text_recipe_) | test(lexical_scope_tests::)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
+Provider-independent `native::recipe` owns recipe identity, limits and output-policy digests; embedding/chunk callers share it. Focused run `1c7a6c91-2e66-4c71-ad42-53f2106d2c3b` passed 5/5. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-CARRY-IMMUTABLE-MEMBER-REUSE-137
 
-The carry could reopen and decode the same artifact after authenticating it in
-delta and keeping it for the final region. An exact owner and immutable member
-reference in a later source now reuse that retained result within the same
-attempt. Each source still accounts for its declared rows and checks current
-selected coverage. Different references still authenticate before stale or
-conflict handling. The final map CAS uses the same original roots.
-
-The 192-owner multi-page carry fixture permits one physical read of the
-repeated artifact during carry. Its original final-map, prior-view and write
-refusal assertions also run. The unchanged code failed on the second physical
-read (Nextest `bd179f6d-5606-4b17-bf63-9a5eea2dbd73`, 1 body, exit100). The same
-selector passed 1/1 after repair (Nextest `43af013a-1f10-4791-9362-b9453f311dbe`,
-0.190s, exit0). The repaired implementation, test, three adjacent ANN source
-files and `Cargo.lock` kept their captured hashes through the run.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(=native::embedding::tests::ann_product_tests::maintenance::consolidation_multi_page_carry_installs_one_final_member_map)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
-
-The other five consolidation bodies passed in one run (Nextest
-`c17dc3b6-ee24-421d-9476-c2761c41cce1`, 5/5, 12.366s, exit0). They cover sparse
-diff after member replacement and deletion, late failure atomicity, foreground
-row bounds, a wrong delta owner count, and region-capacity carry. The six
-captured inputs above remained stable on shared dirty `2cb1c117e`.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-semantic --lib -E 'test(native::embedding::tests::ann_product_tests::maintenance::consolidation_) & not test(=native::embedding::tests::ann_product_tests::maintenance::consolidation_multi_page_carry_installs_one_final_member_map)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
+Within one attempt, exact owner+immutable member ref reuses an already authenticated retained artifact while preserving per-source row accounting and selected coverage. Physical second-read RED `bd179f6d-5606-4b17-bf63-9a5eea2dbd73` became 1/1 PASS `43af013a-1f10-4791-9362-b9453f311dbe`; five adjacent carry cases passed `c17dc3b6-ee24-421d-9476-c2761c41cce1`. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-MODULE-CYCLE-INVENTORY-138
 
-The workspace cycle checker stopped before building the Runtime production
-graph. Runtime's `#[cfg(test)]` dense install module imports a Catalog profile
-fixture from the Kernel workspace member. The checker now validates that a
-sibling member's fixture exists, then applies the declaring module's test-only
-scope after resolving aliases. Missing fixtures, paths outside the workspace
-and cross-crate production imports still fail. The checker never reads the
-sibling fixture into the importing crate's production graph.
-
-A second inventory failure exposed a `pub(crate)` path declaration whose source
-was already under a renamed parent. The path scanner now uses the same
-visibility pattern as ordinary module declarations and resolves the physical
-source through the recorded module aliases. The regression asserts the actual
-production cycle through the visible child.
-
-The cross-crate test fixture and the visible alias both reproduced the original
-inventory error. `.venv/bin/python -m pytest -q tools/ci/tests/test_check_module_cycles.py`
-then passed 40/40, including production escape and missing source refusals.
-Scoped Ruff lint, Ruff format and diff checks passed. The workspace check uses
-the repository's existing cycle baseline.
-
-`just rust-module-cycles` completed the workspace graph and returned exit 1
-with 16 unbaselined groups across Catalog, Contract, Core, IPC, Lexical, Search
-Plane, Runtime and Searchd. It reported no Semantic group. The Core group
-includes the existing read boundary: `existing_file` consumes `ObjectReadIoPort`
-and the metadata visitor in `ports` names `ExistingFileReadFailureV1` from
-`existing_file`. This is a source dependency finding. The ANN4K and SDK product
-selectors still own behavioral acceptance.
+The cycle checker now keeps a sibling test-only fixture outside production graph and resolves visible path aliases. Its Python regression passed 40/40. Workspace `rust-module-cycles` still exited 1 with 16 unbaselined groups, none Semantic; this was a structural finding, not product proof. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-EXISTING-FILE-ERROR-OWNERSHIP-139
 
-The admitted file reader requires `ObjectReadIoPort`. The metadata visitor's
-callback and return signature previously reached back into that reader for
-`ExistingFileReadFailureV1`. The existing `index::error` module now owns the
-shared error, and the metadata port and tree reader import it from there. The
-public `index::existing_file::ExistingFileReadFailureV1` path re-exports the same
-type. The enum and its conversion, display and source implementations match
-their original bytes.
-
-The current repository cycle analyzer on Core reproduced both directions. The
-same graph assertion then passed with the admitted read port edge present and
-the metadata port's reverse edge absent. `index::existing_file` is outside
-every Core cycle. The original typed-error and file-identity paths are exercised
-by the existing `legacy_active_repomap_verifies_real_objects_without_reconciliation_writes`
-Runtime body.
-
-The whole-workspace cycle check completed with exit 1 for the remaining groups.
-The Core port group no longer contains the file reader. The guarded Core module
-snapshot records the relocated type. Its repeat reports drift only in the
-concurrent `protected_source_routes` tree. Module discipline and hexagonal
-checks passed. The workspace error-shape gate reports the missing Error
-implementation on Contract's `NativeCutoverSourceJoinErrorV1`.
-
-The first runtime test invocation exited 101 before any test ran. The Lexical
-dependency's cold posting tournament had attempted `checked_add` on a checked
-sum's `Option<usize>`. The current shared source chains the sums through
-`and_then`, so the same selector was submitted again through the existing lane.
-
-The retry executed 1/1 PASS (Nextest `67ad8fe3-d656-41b0-813c-23ae94417c77`,
-1.008s,632 skipped,exit0) on shared dirty `d7b1b24a6`. The four edited Core
-sources, RepoMap reader, Runtime test source and `Cargo.lock` retained their
-captured hashes. The body checks admitted identity revalidation, both typed
-error variants, oversize and corrupt input refusal, changed file and UUID
-refusal, no rematerialization of missing data, and read-owner retirement.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline --no-default-features -p quanta-index-searchd-runtime --lib -E 'test(=publication_sqlite_vfs::tests::read_only::legacy_active_repomap_verifies_real_objects_without_reconciliation_writes)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
+The shared ExistingFileReadFailure type moved out of the reader/metadata dependency cycle. Focused `67ad8fe3-d656-41b0-813c-23ae94417c77` passed 1/1; public/file product acceptance remained distinct. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-EXISTING-TREE-COMMITMENT-OWNERSHIP-140
 
-The generation module delegates layout reads to `index::existing_tree`. The
-reader depended back on the generation module for the sealed file commitment
-and mismatch types. The private `tree_commitment` module now owns both types.
-The crate root and `domains::generation` re-export those definitions. The
-definitions, display and error implementations match the original bytes. Both
-verifiers still execute their original code.
-
-The scoped Core graph assertion reproduced the reverse edge before the move
-and passed after it, with the generation-to-reader edge present. The canonical
-workspace graph dropped the entire `domains::generation, index::existing_tree`
-group and returned exit 1 for 15 remaining groups. The guarded Core snapshot
-was updated for the two moved definitions. Its repeat reports only the
-concurrent `protected_source_routes` tree drift. Scoped rustfmt, diff, module
-discipline and hexagonal boundary checks passed.
-
-The existing Core tree suite executed 10/10 PASS (Nextest
-`028c711b-5a15-48e2-8901-56e8fc163e67`,0.198s,366 skipped,exit0) on shared dirty
-`2f09e5579`. The four edited Rust files and `Cargo.lock` retained their captured
-hashes. The bodies cover the ordinary layout, digest and mismatch ordering,
-one-byte-overrun refusal, resumable scrub, reader release and inherited inode
-handling. The admitted Runtime FD fixtures are Linux-only and were not run here.
-
-```sh
-CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=1800 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-core --lib -E 'test(/^domains::generation::tree_commitment_tests::/)' --no-tests fail --test-threads 1 --no-fail-fast --failure-output immediate --success-output immediate
-```
+The private tree commitment owns sealed file commitment/mismatch types, removing the existing-tree/generation cycle without changing the wire. Focused `028c711b-5a15-48e2-8901-56e8fc163e67` passed 10/10. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-MODULE-ALIAS-OWNERSHIP-141
 
-The B138 alias resolver could transfer a source file from its first explicit
-module to a second owner. For two inline sibling declarations of the same
-file, the checker dropped the first module and accepted a real dependency
-cycle. The earlier checker refused the second declaration. The new ownership
-check keeps parent alias resolution and refuses a second distinct owner for
-that physical source, naming both logical modules.
-
-The regression failed before repair because the checker returned no cycles and
-raised no error. Removing the ownership check from the repaired implementation
-reproduced the empty result for the same fixture. The final
-`.venv/bin/python -m pytest -q tools/ci/tests/test_check_module_cycles.py`
-executed 41/41 PASS. Scoped Ruff lint, format and diff checks passed, as did
-`just rust-test-authority`. `just rust-module-cycles` completed the workspace
-graph and exited 1 on 16 unbaselined cycle groups, including the Harness
-snippet group now present in the shared worktree.
+The checker rejects two logical modules claiming one physical source, including inline siblings. Its regression passed 41/41; workspace module-cycle inventory still exited 1 on 16 unbaselined groups. This does not close Runtime/product gates. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### B-CARRY-SELECTED-ARTIFACT-BACKING-142
 
@@ -739,7 +458,9 @@ Nextest `c29d5946-cd11-4083-a07f-db471035a464` subsequently passed all four
 focused bodies (exit 0, 70 skipped). The selection covered the readiness
 window, failed SDK call timing, prefix completion receipts and the Fast
 overlay oracle. The private Cargo target compiled the workspace's patched
-SQLite dependency. [LanceDB audit and build RCA](../../../bugbash/nov-20/findings.md#이번-확인-결과)
+SQLite dependency. The earlier LanceDB audit and build RCA remain source-bound
+in the [audit preimage](../../../ARCHIVE-INDEX.md#nov-20-ann-audit-preimage);
+the four-body result above is the scoped current ticket evidence.
 
 ## Retired section links
 

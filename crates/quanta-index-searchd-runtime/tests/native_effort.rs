@@ -6,6 +6,8 @@
 
 #[path = "native_effort/auto_overlay_live.rs"]
 mod auto_overlay_live;
+#[path = "common/interaction_lease.rs"]
+mod interaction_lease;
 #[path = "native_effort/mixed_pressure.rs"]
 mod mixed_pressure;
 #[path = "common/native_physical_profile.rs"]
@@ -28,6 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use interaction_lease::LivePublisher;
 use quanta_index_catalog::CATALOG_FILE_NAME;
 use quanta_index_contract::{
     EmbeddingNormalization, ExactRepoRelativePathV1, QueryConstraintSetV1, SemanticQueryRequest,
@@ -571,6 +574,7 @@ fn service_with_options(
                 literal: QueryAdapterRegistry::new(),
                 path: QueryAdapterRegistry::new(),
                 text,
+                text_matches: QueryAdapterRegistry::new(),
                 semantic,
                 pump: None,
                 provider_attempt_pool: None,

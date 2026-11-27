@@ -161,14 +161,35 @@ impl NativeDispatcher {
                     },
                 )?;
             }
-            let selected = if let Some(policy) = retired_policy {
-                self.catalog.select_native_boot_manifest_with_protected_routes_and_retired_policy_if_current(
-                    primary, routes, decoded, ingress, policy, budget,
-                )?
+            let selected = if self
+                .catalog
+                .native_boot_manifest(budget)?
+                .is_some_and(|manifest| manifest.protected_source_routes.is_some())
+            {
+                let (selected, _, _) =
+                    self.with_selected_protected_routes_v1(budget, |previous, old, budget| {
+                        self.catalog
+                            .select_native_boot_manifest_with_protected_source_history_v1(
+                                primary,
+                                routes,
+                                decoded,
+                                ingress,
+                                retired_policy,
+                                Some((previous, old)),
+                                budget,
+                            )
+                    })?;
+                selected
             } else {
                 self.catalog
-                    .select_native_boot_manifest_with_protected_routes_if_current(
-                        primary, routes, decoded, ingress, budget,
+                    .select_native_boot_manifest_with_protected_source_history_v1(
+                        primary,
+                        routes,
+                        decoded,
+                        ingress,
+                        retired_policy,
+                        None,
+                        budget,
                     )?
             };
             let nonce = self.catalog.observe_native_root_nonce_v1(budget)?;

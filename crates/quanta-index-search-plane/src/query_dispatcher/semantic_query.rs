@@ -339,6 +339,21 @@ fn lane_order_key(lane: SeedLane) -> u8 {
 /// two.
 const LEXICAL_LANE_CORPUS: SemanticCorpusKindV1 = SemanticCorpusKindV1::RawCodeFallback;
 
+/// A seed carries its lane row's text; a row without a match excerpt has no
+/// text to seed hybrid fusion with.
+fn seed_snippet(candidate: &LexicalCandidate) -> Result<String, CoreError> {
+    candidate
+        .excerpt
+        .as_ref()
+        .map(|excerpt| excerpt.snippet.clone())
+        .ok_or_else(|| {
+            CoreError::InvalidContract(format!(
+                "hybrid seed row {} carries no match excerpt",
+                candidate.candidate_id
+            ))
+        })
+}
+
 fn lexical_lane_seed_candidates(
     lexical: &[LexicalCandidate],
 ) -> Result<Vec<SeedCandidate>, CoreError> {
@@ -361,7 +376,7 @@ fn lexical_lane_seed_candidates(
             corpus_kind: Some(LEXICAL_LANE_CORPUS),
             authority_digest: None,
             repo_relative_path: candidate.repo_relative_path.clone(),
-            snippet: candidate.snippet.clone(),
+            snippet: seed_snippet(candidate)?,
             seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 lexical")?,
             contributions: vec![SeedContribution {
                 lane: SeedLane::Bm25,
@@ -398,7 +413,7 @@ fn one_semantic_lane_seed_candidates(
             corpus_kind: hit.corpus_kind,
             authority_digest: Some(hit.authority_digest.clone()),
             repo_relative_path: hit.candidate.repo_relative_path.clone(),
-            snippet: hit.candidate.snippet.clone(),
+            snippet: seed_snippet(&hit.candidate)?,
             seed_rank: checked_rank_u32_v1(index, "hybrid seed v2 semantic")?,
             contributions: vec![SeedContribution {
                 lane: SeedLane::Dense,
@@ -717,12 +732,17 @@ mod seed_fusion_tests {
                 .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(1),
             repo_relative_path: RepoRelativePath::new("src/session.rs"),
-            start_line: 0,
-            end_line: 0,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 0,
+                end_line: 0,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: "seed fusion fixture".to_string(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 1.0,
-            snippet: "seed fusion fixture".to_string(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         }
     }
 

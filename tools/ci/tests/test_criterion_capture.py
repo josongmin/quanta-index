@@ -108,6 +108,23 @@ def test_missing_native_sample_refused():
         capture.payload(data, "parse/1024")
 
 
+@pytest.fixture
+def synthetic_host_observations(tmp_path, monkeypatch):
+    import host_monitor
+
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8, "hostname_hash": "sha256:" + "a" * 64}
+    facts = {
+        "load_average": [0.1, 0.2, 0.3],
+        "disk_available_bytes": 100,
+        "process_count": 1,
+        "process_snapshot_sha256": "sha256:" + "b" * 64,
+        "foreign_rust": [],
+    }
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "host-lock")
+    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
+
+
+@pytest.mark.usefixtures("synthetic_host_observations")
 @pytest.mark.parametrize("large_log", [False, True])
 @pytest.mark.parametrize("feature_flag", ["--all-features", "--no-default-features"])
 def test_replay_refuses_forged_typed_mean(tmp_path, large_log, feature_flag, monkeypatch):
@@ -164,16 +181,6 @@ def test_replay_refuses_forged_typed_mean(tmp_path, large_log, feature_flag, mon
                         b'{"reason":"compiler-message","message":"' + b"x" * 65536 + b'"}\n'
                     )
             stream.write(content)
-    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "host-lock")
-    host = {"os": "macos", "arch": "arm64", "cpu_count": 8, "hostname_hash": "sha256:" + "a" * 64}
-    facts = {
-        "load_average": [0.1, 0.2, 0.3],
-        "disk_available_bytes": 100,
-        "process_count": 1,
-        "process_snapshot_sha256": "sha256:" + "b" * 64,
-        "foreign_rust": [],
-    }
-    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
     host_raw = (
         host_monitor.HostMonitor(run / "host-observations.jsonl", "r1", "micro").start().finish()
     )
@@ -314,8 +321,28 @@ def test_sigterm_kills_owned_producer(tmp_path):
         _, stderr = process.communicate(timeout=10)
         assert process.returncode != 0
         assert b"interrupted by SIGTERM" in stderr
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
+        # The controller reaps the guard, not the producer. The producer can
+        # briefly remain in macOS's exiting state before it disappears or becomes a
+        # zombie, neither of which can execute more work.
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            observed = subprocess.run(
+                ["ps", "-p", str(child_pid), "-o", "stat="],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+            if observed.returncode == 0 and observed.stdout.strip().startswith("Z"):
+                break
+            assert time.monotonic() < deadline, (
+                f"owned producer remains running or state is unknown: {observed!r}"
+            )
+            time.sleep(0.02)
     finally:
         if process.poll() is None:
             process.terminate()
@@ -736,6 +763,7 @@ def test_execution_monitors_high_numbered_pipe_descriptors(tmp_path, monkeypatch
     assert stdout.read_control() == b"high-fd\n" and result["status"] == "completed"
 
 
+@pytest.mark.usefixtures("synthetic_host_observations")
 @pytest.mark.parametrize("missing", [False, True])
 def test_complete_profile_transaction_with_synthetic_native_owner(tmp_path, monkeypatch, missing):
     """Exercise orchestration; synthetic timing is never product evidence."""

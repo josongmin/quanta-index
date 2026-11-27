@@ -1,7 +1,7 @@
 //! Same-cut repository witnesses for Native text Boolean clauses.
 
 use super::text::{NativeTextIndex, TextReadContext};
-use super::text_regex::{RegexMemory, compile_one};
+use super::text_regex::{RegexMemory, compile_field, compile_one};
 use crate::plan::{RepoFileConstraint, RepoFileMatcher};
 use quanta_index_contract::RepoId;
 use quanta_index_core::index::{
@@ -9,12 +9,13 @@ use quanta_index_core::index::{
     OwnerKey, SourcePathOwners, SourceRecordOwner, WorkBudget, WorkUsage, owner_map_key,
     visit_repository_path_sources,
 };
-use quanta_index_lq_regex::RegexExecutor;
+use quanta_index_lq_regex::{FieldRegex, RegexExecutor};
 use quanta_index_lq_text_normalizer::{CaseMode, Token, TokenCursor, apply_case, query_tokens};
 
 const PATH_PAGE: u32 = 128;
 const MAX_REPO_LEAVES: usize = 4;
 const MAX_MATCHERS: usize = 4;
+/// A `content:` regex: a document engine searching one source body.
 struct PreparedRegex {
     executor: RegexExecutor,
     states: u64,
@@ -22,14 +23,8 @@ struct PreparedRegex {
 }
 
 impl PreparedRegex {
-    fn new(
-        source: &str,
-        whole: bool,
-        case: CaseMode,
-        budget: &mut WorkBudget,
-    ) -> Result<Self, IndexError> {
-        let (executor, states, engine) =
-            compile_one(source, if whole { None } else { Some(case) }, whole, budget)?;
+    fn new(source: &str, case: CaseMode, budget: &mut WorkBudget) -> Result<Self, IndexError> {
+        let (executor, states, engine) = compile_one(source, Some(case), false, budget)?;
         Ok(Self {
             executor,
             states,
@@ -51,14 +46,48 @@ impl PreparedRegex {
     }
 }
 
+/// A whole-value `path:` or `name:` pattern. It tests one short path or file
+/// name, so it is a field engine charged its measured heap.
+struct PreparedField {
+    executor: FieldRegex,
+    states: u64,
+    _engine: RegexMemory,
+}
+
+impl PreparedField {
+    fn new(source: &str, budget: &mut WorkBudget) -> Result<Self, IndexError> {
+        let (executor, states, engine) = compile_field(source, true, budget)?;
+        Ok(Self {
+            executor,
+            states,
+            _engine: engine,
+        })
+    }
+
+    fn matches(&self, value: &[u8], budget: &mut WorkBudget) -> Result<bool, IndexError> {
+        let bytes = u64::try_from(value.len())
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .checked_mul(self.states)
+            .ok_or(IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes,
+            ..WorkUsage::default()
+        })?;
+        budget.checkpoint()?;
+        Ok(self.executor.is_match(value))
+    }
+}
+
 enum Matcher {
-    Path(PreparedRegex),
-    Name(PreparedRegex),
+    Path(PreparedField),
+    Name(PreparedField),
     Language {
         value: String,
         _memory: Option<MemoryLease>,
     },
-    ContentRegex(PreparedRegex),
+    /// Boxed: a document engine with its search cache is far larger than
+    /// the other matchers.
+    ContentRegex(Box<PreparedRegex>),
     ContentTokens {
         tokens: Vec<Token>,
         _memory: Option<MemoryLease>,
@@ -72,12 +101,8 @@ impl Matcher {
         budget: &mut WorkBudget,
     ) -> Result<Self, IndexError> {
         match matcher {
-            RepoFileMatcher::Path(value) => {
-                Ok(Self::Path(PreparedRegex::new(value, true, case, budget)?))
-            }
-            RepoFileMatcher::Name(value) => {
-                Ok(Self::Name(PreparedRegex::new(value, true, case, budget)?))
-            }
+            RepoFileMatcher::Path(value) => Ok(Self::Path(PreparedField::new(value, budget)?)),
+            RepoFileMatcher::Name(value) => Ok(Self::Name(PreparedField::new(value, budget)?)),
             RepoFileMatcher::Language(value) => {
                 // Fund both trim scans and ASCII normalization before inspecting
                 // caller text, including whitespace removed from the result.
@@ -115,9 +140,9 @@ impl Matcher {
                     .strip_prefix('/')
                     .and_then(|body| body.strip_suffix('/'))
                 {
-                    Ok(Self::ContentRegex(PreparedRegex::new(
-                        pattern, false, case, budget,
-                    )?))
+                    Ok(Self::ContentRegex(Box::new(PreparedRegex::new(
+                        pattern, case, budget,
+                    )?)))
                 } else {
                     let token_bytes = u64::try_from(value.len())
                         .map_err(|_error| IndexError::ResourceLimited)?
@@ -717,6 +742,108 @@ mod tests {
             ),
             Err(IndexError::ResourceLimited)
         ));
+        Ok(())
+    }
+
+    struct Meter(std::sync::atomic::AtomicU64);
+
+    impl quanta_index_core::index::MemoryLeaseOwner for Meter {
+        fn release(&self, bytes: u64) {
+            let _prior = self.0.fetch_sub(bytes, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    struct MeterScope(std::sync::Arc<Meter>);
+
+    impl quanta_index_core::index::MemoryScopePort for MeterScope {
+        fn reserve(
+            &self,
+            bytes: u64,
+            _lifetime: MemoryLifetime,
+        ) -> Result<MemoryLease, IndexError> {
+            let _prior = self
+                .0
+                .0
+                .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+            Ok(MemoryLease::new(bytes, self.0.clone()))
+        }
+    }
+
+    /// `path:` and `name:` matchers test one short path or file name, so they
+    /// are field engines charged their measured heap, far below one document
+    /// engine's grant. They keep whole-value matching, and every grant ends
+    /// with the matchers.
+    #[test]
+    fn path_and_name_matchers_charge_their_measured_field_engines() -> Result<(), IndexError> {
+        let meter = std::sync::Arc::new(Meter(std::sync::atomic::AtomicU64::new(0)));
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: u64::MAX,
+                writes: u64::MAX,
+                bytes: u64::MAX,
+                mutations: u64::MAX,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        budget.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(
+            std::sync::Arc::new(MeterScope(meter.clone())),
+        )));
+        let matchers = [
+            Matcher::new(
+                &RepoFileMatcher::Path(r"src/.*[.]rs".into()),
+                CaseMode::Sensitive,
+                &mut budget,
+            )?,
+            Matcher::new(
+                &RepoFileMatcher::Path("src/lib.rs".into()),
+                CaseMode::Folded,
+                &mut budget,
+            )?,
+            Matcher::new(
+                &RepoFileMatcher::Name(r"\w+[.]rs".into()),
+                CaseMode::Sensitive,
+                &mut budget,
+            )?,
+            Matcher::new(
+                &RepoFileMatcher::Name("main.rs".into()),
+                CaseMode::Sensitive,
+                &mut budget,
+            )?,
+        ];
+        let reserved = meter.0.load(std::sync::atomic::Ordering::SeqCst);
+        if reserved >= 1 << 20 || budget.usage().bytes >= 1 << 20 {
+            return Err(IndexError::BackendViolation(format!(
+                "four path matchers reserved {reserved} and charged {} bytes",
+                budget.usage().bytes
+            )));
+        }
+        let [nested, exact, any_name, main] = &matchers;
+        for (matcher, path, expected) in [
+            (nested, "src/lib.rs", true),
+            (nested, "src/a/b.rs", true),
+            (nested, "x/src/lib.rs", false),
+            (nested, "src/lib.rs.bak", false),
+            (exact, "src/lib.rs", true),
+            (exact, "SRC/LIB.RS", false),
+            (any_name, "src/lib.rs", true),
+            (any_name, "src/lib.rs/x", false),
+            (main, "src/main.rs", true),
+            (main, "src/domain.rs", false),
+        ] {
+            if matcher.matches_path(path, &mut budget)? != expected {
+                return Err(IndexError::BackendViolation(format!(
+                    "path matcher disagrees on {path:?}"
+                )));
+            }
+        }
+        drop(matchers);
+        if meter.0.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            return Err(IndexError::BackendViolation(
+                "path matcher grant outlived its matcher".into(),
+            ));
+        }
         Ok(())
     }
 }

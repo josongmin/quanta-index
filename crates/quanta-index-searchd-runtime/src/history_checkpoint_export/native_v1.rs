@@ -22,6 +22,13 @@ pub(super) fn export_v1(
     output: &mut impl io::Write,
     budget: &mut WorkBudget,
 ) -> Result<()> {
+    ensure!(
+        !matches!(
+            scope,
+            NativeHistoryExportScopeV1::InventoryAll | NativeHistoryExportScopeV1::CheckpointAll(_)
+        ),
+        "all-repository Legacy History export requires a Legacy selection"
+    );
     boot::with_selected_native_history_v1(selection, budget, |source, budget| {
         if matches!(scope, NativeHistoryExportScopeV1::Protected) {
             return export_protected_v1(source, output, budget);
@@ -32,12 +39,20 @@ pub(super) fn export_v1(
                     IndexError::InvalidInput("protected scope was not handled".into()).into(),
                 );
             }
-            NativeHistoryExportScopeV1::Inventory(repo) => repo,
-            NativeHistoryExportScopeV1::Checkpoint(generation) => &generation.repo_id,
+            NativeHistoryExportScopeV1::Inventory(repo) => Some(repo),
+            NativeHistoryExportScopeV1::Checkpoint(generation) => Some(&generation.repo_id),
+            NativeHistoryExportScopeV1::NativeInventoryAll => None,
+            NativeHistoryExportScopeV1::InventoryAll
+            | NativeHistoryExportScopeV1::CheckpointAll(_) => {
+                return Err(IndexError::InvalidInput(
+                    "Legacy-only History scope reached Native export".into(),
+                )
+                .into());
+            }
         };
         let mut exported = 0_u64;
         let witnessed_history_count = source.visit_history_members_v1(
-            Some(repo),
+            repo,
             budget,
             |input, reader, _source_input, budget| {
                 if let NativeHistoryExportScopeV1::Checkpoint(generation) = scope {
@@ -83,7 +98,11 @@ pub(super) fn export_v1(
             witnessed_history_count >= exported,
             "Native History export count exceeds selected inventory"
         );
-        if matches!(scope, NativeHistoryExportScopeV1::Inventory(_)) {
+        if matches!(
+            scope,
+            NativeHistoryExportScopeV1::Inventory(_)
+                | NativeHistoryExportScopeV1::NativeInventoryAll
+        ) {
             ensure!(
                 witnessed_history_count == exported,
                 "Native History inventory count differs"
@@ -95,10 +114,21 @@ pub(super) fn export_v1(
                 "selected Native History generation is absent"
             );
         }
+        if matches!(scope, NativeHistoryExportScopeV1::NativeInventoryAll) {
+            return write_frame(
+                output,
+                &ExportFrame::NativeInventoryAllComplete {
+                    source_root_nonce: Digest(source.observed_v1().snapshot.root_nonce),
+                    source_view: source.observed_v1().current_head.identity,
+                    count: exported,
+                },
+                budget,
+            );
+        }
         write_frame(
             output,
             &ExportFrame::NativeInventoryComplete {
-                repo_id: repo,
+                repo_id: repo.ok_or(IndexError::DigestConflict)?,
                 count: exported,
             },
             budget,

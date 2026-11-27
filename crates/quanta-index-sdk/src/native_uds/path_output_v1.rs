@@ -50,7 +50,7 @@ pub(super) fn validate_ranking(
         .try_reserve_exact(result.hits.len())
         .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
     for (index, (hit, repository)) in result.hits.iter().zip(&ranked.repositories).enumerate() {
-        if !valid_native_source_path(&hit.path)
+        if !is_canonical_source_path(&hit.path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()

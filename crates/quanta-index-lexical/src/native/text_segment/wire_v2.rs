@@ -2,14 +2,20 @@
 //! Decoding borrows payloads; object identity, child contents, Source membership,
 //! and live posting counts are verified by the reader, not by this wire parser.
 //!
-//! Root: QTXROOT3, policy:32, three optional SourceCut refs, optional path
-//! posting root, path document count:u64, path token count:u64, partition count:u16,
+//! Root: `QTXROOT4`, policy:32, two optional `TextCut` refs (Source owners
+//! and paths), optional path posting root, path document count:u64, path token
+//! count:u64, partition count:u16,
 //! then fixed rows (upperOwner:32, kind:u8, childRef:32, liveDocs:u32,
 //! liveTokens:u64). The last upperOwner is all-FF. Partition intervals are
 //! (previous upper, current upper], with the first interval starting at zero.
 //! Kind 0 directly names one all-live V1-shaped segment; kind 1 names QTXPART2.
-//! Children are SourceCut refs in owners/paths/frontiers order, then the
-//! present path posting root, then exactly one child per partition row.
+//! Children are `TextCut` refs in owners/paths order, then the present path
+//! posting root, then exactly one child per partition row.
+//!
+//! A root binds only the Source surface its text is a function of. Source
+//! frontiers record producer stream positions and never change indexed text,
+//! so they are not part of the root, its children or its logical commitment.
+//! A frontier-only Source advance therefore keeps the exact root identity.
 //!
 //! Partition: QTXPART2, policy:32, layer count:u16, then fixed rows
 //! (segmentRef:32, firstOwner:32, lastOwner:32, physicalDocs:u16,
@@ -32,14 +38,12 @@
 use super::wire;
 use crate::native::text::TextStatistics;
 use crate::native::text_path::PathIndex;
-use quanta_index_core::index::{
-    Digest, IndexError, MAX_RECLAIM_CHILDREN, MapRoot, ObjectRef, SourceCut,
-};
+use quanta_index_core::index::{Digest, IndexError, MAX_RECLAIM_CHILDREN, MapRoot, ObjectRef};
 use sha2::{Digest as _, Sha256};
 
 pub(in crate::native::text) const POLICY: &[u8] =
     b"qidx.native.text.segment.layered.v3;all-source-paths";
-pub(in crate::native::text) const ROOT_MAGIC: &[u8; 8] = b"QTXROOT3";
+pub(in crate::native::text) const ROOT_MAGIC: &[u8; 8] = b"QTXROOT4";
 pub(in crate::native::text) const PART_MAGIC: &[u8; 8] = b"QTXPART2";
 pub(in crate::native::text) const STORAGE_CHILDREN: usize = MAX_RECLAIM_CHILDREN;
 pub(in crate::native::text) const ROOT_ROW_BYTES: usize = 32 + 1 + 32 + 4 + 8;
@@ -47,8 +51,10 @@ pub(in crate::native::text) const LAYER_ROW_BYTES: usize = 32 + 32 + 32 + 2 + 8 
 const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 const MAX_OWNER: [u8; 32] = [0xff; 32];
 
-pub(super) fn root_row_capacity(source: SourceCut, has_path_postings: bool) -> usize {
-    STORAGE_CHILDREN - wire::source_edges(source).count() - usize::from(has_path_postings)
+pub(in crate::native::text) use super::wire::TextCut;
+
+pub(super) fn root_row_capacity(cut: TextCut, has_path_postings: bool) -> usize {
+    STORAGE_CHILDREN - cut.edges().count() - usize::from(has_path_postings)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,7 +103,7 @@ pub(in crate::native::text) struct LayerRow {
 
 #[derive(Clone, Copy)]
 pub(in crate::native::text) struct RootView<'a> {
-    pub source: SourceCut,
+    pub cut: TextCut,
     pub path: PathIndex,
     pub count: usize,
     rows: &'a [u8],
@@ -245,11 +251,10 @@ fn optional(cursor: &mut Cursor<'_>) -> Result<MapRoot, IndexError> {
     }
 }
 
-fn read_source(cursor: &mut Cursor<'_>) -> Result<SourceCut, IndexError> {
-    Ok(SourceCut {
+fn read_cut(cursor: &mut Cursor<'_>) -> Result<TextCut, IndexError> {
+    Ok(TextCut {
         owners: optional(cursor)?,
         paths: optional(cursor)?,
-        frontiers: optional(cursor)?,
     })
 }
 
@@ -273,11 +278,16 @@ pub(in crate::native::text) fn decode_root<'a>(
     if payload.len() > MAX_PAYLOAD {
         return Err(wire::corrupt("V2 root payload bound"));
     }
+    if let Some(refusal) =
+        super::retired::refuse_retired_root(payload, expected_recipe, children, None)
+    {
+        return Err(refusal);
+    }
     let mut cursor = Cursor::new(payload);
     if cursor.fixed::<8>()? != *ROOT_MAGIC || cursor.fixed::<32>()? != expected_recipe.0 {
         return Err(wire::corrupt("V2 root magic or policy"));
     }
-    let source = read_source(&mut cursor)?;
+    let cut = read_cut(&mut cursor)?;
     let path = PathIndex {
         postings: optional(&mut cursor)?,
         statistics: TextStatistics {
@@ -286,9 +296,9 @@ pub(in crate::native::text) fn decode_root<'a>(
         },
     };
     let count = usize::from(cursor.u16()?);
-    let prefix = wire::source_edges(source).chain(path.postings.0);
-    let prefix_count = wire::source_edges(source).count() + usize::from(path.postings.0.is_some());
-    if count > root_row_capacity(source, path.postings.0.is_some())
+    let prefix = cut.edges().chain(path.postings.0);
+    let prefix_count = cut.edges().count() + usize::from(path.postings.0.is_some());
+    if count > root_row_capacity(cut, path.postings.0.is_some())
         || children.len() != prefix_count + count
         || !children[..prefix_count].iter().copied().eq(prefix)
     {
@@ -324,7 +334,7 @@ pub(in crate::native::text) fn decode_root<'a>(
     }
     path.validate(docs)?;
     Ok(RootView {
-        source,
+        cut,
         path,
         count,
         rows,
@@ -337,7 +347,7 @@ pub(in crate::native::text) fn decode_root<'a>(
 pub(in crate::native::text) fn encode_root(
     out: &mut Vec<u8>,
     recipe: Digest,
-    source: SourceCut,
+    cut: TextCut,
     path: PathIndex,
     rows: &[RootRow],
 ) -> Result<(u64, u64), IndexError> {
@@ -346,11 +356,11 @@ pub(in crate::native::text) fn encode_root(
             "V2 root output is not empty".into(),
         ));
     }
-    let prefix_count = wire::source_edges(source).count() + usize::from(path.postings.0.is_some());
-    if rows.len() > root_row_capacity(source, path.postings.0.is_some()) {
+    let prefix_count = cut.edges().count() + usize::from(path.postings.0.is_some());
+    if rows.len() > root_row_capacity(cut, path.postings.0.is_some()) {
         return Err(IndexError::ResourceLimited);
     }
-    let fixed = 8 + 32 + 4 + prefix_count * 32 + 8 + 8 + 2;
+    let fixed = 8 + 32 + 3 + prefix_count * 32 + 8 + 8 + 2;
     let _encoded_len = checked_payload(fixed, rows.len(), ROOT_ROW_BYTES)?;
     let mut previous = None;
     let mut docs = 0u64;
@@ -374,7 +384,7 @@ pub(in crate::native::text) fn encode_root(
     path.validate(docs)?;
     out.extend_from_slice(ROOT_MAGIC);
     out.extend_from_slice(&recipe.0);
-    for root in [source.owners, source.paths, source.frontiers, path.postings] {
+    for root in [cut.owners, cut.paths, path.postings] {
         write_optional(out, root);
     }
     out.extend_from_slice(&path.statistics.docs.to_be_bytes());
@@ -504,15 +514,15 @@ pub(in crate::native::text) fn encode_partition(
 
 pub(in crate::native::text) fn logical_commitment(
     recipe: Digest,
-    source: SourceCut,
+    cut: TextCut,
     live_docs: u64,
     live_tokens: u64,
     path: PathIndex,
 ) -> Digest {
     let mut hash = Sha256::new();
-    hash.update(b"qidx.native.text.segment.layered.logical.v3\0");
+    hash.update(b"qidx.native.text.segment.layered.logical.v4\0");
     hash.update(recipe.0);
-    for root in [source.owners, source.paths, source.frontiers] {
+    for root in [cut.owners, cut.paths] {
         match root.0 {
             Some(reference) => {
                 hash.update([1]);
@@ -591,10 +601,9 @@ mod tests {
     use super::*;
 
     const RECIPE: Digest = Digest(*b"0123456789abcdef0123456789abcdef");
-    const EMPTY_SOURCE: SourceCut = SourceCut {
+    const EMPTY_SOURCE: TextCut = TextCut {
         owners: MapRoot(None),
         paths: MapRoot(None),
-        frontiers: MapRoot(None),
     };
     const REF_A: ObjectRef = ObjectRef(Digest([0x11; 32]));
     const REF_B: ObjectRef = ObjectRef(Digest([0x22; 32]));
@@ -657,24 +666,24 @@ mod tests {
         assert_eq!(totals, (0, 0));
         assert_eq!(
             empty.as_slice(),
-            b"QTXROOT30123456789abcdef0123456789abcdef\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+            b"QTXROOT40123456789abcdef0123456789abcdef\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
         );
         let decoded = decode_root(&empty, RECIPE, &[])?;
         assert_eq!(decoded.count, 0);
         assert_eq!(decoded.totals(), (0, 0));
 
         let direct = one_root()?;
-        assert_eq!(direct.len(), 62 + ROOT_ROW_BYTES);
-        assert_eq!(&direct[..40], b"QTXROOT30123456789abcdef0123456789abcdef");
-        assert_eq!(&direct[40..44], &[0; 4]);
-        assert_eq!(&direct[44..52], &[0, 0, 0, 0, 0, 0, 0, 1]);
-        assert_eq!(&direct[52..60], &[0; 8]);
-        assert_eq!(&direct[60..62], &[0, 1]);
-        assert_eq!(&direct[62..94], &[0xff; 32]);
-        assert_eq!(direct[94], 0);
-        assert_eq!(&direct[95..127], &[0x11; 32]);
-        assert_eq!(&direct[127..131], &[0, 0, 0, 1]);
-        assert_eq!(&direct[131..139], &[0, 0, 0, 0, 0, 0, 0, 7]);
+        assert_eq!(direct.len(), 61 + ROOT_ROW_BYTES);
+        assert_eq!(&direct[..40], b"QTXROOT40123456789abcdef0123456789abcdef");
+        assert_eq!(&direct[40..43], &[0; 3]);
+        assert_eq!(&direct[43..51], &[0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(&direct[51..59], &[0; 8]);
+        assert_eq!(&direct[59..61], &[0, 1]);
+        assert_eq!(&direct[61..93], &[0xff; 32]);
+        assert_eq!(direct[93], 0);
+        assert_eq!(&direct[94..126], &[0x11; 32]);
+        assert_eq!(&direct[126..130], &[0, 0, 0, 1]);
+        assert_eq!(&direct[130..138], &[0, 0, 0, 0, 0, 0, 0, 7]);
         let decoded = decode_root(&direct, RECIPE, &[REF_A])?;
         assert_eq!(decoded.row(0)?.reference, REF_A);
         assert_eq!(decoded.totals(), (1, 7));
@@ -720,9 +729,14 @@ mod tests {
             logical_commitment(RECIPE, EMPTY_SOURCE, 0, 0, index),
             logical_commitment(RECIPE, EMPTY_SOURCE, 0, 0, path(MapRoot(Some(REF_B)), 1, 3))
         );
-        let mut legacy = bytes.clone();
-        legacy[7] = b'2';
-        assert!(decode_root(&legacy, RECIPE, &[REF_B]).is_err());
+        // A current-layout payload relabelled with a retired layered magic
+        // does not authenticate as that retired root: it is corrupt, not stale.
+        let mut relabelled = bytes.clone();
+        relabelled[7] = b'3';
+        assert!(matches!(
+            decode_root(&relabelled, RECIPE, &[REF_B]),
+            Err(IndexError::CorruptObject(_))
+        ));
         assert!(
             encode_root(
                 &mut Vec::new(),
@@ -738,13 +752,12 @@ mod tests {
 
     #[test]
     fn path_root_reserves_one_registration_at_storage_bound() -> Result<(), IndexError> {
-        let source = SourceCut {
+        let source = TextCut {
             owners: MapRoot(Some(REF_A)),
             paths: MapRoot(Some(REF_B)),
-            frontiers: MapRoot(Some(ObjectRef(Digest([0x33; 32])))),
         };
         let path_root = ObjectRef(Digest([0x44; 32]));
-        let mut rows: Vec<_> = (0..4093u16)
+        let mut rows: Vec<_> = (0..4094u16)
             .map(|index| {
                 let mut upper = [0; 32];
                 upper[..2].copy_from_slice(&index.to_be_bytes());
@@ -757,17 +770,17 @@ mod tests {
                 }
             })
             .collect();
-        rows[4092].upper = MAX_OWNER;
+        rows[4093].upper = MAX_OWNER;
         let mut bytes = Vec::new();
         assert_eq!(
             encode_root(
                 &mut bytes,
                 RECIPE,
                 source,
-                path(MapRoot(None), 4093, 0),
+                path(MapRoot(None), 4094, 0),
                 &rows
             )?,
-            (4093, 4093)
+            (4094, 4094)
         );
         bytes.clear();
         assert!(matches!(
@@ -775,29 +788,30 @@ mod tests {
                 &mut bytes,
                 RECIPE,
                 source,
-                path(MapRoot(Some(path_root)), 4093, 1),
+                path(MapRoot(Some(path_root)), 4094, 1),
                 &rows
             ),
             Err(IndexError::ResourceLimited)
         ));
-        rows.truncate(4092);
-        rows[4091].upper = MAX_OWNER;
+        rows.truncate(4093);
+        rows[4092].upper = MAX_OWNER;
         assert_eq!(
             encode_root(
                 &mut bytes,
                 RECIPE,
                 source,
-                path(MapRoot(Some(path_root)), 4092, 1),
+                path(MapRoot(Some(path_root)), 4093, 1),
                 &rows
             )?,
-            (4092, 4092)
+            (4093, 4093)
         );
-        let children: Vec<_> = wire::source_edges(source)
+        let children: Vec<_> = source
+            .edges()
             .chain([path_root])
             .chain(rows.iter().map(|row| row.reference))
             .collect();
         assert_eq!(children.len(), 4096);
-        assert_eq!(decode_root(&bytes, RECIPE, &children)?.count, 4092);
+        assert_eq!(decode_root(&bytes, RECIPE, &children)?.count, 4093);
         Ok(())
     }
 
@@ -883,17 +897,17 @@ mod tests {
             },
             {
                 let mut bytes = base.clone();
-                bytes[94] = 2;
+                bytes[93] = 2;
                 bytes
             },
             {
                 let mut bytes = base.clone();
-                bytes[62] = 0xfe;
+                bytes[61] = 0xfe;
                 bytes
             },
             {
                 let mut bytes = base.clone();
-                bytes[127..131].copy_from_slice(&0u32.to_be_bytes());
+                bytes[126..130].copy_from_slice(&0u32.to_be_bytes());
                 bytes
             },
         ] {
@@ -902,6 +916,26 @@ mod tests {
         assert!(decode_root(&base, RECIPE, &[]).is_err());
         assert!(decode_root(&base, RECIPE, &[REF_B]).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn retired_root_magics_decode_as_rebuild_required_and_unknown_as_corrupt() {
+        use super::super::retired::fixtures::{CHILDREN, layered_root, uncommitted_root};
+        let (layered, _) = layered_root(RECIPE);
+        assert!(matches!(
+            decode_root(&layered, RECIPE, &CHILDREN),
+            Err(IndexError::RebuildRequired)
+        ));
+        assert!(matches!(
+            decode_root(&uncommitted_root(RECIPE), RECIPE, &[]),
+            Err(IndexError::RebuildRequired)
+        ));
+        let mut unknown = layered;
+        unknown[7] = b'9';
+        assert!(matches!(
+            decode_root(&unknown, RECIPE, &CHILDREN),
+            Err(IndexError::CorruptObject(_))
+        ));
     }
 
     #[test]

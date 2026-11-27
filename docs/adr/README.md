@@ -23,8 +23,10 @@ class와 proof authority를 갱신한다. optional compatibility field나 dual l
 
 ## November 2026 implemented contracts
 
-- [Native Query and semantic engine](NOV-12-001-native-query-and-semantic-engine.md) records Native immutable HNSW, prepared publication, authenticated file candidates, retained pages/Hybrid bounded terminal replies, same-socket root/peer observations, the implemented History source-replay/member/read contract, admitted read DATA custody, historical operation metadata, Semantic failure-atomic directory mutation and pure-recipe admission. NC-C's bounded Query/interface supplier scope is closed; its ticket is retired. It scopes the earlier Lance decisions and retains current product/default/installed acceptance in the Nov-12 packets.
-- [Execution admission and terminal recovery](NOV-12-002-execution-admission-and-terminal-recovery.md) consolidates completed B01–B04 coordinator, QBC claim, Docker recovery and explicit-attempt contracts. B05 retains current repairs, supplier/input work and actual C0/P09 body acceptance.
+- [RepoMap retirement and Source custody](NOV-23-001-repomap-retirement-and-source-custody.md) records the one-candidate S/Q removal, Source-only custody and historical verification boundaries. [Current release and recovery work](../plans/nov-23-repomap-retirement/README.md)
+- [Native Literal changed-directory publication](NOV-07-001-native-index-execution-and-custody.md#native-literal-changed-directory-publication) records INC-02. [Native engine retirement](NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement) and [Runtime migration](NOV-12-001-native-query-and-semantic-engine.md#completed-runtime-migration) record completed 06.2–06.3 and 04.1–04.2. [Original ticket recovery](../ARCHIVE-INDEX.md#2026-11-23-completed-native-tickets)
+- [Native Query and semantic engine](NOV-12-001-native-query-and-semantic-engine.md) records Native immutable LanceDB regions, the retained format 4 HNSW reader, prepared publication, authenticated file candidates, retained pages/Hybrid bounded terminal replies, same-socket root/peer observations, the implemented History source-replay/member/read contract, admitted read DATA custody, historical operation metadata, Semantic failure-atomic directory mutation and pure-recipe admission. NC-C's bounded Query/interface supplier scope is closed; its ticket is retired. It scopes the earlier Legacy Lance decision and retains current product/default/installed acceptance in the Nov-12 packets.
+- [Execution admission and terminal recovery](NOV-12-002-execution-admission-and-terminal-recovery.md) consolidates completed B01–B04 coordinator, QBC claim, Docker recovery, explicit-attempt contracts and [P11 paired execution controls](NOV-12-002-execution-admission-and-terminal-recovery.md#paired-release-execution-custody). B05 and the Native release ledger own the pending product-body acceptance.
 - [Native Index execution and custody](NOV-07-001-native-index-execution-and-custody.md) covers the delivered Core/Kernel/Catalog/Storage boundary, Native occurrence policy, publication/readback custody, IPC settlement and the configured provider boundary. It also owns logical identity across Text compaction, authenticated alias/packed Diff, six-counter Inventory Diff observation, Posting scratch, paired Catalog reads, immutable installed baselines, send-observer contracts, the existing-only Semantic physical verifier with borrowed-root custody, and recovery receiver/selection reconciliation custody. The [November recovery entry](../ARCHIVE-INDEX.md#2026-11-07-november-closeout) maps the retired plans and current acceptance owners.
 
 ## OCT-05 implemented contracts
@@ -88,12 +90,12 @@ May–Jun 2026 accepted set:
 - [Sourcegraph compatibility boundary](JUN-06-001-sourcegraph-compatibility-boundary.md)
 - [LanceDB semantic generation authority](MAY-31-001-lancedb-semantic-generation-authority.md)
 - [Verification, quality gates and benchmark separation](JUN-08-001-verification-hellgate-and-benchmark-separation.md)
-- [Decision registry](MAY-JUN-2026-DECISION-REGISTRY.md)
+The May–Jun decision IDs are indexed by the five owning ADRs above. The prior
+registry is recoverable from the [decision preimages](../ARCHIVE-INDEX.md#superseded-decision-preimages).
 
 Legacy lexical contracts:
 
-- [OCT-10-001](OCT-10-001-seal-owned-lexical-serving-metadata.md): historical F16 decision, superseded for storage and admission by OCT-10-002.
-- [OCT-10-002](OCT-10-002-shared-paged-lexical-authorities.md): Tantivy-coupled legacy family only. The separate Native engine follows the [Native RFC](../rfc/oct-10-native-incremental-vnext.md).
+- [OCT-10-002](OCT-10-002-shared-paged-lexical-authorities.md): Tantivy-coupled legacy family only; it also records the historical F16 trust and compatibility boundary. The F16 decision text is recoverable from the [decision preimages](../ARCHIVE-INDEX.md#superseded-decision-preimages). The separate Native engine follows the [Native RFC](../rfc/oct-10-native-incremental-vnext.md).
 
 Historical implementation packets and superseded drafts are indexed in
 [the plan history index](../ARCHIVE-INDEX.md#historical-record-recovery). Historical audits,

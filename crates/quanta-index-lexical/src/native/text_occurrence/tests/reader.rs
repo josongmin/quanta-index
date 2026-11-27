@@ -213,6 +213,10 @@ fn packed_load_requires_a_checked_block() -> Result<(), IndexError> {
         RetainedReply::Same,
     );
     let mut reader = OccurrenceReader::new(1)?;
+    require(
+        reader.count_packed(block_ref, b"\0alpha", &port, &mut budget)? == 2,
+        "packed alpha count differs",
+    )?;
     let packed = reader.load_packed(block_ref, b"\0beta", &port, &mut budget)?;
     require(packed.positions.0.as_slice() == [7], "packed beta differs")?;
     require(
@@ -221,6 +225,13 @@ fn packed_load_requires_a_checked_block() -> Result<(), IndexError> {
             Err(IndexError::CorruptObject(_))
         ),
         "packed inventory accepted scalar leaf",
+    )?;
+    require(
+        matches!(
+            reader.count_packed(leaf_ref, b"\0beta", &port, &mut budget),
+            Err(IndexError::CorruptObject(_))
+        ),
+        "packed inventory count accepted scalar leaf",
     )?;
     drop(packed);
     drop(reader);
@@ -246,6 +257,121 @@ fn leaf_reads_remain_uncached_and_typed_as_leaf() -> Result<(), IndexError> {
     drop(reader);
     drop(port);
     cleaned(&tracker)
+}
+
+#[test]
+fn posting_scalar_window_reuses_tiny_leaves_in_reference_order() -> Result<(), IndexError> {
+    let (mut budget, tracker) = funded(100_000, None, None)?;
+    let first = reference(30);
+    let second = reference(31);
+    let port = ProbePort::new(
+        vec![
+            (first, object(first, LEAF, &budget)?),
+            (second, object(second, br#"{"positions":[5]}"#, &budget)?),
+        ],
+        RetainedReply::Same,
+    );
+    let mut reader = OccurrenceReader::new(2)?;
+    for (reference, expected) in [(first, 2), (second, 1), (first, 2), (second, 1)] {
+        let count = reader.count_for_posting(reference, b"\0alpha", &port, &mut budget)?;
+        require(
+            count.leaf && count.value == expected,
+            "posting scalar count differs",
+        )?;
+    }
+    require(
+        !reader.contains(first),
+        "scalar leaf entered packed block cache",
+    )?;
+    require(
+        port.counts() == (2, 2),
+        "posting scalar window missed repeated refs",
+    )?;
+    drop(reader);
+    drop(port);
+    cleaned(&tracker)
+}
+
+#[test]
+fn posting_scalar_window_preserves_retained_refusal_and_cancel() -> Result<(), IndexError> {
+    for reply in [
+        RetainedReply::Different,
+        RetainedReply::Refuse,
+        RetainedReply::Cancel,
+    ] {
+        let (mut budget, tracker) = funded(100_000, None, None)?;
+        let key = reference(32);
+        let mut port = ProbePort::new(vec![(key, object(key, LEAF, &budget)?)], reply);
+        port.wrong = Some(object(key, br#"{"positions":[3,12]}"#, &budget)?);
+        let mut reader = OccurrenceReader::new(1)?;
+        require(
+            reader
+                .count_for_posting(key, b"\0alpha", &port, &mut budget)?
+                .value
+                == 2,
+            "initial posting scalar count differs",
+        )?;
+        let result = reader.count_for_posting(key, b"\0alpha", &port, &mut budget);
+        match reply {
+            RetainedReply::Different => require(
+                matches!(result, Err(IndexError::CorruptObject(_))),
+                "changed retained scalar DATA was accepted",
+            )?,
+            RetainedReply::Refuse => require(
+                matches!(result, Err(IndexError::ResourceLimited)),
+                "retained scalar refusal was replaced",
+            )?,
+            RetainedReply::Cancel => require(
+                matches!(result, Err(IndexError::Cancelled)),
+                "retained scalar cancellation was replaced",
+            )?,
+            RetainedReply::Same => {
+                return Err(IndexError::BackendViolation(
+                    "retained scalar fault fixture selected success".into(),
+                ));
+            }
+        }
+        require(port.counts() == (1, 1), "retained scalar made a fresh get")?;
+        drop(reader);
+        drop(port);
+        cleaned(&tracker)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn posting_scalar_window_falls_back_without_spare_memory() -> Result<(), IndexError> {
+    let key = reference(33);
+    let mut budget = WorkBudget::new(
+        WorkLimits {
+            reads: 100,
+            writes: 0,
+            bytes: 100_000,
+            mutations: 0,
+        },
+        Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .ok_or(IndexError::ResourceLimited)?,
+    );
+    let port = ProbePort::new(
+        vec![(key, object(key, LEAF, &budget)?)],
+        RetainedReply::Same,
+    );
+    let mut reader = OccurrenceReader::new(1)?;
+    for _ in 0..2 {
+        require(
+            reader
+                .count_for_posting(key, b"\0alpha", &port, &mut budget)?
+                .value
+                == 2,
+            "scalar fallback count differs",
+        )?;
+    }
+    require(
+        port.counts() == (2, 0),
+        "no-scope scalar path retained DATA",
+    )?;
+    Ok(())
 }
 
 #[test]

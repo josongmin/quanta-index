@@ -1,12 +1,19 @@
 //! Match a carried Native route and its actual Catalog ledger against the held
 //! previous root. Candidate-owned objects cannot establish their own provenance.
 
-use super::super::retired_policy_profile_v1::old_repomap_identity_v1;
+use super::super::retired_policy_profile_v1::collect_old_retired_projection_identities_v1;
 use super::*;
 use quanta_index_contract::index::{
-    Digest, NativeImportedNativeSourceHeadV1, NativeSourceOriginV1, RetiredProjectionIdentityV1,
-    RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyViewV1, SourceCut, SourceTextAdmission,
-    decode_retired_projection_policy_v1, preflight_retired_projection_policy_v1,
+    Digest, NativeImportedNativeSourceCompactV1, NativeImportedNativeSourceHeadV1,
+    NativeSourceOriginV1, RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyViewV1, SourceCut,
+    SourceTextAdmission, UpdateRequest, decode_retired_projection_policy_v1,
+    preflight_retired_projection_policy_v1,
+};
+use quanta_index_contract::native_cutover_evidence_v1::{
+    NativeCutoverEvidenceTargetV1, NativeCutoverSourceOnlyEvidenceV6,
+};
+use quanta_index_contract::native_cutover_source_join_v1::{
+    NativeCutoverSourceJoinErrorV1, validate_source_only_native_imports_v7,
 };
 use quanta_index_contract::{RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision};
 use quanta_index_core::index::{
@@ -269,17 +276,12 @@ fn reject_retired_candidate_publications_v1(
                 {
                     return Err(IndexError::DigestConflict);
                 }
-                if let quanta_index_core::index::UpdateKind::ProjectionAdvance(transition) =
-                    &request.kind
-                {
-                    if super::super::retired_policy_profile_v1::retired_projection_present_v1(
-                        policy,
-                        transition.projection,
-                        budget,
-                    )? {
-                        return Err(IndexError::DigestConflict);
-                    }
-                }
+                super::super::retired_policy_profile_v1::reject_retired_published_request_v1(
+                    policy,
+                    sorted_instances,
+                    &request.kind,
+                    budget,
+                )?;
                 Ok(())
             },
         )??;
@@ -405,12 +407,216 @@ fn reject_retired_map_keys_v1(
     }
 }
 
+enum NativeRetirementImportsV1<'a> {
+    Historical(&'a NativeCutoverJoinedSourceFactsV1<'a>),
+    SourceOnly(&'a [Fact]),
+}
+
+impl<'a> NativeRetirementImportsV1<'a> {
+    fn count_v1(&self) -> usize {
+        match self {
+            Self::Historical(joined) => joined.imported_native_source_count_v1(),
+            Self::SourceOnly(facts) => facts.len(),
+        }
+    }
+
+    fn for_pair_v1(
+        &self,
+        repo: &quanta_index_contract::RepoId,
+        revision: &RevisionId,
+        budget: &mut WorkBudget,
+    ) -> Result<
+        (
+            &'a NativeImportedNativeSourceCompactV1,
+            &'a NativeCutoverEvidenceTargetV1,
+            &'a UpdateRequest,
+        ),
+        IndexError,
+    > {
+        match self {
+            Self::Historical(joined) => joined
+                .imported_native_source_inputs_for_pair_v1(repo, revision)
+                .ok_or(IndexError::SnapshotUnavailable),
+            Self::SourceOnly(facts) => {
+                let facts = *facts;
+                let reads = 2 + u64::from(facts.len().max(1).ilog2());
+                let bytes = repo
+                    .as_str()
+                    .len()
+                    .checked_add(revision.as_str().len())
+                    .and_then(|len| u64::try_from(len).ok())
+                    .and_then(|len| len.checked_mul(reads))
+                    .ok_or(IndexError::ResourceLimited)?;
+                budget.charge(WorkUsage {
+                    reads,
+                    bytes,
+                    ..Default::default()
+                })?;
+                let pair = (repo, revision);
+                let index = facts
+                    .binary_search_by(|fact| match fact {
+                        Fact::ImportedNativeSource { head, .. } => {
+                            (&head.origin.repo_id, &head.origin.revision_id).cmp(&pair)
+                        }
+                        _ => std::cmp::Ordering::Less,
+                    })
+                    .map_err(|_| IndexError::SnapshotUnavailable)?;
+                let Fact::ImportedNativeSource {
+                    head,
+                    target,
+                    request,
+                } = &facts[index]
+                else {
+                    return Err(IndexError::DigestConflict);
+                };
+                Ok((head, target, request))
+            }
+        }
+    }
+}
+
+enum NativePreservationV1<'a> {
+    HistoricalCopy,
+    SourceOnlyCopy,
+    Retire(NativeRetirementImportsV1<'a>),
+}
+
 pub(super) fn verify_preserved_native_v1(
     previous: &HeldPreviousNativeV1,
     candidate: &NativeBootAuthority,
     command: &NativeStateCommandV1,
     joined: &NativeCutoverJoinedSourceFactsV1<'_>,
     retire_repomap: bool,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    let preservation = if retire_repomap {
+        if joined.imported_legacy_source_count_v1() != 0 {
+            return Err(IndexError::DigestConflict.into());
+        }
+        NativePreservationV1::Retire(NativeRetirementImportsV1::Historical(joined))
+    } else {
+        NativePreservationV1::HistoricalCopy
+    };
+    verify_preserved_native_inner_v1(previous, candidate, command, preservation, budget)
+}
+
+/// Match the old current Source to the candidate's actual BOOT Source cut.
+/// Subsequent V7 publications have their own signed lineage and may edit it.
+pub(super) fn verify_preserved_source_only_native_v7(
+    previous: &HeldPreviousNativeV1,
+    held_candidate: &HeldPreviousNativeV1,
+    command: &NativeStateCommandV1,
+    evidence: &NativeCutoverSourceOnlyEvidenceV6,
+    requires_retirement: bool,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    let candidate_snapshot = &held_candidate.observed_v1().snapshot;
+    let selected = candidate_snapshot
+        .selected
+        .as_ref()
+        .ok_or(IndexError::SnapshotUnavailable)?;
+    let count = validate_source_only_native_imports_v7(
+        evidence,
+        Digest(candidate_snapshot.root_nonce),
+        &mut |bytes| {
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes,
+                ..Default::default()
+            })
+        },
+    )
+    .map_err(|error| match error {
+        NativeCutoverSourceJoinErrorV1::Work(error) => error,
+        NativeCutoverSourceJoinErrorV1::Refused(_) => IndexError::DigestConflict,
+    })?;
+    let old = previous
+        .observed_v1()
+        .snapshot
+        .selected
+        .as_ref()
+        .ok_or(IndexError::SnapshotUnavailable)?;
+    let inherited_policy = old
+        .retired_projection_policy
+        .is_some_and(|policy| policy.identity_count != 0);
+    let candidate = held_candidate.authority_v7();
+    if selected.retired_projection_policy.is_some() {
+        let start = evidence
+            .source_facts
+            .len()
+            .checked_sub(count)
+            .ok_or(IndexError::DigestConflict)?;
+        return verify_preserved_native_inner_v1(
+            previous,
+            candidate,
+            command,
+            NativePreservationV1::Retire(NativeRetirementImportsV1::SourceOnly(
+                &evidence.source_facts[start..],
+            )),
+            budget,
+        );
+    }
+    if requires_retirement || inherited_policy || count != 0 {
+        return Err(IndexError::DigestConflict.into());
+    }
+    let root = candidate.lease.state_root_identity_v1();
+    let snapshot = verify_native_boot_catalog(root, candidate.io.as_ref(), budget)?;
+    let initial = snapshot
+        .selected
+        .as_ref()
+        .ok_or(IndexError::SnapshotUnavailable)?;
+    if Some(identity(snapshot.root_nonce, initial)?) != command.identity {
+        return Err(IndexError::DigestConflict.into());
+    }
+    let published = quanta_index_catalog::verify_native_published_operation(
+        root,
+        candidate.io.as_ref(),
+        initial.operation.key,
+        budget,
+    )?;
+    if published.snapshot().root_nonce != snapshot.root_nonce
+        || published.snapshot().selected != snapshot.selected
+        || published.snapshot().namespace != snapshot.namespace
+        || published.operation() != &initial.operation
+        || published.publication_metadata() != &initial.publication
+    {
+        return Err(IndexError::DigestConflict.into());
+    }
+    let objects = root.join("native-objects");
+    let io = Arc::new(NativeObjectReadIo::new(Arc::clone(&candidate.physical)));
+    let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
+    let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
+    if snapshot.namespace != Some(reader.namespace_binding()?) {
+        return Err(IndexError::DigestConflict.into());
+    }
+    previous.with_current_source_reader_v1(budget, |old_current, old_reader, budget| {
+        let _verified_census = verify_source_files_v1(
+            old_reader,
+            &reader,
+            &old_current.source,
+            &published.publication_metadata().source,
+            budget,
+        )?;
+        Ok(())
+    })?;
+    drop(reader);
+    verify_preserved_native_inner_v1(
+        previous,
+        candidate,
+        command,
+        NativePreservationV1::SourceOnlyCopy,
+        budget,
+    )?;
+    candidate.lease.require_state_root_v1(root)?;
+    require_retired(candidate)?;
+    previous.require_current_and_retired_v1(budget)
+}
+
+fn verify_preserved_native_inner_v1(
+    previous: &HeldPreviousNativeV1,
+    candidate: &NativeBootAuthority,
+    command: &NativeStateCommandV1,
+    preservation: NativePreservationV1<'_>,
     budget: &mut WorkBudget,
 ) -> Result<()> {
     let old_manifest = previous
@@ -420,7 +626,9 @@ pub(super) fn verify_preserved_native_v1(
         .as_ref()
         .ok_or(IndexError::SnapshotUnavailable)?;
     let expected = command.identity.ok_or(IndexError::SnapshotUnavailable)?;
-    if old_manifest.protected_source_routes.is_none() && !retire_repomap {
+    if old_manifest.protected_source_routes.is_none()
+        && !matches!(&preservation, NativePreservationV1::Retire(_))
+    {
         if expected.protected_source_routes.is_some() {
             return Err(IndexError::DigestConflict.into());
         }
@@ -443,13 +651,11 @@ pub(super) fn verify_preserved_native_v1(
     if observed.namespace != Some(reader.namespace_binding()?) {
         return Err(IndexError::DigestConflict.into());
     }
-    if retire_repomap {
+    let source_only_copy = matches!(&preservation, NativePreservationV1::SourceOnlyCopy);
+    if let NativePreservationV1::Retire(imports) = preservation {
         if old_manifest.protected_source_routes.is_none() {
             // A route-less old Native BOOT has no authenticated RepoMap census.
             return Err(IndexError::SnapshotUnavailable.into());
-        }
-        if joined.imported_legacy_source_count_v1() != 0 {
-            return Err(IndexError::DigestConflict.into());
         }
         let candidate_current = if let Some(route) = route {
             let route_object = reader.get(route.object, budget)?;
@@ -482,12 +688,16 @@ pub(super) fn verify_preserved_native_v1(
         {
             return Err(IndexError::DigestConflict.into());
         }
+        let preserved_source = match &imports {
+            NativeRetirementImportsV1::Historical(_) => &candidate_current.current_head.source,
+            NativeRetirementImportsV1::SourceOnly(_) => &manifest.publication.source,
+        };
         previous.with_current_source_reader_v1(budget, |old_current, old_reader, budget| {
             let _verified_census = verify_source_files_v1(
                 old_reader,
                 &reader,
                 &old_current.source,
-                &candidate_current.current_head.source,
+                preserved_source,
                 budget,
             )?;
             Ok(())
@@ -503,30 +713,21 @@ pub(super) fn verify_preserved_native_v1(
                 }
                 let policy_count = preflight_retired_projection_policy_v1(&policy_object.payload)
                     .map_err(|_| IndexError::DigestConflict)?;
-                if policy_count > old_routes.repomap_heads.len()
-                    || policy_count != policy.identity_count as usize
-                {
+                let (derived, _derived_memory) = collect_old_retired_projection_identities_v1(
+                    old_manifest,
+                    old_routes,
+                    old_reader,
+                    budget,
+                )?;
+                if policy_count != derived.len() || policy_count != policy.identity_count as usize {
                     return Err(IndexError::DigestConflict.into());
                 }
                 let scratch_bytes = policy_count
                     .checked_mul(std::mem::size_of::<quanta_index_core::index::IndexInstanceId>())
                     .ok_or(IndexError::ResourceLimited)?;
-                let derived_bytes = old_routes
-                    .repomap_heads
-                    .len()
-                    .checked_mul(std::mem::size_of::<RetiredProjectionIdentityV1>())
-                    .and_then(|size| {
-                        size.checked_add(old_routes.repomap_heads.len().checked_mul(16)?)
-                    })
-                    .ok_or(IndexError::ResourceLimited)?;
                 let _policy_memory = budget
                     .reserve_memory(
-                        u64::try_from(
-                            scratch_bytes
-                                .checked_add(derived_bytes)
-                                .ok_or(IndexError::ResourceLimited)?,
-                        )?
-                        .max(1),
+                        u64::try_from(scratch_bytes)?.max(1),
                         MemoryLifetime::Temporary,
                     )?
                     .ok_or(IndexError::ResourceLimited)?;
@@ -553,55 +754,23 @@ pub(super) fn verify_preserved_native_v1(
                 {
                     return Err(IndexError::DigestConflict.into());
                 }
-                let mut derived = Vec::new();
-                derived
-                    .try_reserve_exact(old_routes.repomap_heads.len())
-                    .map_err(|_| IndexError::ResourceLimited)?;
-                if derived.capacity() > old_routes.repomap_heads.len() {
-                    return Err(IndexError::ResourceLimited.into());
-                }
-                for old in &old_routes.repomap_heads {
-                    budget.checkpoint()?;
-                    derived.push(old_repomap_identity_v1(old, old_reader, budget)?);
-                }
-                budget.checkpoint()?;
-                derived.sort_unstable_by_key(|identity| identity.projection.0);
-                if derived.windows(2).any(|pair| {
-                    pair[0].projection == pair[1].projection && pair[0].instance != pair[1].instance
-                }) {
-                    return Err(IndexError::DigestConflict.into());
-                }
-                derived.dedup();
-                let mut instances = Vec::new();
-                instances
-                    .try_reserve_exact(derived.len())
-                    .map_err(|_| IndexError::ResourceLimited)?;
-                if instances.capacity() > derived.len() {
-                    return Err(IndexError::ResourceLimited.into());
-                }
-                instances.extend(derived.iter().map(|identity| identity.instance));
-                instances.sort_unstable_by_key(|instance| instance.0);
-                if instances.windows(2).any(|pair| pair[0] == pair[1])
-                    || derived.len() != policy_count
-                {
-                    return Err(IndexError::DigestConflict.into());
-                }
                 for (index, expected) in derived.iter().enumerate() {
                     budget.checkpoint()?;
                     if policy_view.identity_v1(index) != Some(*expected) {
                         return Err(IndexError::DigestConflict.into());
                     }
                 }
-                // Validate the old Catalog rows without reading synthetic snapshot
-                // objects that are staged only in the candidate root.
-                let _witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
+                let witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
                     &previous.selected_config_v1().state_root,
                     previous.catalog_io_v1(),
                     old_manifest,
                     old_routes,
                     budget,
                 )?;
-                if joined.imported_native_source_count_v1() != old_routes.heads.len() {
+                for reference in witness.object_references_v1() {
+                    old_reader.verify_object(reference, budget)?;
+                }
+                if imports.count_v1() != old_routes.heads.len() {
                     return Err(IndexError::DigestConflict.into());
                 }
                 if old_routes.heads.is_empty() && route.is_some() {
@@ -639,12 +808,8 @@ pub(super) fn verify_preserved_native_v1(
                             if old.repo_id != new.repo_id || old.revision_id != new.revision_id {
                                 return Err(IndexError::DigestConflict);
                             }
-                            let (imported, target, request) = joined
-                                .imported_native_source_inputs_for_pair_v1(
-                                    &old.repo_id,
-                                    &old.revision_id,
-                                )
-                                .ok_or(IndexError::SnapshotUnavailable)?;
+                            let (imported, target, request) =
+                                imports.for_pair_v1(&old.repo_id, &old.revision_id, budget)?;
                             let _binding_memory = budget
                                 .reserve_memory(16 * 1024, MemoryLifetime::Temporary)?
                                 .ok_or(IndexError::ResourceLimited)?;
@@ -679,6 +844,36 @@ pub(super) fn verify_preserved_native_v1(
                             {
                                 return Err(IndexError::DigestConflict);
                             }
+                            let actual = quanta_index_catalog::verify_native_published_operation(
+                                root,
+                                candidate.io.as_ref(),
+                                new.source_operation.key,
+                                budget,
+                            )?;
+                            if actual.snapshot().root_nonce != observed.root_nonce
+                                || actual.snapshot().namespace != observed.namespace
+                                || actual.snapshot().selected.as_ref() != Some(manifest)
+                                || actual.operation() != &new.source_operation
+                                || actual.publication_metadata() != &new.source_publication
+                            {
+                                return Err(IndexError::DigestConflict);
+                            }
+                            let stored = reader.get(actual.operation().request, budget)?;
+                            quanta_index_kernel::verify_native_boot_captured_request_v1(
+                                request,
+                                actual.operation(),
+                                &stored,
+                                budget,
+                            )?;
+                            quanta_index_kernel::verify_native_published_full_target_v1(
+                                target,
+                                request,
+                                actual.operation(),
+                                actual.publication(),
+                                actual.publication_metadata().profile,
+                                stored.registration.reference,
+                                budget,
+                            )?;
                             let (files, census) = verify_source_files_v1(
                                 old_reader,
                                 &reader,
@@ -706,7 +901,7 @@ pub(super) fn verify_preserved_native_v1(
                 )?;
                 Ok(())
             })?;
-        } else if route.is_some() || joined.imported_native_source_count_v1() != 0 {
+        } else if route.is_some() || imports.count_v1() != 0 {
             return Err(IndexError::DigestConflict.into());
         }
         drop(reader);
@@ -728,7 +923,8 @@ pub(super) fn verify_preserved_native_v1(
                 .ok_or(IndexError::SnapshotUnavailable)?;
             let witness = previous
                 .with_protected_routes_v1(budget, |old_routes, _old_reader, budget| {
-                    if routes.heads != old_routes.heads
+                    if (source_only_copy && !old_routes.repomap_heads.is_empty())
+                        || routes.heads != old_routes.heads
                         || routes.repomap_heads != old_routes.repomap_heads
                     {
                         return Err(IndexError::DigestConflict.into());

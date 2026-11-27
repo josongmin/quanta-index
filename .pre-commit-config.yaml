@@ -9,39 +9,47 @@ repos:
         files: ^\.github/workflows/.*\.ya?ml$
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.9.0.6
+    rev: v0.10.0.1
     hooks:
       - id: shellcheck
-        files: ^(scripts/.*\.sh|tools/ci/lint/.*\.sh)$
+        files: ^(scripts/(?:cargow|.*\.sh)|tools/ci/lint/.*\.sh)$
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        # Vendored source and fork patches are updated explicitly.
-        exclude: ^vendor/
       - id: end-of-file-fixer
-        exclude: ^vendor/
       - id: check-yaml
       - id: check-json
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
-        exclude: ^vendor/(tree-sitter-javascript/src/parser\.c|unicode-normalization-0\.1\.25/src/tables\.rs)$
       - id: debug-statements
 
   - repo: local
     hooks:
       - id: ruff
         name: ruff
-        entry: bash -lc 'source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m ruff check --fix --exit-non-zero-on-fix'
+        entry: >-
+          bash -c 'source scripts/quanta-index-env.sh &&
+          uv run --frozen --extra dev python -m ruff check --fix --exit-non-zero-on-fix -- "$@"' --
         language: system
         files: \.py$
       - id: ruff-format
         name: ruff format
-        entry: bash -lc 'source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m ruff format --check'
+        entry: >-
+          bash -c 'source scripts/quanta-index-env.sh &&
+          uv run --frozen --extra dev python -m ruff format --check -- "$@"' --
         language: system
         files: \.py$
+
+      - id: actionlint-config
+        name: actionlint workflow configuration
+        entry: bash scripts/run-actionlint.sh
+        language: system
+        pass_filenames: false
+        files: ^\.github/actionlint\.ya?ml$
+        stages: [pre-commit, pre-push]
 
       - id: root-hygiene
         name: root hygiene
@@ -56,7 +64,8 @@ repos:
         entry: bash scripts/check-lock-freshness.sh
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|pyproject\.toml|(crates|benchmarks)/.*/Cargo\.toml|scripts/check-lock-freshness\.sh)$
+        # A lockfile deletion leaves no file for pre-commit's path filter.
+        always_run: true
         stages: [pre-commit]
 
       - id: doc-paths
@@ -70,7 +79,7 @@ repos:
 
       - id: prompt-manager-lint
         name: prompt-manager lint
-        entry: python3 tools/prompt-manager/pm.py lint
+        entry: uv run --frozen --extra dev python tools/prompt-manager/pm.py lint
         language: system
         pass_filenames: false
         always_run: true
@@ -78,47 +87,63 @@ repos:
 
       - id: cargo-fmt-check
         name: cargo fmt check
-        entry: ./scripts/run-rustfmt-owned.sh -- --check
+        entry: bash scripts/run-rustfmt.sh check
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks|shared)/.*(Cargo\.toml|\.rs)|scripts/run-rustfmt-owned\.sh)$
+        files: ^(Justfile|\.pre-commit-config\.yaml|rust-toolchain\.toml|\.cargo/config\.toml|scripts/(cargow|quanta-index-env\.sh|run-rustfmt\.sh|rust-workspaces\.sh)|Cargo\.toml|Cargo\.lock|(crates|benchmarks|shared)/.*(Cargo\.toml|Cargo\.lock|\.rs)|tools/(ci/(ciborium-no-default-consumer|tree-sitter-registry-consumer)|lance-upstream-oracle|sqlite-upstream-oracle|testing/catalog-checked-close)/.*(Cargo\.toml|Cargo\.lock|\.rs))$
         stages: [pre-commit]
 
       - id: cargo-check
         name: cargo check locked
-        entry: ./scripts/cargow check --workspace --all-targets --all-features --locked
+        entry: just rust-check
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
+        files: &workspace_cargo_inputs ^(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.cargo/config\.toml|scripts/(cargow|quanta-index-env\.sh)|(crates|benchmarks|shared)/.*(Cargo\.(toml|lock)|\.rs))$
         stages: [pre-commit]
 
       - id: cargo-clippy-strict
         name: cargo clippy strict
-        entry: ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
+        entry: just rust-clippy
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|clippy\.toml|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
+        files: ^(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.cargo/config\.toml|clippy\.toml|scripts/(cargow|quanta-index-env\.sh)|(crates|benchmarks|shared)/.*(Cargo\.(toml|lock)|\.rs))$
         stages: [pre-push]
 
       - id: cargo-test
         name: cargo test
-        entry: ./scripts/cargow test --workspace --all-features --locked
+        entry: just rust-test
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
+        files: *workspace_cargo_inputs
         stages: [pre-push]
 
       - id: cargo-doc
         name: cargo doc warnings
-        entry: bash -lc 'RUSTDOCFLAGS="-D warnings" ./scripts/cargow doc --workspace --all-features --no-deps --locked'
+        entry: just rust-doc
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
+        files: *workspace_cargo_inputs
+        stages: [pre-push]
+
+      - id: pre-commit-deletions
+        name: repository checks for deleted inputs
+        entry: uv run --frozen --extra dev python tools/ci/run-hooks-on-deletions.py pre-commit
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+      - id: pre-push-deletions
+        name: repository checks for deleted push inputs
+        entry: uv run --frozen --extra dev python tools/ci/run-hooks-on-deletions.py pre-push
+        language: system
+        pass_filenames: false
+        always_run: true
         stages: [pre-push]
 
       - id: workspace-lints
         name: workspace lints inheritance
-        entry: python3 scripts/check_workspace_lints.py
+        entry: uv run --frozen --extra dev python scripts/check_workspace_lints.py
         language: system
         pass_filenames: false
         files: ^(Cargo\.toml|.*\.rs|.*/Cargo\.toml|scripts/check_workspace_lints\.py|tools/ci/tests/test_check_workspace_lints\.py)$
@@ -126,23 +151,31 @@ repos:
 
       - id: hexagonal-boundaries
         name: hexagonal domain boundaries
-        entry: python3 tools/ci/lint/lint-hexagonal-boundaries.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/lint-hexagonal-boundaries.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|crates/.*/(Cargo\.toml|src/.*\.rs)|tools/ci/lint/(lint-hexagonal-boundaries|check-module-cycles)\.py|tools/ci/tests/test_lint_hexagonal_boundaries\.py)$
+        files: ^(Cargo\.toml|crates/.*/(Cargo\.toml|src/.*\.rs)|shared/.*/Cargo\.toml|tools/ci/lint/(lint-hexagonal-boundaries|check-module-cycles)\.py|tools/ci/tests/test_lint_hexagonal_boundaries\.py)$
         stages: [pre-commit, pre-push]
+
+      - id: rust-read-view-ambient
+        name: rust read-view authority
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-read-view-ambient-lookup.py
+        language: system
+        pass_filenames: false
+        files: ^(crates/[^/]+/src/.*\.rs|tools/ci/lint/check-read-view-ambient-lookup\.py|tools/ci/tests/test_check_read_view_ambient_lookup\.py)$
+        stages: [pre-push]
 
       - id: rust-no-allow
         name: rust no allow attributes
-        entry: bash scripts/check-rust-allow-attributes.sh
+        entry: uv run --frozen --extra dev bash scripts/check-rust-allow-attributes.sh
         language: system
         pass_filenames: false
-        files: ^((crates|benchmarks)/.*\.rs|scripts/check-rust-allow-attributes\.sh|tools/ci/lint/(check-rust-allow-attributes|rust_attribute_policy)\.py|tools/ci/tests/test_check_rust_allow_attributes\.py)$
+        files: ^(Cargo\.toml|(crates|benchmarks|shared)/.*\.rs|scripts/check-rust-allow-attributes\.sh|tools/ci/lint/(check-rust-allow-attributes|rust_attribute_policy)\.py|tools/ci/tests/test_check_rust_allow_attributes\.py)$
         stages: [pre-push]
 
       - id: rust-derive-allowlist
         name: rust derive allowlist
-        entry: python3 tools/ci/lint/check-rust-derive-allowlist.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-rust-derive-allowlist.py
         language: system
         pass_filenames: false
         files: ^((crates|benchmarks|shared)/.*\.rs|tools/ci/lint/(check-rust-derive-allowlist|rust_attribute_policy)\.py|tools/ci/tests/test_lint_derive_allowlist\.py)$
@@ -150,26 +183,26 @@ repos:
 
       - id: rust-cargo-toml-hygiene
         name: rust cargo.toml hygiene
-        entry: python3 tools/ci/lint/check-cargo-toml-hygiene.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-cargo-toml-hygiene.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|(crates|benchmarks)/.*/Cargo\.toml|tools/ci/lint/check-cargo-toml-hygiene\.py|tools/ci/tests/test_check_cargo_toml_hygiene\.py)$
+        files: ^(Cargo\.toml|(crates|benchmarks|shared|vendor)/.*/Cargo\.toml|tools/ci/lint/check-cargo-toml-hygiene\.py|tools/ci/tests/test_check_cargo_toml_hygiene\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-module-discipline
         name: rust module discipline (mod.rs + contract lib.rs facade-only)
-        entry: python3 tools/ci/lint/check-module-discipline.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-module-discipline.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|crates/.*/(src|tests)/.*\.rs|tools/ci/lint/check-module-discipline\.py|tools/ci/tests/test_check_module_discipline\.py)$
+        files: ^(Cargo\.toml|(crates|benchmarks|shared|vendor)/.*/(Cargo\.toml|(src|tests)/.*\.rs)|tools/ci/lint/check-module-discipline\.py|tools/ci/tests/test_check_module_discipline\.py)$
         stages: [pre-push]
 
       - id: rust-module-cycles
         name: rust module cycles (every crate's module graph points one way)
-        entry: python3 tools/ci/lint/check-module-cycles.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-module-cycles.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|crates/.*/src/.*\.rs|tools/ci/lint/(check-module-cycles\.py|baselines/module-cycles\.txt)|tools/ci/tests/test_check_module_cycles\.py)$
+        files: ^(Cargo\.toml|(crates|benchmarks|shared|vendor)/.*/(Cargo\.toml|(src|tests)/.*\.rs)|tools/ci/lint/(check-module-cycles\.py|baselines/module-cycles\.txt)|tools/ci/tests/test_check_module_cycles\.py)$
         stages: [pre-push]
 
       - id: dsl-capability-truth
@@ -181,24 +214,34 @@ repos:
         stages: [pre-push]
 
       - id: rust-error-shape
-        name: rust error shape (pub *Error must implement std::error::Error)
-        entry: python3 tools/ci/lint/check-error-shape.py
+        name: first-party Rust error shape
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-error-shape.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|crates/.*/src/.*\.rs|tools/ci/lint/check-error-shape\.py|tools/ci/tests/test_check_error_shape\.py)$
+        files: ^(Cargo\.toml|(crates|benchmarks|shared)/.*/src/.*\.rs|tools/ci/lint/check-error-shape\.py|tools/ci/tests/test_check_error_shape\.py)$
         stages: [pre-push]
 
       - id: rust-wire-inventory
         name: wire-surface inventory (IPC opcodes + on-disk format versions)
-        entry: python3 tools/ci/lint/check-wire-inventory.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-wire-inventory.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|tools/ci/inventory/wire-surface\.toml|crates/.*/src/.*\.rs|tools/ci/(proof-authority\.toml|(?:(proof-manifest|proof-aggregate|error-authority-inventory|verification-receipt)\.schema\.json)|lint/check-wire-inventory\.py|tests/(test_check_wire_inventory|test_check_proof_authority|test_write_proof_aggregate|test_write_error_authority_inventory)\.py))$
+        # Deleting a wire definition drops its path from pre-commit's file list.
+        always_run: true
+        stages: [pre-push]
+
+      - id: rust-error-code-table
+        name: closed search-plane error-code table
+        entry: just rust-error-code-table
+        language: system
+        pass_filenames: false
+        # A deleted enum or table file must still run the whole-repo check.
+        always_run: true
         stages: [pre-push]
 
       - id: proof-authority
         name: proof authority registry and manifest schema lint
-        entry: python3 tools/ci/lint/check-proof-authority.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-proof-authority.py
         language: system
         pass_filenames: false
         always_run: true
@@ -210,20 +253,30 @@ repos:
         entry: uv run --frozen --extra dev python tools/ci/lint/check-test-authority.py
         language: system
         pass_filenames: false
-        files: ^(\.circleci/config\.yml|tools/ci/(test-authority\.toml|lint/check-test-authority\.py|tests/.*\.py)|(?:crates|benchmarks)/.*/tests/.*\.rs|crates/.*/fuzz/(Cargo\.toml|fuzz_targets/.*\.rs))$
+        # The registry must detect deletions, which pre-commit drops from its file list.
+        always_run: true
         stages: [pre-commit, pre-push]
+
+      - id: rust-ignored-test-policy
+        name: rust ignored-test policy
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-ignored-test-policy.py
+        language: system
+        pass_filenames: false
+        # A deleted test leaves no matching path but can leave an exception behind.
+        always_run: true
+        stages: [pre-push]
 
       - id: rust-digest-fallibility
         name: rust digest fallibility
-        entry: python3 tools/ci/lint/check-digest-fallibility.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-digest-fallibility.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|crates/.*\.rs|tools/ci/lint/check-digest-fallibility\.py|tools/ci/tests/test_check_digest_fallibility\.py)$
+        files: ^(Cargo\.toml|(crates|benchmarks|shared|vendor)/.*\.rs|tools/ci/lint/check-digest-fallibility\.py|tools/ci/tests/test_check_digest_fallibility\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-semantic-outcomes
         name: Rust semantic outcome honesty
-        entry: python3 tools/ci/lint/check-semantic-outcomes.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-semantic-outcomes.py
         language: system
         pass_filenames: false
         files: ^(crates/.*\.rs|benchmarks/.*\.rs|tools/ci/lint/(check-semantic-outcomes\.py|semantic-outcome-policy\.json)|tools/ci/tests/test_check_semantic_outcomes\.py)$
@@ -231,7 +284,7 @@ repos:
 
       - id: rust-fallbacks
         name: Rust syntax and search-plane authority
-        entry: python3 tools/ci/lint/check-rust-fallbacks.py
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-rust-fallbacks.py
         language: system
         pass_filenames: false
         files: ^(crates/[^/]+/(?:src/.*|fuzz/fuzz_targets/.*)\.rs|benchmarks/[^/]+/src/.*\.rs|tools/ci/lint/(check-rust-fallbacks|rust_attribute_policy)\.py)$
@@ -239,7 +292,7 @@ repos:
 
       - id: rust-fallback-tests
         name: Rust fallback counterexamples
-        entry: python3 tools/ci/tests/test_check_rust_fallbacks.py
+        entry: uv run --frozen --extra dev python tools/ci/tests/test_check_rust_fallbacks.py
         language: system
         pass_filenames: false
         files: ^(tools/ci/lint/(check-rust-fallbacks|rust_attribute_policy)\.py|tools/ci/tests/test_check_rust_fallbacks\.py)$
@@ -247,10 +300,10 @@ repos:
 
       - id: cargo-deny
         name: cargo deny
-        entry: bash scripts/run-cargo-deny.sh
+        entry: bash scripts/run-cargo-deny.sh --all-workspaces
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|deny\.toml|crates/.*/Cargo\.toml)$
+        files: ^(Cargo\.(toml|lock)|deny\.toml|rust-toolchain\.toml|\.cargo/config\.toml|(crates|benchmarks|shared|tools)/.*/Cargo\.(toml|lock)|scripts/(run-cargo-deny|quanta-index-env|rust-workspaces)\.sh)$
         stages: [pre-push]
 
       - id: cargo-machete
@@ -258,7 +311,7 @@ repos:
         entry: cargo machete --with-metadata
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/Cargo\.toml)$
+        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks|shared)/.*/(Cargo\.toml|[^/]+\.rs))$
         stages: [pre-push]
 
       - id: cargo-bench-build
@@ -266,23 +319,67 @@ repos:
         entry: ./scripts/cargow bench --workspace --all-features --locked --no-run
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/(src|benches)/.*\.rs|crates/.*/Cargo\.toml)$
+        files: ^(Cargo\.toml|Cargo\.lock|\.cargo/config\.toml|rust-toolchain\.toml|scripts/(cargow|quanta-index-env\.sh)|(crates|benchmarks|shared)/.*/(Cargo\.toml|build\.rs|(src|benches)/.*\.rs))$
         stages: [pre-push]
 
       - id: precommit-scope-tests
         name: pre-commit scope tests
-        entry: bash -lc 'source scripts/quanta-index-env.sh && python3 -m pytest tools/ci/tests/test_precommit_scopes.py -q -o cache_dir="$PYTEST_CACHE_DIR"'
+        entry: >-
+          bash -lc 'source scripts/quanta-index-env.sh &&
+          uv run --frozen --extra dev python -m pytest tools/ci/tests/test_precommit_scopes.py
+          tools/ci/tests/test_run_actionlint.py -q -o cache_dir="$PYTEST_CACHE_DIR"'
         language: system
         pass_filenames: false
-        files: ^(\.pre-commit-config\.yaml|\.circleci/config\.yml|\.github/workflows/(ci|correctness|potion-code-parity)\.yml|Justfile|tools/ci/tests/test_precommit_scopes\.py)$
+        files: |
+          (?x)^(
+            \.pre-commit-config\.yaml|\.circleci/config\.yml|\.github/workflows/(ci|correctness|potion-code-parity)\.yml
+            |Justfile|pyproject\.toml|uv\.lock
+            |scripts/(cargow|(check-lock-freshness|quanta-index-env|run-actionlint|run-cargo-deny|run-rustfmt|run-semgrep|run-shellcheck|run-tooling-tests|rust-workspaces)\.sh)
+            |tools/ci/(run-(read-only-hook|hooks-on-deletions)|tests/test_(precommit_scopes|run_actionlint))\.py
+          )$
+        stages: [pre-push]
+
+      - id: cargow-tests
+        name: Rust build wrapper tests
+        entry: >-
+          bash -lc 'source scripts/quanta-index-env.sh &&
+          uv run --frozen --extra dev python -m pytest tools/ci/tests/test_cargow_lane_env.py
+          tools/ci/tests/test_cargow_resource_admission.py tools/ci/tests/test_resource_admission.py
+          -q -o cache_dir="$PYTEST_CACHE_DIR"'
+        language: system
+        pass_filenames: false
+        files: |
+          (?x)^(
+            pyproject\.toml|uv\.lock|scripts/(cargow|quanta-index-env\.sh)
+            |tools/(ci/resource_admission\.py|benchmark/producer_execution\.py)
+            |tools/ci/tests/test_(cargow_lane_env|cargow_resource_admission|resource_admission)\.py
+          )$
         stages: [pre-push]
 
       - id: prompt-manager-tests
         name: tooling tests
-        entry: bash scripts/run-tooling-tests.sh
+        entry: >-
+          bash scripts/run-tooling-tests.sh
+          --ignore=tools/ci/tests/test_precommit_scopes.py
+          --ignore=tools/ci/tests/test_run_actionlint.py
+          --ignore=tools/ci/tests/test_cargow_lane_env.py
+          --ignore=tools/ci/tests/test_cargow_resource_admission.py
+          --ignore=tools/ci/tests/test_resource_admission.py
         language: system
         pass_filenames: false
-        files: ^(pyproject\.toml|tools/(?!ci/(?:semgrep/|lint/check-rust-fallbacks\.py$|tests/(?:test_semgrep_|test_check_rust_fallbacks\.py$|test_precommit_scopes\.py$))).*|scripts/(?:check_workspace_lints\.py|run-tooling-tests\.sh))$
+        files: |
+          (?x)^(
+            pyproject\.toml|uv\.lock
+            |tools/(?!ci/(?:
+              semgrep/|lint/check-rust-fallbacks\.py$|run-(read-only-hook|hooks-on-deletions)\.py$
+              |resource_admission\.py$
+              |tests/(?:test_semgrep_|test_(
+                check_rust_fallbacks|precommit_scopes|run_actionlint
+                |cargow_lane_env|cargow_resource_admission|resource_admission
+              )\.py$)
+            )).*
+            |scripts/(check_workspace_lints\.py|quanta-index-env\.sh|run-tooling-tests\.sh)
+          )$
         stages: [pre-push]
 
       - id: semgrep-rule-tests
@@ -290,7 +387,7 @@ repos:
         entry: bash scripts/check-semgrep-rules.sh
         language: system
         pass_filenames: false
-        files: ^(tools/ci/semgrep/.*|tools/ci/tests/test_semgrep_.*\.py|scripts/check-semgrep-rules\.sh)$
+        files: ^(\.semgrepignore|tools/ci/semgrep/.*|tools/ci/tests/test_semgrep_.*\.py|scripts/check-semgrep-rules\.sh)$
         stages: [pre-push]
 
       - id: semgrep
@@ -298,5 +395,5 @@ repos:
         entry: bash scripts/run-semgrep.sh
         language: system
         pass_filenames: true
-        files: ^(crates/quanta-index-searchd/src/.*\.rs|\.github/workflows/[^/]+\.ya?ml|tools/ci/semgrep/.*|scripts/run-semgrep\.sh|\.semgrepignore)$
+        files: ^(\.github/workflows/[^/]+\.ya?ml|tools/ci/semgrep/.*|scripts/run-semgrep\.sh|\.semgrepignore)$
         stages: [pre-push]

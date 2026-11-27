@@ -54,7 +54,6 @@ pub(super) fn prepare_page(
 ) -> Result<quanta_index_contract::index::Digest, NativeUdsError> {
     if expected.state != NativeReadSessionState::Active
         || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&query.top_k)
-        || query.syntax == quanta_index_contract::TextQuerySyntax::CodeSearch
         || query.generation.is_some()
         || query.generation_selector.is_some()
         || query.cursor.is_some()
@@ -153,7 +152,7 @@ pub(super) fn validate_page_with_memory(
         .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
     let mut prior = after.map(|cursor| (cursor.score, cursor.owner));
     for hit in &page.hits {
-        if !super::super::valid_native_source_path(&hit.path)
+        if !super::super::is_canonical_source_path(&hit.path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()

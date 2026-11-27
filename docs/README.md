@@ -18,7 +18,7 @@ acceptance. Historical tests, counts and status do not qualify current source.
 | Implemented architecture / open proposals | [ADR registry](adr/README.md) |
 | Current source entry points and typed limits | [Engine source map](ssot/engine-status-v1.md), [crate ownership](ssot/crate-ownership.md) |
 | Historical RFC/tickets and accepted contracts | [Recovery index](ARCHIVE-INDEX.md#historical-record-recovery) and [ADRs](adr/README.md) |
-| Test/CI/platform, semantic, installed/pair/actions | [Current acceptance work](plans/oct-22-finalizing/E08-integration-release.md); prior [test/platform](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#affected-checks), [semantic](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#semantic-compatibility), [release/proof](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer) results |
+| Test/CI/platform, semantic, installed/pair/actions | [Current acceptance work](plans/oct-22-finalizing/E08-integration-release.md) and [original execution records](ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages) |
 
 The Oct-22 epic index owns full-product scope. Its Native indexing performance RCA
 and new code packets are delegated to the Nov-5 bugbash SSOT. Epic documents hold fixed contracts;
@@ -44,11 +44,7 @@ conditional designs; their age or presence does not authorize implementation.
 
 ## History
 
-[One recovery index](ARCHIVE-INDEX.md#historical-record-recovery) records pre-edit/deletion revisions and
-recovery commands for documents and tickets. Historical bodies
-remain recoverable. The Native RFC keeps its
-[fixed requirement inventory](rfc/oct-10-native-incremental-vnext.md#23-fixed-full-product-implementation-and-acceptance-ledger);
-its dated progress tables and execution checkpoints are preserved as
-[section 23 history](history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md) and
-[implementation history](history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md). See
-[documentation custody](adr/SEP-27-001-documentation-authority-and-historical-record-custody.md).
+The [recovery index](ARCHIVE-INDEX.md#historical-record-recovery) records exact
+preimages and recovery commands, including the [October RFC checkpoints](ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
+Use the Native RFC's [fixed requirement inventory](rfc/oct-10-native-incremental-vnext.md#23-fixed-full-product-implementation-and-acceptance-ledger)
+and the [documentation custody ADR](adr/SEP-27-001-documentation-authority-and-historical-record-custody.md).

@@ -1677,6 +1677,12 @@ pub(super) fn drain(
     budget.checkpoint()?;
     tx.commit().map_err(|error| sql(&error))?;
     drop(guard);
+    // Freed children can sort below the pump's forward cursor; demand makes
+    // the next reclaim round sweep from the head instead of waiting for the
+    // periodic head probe.
+    if enqueued > 0 {
+        catalog.record_reclaim_demand();
+    }
     Ok(ReclaimDrainPage {
         released_children: u32::try_from(edges.len())
             .map_err(|_error| IndexError::ResourceLimited)?,

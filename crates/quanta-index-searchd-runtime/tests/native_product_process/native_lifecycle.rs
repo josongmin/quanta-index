@@ -11,7 +11,7 @@ use quanta_index_searchd_harness::native_index::NativeSession;
 use super::{TestResult, budget, config, require, workspace};
 
 fn product_binary() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+    Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
 }
 
 fn start_owned() -> TestResult<NativeSession> {

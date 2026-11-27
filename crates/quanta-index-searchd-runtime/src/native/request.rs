@@ -4,15 +4,15 @@ use std::time::Duration;
 
 use quanta_index_contract::{
     TextQueryRequest,
-    index::{Digest, IndexInstanceId, ViewSelection},
+    index::{Digest, IndexInstanceId, IngressRef, ObjectRef, ViewRef, ViewSelection},
     native_protocol::{
         NativeCandidateInstallationV1, NativeIndexRequest, NativeIndexResponse,
-        NativeProjectionRead, NativeRootScopedViewV1,
+        NativeInitialHistoryCutV1, NativeProjectionRead, NativeRootScopedViewV1,
     },
 };
 use quanta_index_core::index::{
-    IndexError, WorkBudget, owner_map_key,
-    ports::{OperationInspectAccess, PersistentMapPort},
+    IndexError, MemoryLease, WorkBudget, owner_map_key,
+    ports::{ImmutableObjectPort, OperationInspectAccess, PersistentMapPort},
 };
 
 use super::{NativeDispatcher, native_text_result, plan_native_projected_text};
@@ -23,6 +23,49 @@ const MAX_STAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STAGE_PATH_BYTES: usize = quanta_index_core::index::MAX_SOURCE_PATH_BYTES;
 
 impl NativeDispatcher {
+    fn preview_initial_history_cut_v1(
+        &self,
+        ingress: IngressRef,
+        expected_view: ViewRef,
+        input: ObjectRef,
+        profile: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(NativeInitialHistoryCutV1, Option<MemoryLease>), IndexError> {
+        if ingress.operation.workspace != expected_view.workspace
+            || ingress.operation.epoch != expected_view.epoch
+        {
+            return Err(IndexError::InvalidInput(
+                "initial History preview differs from ingress Source scope".into(),
+            ));
+        }
+        self.catalog.require_confirmed_initial_history_input_v1(
+            ingress,
+            input,
+            profile,
+            expected_view,
+            budget,
+        )?;
+        let instance =
+            self.kernel
+                .first_native_history_profile_instance_v1(expected_view, profile, budget)?;
+        self.with_read_view(ViewSelection::Exact(expected_view), budget, |view, budget| {
+            if view.identity != expected_view {
+                return Err(IndexError::DigestConflict);
+            }
+            let next_sequence = view.identity.sequence.checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            let stored = self.objects.get(input, budget)?;
+            let (cut, memory) = quanta_index_search_plane::native_history::preview_native_history_initial_cut_v1(
+                input, &stored, ingress.operation, next_sequence,
+                |reference, budget| self.objects.get(reference, budget), budget,
+            )?;
+            self.catalog.require_confirmed_initial_history_input_v1(
+                ingress, input, profile, expected_view, budget,
+            )?;
+            Ok((NativeInitialHistoryCutV1 { instance, cut }, memory))
+        })
+    }
+
     fn observe_held_root_identity(
         &self,
         budget: &mut WorkBudget,
@@ -224,6 +267,11 @@ impl NativeDispatcher {
                 repo_id,
                 revision_id,
             } => self.resolve_protected_source_head_v1(&repo_id, &revision_id, budget),
+            NativeIndexRequest::ResolveProtectedSourceViewV1 {
+                repo_id,
+                revision_id,
+                view,
+            } => self.resolve_protected_source_view_v1(&repo_id, &revision_id, view, budget),
             NativeIndexRequest::CreateWorkspace { workspace, epoch } => self
                 .kernel
                 .create_workspace(workspace, epoch, budget)
@@ -263,6 +311,24 @@ impl NativeDispatcher {
             NativeIndexRequest::StageProfile { ingress, profile } => {
                 let reference = self.kernel.stage_profile(ingress, &profile, budget)?;
                 Ok(NativeIndexResponse::Staged(reference))
+            }
+            NativeIndexRequest::PreviewInitialHistoryCutV1 {
+                ingress,
+                expected_view,
+                input,
+                profile,
+            } => {
+                let (preview, memory) = self.preview_initial_history_cut_v1(
+                    ingress,
+                    expected_view,
+                    input,
+                    profile,
+                    budget,
+                )?;
+                return Ok(reply_slot.finish_with_extra_memory(
+                    NativeIndexResponse::InitialHistoryCutV1(preview),
+                    memory,
+                ));
             }
             NativeIndexRequest::StageProjectionOutput {
                 ingress,
@@ -307,6 +373,14 @@ impl NativeDispatcher {
                 )?;
                 Ok(NativeIndexResponse::Staged(reference))
             }
+            NativeIndexRequest::ReadSealedDslV1(replay) => self
+                .kernel
+                .read_sealed_dsl_request_v1(replay, budget)
+                .map(NativeIndexResponse::SealedDslRequestV1),
+            NativeIndexRequest::SealStagedDslRequestV1 { ingress, request } => self
+                .kernel
+                .seal_staged_dsl_request_v1(ingress, &request, budget)
+                .map(NativeIndexResponse::Staged),
             NativeIndexRequest::StageProjectionOwner {
                 ingress,
                 contribution,
@@ -435,6 +509,7 @@ impl NativeDispatcher {
             | NativeIndexRequest::SearchLiteral { .. }
             | NativeIndexRequest::QueryPaths { .. }
             | NativeIndexRequest::QueryRepositoryPaths { .. }
+            | NativeIndexRequest::TextMatches(_)
             | NativeIndexRequest::SearchOverlayText(_)
             | NativeIndexRequest::ReadSession(_)
             | NativeIndexRequest::SearchText { .. }
@@ -444,8 +519,10 @@ impl NativeDispatcher {
                 "native query bypassed selected reader admission".into(),
             )),
             NativeIndexRequest::Submit(_)
+            | NativeIndexRequest::SubmitStagedSourceV1 { .. }
             | NativeIndexRequest::Resume(_)
-            | NativeIndexRequest::ReplayDslV1(_) => Err(IndexError::BackendViolation(
+            | NativeIndexRequest::ReplayDslV1(_)
+            | NativeIndexRequest::SubmitSealedDslV1(_) => Err(IndexError::BackendViolation(
                 "async native operation routed to sync path".into(),
             )),
             NativeIndexRequest::PublishedViewMetadata(key) => self
@@ -467,6 +544,17 @@ impl NativeDispatcher {
                         operation: key,
                         payload,
                     })
+                }),
+            NativeIndexRequest::OperationRequestIdentityV1(key) => self
+                .kernel
+                .operation_request_identity_v1(key, budget)
+                .map(|payload| {
+                    NativeIndexResponse::OperationRequestIdentityV1(
+                        quanta_index_core::index::OperationReply {
+                            operation: key,
+                            payload,
+                        },
+                    )
                 }),
             NativeIndexRequest::ReadProjection {
                 selection,

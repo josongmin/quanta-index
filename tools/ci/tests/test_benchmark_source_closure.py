@@ -155,12 +155,10 @@ def test_native_release_approval_is_bound_by_retrieval_closure() -> None:
     } <= imports
 
 
-def test_retrieval_closure_binds_the_resolved_typescript_grammar() -> None:
+def test_retrieval_closure_uses_registry_typescript_without_local_source() -> None:
     module = _closure_module()
-    # A producer-side hash of an unused vendor directory is insufficient. The
-    # actual Cargo dependency graph must select and bind those source files.
     roots = module._cargo_roots(REPO_ROOT, ("quanta-index-retrieval-bench",))
-    assert "vendor/tree-sitter-typescript" in roots
+    assert "vendor/tree-sitter-typescript" not in roots
 
 
 def test_local_patch_below_registry_dependency_remains_in_source_closure(tmp_path, monkeypatch):

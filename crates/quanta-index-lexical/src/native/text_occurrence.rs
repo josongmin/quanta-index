@@ -25,8 +25,68 @@ use positions::{MAX_POSITIONS_PER_TERM, Occurrence, Positions};
 /// block reference has a distinct count for every canonical term selector.
 pub(super) struct OccurrenceReader {
     blocks: PreparedRows<block::CheckedBlock>,
+    posting_leaves: Option<PostingLeafWindow>,
     capacity: usize,
     next: usize,
+}
+
+const POSTING_LEAF_WINDOW: usize = 8;
+const POSTING_LEAF_MAX_BYTES: usize = 256;
+
+/// Query-local physical reuse for tiny scalar leaves. Retained DATA retains
+/// its original object grant; the separate lease covers only the ring slots.
+struct PostingLeafWindow {
+    entries: Vec<StoredObject>,
+    next: usize,
+    _memory: MemoryLease,
+}
+
+impl PostingLeafWindow {
+    fn try_new(budget: &WorkBudget) -> Result<Option<Self>, IndexError> {
+        let bytes = POSTING_LEAF_WINDOW
+            .checked_mul(std::mem::size_of::<StoredObject>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let Some(memory) = budget.try_reserve_spare_memory(bytes, MemoryLifetime::Temporary)?
+        else {
+            return Ok(None);
+        };
+        let mut entries = Vec::new();
+        if entries.try_reserve_exact(POSTING_LEAF_WINDOW).is_err()
+            || entries.capacity() > POSTING_LEAF_WINDOW
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            entries,
+            next: 0,
+            _memory: memory,
+        }))
+    }
+
+    fn get(&self, reference: ObjectRef) -> Option<&StoredObject> {
+        self.entries
+            .iter()
+            .find(|object| object.registration.reference == reference)
+    }
+
+    fn admit(&mut self, object: StoredObject) -> Result<(), IndexError> {
+        if self.entries.len() < POSTING_LEAF_WINDOW {
+            self.entries.push(object);
+        } else {
+            let entry = self
+                .entries
+                .get_mut(self.next)
+                .ok_or(IndexError::ResourceLimited)?;
+            *entry = object;
+            self.next = self
+                .next
+                .checked_add(1)
+                .and_then(|next| next.checked_rem(POSTING_LEAF_WINDOW))
+                .ok_or(IndexError::ResourceLimited)?;
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct OccurrenceCount {
@@ -43,6 +103,7 @@ impl OccurrenceReader {
         }
         Ok(Self {
             blocks: PreparedRows::new(capacity)?,
+            posting_leaves: None,
             capacity,
             next: 0,
         })
@@ -203,6 +264,77 @@ impl OccurrenceReader {
                 value: stored_leaf_count(&stored, reference, budget)?,
                 leaf: true,
             }),
+        }
+    }
+
+    /// Frequency-only Tree query path. Every replay crosses the object port's
+    /// retained-read boundary and revalidates the complete scalar payload.
+    /// Build/direct callers continue to use `count` and its original read path.
+    pub(super) fn count_for_posting(
+        &mut self,
+        reference: ObjectRef,
+        term: &[u8],
+        objects: &dyn ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<OccurrenceCount, IndexError> {
+        check_term_key(term)?;
+        if let Some(cached) = self.retained_posting_leaf(reference) {
+            let retained = objects.read_retained(cached, budget)?;
+            budget.checkpoint()?;
+            if retained != *cached {
+                return Err(IndexError::CorruptObject(
+                    "retained text leaf differs from authenticated DATA".into(),
+                ));
+            }
+            return Ok(OccurrenceCount {
+                value: stored_leaf_count(&retained, reference, budget)?,
+                leaf: true,
+            });
+        }
+        match self.block(reference, objects, budget)? {
+            Ok(block) => Ok(OccurrenceCount {
+                value: block.position_count(term, budget)?,
+                leaf: false,
+            }),
+            Err(stored) => {
+                let value = stored_leaf_count(&stored, reference, budget)?;
+                if self.capacity != 0 && stored.payload.len() <= POSTING_LEAF_MAX_BYTES {
+                    if self.posting_leaves.is_none() {
+                        self.posting_leaves = PostingLeafWindow::try_new(budget)?;
+                    }
+                    if let Some(window) = self.posting_leaves.as_mut() {
+                        window.admit(stored)?;
+                    }
+                }
+                Ok(OccurrenceCount { value, leaf: true })
+            }
+        }
+    }
+
+    pub(super) fn retained_posting_leaf(&self, reference: ObjectRef) -> Option<&StoredObject> {
+        if self.capacity == 0 {
+            return None;
+        }
+        self.posting_leaves
+            .as_ref()
+            .and_then(|window| window.get(reference))
+    }
+
+    /// Count a packed inventory selection without materializing positions.
+    /// Keep the same persisted-shape refusal as `load_packed`.
+    pub(super) fn count_packed(
+        &mut self,
+        reference: ObjectRef,
+        term: &[u8],
+        objects: &dyn ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<u64, IndexError> {
+        check_term_key(term)?;
+        match self.block(reference, objects, budget)? {
+            Ok(block) => block.position_count(term, budget),
+            Err(_stored) => Err(IndexError::CorruptObject(
+                "packed inventory references scalar occurrence".into(),
+            )),
         }
     }
 

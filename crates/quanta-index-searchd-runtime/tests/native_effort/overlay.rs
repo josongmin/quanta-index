@@ -28,28 +28,34 @@ fn configure_overlay_service(service: &NativeIndexService) -> TestResult {
     Ok(())
 }
 
-fn begin_overlay(client: &NativeUdsClient) -> TestResult<NativeOverlaySession> {
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+/// Begin a renewed foreground publisher and its first overlay session.
+fn begin_overlay(
+    client: &NativeUdsClient,
+) -> TestResult<(LivePublisher<'_>, NativeOverlaySession)> {
+    let live = LivePublisher::begin(client, Duration::from_secs(30))?;
     let session = NativeOverlaySession {
         workspace: workspace(),
-        publisher,
+        publisher: live.id(),
         epoch: 1,
     };
     assert_eq!(
         client.overlay(NativeOverlayRequest::Begin { session }, &budget())?,
         NativeOverlayReply::Begun(session)
     );
-    Ok(session)
+    Ok((live, session))
 }
 
 fn update_document(
     client: &NativeUdsClient,
+    live: &LivePublisher<'_>,
     document: NativeOverlayDocument,
     previous: Option<u64>,
     revision: u64,
     text: Option<&str>,
     path: Option<&str>,
+    repository_witness: Option<OwnerKey>,
 ) -> TestResult {
+    live.renew()?;
     assert_eq!(
         client.update_overlay_at_path(
             document,
@@ -57,6 +63,7 @@ fn update_document(
             revision,
             text.map(str::to_owned),
             path.map(str::to_owned),
+            repository_witness,
             &budget(),
         )?,
         NativeOverlayReply::Updated { document, revision }
@@ -81,12 +88,14 @@ fn overlay_stream_query(
 
 fn query_overlay_stream(
     client: &NativeUdsClient,
+    live: &LivePublisher<'_>,
     query: NativeEffortStreamQuery,
 ) -> TestResult<(
     NativeOverlayTextResult,
     NativeOverlaySemanticResult,
     NativeEffortDone,
 )> {
+    live.renew()?;
     let mut fast = None;
     let mut deep = None;
     let done = client.query_effort_stream(query, &budget(), &mut |stage| {
@@ -126,7 +135,7 @@ fn uds_overlay_unquoted_multi_token_keyword_matches_quoted_phrase() -> TestResul
     let running = RunningService::start(service);
     let client = NativeUdsClient::new(socket);
     let (selected, durable_source) = setup(&client, semantic)?;
-    let session = begin_overlay(&client)?;
+    let (live, session) = begin_overlay(&client)?;
     let tombstone = NativeOverlayDocument {
         session,
         owner: owner(),
@@ -149,13 +158,41 @@ fn uds_overlay_unquoted_multi_token_keyword_matches_quoted_phrase() -> TestResul
             ..owner()
         },
     };
-    update_document(&client, tombstone, None, 1, None, None)?;
-    update_document(&client, target, None, 1, Some("row-0"), Some("b.rs"))?;
-    update_document(&client, other, None, 1, Some("row-1"), Some("c.rs"))?;
-    update_document(&client, gap, None, 1, Some("row gap 0"), Some("d.rs"))?;
+    update_document(&client, &live, tombstone, None, 1, None, None, None)?;
+    update_document(
+        &client,
+        &live,
+        target,
+        None,
+        1,
+        Some("row-0"),
+        Some("b.rs"),
+        Some(owner()),
+    )?;
+    update_document(
+        &client,
+        &live,
+        other,
+        None,
+        1,
+        Some("row-1"),
+        Some("c.rs"),
+        Some(owner()),
+    )?;
+    update_document(
+        &client,
+        &live,
+        gap,
+        None,
+        1,
+        Some("row gap 0"),
+        Some("d.rs"),
+        Some(owner()),
+    )?;
 
     let (keyword_fast, keyword_deep, keyword_done) = query_overlay_stream(
         &client,
+        &live,
         overlay_stream_query(selected, session, "row-0", None),
     )?;
     assert_eq!(keyword_fast.view, selected);
@@ -184,6 +221,7 @@ fn uds_overlay_unquoted_multi_token_keyword_matches_quoted_phrase() -> TestResul
 
     let (phrase_fast, phrase_deep, phrase_done) = query_overlay_stream(
         &client,
+        &live,
         overlay_stream_query(
             selected,
             session,
@@ -203,6 +241,7 @@ fn uds_overlay_unquoted_multi_token_keyword_matches_quoted_phrase() -> TestResul
     ] {
         let (fast, deep, done) = query_overlay_stream(
             &client,
+            &live,
             overlay_stream_query(selected, session, query, Some(keyword_fast.corpus.identity)),
         )?;
         assert_eq!(fast.view, selected);
@@ -221,6 +260,7 @@ fn uds_overlay_unquoted_multi_token_keyword_matches_quoted_phrase() -> TestResul
             assert!(fast.hits.is_empty());
         }
     }
+    live.renew()?;
     assert_eq!(
         client.overlay(NativeOverlayRequest::Close { session }, &budget())?,
         NativeOverlayReply::Closed(session)
@@ -240,7 +280,7 @@ fn uds_overlay_effort_replaces_adds_and_deletes_on_one_selected_view() -> TestRe
     let running = RunningService::start(service);
     let client = NativeUdsClient::new(socket);
     let (selected, original_source) = setup(&client, semantic)?;
-    let session = begin_overlay(&client)?;
+    let (live, session) = begin_overlay(&client)?;
     let old = NativeOverlayDocument {
         session,
         owner: owner(),
@@ -249,11 +289,30 @@ fn uds_overlay_effort_replaces_adds_and_deletes_on_one_selected_view() -> TestRe
         session,
         owner: second_owner(),
     };
-    update_document(&client, old, None, 1, Some("beta"), Some("a.rs"))?;
-    update_document(&client, added, None, 1, Some("alpha"), Some("b.rs"))?;
+    update_document(
+        &client,
+        &live,
+        old,
+        None,
+        1,
+        Some("beta"),
+        Some("a.rs"),
+        None,
+    )?;
+    update_document(
+        &client,
+        &live,
+        added,
+        None,
+        1,
+        Some("alpha"),
+        Some("b.rs"),
+        Some(owner()),
+    )?;
 
     let (fast, deep, done) = query_overlay_stream(
         &client,
+        &live,
         overlay_stream_query(selected, session, "alpha", None),
     )?;
     assert_eq!(fast.view, selected);
@@ -279,6 +338,7 @@ fn uds_overlay_effort_replaces_adds_and_deletes_on_one_selected_view() -> TestRe
 
     let (beta_fast, beta_deep, beta_done) = query_overlay_stream(
         &client,
+        &live,
         overlay_stream_query(selected, session, "beta", Some(fast.corpus.identity)),
     )?;
     assert_eq!(beta_fast.corpus, fast.corpus);
@@ -288,9 +348,10 @@ fn uds_overlay_effort_replaces_adds_and_deletes_on_one_selected_view() -> TestRe
         hit.owner == old.owner && hit.source == NativeOverlayTextSource::Overlay { revision: 1 }
     }));
 
-    update_document(&client, old, Some(1), 2, None, None)?;
+    update_document(&client, &live, old, Some(1), 2, None, None, None)?;
     let (deleted_fast, deleted_deep, deleted_done) = query_overlay_stream(
         &client,
+        &live,
         overlay_stream_query(selected, session, "alpha", None),
     )?;
     assert_eq!(deleted_fast.view, selected);
@@ -309,6 +370,7 @@ fn uds_overlay_effort_replaces_adds_and_deletes_on_one_selected_view() -> TestRe
             .is_some_and(|hit| hit.owner == added.owner)
     );
     assert!(!deleted_deep.hits.iter().any(|hit| hit.owner == old.owner));
+    live.renew()?;
     assert_eq!(
         client.overlay(NativeOverlayRequest::Close { session }, &budget())?,
         NativeOverlayReply::Closed(session)
@@ -318,9 +380,7 @@ fn uds_overlay_effort_replaces_adds_and_deletes_on_one_selected_view() -> TestRe
         &budget(),
         &mut |_stage| Ok(()),
     );
-    assert!(
-        matches!(closed, Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict)
-    );
+    live.refused(closed, NativeIndexErrorCode::Conflict)?;
     running.stop()?;
     Ok(())
 }
@@ -336,7 +396,7 @@ fn uds_overlay_lexical_scope_limits_deep_to_fast_or_distinct_text_universe() -> 
     let running = RunningService::start(service);
     let client = NativeUdsClient::new(socket);
     let (selected, _) = setup(&client, semantic)?;
-    let session = begin_overlay(&client)?;
+    let (live, session) = begin_overlay(&client)?;
     let replaced = NativeOverlayDocument {
         session,
         owner: owner(),
@@ -345,8 +405,26 @@ fn uds_overlay_lexical_scope_limits_deep_to_fast_or_distinct_text_universe() -> 
         session,
         owner: second_owner(),
     };
-    update_document(&client, replaced, None, 1, Some("beta"), Some("a.rs"))?;
-    update_document(&client, added, None, 1, Some("alpha"), Some("b.rs"))?;
+    update_document(
+        &client,
+        &live,
+        replaced,
+        None,
+        1,
+        Some("beta"),
+        Some("a.rs"),
+        None,
+    )?;
+    update_document(
+        &client,
+        &live,
+        added,
+        None,
+        1,
+        Some("alpha"),
+        Some("b.rs"),
+        Some(owner()),
+    )?;
 
     // A beta semantic vector prefers the replaced owner without lexical
     // eligibility. The alpha Fast universe contains only the added owner.
@@ -354,7 +432,7 @@ fn uds_overlay_lexical_scope_limits_deep_to_fast_or_distinct_text_universe() -> 
     same.semantic_query.query_text = "beta".into();
     same.semantic_query.lexical_scope = Some(same.text_query.clone());
     let calls_before = calls.load(Ordering::SeqCst);
-    let (same_fast, same_deep, same_done) = query_overlay_stream(&client, same)?;
+    let (same_fast, same_deep, same_done) = query_overlay_stream(&client, &live, same)?;
     assert_eq!(same_fast.matched, 1);
     assert!(same_fast.hits.iter().all(|hit| hit.owner == added.owner));
     assert_eq!(same_deep.corpus, same_fast.corpus);
@@ -377,7 +455,8 @@ fn uds_overlay_lexical_scope_limits_deep_to_fast_or_distinct_text_universe() -> 
     lexical.query_text = "alpha".into();
     distinct.semantic_query.lexical_scope = Some(lexical);
     let calls_before = calls.load(Ordering::SeqCst);
-    let (different_fast, different_deep, different_done) = query_overlay_stream(&client, distinct)?;
+    let (different_fast, different_deep, different_done) =
+        query_overlay_stream(&client, &live, distinct)?;
     assert_eq!(different_fast.matched, 1);
     assert!(
         different_fast
@@ -399,14 +478,23 @@ fn uds_overlay_lexical_scope_limits_deep_to_fast_or_distinct_text_universe() -> 
 
     // Deleting the old owner masks durable alpha. With only beta active,
     // scoped alpha is empty and no query or overlay embedding is requested.
-    update_document(&client, replaced, Some(1), 2, None, None)?;
-    update_document(&client, added, Some(1), 2, Some("beta"), Some("b.rs"))?;
+    update_document(&client, &live, replaced, Some(1), 2, None, None, None)?;
+    update_document(
+        &client,
+        &live,
+        added,
+        Some(1),
+        2,
+        Some("beta"),
+        Some("b.rs"),
+        Some(owner()),
+    )?;
     let mut empty = overlay_stream_query(selected, session, "beta", None);
     let mut lexical = empty.text_query.clone();
     lexical.query_text = "alpha".into();
     empty.semantic_query.lexical_scope = Some(lexical);
     let calls_before = calls.load(Ordering::SeqCst);
-    let (empty_fast, empty_deep, empty_done) = query_overlay_stream(&client, empty)?;
+    let (empty_fast, empty_deep, empty_done) = query_overlay_stream(&client, &live, empty)?;
     assert_eq!(empty_fast.matched, 1);
     assert!(empty_fast.hits.iter().all(|hit| hit.owner == added.owner));
     assert!(empty_fast.corpus.revisions.iter().any(|row| {
@@ -436,12 +524,21 @@ fn uds_overlay_distinct_lexical_scope_keeps_emitted_fast_on_optional_deep_denial
     let running = RunningService::start(service);
     let client = NativeUdsClient::new(socket);
     let (selected, _) = setup(&client, semantic)?;
-    let session = begin_overlay(&client)?;
+    let (live, session) = begin_overlay(&client)?;
     let document = NativeOverlayDocument {
         session,
         owner: owner(),
     };
-    update_document(&client, document, None, 1, Some("beta"), Some("a.rs"))?;
+    update_document(
+        &client,
+        &live,
+        document,
+        None,
+        1,
+        Some("beta"),
+        Some("a.rs"),
+        None,
+    )?;
 
     let mut query = overlay_stream_query(selected, session, "beta", None);
     let mut lexical = query.text_query.clone();
@@ -450,6 +547,7 @@ fn uds_overlay_distinct_lexical_scope_keeps_emitted_fast_on_optional_deep_denial
     let baseline = calls.load(Ordering::SeqCst);
     let mut fast = None;
     let mut deep_seen = false;
+    live.renew()?;
     let done = client.query_effort_stream(query, &budget(), &mut |stage| {
         match stage {
             NativeEffortStreamStage::OverlayFast(result) if fast.is_none() => {
@@ -499,14 +597,24 @@ fn uds_overlay_effort_rejects_revision_change_during_provider_before_deep_delive
     let running = RunningService::start(service);
     let client = NativeUdsClient::new(socket.clone());
     let (selected, _) = setup(&client, semantic)?;
-    let session = begin_overlay(&client)?;
+    let (live, session) = begin_overlay(&client)?;
     let document = NativeOverlayDocument {
         session,
         owner: owner(),
     };
-    update_document(&client, document, None, 1, Some("beta"), Some("a.rs"))?;
+    update_document(
+        &client,
+        &live,
+        document,
+        None,
+        1,
+        Some("beta"),
+        Some("a.rs"),
+        None,
+    )?;
 
     let (fast_tx, fast_rx) = mpsc::channel::<NativeOverlayCorpusStamp>();
+    live.renew()?;
     let worker = std::thread::spawn(move || {
         let client = NativeUdsClient::new(socket);
         let mut deep_seen = false;
@@ -533,13 +641,20 @@ fn uds_overlay_effort_rejects_revision_change_during_provider_before_deep_delive
     let captured = fast_rx.recv_timeout(Duration::from_secs(3))?;
     assert_eq!(captured.session, session);
     wait_until(|| gate.entered.load(Ordering::Acquire))?;
-    update_document(&client, document, Some(1), 2, Some("alpha"), Some("a.rs"))?;
+    update_document(
+        &client,
+        &live,
+        document,
+        Some(1),
+        2,
+        Some("alpha"),
+        Some("a.rs"),
+        None,
+    )?;
     gate.released.store(true, Ordering::Release);
     let (outcome, deep_seen) = worker.join().map_err(|_panic| "overlay worker panicked")?;
     assert!(!deep_seen);
-    assert!(
-        matches!(outcome, Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict)
-    );
+    live.refused(outcome, NativeIndexErrorCode::Conflict)?;
     running.stop()?;
     Ok(())
 }
@@ -567,16 +682,26 @@ fn uds_overlay_effort_original_cancellation_during_provider_blocks_deep_and_drai
     let (selected, _) = setup(&client, semantic)?;
     let catalog_path = catalog_path(root.path());
     let baseline_pins = pin_count(&catalog_path)?;
-    let session = begin_overlay(&client)?;
+    let (live, session) = begin_overlay(&client)?;
     let document = NativeOverlayDocument {
         session,
         owner: owner(),
     };
-    update_document(&client, document, None, 1, Some("beta"), Some("a.rs"))?;
+    update_document(
+        &client,
+        &live,
+        document,
+        None,
+        1,
+        Some("beta"),
+        Some("a.rs"),
+        None,
+    )?;
 
     let original = budget();
     let worker_request = original.clone();
     let (fast_tx, fast_rx) = mpsc::channel::<NativeOverlayCorpusStamp>();
+    live.renew()?;
     let worker = std::thread::spawn(move || {
         let client = NativeUdsClient::new(socket);
         let mut deep_seen = false;
@@ -615,6 +740,7 @@ fn uds_overlay_effort_original_cancellation_during_provider_blocks_deep_and_drai
         baseline_pins.checked_add(1).ok_or("pin count overflow")?
     );
     original.cancel_handle().cancel();
+    live.renew()?;
     gate.released.store(true, Ordering::Release);
     let (outcome, deep_seen) = worker.join().map_err(|_panic| "overlay worker panicked")?;
     assert!(original.is_cancelled());
@@ -631,6 +757,7 @@ fn uds_overlay_effort_original_cancellation_during_provider_blocks_deep_and_drai
                     && observation.enrichment.active == 0
             })
     })?;
+    live.renew()?;
     assert_eq!(
         client.overlay(NativeOverlayRequest::Close { session }, &budget())?,
         NativeOverlayReply::Closed(session)
@@ -667,14 +794,24 @@ fn overlay_effort_rejects_late_corpus_invalidation(action: LateCorpusInvalidatio
     let (selected, _) = setup(&client, semantic)?;
     let catalog_path = catalog_path(root.path());
     let baseline_pins = pin_count(&catalog_path)?;
-    let session = begin_overlay(&client)?;
+    let (live, session) = begin_overlay(&client)?;
     let document = NativeOverlayDocument {
         session,
         owner: owner(),
     };
-    update_document(&client, document, None, 1, Some("beta"), Some("a.rs"))?;
+    update_document(
+        &client,
+        &live,
+        document,
+        None,
+        1,
+        Some("beta"),
+        Some("a.rs"),
+        None,
+    )?;
 
     let (fast_tx, fast_rx) = mpsc::channel::<NativeOverlayCorpusStamp>();
+    live.renew()?;
     let worker = std::thread::spawn(move || {
         let client = NativeUdsClient::new(socket);
         let mut deep_seen = false;
@@ -713,17 +850,22 @@ fn overlay_effort_rejects_late_corpus_invalidation(action: LateCorpusInvalidatio
                 NativeOverlayReply::Closed(session)
             );
         }
-        LateCorpusInvalidation::EndPublisher => {
-            client.end_interaction_publisher(session.publisher, 1, &budget())?;
-        }
+        LateCorpusInvalidation::EndPublisher => live.end()?,
     }
     gate.released.store(true, Ordering::Release);
     let (outcome, deep_seen) = worker.join().map_err(|_panic| "overlay worker panicked")?;
     assert!(!deep_seen);
-    assert!(matches!(
-        outcome,
-        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict
-    ));
+    match action {
+        // A closed session leaves the lease live, which attributes the refusal.
+        LateCorpusInvalidation::CloseSession => {
+            live.refused(outcome, NativeIndexErrorCode::Conflict)?;
+        }
+        // The explicit End protocol event is the attributed cause.
+        LateCorpusInvalidation::EndPublisher => assert!(matches!(
+            outcome,
+            Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict
+        )),
+    }
     wait_until(|| {
         pin_count(&catalog_path).is_ok_and(|count| count == baseline_pins)
             && resources.observe().is_ok_and(|observation| {
@@ -744,4 +886,65 @@ fn uds_overlay_effort_close_during_provider_refuses_deep_and_drains() -> TestRes
 #[test]
 fn uds_overlay_effort_end_publisher_during_provider_refuses_deep_and_drains() -> TestResult {
     overlay_effort_rejects_late_corpus_invalidation(LateCorpusInvalidation::EndPublisher)
+}
+
+/// Deep keeps no path identity of its own: it masks by owner and inherits the
+/// `(repository, path)` admission of the required Fast stage. A corpus whose
+/// new file has no authenticated repository never reaches a stage or provider.
+#[test]
+fn uds_overlay_deep_is_unreachable_before_fast_admits_repository_identity() -> TestResult {
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let socket = root.path().join("native.sock");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (service, semantic) = service(root.path(), &socket, Arc::clone(&calls))?;
+    configure_overlay_service(&service)?;
+    let running = RunningService::start(service);
+    let client = NativeUdsClient::new(socket);
+    let (selected, _) = setup(&client, semantic)?;
+    let (live, session) = begin_overlay(&client)?;
+    let added = NativeOverlayDocument {
+        session,
+        owner: second_owner(),
+    };
+    let outside = OwnerKey {
+        stable_id: StableOwnerId([99; 16]),
+        ..owner()
+    };
+    for (revision, witness) in [(1_u64, None), (2, Some(outside))] {
+        let previous = revision.checked_sub(1).filter(|value| *value != 0);
+        update_document(
+            &client,
+            &live,
+            added,
+            previous,
+            revision,
+            Some("alpha"),
+            Some("b.rs"),
+            witness,
+        )?;
+        let calls_before = calls.load(Ordering::SeqCst);
+        let mut stages = 0_usize;
+        live.renew()?;
+        let refused = client.query_effort_stream(
+            overlay_stream_query(selected, session, "alpha", None),
+            &budget(),
+            &mut |_stage| {
+                stages = stages
+                    .checked_add(1)
+                    .ok_or_else(|| NativeUdsError::Protocol("stage count overflow".into()))?;
+                Ok(())
+            },
+        );
+        live.refused(refused, NativeIndexErrorCode::InvalidInput)?;
+        assert_eq!(stages, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), calls_before);
+    }
+    live.renew()?;
+    assert_eq!(
+        client.overlay(NativeOverlayRequest::Close { session }, &budget())?,
+        NativeOverlayReply::Closed(session)
+    );
+    running.stop()?;
+    Ok(())
 }

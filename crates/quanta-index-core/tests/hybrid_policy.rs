@@ -28,12 +28,17 @@ fn candidate(id: &str) -> LexicalCandidate {
         revision_id: RevisionId::new("v").expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(1),
         repo_relative_path: RepoRelativePath::new(""),
-        start_line: 0,
-        end_line: 0,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 0,
+            end_line: 0,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: String::new(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score: 0.0,
-        snippet: String::new(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 
@@ -332,21 +337,61 @@ fn rrf_shared_id_aggregates_score() {
 fn rrf_shared_id_preserves_lexical_payload() {
     let mut lexical = candidate("shared");
     lexical.repo_relative_path = RepoRelativePath::new("src/lexical.rs");
-    lexical.start_line = 10;
-    lexical.end_line = 12;
+    lexical
+        .lines
+        .as_mut()
+        .expect("fixture row carries match lines")
+        .start_line = 10;
+    lexical
+        .lines
+        .as_mut()
+        .expect("fixture row carries match lines")
+        .end_line = 12;
     lexical.score = 0.875;
-    lexical.snippet = "lexical match".to_string();
-    lexical.snippet_hit_offset = Some(2);
-    lexical.highlights = vec![HighlightSpan { start: 2, len: 7 }];
+    lexical
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet = "lexical match".to_string();
+    lexical
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet_hit_offset = Some(2);
+    lexical
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .highlights = vec![HighlightSpan { start: 2, len: 7 }];
 
     let mut semantic = candidate("shared");
     semantic.repo_relative_path = RepoRelativePath::new("src/semantic.rs");
-    semantic.start_line = 40;
-    semantic.end_line = 45;
+    semantic
+        .lines
+        .as_mut()
+        .expect("fixture row carries match lines")
+        .start_line = 40;
+    semantic
+        .lines
+        .as_mut()
+        .expect("fixture row carries match lines")
+        .end_line = 45;
     semantic.score = 0.25;
-    semantic.snippet = "semantic payload".to_string();
-    semantic.snippet_hit_offset = None;
-    semantic.highlights = Vec::new();
+    semantic
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet = "semantic payload".to_string();
+    semantic
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet_hit_offset = None;
+    semantic
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .highlights = Vec::new();
 
     let fused = HybridOrchestratorPolicy::fuse_rrf(&[lexical.clone()], &[semantic], 1);
 
@@ -545,7 +590,11 @@ fn rrf_candidates_carry_the_lane_rows_and_provenance_in_the_lane_dto_order() -> 
     lex_only.score = 1.5;
     let mut sem_shared = candidate("shared");
     sem_shared.score = 0.75;
-    sem_shared.snippet = "dense payload".to_string();
+    sem_shared
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet = "dense payload".to_string();
     let mut sem_only = candidate("sem-only");
     sem_only.score = -0.25;
     let lexical = [lex_shared, lex_only];
@@ -610,7 +659,15 @@ fn rrf_candidates_carry_the_lane_rows_and_provenance_in_the_lane_dto_order() -> 
     for row in &rows {
         row.validate_v1()?;
     }
-    if rows.first().map(|row| row.candidate.snippet.as_str()) != Some("") {
+    if rows.first().map(|row| {
+        row.candidate
+            .excerpt
+            .as_ref()
+            .expect("fixture row carries a match excerpt")
+            .snippet
+            .as_str()
+    }) != Some("")
+    {
         return Err("the lexical lane's row is carried when it saw the identity".into());
     }
     Ok(())

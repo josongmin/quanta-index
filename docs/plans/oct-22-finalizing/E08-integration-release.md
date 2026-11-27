@@ -10,6 +10,14 @@
 4. E06 default switch.
 5. 통합 B/post-switch: default smoke/rollback·current coherent full workspace·공개 API/module·exact-source hosted CI/release.
 
+E06의 새-root rebuild/reselection·rollback 리허설은 A 전에 실행할 수 있다.
+실제 default 전환은 A의 제품·비용 수용 뒤에만 한다. B의 remote CI/release를
+A의 선행 조건으로 바꾸지 않는다. A/B는 source·dependency·config·입력·binary·host를
+같은 후보에 결속하고, 기능·운영·설치·출시 결과를 각 범위에서 판정한다.
+고정 gold·reference·독립 관측을 기대값으로 쓰며 구현식을 재계산한 값이나
+성공 표본만의 평균으로 합격을 만들지 않는다. 취소·실패·timeout·capped·Unknown,
+실행 본문 0·skipped/ignored는 각각 원 상태를 유지한다.
+
 ## Actual IntelliJ acceptance
 
 [RFC 12.5절](../../rfc/oct-10-native-incremental-vnext.md#125-ide-and-indexing-acceptance-against-an-actual-intellij-baseline)가 원래 약속한 비교다. exact IntelliJ edition/build/plugins/JDK와 Quanta client/Runtime/Index, 같은 source/dependencies/action trace·하드웨어·cache 정의를 실행 전에 고정한다.
@@ -20,7 +28,7 @@
 
 기존 [proof-authority](../../../tools/ci/proof-authority.toml)의 p03–p11 실제 activation/lifetime/query/SDK/provider/supervisor/readiness/state migration/exact-pair/운영 action·독립 observer를 원 registry/recipe로 수용한다. staged 선언은 코드 부재 증거가 아니고 local pass는 installed/hosted 증거가 아니다.
 
-CODE_QUALIFIED·DEPLOYED·ACTIVATED·ROLLBACK_PROVEN을 별도 판정한다. 실제 target/authority/설치 provenance 누락은 해당 gate BLOCKED이며 새 target issuer/runner를 추측해 만들지 않는다. [기존 release 세부 계약](../../history/oct-22-finalizing/oct-17-index-closeout/tickets/W2-19-integration-acceptance.md)과 CircleCI exact-source/test-authority 계약을 유지한다.
+CODE_QUALIFIED·DEPLOYED·ACTIVATED·ROLLBACK_PROVEN을 별도 판정한다. 실제 target/authority/설치 provenance 누락은 해당 gate BLOCKED이며 새 target issuer/runner를 추측해 만들지 않는다. [W2-19 원문 복구 색인](../../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages)과 CircleCI exact-source/test-authority 계약을 유지한다.
 
 ## DoD
 

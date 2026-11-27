@@ -55,22 +55,27 @@ then
 fi
 
 for forbidden in target .codex-tmp-target '~'; do
-  if [[ -e "$forbidden" ]]; then
+  if [[ -e "$forbidden" || -L "$forbidden" ]]; then
     echo "Forbidden root artifact present: $forbidden" >&2
     fail=1
   fi
 done
 
-while IFS= read -r path; do
-  [[ -n "$path" ]] || continue
-  echo "Forbidden nested target directory present: ${path#./}" >&2
-  fail=1
-done < <(
-  find . \
+target_scan="$(mktemp /tmp/quanta-root-hygiene.XXXXXX)"
+trap 'rm -f "$target_scan"' EXIT
+if find . \
     -path ./.git -prune -o \
     -path ./.claude -prune -o \
-    -type d -name target -print
-)
+    -path ./target -prune -o \
+    -name target \( -type d -o -type l \) -print0 -prune > "$target_scan"; then
+  while IFS= read -r -d '' path; do
+    echo "Forbidden nested target directory present: ${path#./}" >&2
+    fail=1
+  done < "$target_scan"
+else
+  echo "Root target directory scan failed." >&2
+  fail=1
+fi
 
 if [[ "$fail" -ne 0 ]]; then
   cat <<'EOF' >&2

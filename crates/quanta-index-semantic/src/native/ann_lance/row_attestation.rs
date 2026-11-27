@@ -2,7 +2,7 @@
 
 use arrow_array::{Array as _, FixedSizeListArray, Float32Array, RecordBatch};
 use futures::TryStreamExt as _;
-use lancedb::query::{ExecutableQuery as _, QueryBase as _, Select};
+use lance::Dataset;
 use quanta_index_contract::native_protocol::MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES;
 use quanta_index_core::index::{
     Digest, IndexError, MemoryLifetime, OwnerKey, ProducerId, StableOwnerId, WorkBudget, WorkUsage,
@@ -18,7 +18,7 @@ use super::{
 /// The scan cap includes one surplus row so a forged count cannot be accepted.
 /// The original budget funds the complete bounded Arrow result before execution.
 pub(super) async fn attest(
-    table: &lancedb::Table,
+    dataset: &Dataset,
     seal: &RegionSeal,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
@@ -56,9 +56,9 @@ pub(super) async fn attest(
         ..WorkUsage::default()
     })?;
     let _memory = budget.reserve_memory(admitted, MemoryLifetime::Temporary)?;
-    let actual_schema = table.schema().await.map_err(backend);
+    let actual_schema = arrow_schema::Schema::from(dataset.schema());
     budget.checkpoint()?;
-    if actual_schema?.as_ref() != schema(dimension)?.as_ref() {
+    if &actual_schema != schema(dimension)?.as_ref() {
         return Err(corrupt("Native ANN attestation physical schema differs"));
     }
     let mut hash = Sha256::new();
@@ -68,14 +68,25 @@ pub(super) async fn attest(
     hash.update(seal.rows.to_be_bytes());
     // `build_region` inserted canonical rows. Do not ask Lance to sort a
     // potentially forged, overlarge table before the bounded scan limit.
-    let query = table.query().limit(scan_cap).select(Select::columns(&[
-        COLUMN_PRODUCER,
-        COLUMN_OWNER,
-        COLUMN_MEMBER,
-        COLUMN_VECTOR_ID,
-        COLUMN_INPUT,
-        COLUMN_VECTOR,
-    ]));
+    let mut scan = dataset.scan();
+    // LanceDB's default QueryExecutionOptions caps batches at 1024 rows.
+    let _ = scan
+        .scan_in_order(true)
+        .batch_size(1024)
+        .limit(
+            Some(i64::try_from(scan_cap).map_err(|_error| IndexError::ResourceLimited)?),
+            None,
+        )
+        .map_err(backend)?
+        .project(&[
+            COLUMN_PRODUCER,
+            COLUMN_OWNER,
+            COLUMN_MEMBER,
+            COLUMN_VECTOR_ID,
+            COLUMN_INPUT,
+            COLUMN_VECTOR,
+        ])
+        .map_err(backend)?;
     let mut count = 0usize;
     let mut prior_key: Option<(OwnerKey, Digest)> = None;
     let mut prior_vector_id = Vec::new();
@@ -83,7 +94,7 @@ pub(super) async fn attest(
         .try_reserve_exact(max_id)
         .map_err(|_error| IndexError::ResourceLimited)?;
     budget.checkpoint()?;
-    let batches = match query.execute().await.map_err(backend) {
+    let batches = match scan.try_into_stream().await.map_err(backend) {
         Ok(batches) => batches,
         Err(error) => {
             budget.checkpoint()?;

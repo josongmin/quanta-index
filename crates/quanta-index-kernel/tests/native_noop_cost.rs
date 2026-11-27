@@ -417,13 +417,22 @@ fn frontier_only_source_advance_has_no_per_async_instance_scratch() -> TestResul
     let none = frontier_only_cost(0, 0)?.scratch_allocations;
     let one = frontier_only_cost(1, 0)?.scratch_allocations;
     let three = frontier_only_cost(3, 0)?.scratch_allocations;
+    let six = frontier_only_cost(6, 0)?.scratch_allocations;
     assert!(none > 0, "source/publication scratch must remain visible");
     assert!(
         one >= none,
-        "async coverage cannot remove base scratch work"
+        "async coverage cannot remove base scratch work: none={none} one={one}"
+    );
+    // Every async instance rebinds its coverage in one shared map batch. A
+    // single edit takes the store's resident path and a multi-edit batch
+    // stages once, so the cost may step by one batch but never grows per
+    // instance.
+    assert!(
+        three <= one.checked_add(1).ok_or("scratch count overflow")?,
+        "coverage batch allocated more than one staging scratch: one={one} three={three}"
     );
     assert_eq!(
-        three, one,
+        six, three,
         "extra unchanged async indexes allocated scratch"
     );
     Ok(())

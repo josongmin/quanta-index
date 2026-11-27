@@ -1,7 +1,8 @@
 use super::*;
 
 use quanta_index_contract::{
-    CandidateCountV1, IngestObservationStatus, SymbolQueryResponse, TextQueryResponse, TextRankUnit,
+    CandidateCountV1, IngestObservationStatus, SymbolId, SymbolQueryResponse, TextQueryResponse,
+    TextRankUnit,
 };
 use quanta_index_core::GenerationStorageKeyV1;
 

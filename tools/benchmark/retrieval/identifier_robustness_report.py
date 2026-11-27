@@ -165,8 +165,7 @@ def verify_generation_manifest(
     lane: str,
 ) -> str:
     """Bind the admission denominator and submitted suite to one frozen generation."""
-    raw = manifest_path.read_bytes()
-    manifest = evaluator.read_json(manifest_path)
+    raw, manifest = evaluator.read_json_with_bytes(manifest_path)
     _require(isinstance(manifest, dict), "invalid robustness generation manifest")
     _require(
         type(manifest.get("schema_version")) is int and manifest["schema_version"] == 1,
@@ -225,27 +224,35 @@ def verify_generation_manifest(
             },
             "generation tool snapshot mismatch",
         )
-    for name, path in (("census.json", census_path), (f"{lane}-suite.json", suite_path)):
+    for label, name, path, loaded in (
+        ("census", "census.json", census_path, census),
+        ("suite", f"{lane}-suite.json", suite_path, suite),
+    ):
         _require(name in paths, "missing generation artifact: " + name)
-        observed = evaluator.digest(path.read_bytes())
-        if name == f"{lane}-suite.json" and observed != paths[name]:
+        submitted_raw, submitted = evaluator.read_json_with_bytes(path)
+        _require(isinstance(submitted, dict), f"invalid submitted {label}")
+        submitted_content = evaluator.canonical(submitted)
+        observed = evaluator.digest(submitted_raw)
+        if label == "suite" and observed != paths[name]:
             generated_path = manifest_path.parent / name
-            generated = evaluator.read_json(generated_path)
-            if evaluator.digest(generated_path.read_bytes()) == paths[name] and generated == suite:
+            generated_raw, generated = evaluator.read_json_with_bytes(generated_path)
+            generated_matches = evaluator.digest(generated_raw) == paths[name]
+            if generated_matches and evaluator.canonical(generated) == submitted_content:
                 # The runner may reserialize an unchanged suite canonically.
                 observed = paths[name]
             # The pair runner adds exactly one external route. Bind all other
             # bytes back to the generator's single-route suite. A Quanta-only
             # capture of a generated paired clean suite removes that route.
-            elif suite.get("routes") == ["lexical", "semble-lexical-file"]:
-                source_suite = {**suite, "routes": ["lexical"]}
+            elif submitted.get("routes") == ["lexical", "semble-lexical-file"]:
+                source_suite = {**submitted, "routes": ["lexical"]}
                 observed = evaluator.digest(source_oracle_suite._json_bytes(source_suite))
-            elif suite.get("routes") == ["lexical"]:
+            elif submitted.get("routes") == ["lexical"]:
                 if (
-                    evaluator.digest(generated_path.read_bytes()) == paths[name]
+                    generated_matches
                     and isinstance(generated, dict)
                     and generated.get("routes") == ["lexical", "semble-lexical-file"]
-                    and {**generated, "routes": ["lexical"]} == suite
+                    and evaluator.canonical({**generated, "routes": ["lexical"]})
+                    == submitted_content
                 ):
                     observed = paths[name]
             else:
@@ -254,18 +261,21 @@ def verify_generation_manifest(
             observed == paths[name],
             "generation artifact mismatch: " + name,
         )
+        _require(
+            submitted_content == evaluator.canonical(loaded),
+            f"loaded {label} differs from verified input",
+        )
     if lane == identifier_osa1_absence_suite.TARGET_LANE:
         source_name = "source-no-answer-content-suite.json"
         _require(source_name in paths, "missing generation source suite")
         source_path = manifest_path.parent / source_name
-        source_raw = source_path.read_bytes()
+        source_raw, source_suite = evaluator.read_json_with_bytes(source_path)
         _require(
             evaluator.digest(source_raw)
             == paths[source_name]
             == manifest.get("source_suite_sha256"),
             "generation source suite mismatch",
         )
-        source_suite = evaluator.read_json(source_path)
         _require(
             suite["suite_id"]
             == source_suite["suite_id"] + identifier_osa1_absence_suite.SUITE_SUFFIX

@@ -13,8 +13,7 @@ pub(super) fn stabilize_ranked_candidates(results: &mut [LexicalCandidate]) {
                     .as_str()
                     .cmp(right.repo_relative_path.as_str())
             })
-            .then(left.start_line.cmp(&right.start_line))
-            .then(left.end_line.cmp(&right.end_line))
+            .then(left.order_key().lines.cmp(&right.order_key().lines))
             .then_with(|| left.candidate_id.as_str().cmp(right.candidate_id.as_str()))
     });
 }
@@ -31,8 +30,12 @@ pub(super) fn stabilize_semantic_seed_hits_v1(results: &mut [SemanticSearchHitV1
                     .as_str()
                     .cmp(right.candidate.repo_relative_path.as_str())
             })
-            .then(left.candidate.start_line.cmp(&right.candidate.start_line))
-            .then(left.candidate.end_line.cmp(&right.candidate.end_line))
+            .then(
+                left.candidate
+                    .order_key()
+                    .lines
+                    .cmp(&right.candidate.order_key().lines),
+            )
             .then_with(|| left.owner_id.as_str().cmp(right.owner_id.as_str()))
             .then_with(|| left.record_id.as_str().cmp(right.record_id.as_str()))
             .then_with(|| {

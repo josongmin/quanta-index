@@ -10,6 +10,8 @@ mod native_physical_profile;
 
 #[path = "common/native_object_files.rs"]
 mod native_object_files;
+#[path = "common/publication_settle.rs"]
+mod publication_settle;
 
 #[path = "common/legacy_searchd_binary.rs"]
 mod legacy_searchd_binary;
@@ -84,8 +86,9 @@ use quanta_index_repomap::native::{NativeFileMap, NativePathReader};
 use quanta_index_sdk::native_uds::{NativeUdsClient, NativeUdsError};
 use quanta_index_searchd_runtime::native::{
     FixedPumpPolicy, NativeAdapterDescriptors, NativeIndexService, NativeProcessMemoryAdmission,
-    NativePumpConfig, NativePumpScope, NativeReclaimConfig, NativeResourceObservation,
-    NativeResourcePlan, NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
+    NativePumpConfig, NativePumpScope, NativeReclaimConfig, NativeReclaimMark,
+    NativeReclaimObservation, NativeResourceObservation, NativeResourcePlan,
+    NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
     NativeWorkerObservation, NativeWorkerStatus,
 };
 use quanta_index_semantic::native::{
@@ -185,6 +188,7 @@ fn bind_service_with_registry(
             literal,
             path,
             text: QueryAdapterRegistry::new(),
+            text_matches: QueryAdapterRegistry::new(),
             semantic: QueryAdapterRegistry::new(),
             pump: None,
             provider_attempt_pool: None,
@@ -226,6 +230,7 @@ fn bind_service_with_registry_and_process_memory_admission(
             literal,
             path,
             text: QueryAdapterRegistry::new(),
+            text_matches: QueryAdapterRegistry::new(),
             semantic: QueryAdapterRegistry::new(),
             pump: None,
             provider_attempt_pool: None,
@@ -236,9 +241,7 @@ fn bind_service_with_registry_and_process_memory_admission(
 }
 
 fn private_root() -> TestResult<tempfile::TempDir> {
-    let root = tempfile::tempdir()?;
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
-    Ok(root)
+    Ok(quanta_index_searchd_harness::private_tempdir()?)
 }
 
 fn workspace() -> WorkspaceKey {
@@ -418,16 +421,77 @@ fn test_reclaim_config() -> NativeReclaimConfig {
     }
 }
 
+/// Automatic reclaim sized for retention: one round reaches every root a
+/// retired view queues, so seven steps and their round byte allowance.
+fn release_bounded_reclaim_config() -> NativeReclaimConfig {
+    NativeReclaimConfig {
+        max_steps_per_round: 7,
+        work_limits: WorkLimits {
+            bytes: 939_524_096,
+            ..work_limits()
+        },
+        ..test_reclaim_config()
+    }
+}
+
 fn reclaim_capabilities(pump: Option<NativePumpConfig>) -> TestResult<NativeServiceCapabilities> {
     Ok(NativeServiceCapabilities {
         builders: tokio_literal_registry()?,
         literal: QueryAdapterRegistry::new(),
         path: QueryAdapterRegistry::new(),
         text: QueryAdapterRegistry::new(),
+        text_matches: QueryAdapterRegistry::new(),
         semantic: QueryAdapterRegistry::new(),
         pump,
         provider_attempt_pool: None,
     })
+}
+
+/// In-process services validate the release-to-reclaim deadline.
+///
+/// Like the product config, retention with a one-step reclaim round cannot
+/// reach a retired view's roots in one round, so binding refuses it.
+#[test]
+fn programmatic_retention_refuses_reclaim_rounds_below_view_roots() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let mut resources = test_resources();
+    resources.execution.capacity.cpu_units = 5;
+    resources.execution.capacity.io_bytes = 320 * 1024 * 1024;
+    resources.execution.capacity.memory_bytes = (5 + 1) * 64 * 1024 * 1024;
+    let retention = quanta_index_searchd_runtime::native::NativeRetentionConfig {
+        scopes: vec![quanta_index_searchd_runtime::native::NativeRetentionScope {
+            workspace: workspace(),
+            epoch: 1,
+        }],
+        sequence_window: 1,
+        page_limit: 1,
+        custody_page_limit: 1,
+        interval: Duration::from_millis(20),
+        round_timeout: Duration::from_secs(2),
+        work_limits: work_limits(),
+        head_probe_every: 2,
+    };
+    let refused = NativeIndexService::bind_with_retention(
+        root.path(),
+        &socket,
+        work_limits(),
+        reclaim_capabilities(None)?,
+        &resources,
+        Some(test_reclaim_config()),
+        Some(retention),
+    );
+    let Err(error) = refused else {
+        return Err("one-step reclaim with retention was accepted".into());
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("cannot reach a retired view's roots"),
+        "refused for the wrong reason: {error}"
+    );
+    assert!(!socket.exists());
+    Ok(())
 }
 
 #[test]
@@ -992,6 +1056,7 @@ fn native_uds_same_kind_instances_resolve_separate_stored_specs() -> TestResult 
             literal,
             path: QueryAdapterRegistry::new(),
             text: QueryAdapterRegistry::new(),
+            text_matches: QueryAdapterRegistry::new(),
             semantic: QueryAdapterRegistry::new(),
             pump: None,
             provider_attempt_pool: None,
@@ -1273,6 +1338,7 @@ fn native_uds_literal_reader_failure_releases_pin_and_reservation() -> TestResul
             literal,
             path: QueryAdapterRegistry::new(),
             text: QueryAdapterRegistry::new(),
+            text_matches: QueryAdapterRegistry::new(),
             semantic: QueryAdapterRegistry::new(),
             pump: None,
             provider_attempt_pool: None,
@@ -1479,6 +1545,7 @@ fn native_literal_path_reader_ceiling_refuses_before_state_creation() -> TestRes
                     literal,
                     path,
                     text: QueryAdapterRegistry::new(),
+                    text_matches: QueryAdapterRegistry::new(),
                     semantic: QueryAdapterRegistry::new(),
                     pump: None,
                     provider_attempt_pool: None,
@@ -2488,18 +2555,75 @@ fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
         sequence: 1,
         payload: transition.owner_digest()?,
     });
-    let next = published(&client.submit(
-        UpdateRequest {
-            operation: operation(2),
-            expected_view: configured,
-            kind: UpdateKind::SourceAdvance(transition),
+    let source_request = UpdateRequest {
+        operation: operation(2),
+        expected_view: configured,
+        kind: UpdateKind::SourceAdvance(transition),
+    };
+    // Identify the original canonical request without staging it or reading
+    // the journal. The UDS readback below must return this exact object ref.
+    let canonical_request = quanta_index_kernel::identify_update_request_with(
+        &source_request,
+        &mut WorkBudget::with_request(work_limits(), budget()),
+        |bytes, children, _budget| {
+            let reference =
+                quanta_index_contract::index::native_immutable_object_ref_v1(bytes, children)
+                    .ok_or(IndexError::ResourceLimited)?;
+            let bytes = u64::try_from(bytes.len()).map_err(|_| IndexError::ResourceLimited)?;
+            Ok(RegisteredObject::unscoped(
+                reference,
+                bytes,
+                children.to_vec(),
+            ))
         },
-        &budget(),
-    )?)?;
+    )?;
+    let next = published(&client.submit(source_request, &budget())?)?;
     assert_eq!(
         client.status(operation(2), &budget())?,
         OperationStatus::Published(next)
     );
+    let identity_memory_bytes = Arc::new(AtomicU64::new(0));
+    let identity_memory = MemoryScope::new(Arc::new(CountedNativeTestMemory(Arc::clone(
+        &identity_memory_bytes,
+    ))));
+    let identity =
+        client.operation_request_identity_admitted_v1(operation(2), &budget(), &identity_memory)?;
+    let NativeIndexResponse::OperationRequestIdentityV1(identity_row) = identity.response() else {
+        return Err(format!(
+            "unexpected Source request identity: {:?}",
+            identity.response()
+        )
+        .into());
+    };
+    assert_eq!(identity_row.operation, operation(2));
+    assert_eq!(identity_row.payload.key, operation(2));
+    assert_eq!(identity_row.payload.request, canonical_request);
+    assert_eq!(
+        identity_row.payload.source_mode,
+        quanta_index_contract::index::SourceOperationMode::Advance
+    );
+    let original_immutable = identity_row.payload;
+    drop(identity);
+    assert_eq!(identity_memory_bytes.load(Ordering::SeqCst), 0);
+    let before_unknown = client.read_view(ViewSelection::Exact(next), &budget())?;
+    let unknown = operation(99);
+    let unknown_identity =
+        client.operation_request_identity_admitted_v1(unknown, &budget(), &identity_memory)?;
+    assert!(matches!(
+        unknown_identity.response(),
+        NativeIndexResponse::Error(error) if error.code == NativeIndexErrorCode::SnapshotUnavailable
+    ));
+    drop(unknown_identity);
+    assert_eq!(client.status(unknown, &budget())?, OperationStatus::Unknown);
+    assert_eq!(
+        client.status(operation(2), &budget())?,
+        OperationStatus::Published(next)
+    );
+    assert_eq!(
+        client.read_view(ViewSelection::Exact(next), &budget())?,
+        before_unknown
+    );
+    assert_eq!(identity_memory_bytes.load(Ordering::SeqCst), 0);
     let old = client.read_view(ViewSelection::Exact(configured), &budget())?;
     let current = client.read_view(ViewSelection::Exact(next), &budget())?;
     assert_ne!(old.source.owners, current.source.owners);
@@ -2588,6 +2712,22 @@ fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
         "b.rs"
     );
     assert!(!paths_second.has_more);
+    let moving_path = client.request(
+        NativeIndexRequest::QueryPaths {
+            selection: ViewSelection::Latest {
+                workspace: workspace(),
+                epoch: 1,
+            },
+            instance: file_spec().instance,
+            prefix: String::new(),
+            after: Some("a.rs".into()),
+            limit: 1,
+        },
+        &budget(),
+    );
+    assert!(
+        matches!(moving_path, Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::InvalidInput)
+    );
     assert!(matches!(
         client.query_paths(
             ViewSelection::Exact(next),
@@ -2728,6 +2868,44 @@ fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
         client.status(operation(2), &budget())?,
         OperationStatus::Published(next)
     );
+    let reopened_identity =
+        client.operation_request_identity_admitted_v1(operation(2), &budget(), &identity_memory)?;
+    let NativeIndexResponse::OperationRequestIdentityV1(reopened_row) =
+        reopened_identity.response()
+    else {
+        return Err(format!(
+            "unexpected reopened Source identity: {:?}",
+            reopened_identity.response()
+        )
+        .into());
+    };
+    assert_eq!(reopened_row.operation, operation(2));
+    assert_eq!(reopened_row.payload.key, operation(2));
+    assert_eq!(reopened_row.payload.request, canonical_request);
+    assert_eq!(reopened_row.payload, original_immutable);
+    assert_eq!(
+        reopened_row.payload.source_mode,
+        quanta_index_contract::index::SourceOperationMode::Advance
+    );
+    drop(reopened_identity);
+    let before_reopened_unknown = client.read_view(ViewSelection::Exact(next), &budget())?;
+    let unknown_after_reopen =
+        client.operation_request_identity_admitted_v1(unknown, &budget(), &identity_memory)?;
+    assert!(matches!(
+        unknown_after_reopen.response(),
+        NativeIndexResponse::Error(error) if error.code == NativeIndexErrorCode::SnapshotUnavailable
+    ));
+    drop(unknown_after_reopen);
+    assert_eq!(client.status(unknown, &budget())?, OperationStatus::Unknown);
+    assert_eq!(
+        client.status(operation(2), &budget())?,
+        OperationStatus::Published(next)
+    );
+    assert_eq!(
+        client.read_view(ViewSelection::Exact(next), &budget())?,
+        before_reopened_unknown
+    );
+    assert_eq!(identity_memory_bytes.load(Ordering::SeqCst), 0);
     assert_eq!(
         client.status(projection_operation, &budget())?,
         OperationStatus::Published(projected)
@@ -3193,18 +3371,21 @@ fn native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold() -> TestResult {
         ),
         Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::InvalidInput
     ));
-    let mut unsupported = native_text_request("one", 2);
-    unsupported.syntax = TextQuerySyntax::CodeSearch;
+    // Product code search is admitted and ranks repository/path groups. These
+    // Sources were staged without a repository identity, so the file unit
+    // cannot be formed and the reader fails closed instead of guessing one.
+    let mut repository_less = native_text_request("one", 2);
+    repository_less.syntax = TextQuerySyntax::CodeSearch;
     assert!(matches!(
         client.request(
             NativeIndexRequest::SearchText {
                 selection: ViewSelection::Exact(published_view),
                 instance: native_text_spec().instance,
-                query: unsupported,
+                query: repository_less,
             },
             &budget(),
         ),
-        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::InvalidInput
+        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::SnapshotUnavailable
     ));
     service.stop()?;
     let reopened = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
@@ -3891,12 +4072,9 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
     resources.execution.capacity.memory_bytes = (5 + 1) * 64 * 1024 * 1024;
     // This law covers pin/history/replay correctness for two complete COW
     // source transitions, not a one-object-per-round throughput guarantee.
-    // Four steps fit the unchanged 512 MiB WorkLimits (128 MiB per step).
-    // Single-step cursor/partial-drain laws retain their separate coverage.
-    let reclaim = NativeReclaimConfig {
-        max_steps_per_round: 4,
-        ..test_reclaim_config()
-    };
+    // Retention requires seven reclaim steps per round (one retired view's
+    // roots); single-step cursor/partial-drain laws keep separate coverage.
+    let reclaim = release_bounded_reclaim_config();
     reclaim.validate()?;
     let retention = NativeRetentionConfig {
         scopes: vec![NativeRetentionScope {
@@ -5354,6 +5532,7 @@ fn bind_native_semantic_service_with_input(
             literal: QueryAdapterRegistry::new(),
             path: QueryAdapterRegistry::new(),
             text,
+            text_matches: QueryAdapterRegistry::new(),
             semantic,
             pump,
             provider_attempt_pool: None,
@@ -5740,11 +5919,45 @@ fn native_uds_semantic_query_fixed_cosine_coverage_reopen_and_composed_pump() ->
             Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::InvalidInput
         ));
     }
+    // A plain Native text scope with the semantic query's own constraints is
+    // admitted: Semantic ranks only the owners the lexical scope matches.
+    // Gold: only alpha.rs (owner 1) contains "alpha"; its cosine is 1.0.
     let mut scoped = semantic_request("query");
     scoped.lexical_scope = Some(native_text_request("alpha", 2));
+    let NativeIndexResponse::SemanticRanked(scoped_ranked) = client.request(
+        NativeIndexRequest::SearchSemantic {
+            selection: ViewSelection::Exact(complete_view),
+            instance: spec.instance,
+            query: scoped.clone(),
+        },
+        &budget(),
+    )?
+    else {
+        return Err("lexically scoped semantic reply differs".into());
+    };
+    assert_eq!(scoped_ranked.view, complete_view);
+    assert_eq!(scoped_ranked.coverage.status, CoverageStatus::Complete);
+    assert!(scoped_ranked.exhaustive);
+    assert_eq!(
+        scoped_ranked
+            .hits
+            .iter()
+            .map(|hit| (hit.owner, hit.vector_id.clone(), hit.score.get().to_bits()))
+            .collect::<Vec<_>>(),
+        vec![(owner(1), b"whole-file".to_vec(), 1.0_f64.to_bits())]
+    );
+    // A scope whose constraints differ from the semantic query's is refused.
+    let mut mismatched = scoped;
+    let _inserted = mismatched
+        .lexical_scope
+        .as_mut()
+        .ok_or("lexical scope absent")?
+        .constraints
+        .language_any_of
+        .insert(quanta_index_contract::lex::LanguageCode::new("rust")?);
     assert!(matches!(
         client.request(NativeIndexRequest::SearchSemantic {
-            selection: ViewSelection::Exact(complete_view), instance: spec.instance, query: scoped,
+            selection: ViewSelection::Exact(complete_view), instance: spec.instance, query: mismatched,
         }, &budget()),
         Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::InvalidInput
     ));
@@ -6636,44 +6849,39 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
     }
     drop(connection);
 
-    let reopen = || -> TestResult<NativeServiceGuard> {
-        Ok(NativeServiceGuard::start(
-            NativeIndexService::bind_with_capabilities_and_maintenance(
-                root.path(),
-                &socket,
-                work_limits(),
-                reclaim_capabilities(None)?,
-                &resources,
-                Some(test_reclaim_config()),
-            )?,
-        ))
+    // Completion is observed through the pump's own drained rounds, never
+    // through elapsed time: a round that finds the reclaim queue empty after
+    // the queued work was committed has reclaimed all of it.
+    let reopen = || -> TestResult<(NativeServiceGuard, Arc<NativeReclaimObservation>)> {
+        let service = NativeIndexService::bind_with_capabilities_and_maintenance(
+            root.path(),
+            &socket,
+            work_limits(),
+            reclaim_capabilities(None)?,
+            &resources,
+            Some(test_reclaim_config()),
+        )?;
+        let observation = service.reclaim_observation();
+        Ok((NativeServiceGuard::start(service), observation))
     };
-    let reopened = reopen()?;
+    // The prepared parent was queued before this service started, so any
+    // drained round of the reopened pump comes after its persisted drain.
+    let (reopened, observation) = reopen()?;
+    observation.wait_drained_after(observation.mark())?;
     let catalog_path = catalog.path().to_path_buf();
     let connection = rusqlite::Connection::open_with_flags(
         &catalog_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(8))
-        .ok_or("deadline overflow")?;
-    loop {
-        let lifecycle = connection.query_row(
-            "SELECT phase,drained_children FROM native_gc_object_v1 WHERE object=?1",
-            rusqlite::params![(parent.reference.0).0.to_vec()],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        );
-        match lifecycle {
-            Err(rusqlite::Error::QueryReturnedNoRows) => break,
-            Ok((_phase, _drained)) => {}
-            Err(error) => return Err(error.into()),
-        }
-        assert!(
-            Instant::now() < deadline,
-            "reopen did not finish parent's persisted drain"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let lifecycle = connection.query_row(
+        "SELECT phase,drained_children FROM native_gc_object_v1 WHERE object=?1",
+        rusqlite::params![(parent.reference.0).0.to_vec()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    );
+    assert!(
+        matches!(lifecycle, Err(rusqlite::Error::QueryReturnedNoRows)),
+        "reopen did not finish parent's persisted drain: {lifecycle:?}"
+    );
     let assert_settled = |connection: &rusqlite::Connection| -> TestResult {
         let pending_or_registered: i64 = connection.query_row(
             "SELECT (SELECT count(*) FROM native_gc_object_v1 WHERE object=?1) \
@@ -6694,7 +6902,7 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
     drop(catalog);
     reopened.stop()?;
 
-    let reopened = reopen()?;
+    let (reopened, observation) = reopen()?;
     let connection = rusqlite::Connection::open_with_flags(
         &catalog_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -6704,13 +6912,9 @@ fn native_automatic_reclaim_resumes_prepared_partial_child_drain_after_service_r
 
     // The held ingress remains usable after reopen. Releasing it makes all
     // 70 now-unshared children eligible for automatic physical reclamation.
+    // The baseline is read after the discard committed its queue entries.
     client.discard_input(children_ingress, &budget())?;
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(10))
-        .ok_or("deadline overflow")?;
-    while !native_objects_absent_nofollow(root.path(), &children)? && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    observation.wait_drained_after(observation.mark())?;
     assert!(native_objects_absent_nofollow(root.path(), &children)?);
     reopened.stop()
 }

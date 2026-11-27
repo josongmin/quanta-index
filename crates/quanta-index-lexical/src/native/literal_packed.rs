@@ -72,6 +72,25 @@ impl PackedRoot {
         context: &mut AttemptContext<'_>,
     ) -> Result<(ObjectRef, Digest), IndexError> {
         use sha2::{Digest as _, Sha256};
+        let (bytes, len) = self.encode()?;
+        let payload = bytes
+            .get(..len)
+            .ok_or_else(|| corrupt("root length differs"))?;
+        let artifact = context.put(payload, self.children().as_slice())?;
+        Ok((artifact, Digest(Sha256::digest(payload).into())))
+    }
+
+    /// The canonical root payload, for sibling fixtures in Text read tests.
+    #[cfg(test)]
+    pub(super) fn fixture_payload(self) -> Result<Vec<u8>, IndexError> {
+        let (bytes, len) = self.encode()?;
+        Ok(bytes
+            .get(..len)
+            .ok_or_else(|| corrupt("root length differs"))?
+            .to_vec())
+    }
+
+    fn encode(self) -> Result<([u8; 74], usize), IndexError> {
         let mut bytes = [0_u8; 74];
         let (magic, mut rest) = bytes
             .split_first_chunk_mut::<8>()
@@ -94,11 +113,7 @@ impl PackedRoot {
         let len = 74_usize
             .checked_sub(rest.len())
             .ok_or(IndexError::ResourceLimited)?;
-        let payload = bytes
-            .get(..len)
-            .ok_or_else(|| corrupt("root length differs"))?;
-        let artifact = context.put(payload, self.children().as_slice())?;
-        Ok((artifact, Digest(Sha256::digest(payload).into())))
+        Ok((bytes, len))
     }
 
     pub(super) fn children(self) -> ObjectChildren {

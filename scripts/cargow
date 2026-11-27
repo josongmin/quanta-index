@@ -12,6 +12,7 @@ has_arg() {
     if [[ "$arg" == "$needle" ]]; then
       return 0
     fi
+    [[ "$arg" != -- ]] || break
   done
 
   return 1
@@ -25,6 +26,7 @@ arg_value() {
   local expect_value="0"
   local arg
   for arg in "$@"; do
+    [[ "$arg" != -- ]] || break
     if [[ "$expect_value" == "1" ]]; then
       printf '%s\n' "$arg"
       return 0
@@ -42,6 +44,27 @@ arg_value() {
   done
 
   return 1
+}
+
+cargo_command_offset() {
+  local offset=0 step
+  if [[ "${1:-}" == +?* ]]; then
+    offset=1
+    shift
+  fi
+
+  while [[ "$#" -gt 0 ]]; do
+    step=1
+    case "$1" in
+      --config|--color|-Z|-C) step=2 ;;
+      --config=*|--color=*|-Z?*|-C?*|--locked|--offline|--frozen|--quiet|--verbose) ;;
+      *) [[ "$1" =~ ^-[vq]+$ ]] || break ;;
+    esac
+    [[ "$#" -ge "$step" ]] || break
+    offset=$((offset + step))
+    shift "$step"
+  done
+  printf '%s\n' "$offset"
 }
 
 detect_lane() {
@@ -172,8 +195,11 @@ if [[ "${1:-}" == "--lane" ]]; then
   lane="${2:-}"
   lane_source="explicit"
   shift 2
-elif [[ -z "$lane" ]]; then
-  lane="$(detect_lane "$@")"
+fi
+cargo_prefix_length="$(cargo_command_offset "$@")"
+cargo_start=$((cargo_prefix_length + 1))
+if [[ -z "$lane" && "$lane_source" != "explicit" ]]; then
+  lane="$(detect_lane "${@:$cargo_start}")"
   lane_source="auto"
 fi
 if [[ "$lane" != "shared" && ! "$lane" =~ ^[a-z0-9][a-z0-9-]*-lane$ ]]; then
@@ -205,6 +231,16 @@ case "$resource_mode" in
   auto|0|1) ;;
   *) printf 'invalid QUANTA_INDEX_RESOURCE_ADMISSION; expected auto, 0, or 1\n' >&2; exit 2 ;;
 esac
+
+requests_cargo_help() {
+  # Keep unknown Cargo aliases under the normal admission rules.
+  case "${1:-}" in
+    build|check|clippy|test|bench|doc|rustc|rustdoc|llvm-cov|clean|nextest)
+      has_arg --help "$@" || has_arg -h "$@"
+      ;;
+    *) return 1 ;;
+  esac
+}
 
 needs_resource_admission() {
   case "${1:-}" in
@@ -274,13 +310,16 @@ requires_searchd_pin() {
 }
 
 prepare_searchd_pin() {
-  run_cargo build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
+  run_cargo "$@" build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
   local binary="${CARGO_TARGET_DIR}/debug/quanta-index-searchd"
   if [[ ! -x "$binary" ]]; then
     printf 'built searchd binary is missing or not executable: %s\n' "$binary" >&2
     return 1
   fi
   export QUANTA_INDEX_SEARCHD_BIN="$binary"
+  # Process tests distinguish the workspace build from an externally pinned
+  # release daemon, whose writable StateRoot requires a provisioned XFS project.
+  export QIDX_CARGOW_AUTO_SEARCHD_PIN=1
 }
 
 # Record lane use for tools/ci/target_gc.py and opportunistically start it.
@@ -305,24 +344,76 @@ mark_lane_used_and_maybe_gc() {
   )
 }
 
-if needs_resource_admission "$@"; then
-  mark_lane_used_and_maybe_gc 2>/dev/null || true
-fi
+# Parse exit handling before a long-running command can block on the checkout.
+main() {
+  # Tool help must not prepare a daemon or wait for a build lease.
+  if requests_cargo_help "${@:$cargo_start}"; then
+    exec cargo "$@"
+  fi
 
-if requires_searchd_pin "$@"; then
-  prepare_searchd_pin
-fi
+  local cargo_command="${*:$cargo_start:1} ${*:$((cargo_start + 1)):1}"
+  case "$cargo_command" in
+    "test "*|"nextest run"|"llvm-cov nextest")
+      # SQLite's NOFOLLOW checks also cover system temp-directory aliases.
+      local test_tmpdir="${TMPDIR:-}"
+      if [[ -z "$test_tmpdir" && "$OSTYPE" == darwin* ]]; then
+        test_tmpdir="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+      fi
+      test_tmpdir="${test_tmpdir:-/tmp}"
+      local physical_tmpdir
+      if physical_tmpdir="$(CDPATH='' cd -- "$test_tmpdir" 2>/dev/null && pwd -P)"; then
+        export TMPDIR="$physical_tmpdir"
+      fi
+      ;;
+  esac
 
-start_ms="$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000000)')"
+  if needs_resource_admission "$@"; then
+    mark_lane_used_and_maybe_gc 2>/dev/null || true
+  fi
 
-if run_cargo "$@"; then
-  status=0
-else
-  status="$?"
-fi
+  if requires_searchd_pin "${@:$cargo_start}"; then
+    prepare_searchd_pin "${@:1:$cargo_prefix_length}"
+  fi
 
-end_ms="$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000000)')"
-duration_ms="$((end_ms - start_ms))"
+  case "$cargo_command" in
+    "nextest run"|"nextest list"|"nextest archive"|"nextest show-config"|"llvm-cov nextest")
+      # Nextest has a separate store that otherwise defaults to the workspace target.
+      mkdir -p -- "$CARGO_TARGET_DIR"
+      target_dir="$(CDPATH='' cd -- "$CARGO_TARGET_DIR" && pwd -P)"
+      nextest_store_config="$(mktemp "${target_dir}/.nextest-config.XXXXXX")"
+      trap 'rm -f -- "$nextest_store_config"' EXIT
+      python3 - "$target_dir/nextest" > "$nextest_store_config" <<'PY'
+import json
+import sys
 
-log_cargo_event "$lane" "$lane_source" "$status" "$duration_ms" "${1:-}"
-exit "$status"
+store_dir = json.dumps(sys.argv[1], ensure_ascii=False).replace("\x7f", "\\u007f")
+print(f"[store]\ndir = {store_dir}")
+PY
+
+      # Tool configs are fallback layers. Keep the caller's options ahead of ours
+      # and the test harness arguments after the separator.
+      local -a nextest_args=()
+      while [[ "$#" -gt 0 && "$1" != "--" ]]; do
+        nextest_args+=("$1")
+        shift
+      done
+      set -- "${nextest_args[@]}" --tool-config-file "quanta-index-cargow-store:$nextest_store_config" "$@"
+      ;;
+  esac
+
+  start_ms="$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000000)')"
+
+  if run_cargo "$@"; then
+    status=0
+  else
+    status="$?"
+  fi
+
+  end_ms="$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000000)')"
+  duration_ms="$((end_ms - start_ms))"
+
+  log_cargo_event "$lane" "$lane_source" "$status" "$duration_ms" "${1:-}"
+  exit "$status"
+}
+
+main "$@"

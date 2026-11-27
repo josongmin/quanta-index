@@ -602,7 +602,7 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
             source_repo_id: repository
                 .map(quanta_index_contract::RepoId::new)
                 .transpose()?,
-            language: None,
+                language: None,
         };
         Ok(objects
             .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
@@ -658,7 +658,8 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
         let marker = objects
             .lookup(cut.paths, b"path\0src/main.rs", &mut budget())?
             .ok_or("repository path absent")?;
-        let SourcePathOwners::Repositories(root) = SourcePathOwners::decode(marker, &budget())?
+        let SourcePathOwners::Repositories(root) =
+            SourcePathOwners::decode(marker, &budget())?
         else {
             return Err("repository bucket absent".into());
         };
@@ -745,6 +746,275 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
     assert_eq!(bucket_owner(next, Some("corp-b"))?, Some(owner(2)));
     assert_eq!(bucket_owner(next, None)?, Some(owner(3)));
     assert_eq!(bucket_owner(original, Some("corp-a"))?, Some(owner(1)));
+    Ok(())
+}
+
+#[test]
+fn mixed_source_path_page_matches_independent_full_for_repository_owners() -> TestResult {
+    use quanta_index_contract::RepoId;
+    use quanta_index_core::index::{SourcePathOwners, SourcePathRepositoryKey};
+    use std::fmt::Write as _;
+
+    let put_record = |objects: &FileObjectStore,
+                      body: ObjectRef,
+                      path: &str,
+                      repository: &str|
+     -> TestResult<ObjectRef> {
+        let record = SourceRecord {
+            path: path.into(),
+            bytes: body,
+            byte_len: 1,
+            text: quanta_index_core::index::SourceTextAdmission::Excluded,
+            source_repo_id: Some(RepoId::new(repository)?),
+            language: None,
+        };
+        Ok(objects
+            .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
+            .reference)
+    };
+    let path_bucket =
+        |objects: &FileObjectStore, cut: SourceCut, path: &str| -> TestResult<MapRoot> {
+            let mut path_key = b"path\0".to_vec();
+            path_key.extend_from_slice(path.as_bytes());
+            let marker = objects
+                .lookup(cut.paths, &path_key, &mut budget())?
+                .ok_or("repository path marker absent")?;
+            let SourcePathOwners::Repositories(root) = SourcePathOwners::decode(marker, &budget())?
+            else {
+                return Err("repository path bucket absent".into());
+            };
+            Ok(MapRoot(Some(root)))
+        };
+    let bucket_owner = |objects: &FileObjectStore,
+                        cut: SourceCut,
+                        path: &str,
+                        repository: &str|
+     -> TestResult<Option<OwnerKey>> {
+        let root = path_bucket(objects, cut, path)?
+            .0
+            .ok_or("repository path bucket absent")?;
+        let repo = RepoId::new(repository)?;
+        let key = SourcePathRepositoryKey::new(Some(&repo))?;
+        Ok(SourcePathOwners::repository_owner(
+            root,
+            key.as_slice()?,
+            objects,
+            &mut budget(),
+        )?)
+    };
+
+    let delta_dir = tempfile::tempdir()?;
+    let (delta_kernel, delta_objects, delta_catalog) = kernel(delta_dir.path())?;
+    let delta_genesis = delta_kernel.create_workspace(workspace(), 1, &mut budget())?;
+    let delta_body = delta_objects.put(b"a", &[], &mut budget())?.reference;
+    let initial_a = put_record(delta_objects.as_ref(), delta_body, "src/main.rs", "corp-a")?;
+    let common_b = put_record(delta_objects.as_ref(), delta_body, "src/main.rs", "corp-b")?;
+    let initial_view = published(block_on(delta_kernel.submit(
+        request(
+            &delta_kernel,
+            &delta_catalog,
+            &delta_objects,
+            delta_genesis,
+            source(&delta_kernel, delta_genesis)?,
+            1,
+            1,
+            vec![
+                OwnerMutation {
+                    owner: owner(1),
+                    expected: None,
+                    next: Some(initial_a),
+                },
+                OwnerMutation {
+                    owner: owner(2),
+                    expected: None,
+                    next: Some(common_b),
+                },
+            ],
+        )?,
+        &mut budget(),
+    ))?)?;
+    let initial_cut = source(&delta_kernel, initial_view)?;
+    let common_c = put_record(delta_objects.as_ref(), delta_body, "src/main.rs", "corp-c")?;
+    let renamed_path = "src/r-renamed.rs";
+    let renamed = put_record(delta_objects.as_ref(), delta_body, renamed_path, "corp-a")?;
+    let mut changes = vec![
+        OwnerMutation {
+            owner: owner(1),
+            expected: Some(initial_a),
+            next: Some(renamed),
+        },
+        OwnerMutation {
+            owner: owner(3),
+            expected: None,
+            next: Some(common_c),
+        },
+    ];
+    let mut fresh = Vec::new();
+    for ordinal in 0..127_u8 {
+        // The retained main path must separate two fresh rows in path order.
+        let prefix = if ordinal == 126 { 'z' } else { 'f' };
+        let path = format!("src/{prefix}{ordinal:04}.rs");
+        let claimant = owner(ordinal + 4);
+        let record = put_record(delta_objects.as_ref(), delta_body, &path, "corp-a")?;
+        changes.push(OwnerMutation {
+            owner: claimant,
+            expected: None,
+            next: Some(record),
+        });
+        fresh.push((path, claimant, record));
+    }
+    let update = request(
+        &delta_kernel,
+        &delta_catalog,
+        &delta_objects,
+        initial_view,
+        initial_cut,
+        2,
+        2,
+        changes,
+    )?;
+    let operation = update.operation;
+    let ObjectRef(Digest(bytes)) = path_bucket(&delta_objects, initial_cut, "src/main.rs")?
+        .0
+        .ok_or("repository path bucket absent before fault")?;
+    let mut name = String::with_capacity(64);
+    for byte in bytes {
+        write!(&mut name, "{byte:02x}")?;
+    }
+    let shard = name.get(..2).ok_or("object shard absent")?;
+    let bucket_file = delta_dir
+        .path()
+        .join("native-objects/objects")
+        .join(shard)
+        .join(&name);
+    let removed_bucket = delta_dir.path().join("removed-repository-bucket");
+    std::fs::rename(&bucket_file, &removed_bucket)?;
+    let failed = block_on(delta_kernel.submit(update, &mut budget()));
+    std::fs::rename(removed_bucket, bucket_file)?;
+    assert_eq!(failed?, SubmitOutcome::Unknown(operation));
+    let latest = delta_kernel.pin_view(
+        ViewSelection::Latest {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?;
+    assert_eq!(latest.view().identity, initial_view);
+    assert_eq!(latest.view().source, initial_cut);
+    latest.release()?;
+
+    let delta_view = published(block_on(delta_kernel.resume(operation, &mut budget()))?)?;
+    assert_eq!(
+        block_on(delta_kernel.resume(operation, &mut budget()))?,
+        SubmitOutcome::Terminal(OperationStatus::Published(delta_view))
+    );
+    let delta_cut = source(&delta_kernel, delta_view)?;
+
+    let full_dir = tempfile::tempdir()?;
+    let (full_kernel, full_objects, full_catalog) = kernel(full_dir.path())?;
+    let full_genesis = full_kernel.create_workspace(workspace(), 1, &mut budget())?;
+    let full_body = full_objects.put(b"a", &[], &mut budget())?.reference;
+    let full_b = put_record(full_objects.as_ref(), full_body, "src/main.rs", "corp-b")?;
+    let full_c = put_record(full_objects.as_ref(), full_body, "src/main.rs", "corp-c")?;
+    let full_renamed = put_record(full_objects.as_ref(), full_body, renamed_path, "corp-a")?;
+    let mut all = vec![
+        OwnerMutation {
+            owner: owner(1),
+            expected: None,
+            next: Some(full_renamed),
+        },
+        OwnerMutation {
+            owner: owner(2),
+            expected: None,
+            next: Some(full_b),
+        },
+        OwnerMutation {
+            owner: owner(3),
+            expected: None,
+            next: Some(full_c),
+        },
+    ];
+    for (path, claimant, expected) in &fresh {
+        let record = put_record(full_objects.as_ref(), full_body, path, "corp-a")?;
+        assert_eq!(record, *expected);
+        all.push(OwnerMutation {
+            owner: *claimant,
+            expected: None,
+            next: Some(record),
+        });
+    }
+    let full_view = published(block_on(full_kernel.submit(
+        request(
+            &full_kernel,
+            &full_catalog,
+            &full_objects,
+            full_genesis,
+            source(&full_kernel, full_genesis)?,
+            1,
+            1,
+            all,
+        )?,
+        &mut budget(),
+    ))?)?;
+    let full_cut = source(&full_kernel, full_view)?;
+
+    assert_eq!(map_count(&delta_objects, delta_cut.owners)?, 130);
+    assert_eq!(map_count(&delta_objects, delta_cut.paths)?, 129);
+    assert_eq!(map_count(&full_objects, full_cut.owners)?, 130);
+    assert_eq!(map_count(&full_objects, full_cut.paths)?, 129);
+    assert_eq!(
+        bucket_owner(&delta_objects, initial_cut, "src/main.rs", "corp-a")?,
+        Some(owner(1))
+    );
+    assert_eq!(
+        map_count(
+            &delta_objects,
+            path_bucket(&delta_objects, initial_cut, "src/main.rs")?
+        )?,
+        2
+    );
+    for (objects, cut) in [(&delta_objects, delta_cut), (&full_objects, full_cut)] {
+        assert_eq!(
+            map_count(objects, path_bucket(objects, cut, "src/main.rs")?)?,
+            2
+        );
+        assert_eq!(bucket_owner(objects, cut, "src/main.rs", "corp-a")?, None);
+        assert_eq!(
+            bucket_owner(objects, cut, "src/main.rs", "corp-b")?,
+            Some(owner(2))
+        );
+        assert_eq!(
+            bucket_owner(objects, cut, "src/main.rs", "corp-c")?,
+            Some(owner(3))
+        );
+        assert_eq!(
+            bucket_owner(objects, cut, renamed_path, "corp-a")?,
+            Some(owner(1))
+        );
+        assert_eq!(
+            objects.lookup_object(cut.owners, &owner_map_key(owner(1)), &mut budget())?,
+            Some(renamed)
+        );
+        for (path, claimant, record) in &fresh {
+            assert_eq!(map_count(objects, path_bucket(objects, cut, path)?)?, 1);
+            assert_eq!(bucket_owner(objects, cut, path, "corp-a")?, Some(*claimant));
+            assert_eq!(
+                objects.lookup_object(cut.owners, &owner_map_key(*claimant), &mut budget())?,
+                Some(*record)
+            );
+        }
+    }
+    assert_eq!(
+        delta_objects.lookup_object(delta_cut.owners, &owner_map_key(owner(2)), &mut budget())?,
+        Some(common_b)
+    );
+    assert_eq!(
+        delta_objects.lookup_object(delta_cut.owners, &owner_map_key(owner(3)), &mut budget())?,
+        Some(common_c)
+    );
+    assert_eq!(full_b, common_b);
+    assert_eq!(full_c, common_c);
+    assert_eq!(full_renamed, renamed);
     Ok(())
 }
 
@@ -865,8 +1135,8 @@ fn source_path_cycle_crosses_mutation_cursor_pages() -> TestResult {
     while let Some(reference) = path_nodes.pop() {
         let node = objects.get(reference, &mut budget())?;
         // Both one-level and nested packing cross the same mutation-page boundary.
-        contains_packed_node |=
-            node.payload.starts_with(b"QIMAP005") || node.payload.starts_with(b"QIMAP006");
+        contains_packed_node |= node.payload.starts_with(b"QIMAP005")
+            || node.payload.starts_with(b"QIMAP006");
         // Path owner values have no object children, so these edges are nodes.
         path_nodes.extend(node.registration.children.iter().copied());
     }
@@ -3396,7 +3666,7 @@ fn required_lexical_and_filemap_publish_one_view_and_prefix_pagination_is_exact(
 }
 
 #[test]
-fn empty_source_advance_rebinds_real_filemap_and_preserves_pinned_paths() -> TestResult {
+fn empty_source_advance_reuses_real_filemap_root_and_preserves_pinned_paths() -> TestResult {
     let root = tempfile::tempdir()?;
     let (engine, objects, catalog) = kernel(root.path())?;
     let configured = configured(&engine, &objects)?;
@@ -3453,20 +3723,21 @@ fn empty_source_advance_rebinds_real_filemap_and_preserves_pinned_paths() -> Tes
     let new_file = file_member(&engine, &objects, second)?;
     assert_eq!(new_file.input.root, old_file.input.root);
     assert_ne!(new_file.input.context, old_file.input.context);
-    assert_ne!(new_file.artifact, old_file.artifact);
-
-    let old_root: serde_json::Value =
-        serde_json::from_slice(&objects.get(old_file.artifact, &mut budget())?.payload)?;
-    let new_root: serde_json::Value =
+    // The file map root binds owners and paths, never frontiers: the
+    // frontier-only advance keeps the exact root under the new input.
+    assert_eq!(new_file.artifact, old_file.artifact);
+    assert_eq!(new_file.logical_commitment, old_file.logical_commitment);
+    let file_root: serde_json::Value =
         serde_json::from_slice(&objects.get(new_file.artifact, &mut budget())?.payload)?;
     assert_eq!(
-        old_root.get("source"),
-        Some(&serde_json::to_value(old_cut)?)
+        file_root.get("owners"),
+        Some(&serde_json::to_value(new_cut.owners)?)
     );
     assert_eq!(
-        new_root.get("source"),
-        Some(&serde_json::to_value(new_cut)?)
+        file_root.get("paths"),
+        Some(&serde_json::to_value(new_cut.paths)?)
     );
+    assert_eq!(file_root.get("source"), None);
 
     let old_paths = query_paths(
         &FilePathQuery {
@@ -6431,6 +6702,12 @@ struct UpdateCostSpyState {
     inventory_block_ten_row_inputs: u64,
     materialized_metadata_batches: u64,
     empty_base_edits: u64,
+    /// Physical installer inputs carrying any Native Text wire magic (`QTX`).
+    text_wire_installs: u64,
+    /// Identities the installer confirmed while armed, before content reuse.
+    installed: std::collections::BTreeSet<ObjectRef>,
+    /// Map roots read, diffed or used as an apply base while armed.
+    touched_maps: std::collections::BTreeSet<ObjectRef>,
     single_map_stream: MapStreamCost,
     multi_map_stream: MapStreamCost,
     io_baseline: Option<quanta_index_storage::ObjectIoSnapshot>,
@@ -6538,10 +6815,29 @@ impl UpdateCostSpy {
 
     fn record_occurrence_inputs<'a>(
         &self,
-        payloads: impl IntoIterator<Item = &'a [u8]>,
+        payloads: impl IntoIterator<Item = &'a [u8]> + Clone,
     ) -> Result<(), IndexError> {
         if !self.active.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
+        }
+        // Every Native Text root, partition, segment and posting page wire
+        // starts with `QTX`; count them before content-addressed store reuse.
+        let text_wire = payloads
+            .clone()
+            .into_iter()
+            .filter(|payload| payload.starts_with(b"QTX"))
+            .count();
+        if text_wire != 0 {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?;
+            state.text_wire_installs = state
+                .text_wire_installs
+                .checked_add(
+                    u64::try_from(text_wire).map_err(|_error| IndexError::ResourceLimited)?,
+                )
+                .ok_or(IndexError::ResourceLimited)?;
         }
         // Count both current-policy occurrence wires at the physical installer,
         // before content-addressed store reuse. Generic map blocks use another
@@ -6567,6 +6863,39 @@ impl UpdateCostSpy {
             .occurrence_install_calls
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
+        drop(state);
+        Ok(())
+    }
+
+    fn record_map_roots(&self, roots: &[MapRoot]) -> Result<(), IndexError> {
+        if !self.active.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        state
+            .touched_maps
+            .extend(roots.iter().filter_map(|root| root.0));
+        drop(state);
+        Ok(())
+    }
+
+    fn record_installed<'a>(
+        &self,
+        objects: impl IntoIterator<Item = &'a quanta_index_core::index::RegisteredObject>,
+    ) -> Result<(), IndexError> {
+        if !self.active.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        state
+            .installed
+            .extend(objects.into_iter().map(|object| object.reference));
         drop(state);
         Ok(())
     }
@@ -6786,7 +7115,9 @@ impl ImmutableObjectPort for UpdateCostSpy {
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::RegisteredObject, IndexError> {
         self.record_occurrence_inputs([payload])?;
-        self.inner.put(payload, children, budget)
+        let object = self.inner.put(payload, children, budget)?;
+        self.record_installed([&object])?;
+        Ok(object)
     }
 
     fn install(
@@ -6804,7 +7135,9 @@ impl ImmutableObjectPort for UpdateCostSpy {
         {
             return Err(IndexError::ResourceLimited);
         }
-        self.inner.install(payload, children, sink, budget)
+        let object = self.inner.install(payload, children, sink, budget)?;
+        self.record_installed([&object])?;
+        Ok(object)
     }
 
     fn install_batch(
@@ -6828,6 +7161,7 @@ impl ImmutableObjectPort for UpdateCostSpy {
         }
         let dense_profile = dense_install_batches::before(self, inputs)?;
         let confirmed = self.inner.install_batch(inputs, sink, budget)?;
+        self.record_installed(confirmed.iter())?;
         dense_install_batches::after(self, inputs, dense_profile)?;
         // Inventory Block is the actual map installation path for 9..=512
         // rows. Observe confirmed objects, not attempted writes or a tree-only
@@ -7011,6 +7345,7 @@ impl PersistentMapPort for UpdateCostSpy {
         visitor: &mut dyn quanta_index_core::index::ports::MapDiffVisitor,
         budget: &mut WorkBudget,
     ) -> Result<bool, IndexError> {
+        self.record_map_roots(&[before, after])?;
         if self.active.load(std::sync::atomic::Ordering::Acquire) {
             let mut state = self
                 .state
@@ -7035,6 +7370,7 @@ impl PersistentMapPort for UpdateCostSpy {
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<quanta_index_core::index::MapValue>, IndexError> {
+        self.record_map_roots(&[root])?;
         self.inner.lookup(root, key, budget)
     }
 
@@ -7045,6 +7381,7 @@ impl PersistentMapPort for UpdateCostSpy {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::MapPage, IndexError> {
+        self.record_map_roots(&[root])?;
         let page = self.inner.scan(root, after, limit, budget)?;
         self.record_map_page(root, page)
     }
@@ -7054,6 +7391,7 @@ impl PersistentMapPort for UpdateCostSpy {
         root: MapRoot,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::MapPage, IndexError> {
+        self.record_map_roots(&[root])?;
         let page = self.inner.last_entry(root, budget)?;
         self.record_map_page(root, page)
     }
@@ -7065,6 +7403,7 @@ impl PersistentMapPort for UpdateCostSpy {
         sink: &dyn quanta_index_core::index::ports::ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::MapWrite, IndexError> {
+        self.record_map_roots(&[base])?;
         if base == quanta_index_core::index::MapRoot(None) {
             self.record_empty_base_edits(edits.len())?;
         }
@@ -7077,6 +7416,9 @@ impl PersistentMapPort for UpdateCostSpy {
         sink: &dyn quanta_index_core::index::ports::ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::MapBatchWrite, IndexError> {
+        for request in requests {
+            self.record_map_roots(&[request.base])?;
+        }
         if self.active.load(std::sync::atomic::Ordering::Acquire) {
             let empty_edits = requests
                 .iter()
@@ -7131,6 +7473,7 @@ impl PersistentMapPort for UpdateCostSpy {
                 Ok(edit)
             }
         }
+        self.record_map_roots(bases)?;
         if !self.active.load(std::sync::atomic::Ordering::Acquire) {
             return self.inner.apply_stream(bases, edits, sink, budget);
         }
@@ -7160,10 +7503,7 @@ impl PersistentMapPort for UpdateCostSpy {
                         ));
                     }
                     state.next_literal_blocks = Some(
-                        *roots
-                            .as_slice()
-                            .get(index)
-                            .ok_or(IndexError::ResourceLimited)?,
+                        *roots.as_slice().get(index).ok_or(IndexError::ResourceLimited)?,
                     );
                 }
             }
@@ -8003,7 +8343,9 @@ fn literal_unrelated_corpus() -> Vec<u8> {
     body
 }
 
-fn literal_directory_patch_case(unrelated_len: usize) -> TestResult<(u64, UpdateCostObservation)> {
+fn literal_directory_patch_case(
+    unrelated_len: usize,
+) -> TestResult<(u64, UpdateCostObservation)> {
     let directory = tempfile::tempdir()?;
     let observer = Arc::new(quanta_index_storage::ObjectIoObservation::default());
     let (engine, objects, catalog, spy) = observed_literal_cost_kernel(directory.path(), observer)?;
@@ -8070,8 +8412,7 @@ fn literal_directory_patch_case(unrelated_len: usize) -> TestResult<(u64, Update
     let new_view = published(block_on(engine.submit(update, &mut work))?)?;
     let observed = spy.disarm()?;
     let new_member = member(&engine, &objects, new_view)?;
-    let _ =
-        assert_literal_postings_exact(&objects, &new_member, unrelated_body, b"fixed-hotp-new-v1")?;
+    let _ = assert_literal_postings_exact(&objects, &new_member, unrelated_body, b"fixed-hotp-new-v1")?;
     assert_eq!(
         hits(&engine, old_view, &objects, &old_member, b"hotp-old")?,
         vec![hot_owner]
@@ -8252,16 +8593,12 @@ fn literal_patch_uses_empty_directory_for_two_byte_sources() -> TestResult {
         ))?)?;
         let member = member(&engine, &objects, next_view)?;
         let root = objects.get(member.artifact, &mut budget())?;
-        assert_eq!(
-            root.payload.get(41),
-            Some(&u8::from(expected_postings != 0))
-        );
+        assert_eq!(root.payload.get(41), Some(&u8::from(expected_postings != 0)));
         if expected_postings == 0 {
             assert_eq!(root.registration.children.len(), 1);
             assert!(hits(&engine, next_view, &objects, &member, b"abc")?.is_empty());
         } else {
-            let rows =
-                literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?;
+            let rows = literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?;
             assert_eq!(rows.len(), 1);
             let block = objects.get(rows[0].1, &mut budget())?;
             let keys = literal_block_keys(&block.payload)?;
@@ -8270,10 +8607,7 @@ fn literal_patch_uses_empty_directory_for_two_byte_sources() -> TestResult {
             expected[..3].copy_from_slice(b"abc");
             expected[3..].copy_from_slice(&literal_owner_bytes(owner));
             assert_eq!(keys[0], expected);
-            assert_eq!(
-                hits(&engine, next_view, &objects, &member, b"abc")?,
-                vec![owner]
-            );
+            assert_eq!(hits(&engine, next_view, &objects, &member, b"abc")?, vec![owner]);
         }
         prior_ref = Some(next_ref);
         prior_view = next_view;
@@ -8299,21 +8633,9 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
             2,
             1,
             vec![
-                OwnerMutation {
-                    owner: owner(1),
-                    expected: None,
-                    next: Some(base),
-                },
-                OwnerMutation {
-                    owner: owner(2),
-                    expected: None,
-                    next: Some(first),
-                },
-                OwnerMutation {
-                    owner: owner(3),
-                    expected: None,
-                    next: Some(last),
-                },
+                OwnerMutation { owner: owner(1), expected: None, next: Some(base) },
+                OwnerMutation { owner: owner(2), expected: None, next: Some(first) },
+                OwnerMutation { owner: owner(3), expected: None, next: Some(last) },
             ],
         )?,
         &mut budget(),
@@ -8323,18 +8645,8 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
     let mut prior_last = last;
 
     for (sequence, id, body, expected_grams) in [
-        (
-            3,
-            2,
-            b"abc".as_slice(),
-            [Some((b"abc".as_slice(), 2)), None],
-        ),
-        (
-            4,
-            3,
-            b"xyz".as_slice(),
-            [Some((b"abc".as_slice(), 2)), Some((b"xyz".as_slice(), 3))],
-        ),
+        (3, 2, b"abc".as_slice(), [Some((b"abc".as_slice(), 2)), None]),
+        (4, 3, b"xyz".as_slice(), [Some((b"abc".as_slice(), 2)), Some((b"xyz".as_slice(), 3))]),
         (5, 2, b"ab".as_slice(), [None, Some((b"xyz".as_slice(), 3))]),
         (6, 3, b"xy".as_slice(), [None, None]),
     ] {
@@ -8357,19 +8669,14 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
             )?,
             &mut budget(),
         ))?)?;
-        if id == 2 {
-            prior_first = current_ref;
-        } else {
-            prior_last = current_ref;
-        }
+        if id == 2 { prior_first = current_ref; } else { prior_last = current_ref; }
         let member = member(&engine, &objects, next_view)?;
         let mut actual = Vec::new();
-        for (_, reference) in
-            literal_directory_rows(&objects, literal_block_directory(&objects, &member)?)?
-        {
-            actual.extend(literal_block_keys(
-                &objects.get(reference, &mut budget())?.payload,
-            )?);
+        for (_, reference) in literal_directory_rows(
+            &objects,
+            literal_block_directory(&objects, &member)?,
+        )? {
+            actual.extend(literal_block_keys(&objects.get(reference, &mut budget())?.payload)?);
         }
         let mut expected = Vec::new();
         for (gram, id) in [(b"mmm".as_slice(), 1)]
@@ -8385,18 +8692,11 @@ fn literal_patch_inserts_and_removes_first_and_last_postings() -> TestResult {
         assert_eq!(actual, expected);
         for (gram, id) in [(b"abc".as_slice(), 2), (b"xyz".as_slice(), 3)] {
             let observed = hits(&engine, next_view, &objects, &member, gram)?;
-            assert_eq!(
-                observed,
-                if expected_grams
-                    .into_iter()
-                    .flatten()
-                    .any(|(text, _)| text == gram)
-                {
-                    vec![owner(id)]
-                } else {
-                    Vec::new()
-                }
-            );
+            assert_eq!(observed, if expected_grams.into_iter().flatten().any(|(text, _)| text == gram) {
+                vec![owner(id)]
+            } else {
+                Vec::new()
+            });
         }
         view = next_view;
     }
@@ -12404,5 +12704,11 @@ mod text_entry_maps;
 
 #[path = "native_lifecycle/dense_install_batches.rs"]
 mod dense_install_batches;
+#[path = "native_lifecycle/core_noop_delta.rs"]
+mod core_noop_delta;
+#[path = "native_lifecycle/layered_noop_delta.rs"]
+mod layered_noop_delta;
 #[path = "native_lifecycle/occurrence_blocks.rs"]
 mod occurrence_blocks;
+#[path = "native_lifecycle/retired_text_root.rs"]
+mod retired_text_root;

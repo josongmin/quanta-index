@@ -241,11 +241,11 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
     let (selected, _) = setup(&client, semantic)?;
     let setup_provider_calls = calls.load(Ordering::SeqCst);
 
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(60), &budget())?;
-    client.report_interaction_activity(publisher, 1, &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(60))?;
+    live.activity()?;
     let session = NativeOverlaySession {
         workspace: workspace(),
-        publisher,
+        publisher: live.id(),
         epoch: 1,
     };
     assert_eq!(
@@ -256,6 +256,7 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
         session,
         owner: owner(),
     };
+    live.renew()?;
     assert_eq!(
         client.update_overlay_at_path(
             document,
@@ -263,6 +264,7 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
             1,
             Some("beta".into()),
             Some("a.rs".into()),
+            None,
             &budget(),
         )?,
         NativeOverlayReply::Updated {
@@ -271,6 +273,7 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
         }
     );
 
+    live.renew()?;
     let (first, first_done) = overlay_fast(&client, selected, session, None)?;
     assert_eq!(first.view, selected);
     assert_eq!(first_done.reason, NativeEffortReason::ExplicitFast);
@@ -287,6 +290,7 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
 
     let first_signal_count = captured(&signals)?.len();
     let first_policy_count = prior_policy.len();
+    live.renew()?;
     let update_started = Instant::now();
     assert_eq!(
         client.update_overlay_at_path(
@@ -295,6 +299,7 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
             2,
             Some("alpha".into()),
             Some("a.rs".into()),
+            None,
             &budget(),
         )?,
         NativeOverlayReply::Updated {
@@ -302,6 +307,7 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
             revision: 2,
         }
     );
+    live.renew()?;
     let (second, second_done) = overlay_auto(&client, selected, session)?;
     assert_eq!(second.view, selected);
     assert_eq!(second_done.corpus.as_ref(), Some(&second.corpus));
@@ -339,7 +345,7 @@ fn uds_auto_samples_authenticated_overlay_and_resets_revision_clear_window() -> 
         return Err("document signal capture lock was poisoned".into());
     }
 
-    client.end_interaction_publisher(publisher, 2, &budget())?;
+    live.end()?;
     running.stop()?;
     Ok(())
 }

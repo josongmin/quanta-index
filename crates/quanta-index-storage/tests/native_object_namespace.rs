@@ -170,6 +170,42 @@ fn managed_and_standalone_reads_recheck_private_names_after_open() -> TestResult
 }
 
 #[test]
+fn managed_reads_recheck_held_namespace_lock_name_and_mode() -> TestResult {
+    let parent = tempfile::tempdir()?;
+    let root = parent.path().join("store");
+    let seed = FileObjectStore::open(&root)?;
+    let object = seed.put(b"existing", &[], &mut budget()?)?;
+    drop(seed);
+    let reader = open_managed(&root, scratch(parent.path())?)?;
+    let lease = root.join(LEASE);
+
+    fs::set_permissions(&lease, fs::Permissions::from_mode(0o640))?;
+    assert!(matches!(
+        reader.get(object.reference, &mut budget()?),
+        Err(IndexError::Storage(message)) if message.contains("unsafe owner, mode, type, link or device")
+    ));
+    fs::set_permissions(&lease, fs::Permissions::from_mode(0o600))?;
+
+    let held = root.join("held-namespace-lease");
+    fs::rename(&lease, &held)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&lease)?;
+    assert!(matches!(
+        reader.get(object.reference, &mut budget()?),
+        Err(IndexError::Storage(message)) if message == "object namespace lease name changed"
+    ));
+    fs::rename(held, lease)?;
+    assert_eq!(
+        reader.get(object.reference, &mut budget()?)?.payload,
+        b"existing"
+    );
+    Ok(())
+}
+
+#[test]
 fn path_aliases_cannot_bypass_exclusive_object_namespace() -> TestResult {
     let parent = tempfile::tempdir()?;
     let root = parent.path().join("store");

@@ -41,7 +41,7 @@ def test_default_request_budget_and_front_door_match_authoritative_floor() -> No
     counts = [sum(index % 5 == route for index in range(requests)) for route in range(5)]
     assert all(count >= floor for count in counts), counts
     recipe = re.search(
-        r'^rust-verify-quality-concurrency requests="([0-9]+)":$',
+        r'^rust-verify-quality-concurrency requests="([0-9]+)":',
         (REPO / "Justfile").read_text(),
         re.MULTILINE,
     )

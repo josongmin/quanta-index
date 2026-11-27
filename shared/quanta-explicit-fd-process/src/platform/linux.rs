@@ -51,11 +51,7 @@ pub(crate) fn set_descriptor_cloexec_v1(
     }
     // SAFETY: F_SETFD updates only descriptor flags and never assumes ownership.
     let result_v1 = unsafe {
-        libc::fcntl(
-            descriptor_v1.as_raw_fd(),
-            libc::F_SETFD,
-            flags_v1 | libc::FD_CLOEXEC,
-        )
+        libc::fcntl(descriptor_v1.as_raw_fd(), libc::F_SETFD, flags_v1 | libc::FD_CLOEXEC)
     };
     if result_v1 < 0 {
         return Err(descriptor_error_v1("fcntl_setfd_cloexec_v1"));
@@ -94,26 +90,34 @@ pub(super) fn duplicate_cloexec_at_least_v1(
     Ok(unsafe { OwnedFd::from_raw_fd(duplicate_v1) })
 }
 
+#[cfg_attr(
+    target_pointer_width = "64",
+    expect(
+        clippy::useless_conversion,
+        reason = "the same lossless field widening is required by 32-bit Linux stat64"
+    )
+)]
 pub(crate) fn descriptor_identity_v1(
     descriptor_v1: BorrowedFd<'_>,
 ) -> Result<DescriptorIdentityV1, ExplicitFdProcessErrorV1> {
-    let mut stat_v1 = MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: fstat initializes the pointed-to stat on success.
-    if unsafe { libc::fstat(descriptor_v1.as_raw_fd(), stat_v1.as_mut_ptr()) } != 0 {
+    let mut stat_v1 = MaybeUninit::<libc::stat64>::uninit();
+    // SAFETY: fstat64 initializes the pointed-to stat64 on success and retains
+    // full file sizes and inode numbers on 32-bit Linux.
+    if unsafe { libc::fstat64(descriptor_v1.as_raw_fd(), stat_v1.as_mut_ptr()) } != 0 {
         return Err(descriptor_error_v1("fstat_descriptor_v1"));
     }
-    // SAFETY: successful fstat initialized the value.
+    // SAFETY: successful fstat64 initialized the value.
     let stat_v1 = unsafe { stat_v1.assume_init() };
     Ok(DescriptorIdentityV1 {
-        device_v1: stat_v1.st_dev,
-        inode_v1: stat_v1.st_ino,
+        device_v1: u64::from(stat_v1.st_dev),
+        inode_v1: u64::from(stat_v1.st_ino),
         size_v1: u64::try_from(stat_v1.st_size)
             .map_err(|_| ExplicitFdProcessErrorV1::InvalidExecutableDescriptor)?,
         mode_v1: stat_v1.st_mode,
-        modified_seconds_v1: stat_v1.st_mtime,
-        modified_nanoseconds_v1: stat_v1.st_mtime_nsec,
-        changed_seconds_v1: stat_v1.st_ctime,
-        changed_nanoseconds_v1: stat_v1.st_ctime_nsec,
+        modified_seconds_v1: i64::from(stat_v1.st_mtime),
+        modified_nanoseconds_v1: i64::from(stat_v1.st_mtime_nsec),
+        changed_seconds_v1: i64::from(stat_v1.st_ctime),
+        changed_nanoseconds_v1: i64::from(stat_v1.st_ctime_nsec),
         regular_file_v1: stat_v1.st_mode & libc::S_IFMT == libc::S_IFREG,
         directory_v1: stat_v1.st_mode & libc::S_IFMT == libc::S_IFDIR,
     })
@@ -219,12 +223,7 @@ pub(crate) fn observe_pid_exit_without_reap_v1(
         // SAFETY: waitid initializes siginfo on success while WNOWAIT keeps the
         // launcher-owned leader waitable, preserving its process-group ID.
         let result_v1 = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                pid_v1 as libc::id_t,
-                info_v1.as_mut_ptr(),
-                options_v1,
-            )
+            libc::waitid(libc::P_PID, pid_v1 as libc::id_t, info_v1.as_mut_ptr(), options_v1)
         };
         if result_v1 == 0 {
             // SAFETY: successful waitid initialized the zeroed siginfo value.

@@ -78,13 +78,21 @@ fn storage_io(context: &str, error: impl Into<io::Error>) -> CoreError {
 
 struct ObjectOpen(OpenGuard);
 
+pub(crate) fn object_open(guard: OpenGuard) -> Box<dyn PublicationObjectOpenTicket> {
+    Box::new(ObjectOpen(guard))
+}
+
+pub(crate) fn object_reader(lease: ReaderLease) -> Box<dyn PublicationObjectReader> {
+    Box::new(ObjectReader(lease))
+}
+
 impl PublicationObjectOpenTicket for ObjectOpen {
     fn opened_owned(
         self: Box<Self>,
         file: File,
     ) -> Result<Box<dyn PublicationObjectReader>, CoreError> {
         let Self(guard) = *self;
-        Ok(Box::new(ObjectReader(guard.opened_owned(file)?)))
+        Ok(object_reader(guard.opened_owned(file)?))
     }
 }
 
@@ -183,7 +191,7 @@ impl PublicationObjectLifetimePort for PublicationLexicalLifetime {
         path: &Path,
     ) -> Result<Box<dyn PublicationObjectOpenTicket>, CoreError> {
         self.require_object_path(path)?;
-        Ok(Box::new(ObjectOpen(self.binder.begin_reader_open(path)?)))
+        Ok(object_open(self.binder.begin_reader_open(path)?))
     }
 
     fn begin_delete(

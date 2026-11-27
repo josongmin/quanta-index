@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from copy import deepcopy
 
 import pytest
@@ -85,4 +86,22 @@ def test_ci_runs_nonempty_registry_consumer_and_checks_its_features():
     assert "tools/ci/ciborium-no-default-consumer/Cargo.toml" in command
     assert "nextest run" in command and "--locked" in command and "--no-tests fail" in command
     assert "python3 tools/ci/verify_ciborium_no_default.py" in command
-    assert "ciborium no-default integration" in commands
+
+
+def test_local_commands_run_the_same_registry_consumer_and_check_its_features():
+    commands = []
+    for recipe in ("rust-test-ciborium-no-default", "rust-test-ciborium-registry-no-default"):
+        result = subprocess.run(
+            ["just", "--dry-run", recipe],
+            cwd=verifier.ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        commands.append(result.stderr.splitlines())
+
+    assert commands[0] == commands[1]
+    run, verify = commands[0]
+    assert "nextest run --manifest-path tools/ci/ciborium-no-default-consumer/Cargo.toml" in run
+    assert "--locked --lib --no-tests fail" in run
+    assert verify == "python3 tools/ci/verify_ciborium_no_default.py"

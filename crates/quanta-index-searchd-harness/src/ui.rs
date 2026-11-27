@@ -251,9 +251,25 @@ fn score_probe(client: &QuantaIndex, pin: &GenerationPin, probe: &UiProbe) -> Ui
             failures,
         };
     };
-    let snippet = candidate.snippet.clone();
-    let snippet_hit_offset = candidate.snippet_hit_offset;
-    let highlights = candidate.highlights.clone();
+    let Some(excerpt) = &candidate.excerpt else {
+        failures.push(format!(
+            "{}: candidate for `{}` carries no match excerpt (anchor ungradable)",
+            probe.id, probe.path
+        ));
+        return UiScore {
+            id: probe.id,
+            query: probe.query,
+            needle: probe.needle,
+            path: probe.path,
+            snippet: None,
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+            failures,
+        };
+    };
+    let snippet = excerpt.snippet.clone();
+    let snippet_hit_offset = excerpt.snippet_hit_offset;
+    let highlights = excerpt.highlights.clone();
     // 1. Anchor present — the typed field must be populated, not implicit.
     match snippet_hit_offset {
         None => failures.push(format!(

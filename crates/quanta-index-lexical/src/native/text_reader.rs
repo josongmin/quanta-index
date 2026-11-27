@@ -5,7 +5,10 @@ use std::{borrow::Cow, sync::Arc};
 
 use super::text::{BoundTextMember, authenticated_text_source, valid_path};
 use super::text_memory::PreparedRows;
-use super::{Bm25Policy, NativeTextIndex, TextReadContext, TextRecipe};
+use super::{
+    Bm25Policy, CodeSearchMatch, NativeTextIndex, TextRankEntry, TextRankOrder, TextReadContext,
+    TextRecipe,
+};
 use super::{
     text_overlay::{
         MAX_TEXT_OVERLAY_DOCUMENT_BYTES, MAX_TEXT_OVERLAY_DOCUMENTS, MAX_TEXT_OVERLAY_TOTAL_BYTES,
@@ -18,14 +21,16 @@ use super::{
 };
 use crate::plan::LexicalPlan;
 use crate::symbol::ResultSurface;
+use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     PreviewUnavailableReason, RepoId,
     native_protocol::{MAX_NATIVE_TEXT_TOP_K, NativeTextPreview, NativeTextPreviewEvidence},
 };
 use quanta_index_core::index::{
     FiniteScore, IndexError, IndexQueryPort, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey,
-    QueryOutcome, QueryReadContext, SourcePathOwners, SourceRecordOwner, WorkBudget, WorkUsage,
-    effort::ResourceNeed, owner_map_key, ports::IndexBuildPort, visit_repository_path_sources,
+    QueryOutcome, QueryReadContext, SourcePathOwners, SourceRecord, SourceRecordOwner, WorkBudget,
+    WorkUsage, effort::ResourceNeed, owner_map_key, ports::IndexBuildPort,
+    visit_repository_path_sources,
 };
 
 /// A planned request retains the canonical lexical plan and a bounded result cap.
@@ -46,16 +51,49 @@ pub struct PlannedTextRead {
     overlay: Vec<TextOverlayReadDocument>,
     // The caller funds the owned row container before constructing it.
     overlay_memory: Option<MemoryLease>,
+    // Set by `with_overlay`, including for an empty captured corpus.
+    overlay_read: bool,
+    order: OrderMode,
+}
+
+/// How a page uses a full ranked order.
+#[derive(Debug, Default)]
+enum OrderMode {
+    /// Rank and project as usual.
+    #[default]
+    Scan,
+    /// Rank, project the first page and also capture the full order.
+    Capture(Option<Arc<dyn super::text_rank_order::TextRankMemoryPort>>),
+    /// Answer from a cached order of the same view, member and query:
+    /// search the cursor in it and project only the page's own rows.
+    Cached(Arc<TextRankOrder>),
 }
 
 /// One captured overlay row. `None` text masks the selected durable owner;
 /// a present empty string is an indexed empty document.
+///
+/// Overlay file identity is `(repository, path)`: duplicate detection and
+/// durable-owner resolution never compare a relative path alone, because one
+/// selected view may hold the same relative path in several repositories.
+/// The repository is never taken from a caller-supplied name:
+///
+/// - An owner with a durable record in the selected view keeps that
+///   authenticated record's `source_repo_id`, including when `path` renames
+///   it. Such a row must not name a `repository_witness`.
+/// - An owner without a durable record (an unsaved new file) must carry an
+///   explicit `path` and a `repository_witness`: another owner with a durable
+///   record in the same selected view. The witness record's authenticated
+///   `source_repo_id` (the unscoped slot when absent) is the new file's
+///   repository. A witness outside the selected view is refused, so a new
+///   file can only join a repository that is a member of that view.
+/// - A deletion row (`text=None`) carries neither a path nor a witness.
 #[derive(Debug)]
 pub struct TextOverlayReadDocument {
     pub owner: OwnerKey,
     pub revision: u64,
     pub text: Option<Arc<str>>,
     pub path: Option<Arc<str>>,
+    pub repository_witness: Option<OwnerKey>,
 }
 
 impl PlannedTextRead {
@@ -88,6 +126,33 @@ impl PlannedTextRead {
         self
     }
 
+    /// Also capture the full ranked order of this first page; see
+    /// [`TextReadResult::take_order`].
+    #[must_use]
+    pub fn with_order_capture(mut self) -> Self {
+        self.order = OrderMode::Capture(None);
+        self
+    }
+
+    /// Capture with a session-owned, separately admitted memory share.
+    #[must_use]
+    pub fn with_session_order_capture(
+        mut self,
+        memory: Arc<dyn super::text_rank_order::TextRankMemoryPort>,
+    ) -> Self {
+        self.order = OrderMode::Capture(Some(memory));
+        self
+    }
+
+    /// Answer from `order`, captured by an earlier page of the same view,
+    /// member and query, instead of ranking again. The caller binds the
+    /// order to the view and query; the reader checks the member artifact.
+    #[must_use]
+    pub fn with_cached_order(mut self, order: Arc<TextRankOrder>) -> Self {
+        self.order = OrderMode::Cached(order);
+        self
+    }
+
     /// Keep the caller's before-planning reservation until the owned plan dies.
     #[must_use]
     pub fn with_plan_memory(mut self, memory: [Option<MemoryLease>; 3]) -> Self {
@@ -97,6 +162,10 @@ impl PlannedTextRead {
 
     /// Adopt the caller's atomically captured rows and their preallocation
     /// grant. Snapshot and Arc backing remain owned by the request.
+    ///
+    /// This makes the request an overlay read even when `documents` is empty:
+    /// every hit then carries its authenticated repository, while Path
+    /// grouping and previews remain durable-only and are refused.
     #[must_use]
     pub fn with_overlay(
         mut self,
@@ -107,6 +176,7 @@ impl PlannedTextRead {
         let old_memory = std::mem::replace(&mut self.overlay_memory, memory);
         drop(old_documents);
         drop(old_memory);
+        self.overlay_read = true;
         self
     }
 
@@ -159,6 +229,8 @@ impl PlannedTextRead {
             preview: false,
             overlay: Vec::new(),
             overlay_memory: None,
+            overlay_read: false,
+            order: OrderMode::Scan,
         })
     }
 }
@@ -169,10 +241,24 @@ pub struct TextReadHit {
     pub source: NativeTextHitSource,
     pub path: String,
     pub score: FiniteScore,
+    /// The representative verified match of a CodeSearch-shaped file result:
+    /// Source body bytes and lines, or path bytes. `None` for other queries.
+    pub code_search: Option<CodeSearchMatch>,
     // The path dies before its exact retained allocation charge.
     path_memory: Option<MemoryLease>,
     // A path projection transfers authenticated source-repository custody.
     path_group_repository: Option<(RepoId, Option<MemoryLease>)>,
+    // An overlay read transfers each hit's authenticated repository.
+    overlay_repository: Option<OverlayHitRepository>,
+}
+
+/// The authenticated repository of one overlay-read hit. `repository=None`
+/// is the unscoped repository slot, not an unknown repository.
+#[derive(Debug)]
+struct OverlayHitRepository {
+    repository: Option<RepoId>,
+    // The owned repository dies before its retained allocation grant.
+    memory: Option<MemoryLease>,
 }
 
 impl PartialEq for TextReadHit {
@@ -181,8 +267,17 @@ impl PartialEq for TextReadHit {
             && self.source == other.source
             && self.path == other.path
             && self.score == other.score
+            && self.code_search == other.code_search
             && self.path_group_repository.as_ref().map(|(repo, _)| repo)
                 == other.path_group_repository.as_ref().map(|(repo, _)| repo)
+            && self
+                .overlay_repository
+                .as_ref()
+                .map(|value| &value.repository)
+                == other
+                    .overlay_repository
+                    .as_ref()
+                    .map(|value| &value.repository)
     }
 }
 
@@ -196,6 +291,17 @@ impl TextReadHit {
     #[must_use]
     pub fn take_path_group_repository_v1(&mut self) -> Option<(RepoId, Option<MemoryLease>)> {
         self.path_group_repository.take()
+    }
+
+    /// Move an overlay read's authenticated repository and its retained grant.
+    ///
+    /// `None` means the read did not project repositories; `Some((None, _))`
+    /// is the unscoped repository slot.
+    #[must_use]
+    pub fn take_overlay_repository(&mut self) -> Option<(Option<RepoId>, Option<MemoryLease>)> {
+        self.overlay_repository
+            .take()
+            .map(|value| (value.repository, value.memory))
     }
 
     /// Move the canonical hit and its path custody to the result mapper.
@@ -214,9 +320,12 @@ impl TextReadHit {
             source,
             path,
             score,
+            code_search: _,
             path_memory,
             path_group_repository,
+            overlay_repository,
         } = self;
+        drop(overlay_repository);
         // A caller using the ordinary hit mapper must still retain the grant
         // that covers the path, even if it does not consume Path grouping.
         let path_memory =
@@ -235,6 +344,7 @@ pub struct TextReadResult {
     previews: Option<OwnedTextPreviews>,
     // The hit container dies before this retained capacity charge.
     hit_memory: Option<MemoryLease>,
+    order: Option<TextRankOrder>,
 }
 
 impl PartialEq for TextReadResult {
@@ -249,6 +359,13 @@ impl PartialEq for TextReadResult {
 }
 
 impl TextReadResult {
+    /// Transfer the full ranked order a capturing first page produced. `None`
+    /// when the page was not capturing or the order exceeded its bound.
+    #[must_use]
+    pub fn take_order(&mut self) -> Option<TextRankOrder> {
+        self.order.take()
+    }
+
     /// Transfer selected-source previews and their output allocation custody.
     #[must_use]
     pub fn take_previews(&mut self) -> Option<(Vec<NativeTextPreview>, Vec<MemoryLease>)> {
@@ -362,14 +479,21 @@ impl PreviewRead {
 /// Clients cannot switch models or request unbounded results through this port.
 pub struct NativeTextReader {
     index: NativeTextIndex,
-    previous_tree: Option<NativeTextIndex>,
     policy: Bm25Policy,
     need: ResourceNeed,
 }
 
+/// The `(repository, path)` identity of one present overlay row.
+///
+/// Both parts come from the selected view: the repository from the owner's
+/// own durable record or from its repository witness, never a caller string.
 struct OverlayPath<'a> {
     path: Cow<'a, str>,
-    // Selected durable paths are decoded and retained for the query stage.
+    repository: Option<RepoId>,
+    /// The durable owner's own record language; `None` for a new file, which
+    /// never inherits its repository witness's language.
+    language: Option<LanguageCode>,
+    // Selected durable path and repository are retained for the query stage.
     _memory: Option<MemoryLease>,
 }
 
@@ -439,63 +563,94 @@ impl NativeTextReader {
         }
         Ok(Self {
             index: NativeTextIndex::new(recipe),
-            previous_tree: None,
             policy,
             need,
         })
     }
 
-    /// Admit the exact prior Tree recipe for retained, ticket-bound reads.
-    /// The selected instance and member must still carry that policy.
+    /// Anchors `file.contains` on the pinned Literal sibling of this storage
+    /// format; see [`NativeTextIndex::with_literal_sibling`].
     #[must_use]
-    pub fn with_previous_tree(mut self) -> Self {
-        if self
-            .index
-            .recipe()
-            .retained_source_tree_policy_v20()
-            .is_some()
-        {
-            self.previous_tree = Some(NativeTextIndex::new(TextRecipe::previous_tree(
-                self.index.recipe().admission_policy,
-            )));
-        }
+    pub const fn with_literal_sibling(
+        mut self,
+        format: quanta_index_core::index::StorageFormatId,
+    ) -> Self {
+        self.index = self.index.with_literal_sibling(format);
         self
     }
 
-    fn index_for_instance(
+    /// Establish one present overlay row's `(repository, path)` identity.
+    ///
+    /// The rule is documented on [`TextOverlayReadDocument`].
+    fn overlay_identity<'a>(
         &self,
-        instance: &quanta_index_core::index::InstanceSpec,
-    ) -> Result<NativeTextIndex, IndexError> {
-        if instance.policy == self.index.recipe().output_policy() {
-            self.index.validate_instance(instance)?;
-            return Ok(self.index);
-        }
-        let previous = self.previous_tree.ok_or_else(|| {
-            IndexError::InvalidInput("native text instance has an unsupported recipe".into())
-        })?;
-        previous.validate_instance(instance)?;
-        Ok(previous)
-    }
-
-    fn source_path(
-        &self,
-        owner: OwnerKey,
-        source: Option<ObjectRef>,
-        allow_excluded: bool,
+        document: &'a TextOverlayReadDocument,
         context: &mut QueryReadContext<'_>,
-    ) -> Result<(String, Option<MemoryLease>), IndexError> {
-        self.selected_source(
-            owner,
-            source,
-            allow_excluded,
+    ) -> Result<OverlayPath<'a>, IndexError> {
+        let durable = context.maps.lookup_object(
+            context.ticket.view.source.owners,
+            &owner_map_key(document.owner),
+            context.budget,
+        )?;
+        let (anchor, source) = match (durable, document.repository_witness) {
+            (Some(source), None) => (document.owner, source),
+            (Some(_), Some(_)) => {
+                return Err(IndexError::InvalidInput(
+                    "durable native text overlay owner keeps its own repository".into(),
+                ));
+            }
+            (None, Some(witness)) if document.path.is_some() => {
+                let source = context
+                    .maps
+                    .lookup_object(
+                        context.ticket.view.source.owners,
+                        &owner_map_key(witness),
+                        context.budget,
+                    )?
+                    .ok_or_else(|| {
+                        IndexError::InvalidInput(
+                            "native text overlay repository witness is outside the selected view"
+                                .into(),
+                        )
+                    })?;
+                (witness, source)
+            }
+            (None, _) => {
+                return Err(IndexError::InvalidInput(
+                    "new native text overlay owner requires a path and repository witness".into(),
+                ));
+            }
+        };
+        let record = self.selected_source(
+            anchor,
+            Some(source),
+            true,
             &mut TextReadContext {
                 ticket: context.ticket,
                 objects: context.objects,
                 maps: context.maps,
                 budget: &mut *context.budget,
             },
-        )?
-        .into_retained_path(context.budget)
+        )?;
+        let (record, memory) = record.into_retained_parts(context.budget)?;
+        let SourceRecord {
+            path: durable_path,
+            source_repo_id,
+            language,
+            ..
+        } = record;
+        // A witness lends its repository only; its language is another file's.
+        let language = language.filter(|_language| anchor == document.owner);
+        let path = document
+            .path
+            .as_deref()
+            .map_or_else(|| Cow::Owned(durable_path), Cow::Borrowed);
+        Ok(OverlayPath {
+            path,
+            repository: source_repo_id,
+            language,
+            _memory: memory,
+        })
     }
 
     fn source_hit(
@@ -524,6 +679,211 @@ impl NativeTextReader {
             },
         )?;
         retain_hit_source(record, path_projection, context.budget)
+    }
+
+    /// Resolve a durable overlay-read hit to its path and authenticated
+    /// repository under one retained grant.
+    fn source_hit_with_repository(
+        &self,
+        owner: OwnerKey,
+        source: ObjectRef,
+        context: &mut QueryReadContext<'_>,
+    ) -> Result<(String, Option<MemoryLease>, OverlayHitRepository), IndexError> {
+        let record = self.selected_source(
+            owner,
+            Some(source),
+            false,
+            &mut TextReadContext {
+                ticket: context.ticket,
+                objects: context.objects,
+                maps: context.maps,
+                budget: &mut *context.budget,
+            },
+        )?;
+        let (record, memory) = record.into_retained_parts(context.budget)?;
+        let SourceRecord {
+            path,
+            source_repo_id,
+            ..
+        } = record;
+        Ok((
+            path,
+            memory,
+            OverlayHitRepository {
+                repository: source_repo_id,
+                memory: None,
+            },
+        ))
+    }
+
+    /// Copy an overlay row's authenticated repository into its ranked hit.
+    fn copy_overlay_repository(
+        repository: Option<&RepoId>,
+        context: &mut QueryReadContext<'_>,
+    ) -> Result<OverlayHitRepository, IndexError> {
+        let Some(repository) = repository else {
+            return Ok(OverlayHitRepository {
+                repository: None,
+                memory: None,
+            });
+        };
+        let bytes = u64::try_from(repository.as_str().len())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        context.budget.charge(WorkUsage {
+            bytes,
+            ..WorkUsage::default()
+        })?;
+        let memory = context
+            .budget
+            .reserve_memory(bytes, MemoryLifetime::Retained)?;
+        Ok(OverlayHitRepository {
+            repository: Some(repository.clone()),
+            memory,
+        })
+    }
+
+    /// Answer a page from a cached full order: find the cursor by binary
+    /// search, then project only this page's rows. Owner pages compare
+    /// `(score, owner)` directly; path pages read the representative record
+    /// of each probed group, so the search costs `O(log N)` record reads.
+    fn query_cached_order(
+        &self,
+        request: &PlannedTextRead,
+        order: &TextRankOrder,
+        context: &mut QueryReadContext<'_>,
+    ) -> Result<QueryOutcome<TextReadResult>, IndexError> {
+        let bound = BoundTextMember::from_context(context)?;
+        let artifact = bound.member().artifact;
+        if order.artifact() != artifact {
+            return Err(IndexError::InvalidInput(
+                "cached text order differs from the selected member".into(),
+            ));
+        }
+        let path_projection = request.plan.filters.surface == ResultSurface::Path;
+        let entries = order.entries();
+        let start = if let Some((score, repository, path)) = request.path_rank_after.as_ref() {
+            let (mut low, mut high) = (0_usize, entries.len());
+            let mut found = None;
+            while low < high {
+                context.budget.checkpoint()?;
+                let middle = low.midpoint(high);
+                let entry = entries.get(middle).ok_or(IndexError::ResourceLimited)?;
+                let record = self.selected_source(
+                    entry.owner,
+                    None,
+                    true,
+                    &mut TextReadContext {
+                        ticket: context.ticket,
+                        objects: context.objects,
+                        maps: context.maps,
+                        budget: &mut *context.budget,
+                    },
+                )?;
+                let probe_repository = record.source_repo_id.as_ref().ok_or_else(|| {
+                    IndexError::CorruptObject(
+                        "native path hit lacks authenticated source repository".into(),
+                    )
+                })?;
+                match quanta_index_contract::native_protocol::compare_native_text_path_rank_v1(
+                    (entry.score, probe_repository, &record.path),
+                    (*score, repository, path),
+                ) {
+                    std::cmp::Ordering::Less => {
+                        low = middle.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                    }
+                    std::cmp::Ordering::Greater => high = middle,
+                    std::cmp::Ordering::Equal => {
+                        found = Some(middle);
+                        break;
+                    }
+                }
+            }
+            found
+                .ok_or_else(|| {
+                    IndexError::InvalidInput(
+                        "native path rank-after anchor is absent from eligible groups".into(),
+                    )
+                })?
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?
+        } else if let Some((score, owner)) = request.rank_after {
+            let rank = |entry: &TextRankEntry| {
+                score
+                    .get()
+                    .total_cmp(&entry.score.get())
+                    .then(entry.owner.cmp(&owner))
+            };
+            entries
+                .binary_search_by(rank)
+                .map_err(|_absent| {
+                    IndexError::InvalidInput(
+                        "native BM25 rank-after anchor is absent from eligible matches".into(),
+                    )
+                })?
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?
+        } else {
+            0
+        };
+        let rest = entries.get(start..).ok_or(IndexError::ResourceLimited)?;
+        let count = rest
+            .len()
+            .min(usize::try_from(request.top_k).map_err(|_error| IndexError::ResourceLimited)?);
+        let hit_bytes = u64::try_from(
+            count
+                .checked_mul(std::mem::size_of::<TextReadHit>())
+                .ok_or(IndexError::ResourceLimited)?,
+        )
+        .map_err(|_error| IndexError::ResourceLimited)?;
+        let hit_memory = if hit_bytes == 0 {
+            None
+        } else {
+            context
+                .budget
+                .reserve_memory(hit_bytes, MemoryLifetime::Retained)?
+        };
+        let mut hits = Vec::new();
+        hits.try_reserve_exact(count)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        for entry in rest.iter().take(count) {
+            context.budget.checkpoint()?;
+            // One authenticated record read per row, as on a ranked page.
+            let (record, source) = super::text::authenticated_text_source_with_ref(
+                &self.index,
+                entry.owner,
+                None,
+                path_projection,
+                &mut TextReadContext {
+                    ticket: context.ticket,
+                    objects: context.objects,
+                    maps: context.maps,
+                    budget: &mut *context.budget,
+                },
+            )?;
+            let (path, path_memory, path_group_repository) =
+                retain_hit_source(record, path_projection, context.budget)?;
+            hits.push(TextReadHit {
+                owner: entry.owner,
+                source: NativeTextHitSource::Durable(source),
+                path,
+                score: entry.score,
+                code_search: entry.code_search,
+                path_memory,
+                path_group_repository,
+                overlay_repository: None,
+            });
+        }
+        let result = TextReadResult {
+            artifact,
+            matched: u64::try_from(entries.len()).map_err(|_error| IndexError::ResourceLimited)?,
+            remaining: u64::try_from(rest.len()).map_err(|_error| IndexError::ResourceLimited)?,
+            hits,
+            previews: None,
+            hit_memory,
+            order: None,
+        };
+        context.budget.checkpoint()?;
+        QueryOutcome::core_scanned(context.ticket, context.instance, true, result)
     }
 
     fn selected_source(
@@ -586,8 +946,10 @@ impl NativeTextReader {
                     source: hit.source,
                     path,
                     score,
+                    code_search: hit.code_search,
                     path_memory,
                     path_group_repository,
+                    overlay_repository: None,
                 });
                 selected.previews.rows.push(NativeTextPreview {
                     owner: hit.owner,
@@ -658,7 +1020,9 @@ impl NativeTextReader {
         Ok((owned, memory))
     }
 
+    /// Validate all selected path owners while respecting repository/path identity.
     fn validate_overlay_path_claim(
+        repository: Option<&RepoId>,
         path: &str,
         overlay_owner: OwnerKey,
         overlay: &[TextOverlayReadDocument],
@@ -709,7 +1073,12 @@ impl NativeTextReader {
                     context.maps,
                     context.objects,
                     context.budget,
-                    &mut |owner, _source, _record, _budget| check_owner(owner),
+                    &mut |owner, _source, record, _budget| {
+                        if record.source_repo_id.as_ref() == repository {
+                            check_owner(owner)?;
+                        }
+                        Ok(())
+                    },
                 );
             }
         };
@@ -738,7 +1107,19 @@ impl NativeTextReader {
                 "native text overlay reverse path differs from selected source".into(),
             ));
         }
-        check_owner(owner)
+        if record.source_repo_id.as_ref() == repository {
+            check_owner(owner)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl NativeTextReader {
+    /// The text-match reader over this reader's index and reservation.
+    #[must_use]
+    pub const fn match_reader(&self) -> super::NativeTextMatchReader {
+        super::NativeTextMatchReader::new(self.index, self.need)
     }
 }
 
@@ -749,9 +1130,9 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         source: Option<ObjectRef>,
         context: &mut QueryReadContext<'_>,
     ) -> Result<(), IndexError> {
-        let index = self.index_for_instance(context.instance)?;
+        self.validate_instance(context.instance)?;
         let member = context.source_member_binding()?;
-        index.validate_searchable_owner(
+        self.index.validate_searchable_owner(
             &member,
             owner,
             source,
@@ -769,7 +1150,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         &self,
         instance: &quanta_index_core::index::InstanceSpec,
     ) -> Result<(), IndexError> {
-        self.index_for_instance(instance).map(|_index| ())
+        self.index.validate_instance(instance)
     }
 
     fn reservation(&self, request: &PlannedTextRead) -> Result<ResourceNeed, IndexError> {
@@ -779,6 +1160,13 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
             ));
         }
         let path_projection = request.plan.filters.surface == ResultSurface::Path;
+        if request.overlay_read && (path_projection || request.preview) {
+            return Err(IndexError::InvalidInput(
+                "native overlay reads return repository-bound file hits; Path grouping and \
+                 previews are durable-only"
+                    .into(),
+            ));
+        }
         if path_projection && (request.rank_after.is_some() || !request.overlay.is_empty()) {
             return Err(IndexError::InvalidInput(
                 "native path projection requires durable path ranking".into(),
@@ -804,6 +1192,23 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                 "native text preview requires a durable first-page query".into(),
             ));
         }
+        match &request.order {
+            OrderMode::Scan => {}
+            OrderMode::Capture(_)
+                if request.rank_after.is_none()
+                    && request.path_rank_after.is_none()
+                    && !request.overlay_read
+                    && !request.preview => {}
+            OrderMode::Cached(order)
+                if order.is_path() == path_projection
+                    && !request.overlay_read
+                    && !request.preview => {}
+            OrderMode::Capture(_) | OrderMode::Cached(_) => {
+                return Err(IndexError::InvalidInput(
+                    "native text rank order requires a durable page of its own projection".into(),
+                ));
+            }
+        }
         Ok(self.need)
     }
 
@@ -814,12 +1219,9 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
     ) -> Result<QueryOutcome<TextReadResult>, IndexError> {
         self.validate_instance(context.instance)?;
         let _need = self.reservation(request)?;
-        let selected = Self {
-            index: self.index_for_instance(context.instance)?,
-            previous_tree: None,
-            policy: self.policy,
-            need: self.need,
-        };
+        if let OrderMode::Cached(order) = &request.order {
+            return self.query_cached_order(request, order, context);
+        }
         let bound = BoundTextMember::from_context(context)?;
         let member = bound.member();
         let mut overlay_input_memory = None;
@@ -850,6 +1252,11 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                 {
                     return Err(IndexError::InvalidInput(
                         "native text overlay path is invalid".into(),
+                    ));
+                }
+                if document.text.is_none() && document.repository_witness.is_some() {
+                    return Err(IndexError::InvalidInput(
+                        "native text overlay deletion names no repository witness".into(),
                     ));
                 }
                 if let Some(body) = document.text.as_deref() {
@@ -883,17 +1290,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                     text: document.text.as_deref(),
                 });
                 if document.text.is_some() {
-                    let (path, memory) = if let Some(path) = document.path.as_deref() {
-                        (Cow::Borrowed(path), None)
-                    } else {
-                        let (path, memory) =
-                            selected.source_path(document.owner, None, true, context)?;
-                        (Cow::Owned(path), memory)
-                    };
-                    overlay_paths.push(OverlayPath {
-                        path,
-                        _memory: memory,
-                    });
+                    overlay_paths.push(self.overlay_identity(document, context)?);
                 }
             }
             for (document, path) in request
@@ -910,28 +1307,48 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                     revision: document.revision,
                     path: path.path.as_ref(),
                     body,
+                    repository: path.repository.as_ref(),
+                    language: path.language.as_ref(),
                 });
             }
-            for (position, source) in overlay_sources.iter().enumerate() {
-                for prior in overlay_sources.iter().take(position) {
-                    let compared = u64::try_from(source.path.len().max(prior.path.len()))
-                        .map_err(|_error| IndexError::ResourceLimited)?;
+            // Overlay identity is (repository, path): the same relative path in
+            // two repositories of one view names two distinct files.
+            for (position, (source, identity)) in
+                overlay_sources.iter().zip(&overlay_paths).enumerate()
+            {
+                for (prior, prior_identity) in
+                    overlay_sources.iter().zip(&overlay_paths).take(position)
+                {
+                    let compared = source
+                        .path
+                        .len()
+                        .max(prior.path.len())
+                        .checked_add(
+                            identity
+                                .repository
+                                .as_ref()
+                                .map_or(0, |repo| repo.as_str().len()),
+                        )
+                        .ok_or(IndexError::ResourceLimited)?;
                     context.budget.charge(WorkUsage {
-                        bytes: compared,
+                        bytes: u64::try_from(compared)
+                            .map_err(|_error| IndexError::ResourceLimited)?,
                         ..WorkUsage::default()
                     })?;
-                    if source.path == prior.path {
+                    if source.path == prior.path && identity.repository == prior_identity.repository
+                    {
                         return Err(IndexError::Conflict);
                     }
                 }
                 Self::validate_overlay_path_claim(
+                    identity.repository.as_ref(),
                     source.path,
                     source.owner,
                     &request.overlay,
                     context,
                 )?;
             }
-            Some(selected.index.prepare_overlay_corpus(
+            Some(self.index.prepare_overlay_corpus(
                 member,
                 &overlay_inputs,
                 &mut TextReadContext {
@@ -945,7 +1362,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         let mut preview_read = None;
         let mut visit_preview = |selection: &PreviewSelection<'_>,
                                  ctx: &mut TextReadContext<'_>| {
-            preview_read = Some(selected.project_previews(
+            preview_read = Some(self.project_previews(
                 selection,
                 request.plan.filters.surface == ResultSurface::Path,
                 ctx,
@@ -957,7 +1374,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         } else {
             None
         };
-        let mut ranked = selected.index.search_content_with_bound_member(
+        let mut ranked = self.index.search_content_with_bound_member(
             &bound,
             &request.plan,
             &request.constraints,
@@ -970,6 +1387,11 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                 .path_rank_after
                 .as_ref()
                 .map(|(score, repo, path)| (*score, repo, path.as_str())),
+            matches!(&request.order, OrderMode::Capture(_)),
+            match &request.order {
+                OrderMode::Capture(memory) => memory.clone(),
+                OrderMode::Scan | OrderMode::Cached(_) => None,
+            },
             overlay_corpus
                 .as_ref()
                 .map(|corpus| (corpus, overlay_sources.as_slice())),
@@ -1001,6 +1423,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                 hits: selected.hits,
                 previews: Some(selected.previews),
                 hit_memory: selected.hit_memory,
+                order: None,
             };
             drop(ranked);
             context.budget.checkpoint()?;
@@ -1026,6 +1449,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
             hits: Vec::new(),
             previews: None,
             hit_memory,
+            order: ranked.order.take(),
         };
         result
             .hits
@@ -1033,13 +1457,21 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
             .map_err(|_error| IndexError::ResourceLimited)?;
         for hit in ranked.hits.drain(..) {
             let score = hit_score(hit.score)?;
-            let (path, path_memory, path_group_repository) = match hit.source {
-                NativeTextHitSource::Durable(source) => selected.source_hit(
-                    hit.owner,
-                    source,
-                    request.plan.filters.surface == ResultSurface::Path,
-                    context,
-                )?,
+            let (path, path_memory, path_group_repository, overlay_repository) = match hit.source {
+                NativeTextHitSource::Durable(source) if request.overlay_read => {
+                    let (path, memory, repository) =
+                        self.source_hit_with_repository(hit.owner, source, context)?;
+                    (path, memory, None, Some(repository))
+                }
+                NativeTextHitSource::Durable(source) => {
+                    let (path, memory, repository) = self.source_hit(
+                        hit.owner,
+                        source,
+                        request.plan.filters.surface == ResultSurface::Path,
+                        context,
+                    )?;
+                    (path, memory, repository, None)
+                }
                 NativeTextHitSource::Overlay { revision } => {
                     let index = overlay_sources
                         .binary_search_by_key(&hit.owner, |row| row.owner)
@@ -1054,8 +1486,15 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                     if source.revision != revision {
                         return Err(IndexError::Conflict);
                     }
+                    let identity = overlay_paths.get(index).ok_or_else(|| {
+                        IndexError::BackendViolation(
+                            "ranked overlay owner lacks its repository identity".into(),
+                        )
+                    })?;
                     let (path, path_memory) = Self::copy_overlay_path(source.path, context)?;
-                    (path, path_memory, None)
+                    let repository =
+                        Self::copy_overlay_repository(identity.repository.as_ref(), context)?;
+                    (path, path_memory, None, Some(repository))
                 }
             };
             result.hits.push(TextReadHit {
@@ -1063,8 +1502,10 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                 source: hit.source,
                 path,
                 score,
+                code_search: hit.code_search,
                 path_memory,
                 path_group_repository,
+                overlay_repository,
             });
         }
         // The drained ranking owns its backing and grant even on mapping failure.
@@ -1285,6 +1726,7 @@ mod tests {
             source: super::NativeTextHitSource::Durable(ObjectRef(Digest([3; 32]))),
             path: "src/lib.rs".to_owned(),
             score: FiniteScore::new(1.0).expect("finite static score"),
+            code_search: None,
             path_memory: None,
             path_group_repository: Some((
                 repository,
@@ -1293,6 +1735,7 @@ mod tests {
                     Arc::new(PreviewRelease(Arc::clone(&used))),
                 )),
             )),
+            overlay_repository: None,
         };
         let mut first = hit(repository.clone());
         assert_eq!(first.path_group_repository_v1(), Some(&repository));
@@ -1444,19 +1887,10 @@ mod tests {
             ]),
             ..valid
         };
-        // Historical direct-term Tree policy from the prior v20 writer.
-        check!(recipe.retained_source_tree_policy_v20() == Some(prior_term_map_layout.policy));
         check!(matches!(
             port.validate_instance(&prior_term_map_layout),
             Err(IndexError::InvalidInput(_))
         ));
-        NativeTextReader::new(
-            recipe,
-            super::super::Bm25Policy { k1: 1.2, b: 0.75 },
-            need(),
-        )?
-        .with_previous_tree()
-        .validate_instance(&prior_term_map_layout)?;
         check!(matches!(
             crate::native::NativeTextIndex::new(recipe).validate_instance(&prior_term_map_layout),
             Err(IndexError::InvalidInput(_))

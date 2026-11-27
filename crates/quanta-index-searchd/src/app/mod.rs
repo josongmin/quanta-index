@@ -16,6 +16,7 @@ pub mod server;
 pub mod socket_access;
 pub mod state_format;
 pub mod state_migration;
+pub mod state_root_quota;
 pub mod supervisor;
 pub mod trace_recorder;
 pub mod umask;

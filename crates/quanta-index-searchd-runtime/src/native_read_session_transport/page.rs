@@ -1,6 +1,13 @@
 //! Exhaustive lexical rank pages under the session's original ticket.
+//!
+//! The first page of a `(view, instance, query)` also captures the full rank
+//! order and keeps it in the session. A later page of the same identity is
+//! answered from it: the cursor is binary-searched and only the page's rows
+//! are projected, instead of re-ranking the whole union. Without the cached
+//! order (disabled, evicted, over its bound or unfunded), a page re-ranks.
 
 use super::*;
+use crate::native_read_sessions::{NativeReadSessions, TextOrderKey};
 use crate::native_result::{ResultValue, ScopedNativeResult, shared_value_bytes};
 use quanta_index_contract::native_protocol::{
     NativeReadSessionId, NativeTextCursor, NativeTextHit, NativeTextPage, NativeTextPathCursorV1,
@@ -11,6 +18,56 @@ use quanta_index_lexical::native::{NativeTextHitSource, TextReadResult};
 
 pub(crate) type ScopedNativeTextPage = ScopedNativeResult<NativeTextPage>;
 
+/// The session's text order cache, as seen by one page request.
+pub(super) struct SessionTextOrders<'a> {
+    pub(super) sessions: &'a NativeReadSessions,
+    pub(super) uid: u32,
+    pub(super) session: NativeReadSessionId,
+}
+
+impl SessionTextOrders<'_> {
+    fn cached(
+        &self,
+        key: TextOrderKey,
+        evict_on_miss: bool,
+        budget: &WorkBudget,
+    ) -> Result<Option<Arc<quanta_index_lexical::native::TextRankOrder>>, IndexError> {
+        self.sessions
+            .cached_text_order(self.uid, self.session, key, evict_on_miss, budget)
+    }
+
+    /// Keep a captured order on the registry's text order share.
+    fn retain(
+        &self,
+        key: TextOrderKey,
+        order: quanta_index_lexical::native::TextRankOrder,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.sessions
+            .retain_text_order(self.uid, self.session, key, order, budget)
+    }
+}
+
+/// Apply the session's cached order, or capture one on a first page.
+fn order_mode(
+    planned: quanta_index_lexical::native::PlannedTextRead,
+    orders: &SessionTextOrders<'_>,
+    key: TextOrderKey,
+    first_page: bool,
+    budget: &WorkBudget,
+) -> Result<quanta_index_lexical::native::PlannedTextRead, IndexError> {
+    if !orders.sessions.text_order_cache_enabled() {
+        return Ok(planned);
+    }
+    if let Some(order) = orders.cached(key, first_page, budget)? {
+        return Ok(planned.with_cached_order(order));
+    }
+    Ok(if first_page {
+        planned.with_session_order_capture(orders.sessions.text_order_capture_port())
+    } else {
+        planned
+    })
+}
 pub(super) fn search(
     dispatcher: &NativeDispatcher,
     ticket: &quanta_index_kernel::ReadTicket,
@@ -19,6 +76,7 @@ pub(super) fn search(
     instance: IndexInstanceId,
     query: &TextQueryRequest,
     after: Option<NativeTextCursor>,
+    orders: &SessionTextOrders<'_>,
     work: &mut WorkBudget,
     timer: &RetainedSearchTimer,
     control: ReservationGuard<NativeClassScheduler>,
@@ -44,7 +102,19 @@ pub(super) fn search(
             "text pages do not support count".into(),
         ));
     }
-    let planned = planned.with_rank_after(after.map(|cursor| (cursor.score, cursor.owner)));
+    let key = TextOrderKey {
+        view: ticket.view().identity,
+        instance,
+        query: digest,
+        path: false,
+    };
+    let planned = order_mode(
+        planned.with_rank_after(after.map(|cursor| (cursor.score, cursor.owner))),
+        orders,
+        key,
+        after.is_none(),
+        work,
+    )?;
     execute_text(
         dispatcher,
         ticket,
@@ -54,8 +124,9 @@ pub(super) fn search(
         work,
         timer,
         control,
-        |outcome, work| {
-            convert(
+        |mut outcome, work| {
+            let order = outcome.result_mut().take_order();
+            let page = convert(
                 outcome,
                 session,
                 instance,
@@ -64,7 +135,11 @@ pub(super) fn search(
                 after,
                 &query.constraints,
                 work,
-            )
+            )?;
+            if let Some(order) = order {
+                orders.retain(key, order, work)?;
+            }
+            Ok(page)
         },
     )
 }
@@ -77,6 +152,7 @@ pub(super) fn search_paths(
     instance: IndexInstanceId,
     query: &TextQueryRequest,
     after: Option<NativeTextPathCursorV1>,
+    orders: &SessionTextOrders<'_>,
     work: &mut WorkBudget,
     timer: &RetainedSearchTimer,
     control: ReservationGuard<NativeClassScheduler>,
@@ -89,7 +165,7 @@ pub(super) fn search_paths(
             || cursor.instance != instance
             || cursor.query != digest
             || cursor.score.get() < 0.0
-            || !crate::native_source_path::valid_native_source_path(&cursor.path)
+            || !quanta_index_contract::index::is_canonical_source_path(&cursor.path)
             || query
                 .constraints
                 .repo_relative_path_exact
@@ -125,7 +201,14 @@ pub(super) fn search_paths(
     } else {
         planned
     };
-    execute_text(
+    let key = TextOrderKey {
+        view: ticket.view().identity,
+        instance,
+        query: digest,
+        path: true,
+    };
+    let planned = order_mode(planned, orders, key, after.is_none(), work)?;
+    let mut projected = execute_text(
         dispatcher,
         ticket,
         attempt,
@@ -134,8 +217,9 @@ pub(super) fn search_paths(
         work,
         timer,
         control,
-        |outcome, work| {
-            crate::native_text_result::convert_path_page(
+        |mut outcome, work| {
+            let order = outcome.result_mut().take_order();
+            let page = crate::native_text_result::convert_path_page(
                 outcome,
                 session,
                 instance,
@@ -143,9 +227,29 @@ pub(super) fn search_paths(
                 digest,
                 after.as_ref(),
                 |bytes, lifetime| work.reserve_memory(bytes, lifetime),
-            )
+            )?;
+            if let Some(order) = order {
+                orders.retain(key, order, work)?;
+            }
+            Ok(page)
         },
-    )
+    )?;
+    // Each row's CodeSearch match comes from the scan; its excerpt is read
+    // from the row's Source under this session's retained ticket. Both
+    // execution reservations have ended, so this finalization is funded
+    // like the response it becomes.
+    timer.mark(ReadFailureStage::ResultConversion);
+    work.bind_memory_scope(Some(super::attempt_memory(&dispatcher.resources)?));
+    crate::native_code_search_excerpt::attach_code_search_matches(
+        &mut projected.value,
+        &projected.witnesses,
+        dispatcher.objects.as_ref(),
+        work,
+    )?;
+    timer.mark(ReadFailureStage::Checkpoint);
+    Ok(crate::native_result::ScopedNativeResult::new(
+        projected.value,
+    ))
 }
 
 fn convert(
@@ -196,7 +300,7 @@ fn convert(
         .map_err(|_error| IndexError::ResourceLimited)?;
     let mut prior = after.map(|cursor| (cursor.score, cursor.owner));
     for hit in &raw.hits {
-        if !crate::native_source_path::valid_native_source_path(&hit.path)
+        if !quanta_index_contract::index::is_canonical_source_path(&hit.path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()

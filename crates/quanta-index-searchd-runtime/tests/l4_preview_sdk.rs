@@ -92,18 +92,38 @@ fn assert_preview(
     let context = preview.original_context.ok_or("source context missing")?;
     let context_start = usize::try_from(context.start)?;
     let context_end = usize::try_from(context.end)?;
-    if raw.get(context_start..context_end) != Some(candidate.snippet.as_str()) {
+    if raw.get(context_start..context_end)
+        != Some(
+            candidate
+                .excerpt
+                .as_ref()
+                .ok_or("fixture row carries no match excerpt")?
+                .snippet
+                .as_str(),
+        )
+    {
         return Err(format!("{query:?}: emitted snippet differs from immutable source").into());
     }
     let expected_focus = raw
         .get(usize::try_from(original_focus.start)?..usize::try_from(original_focus.end)?)
         .ok_or("independent focus oracle is not UTF-8 aligned")?;
-    let highlighted = candidate.highlights.iter().any(|span| {
-        let (Ok(start), Ok(len)) = (usize::try_from(span.start), usize::try_from(span.len)) else {
-            return false;
-        };
-        candidate.snippet.get(start..start.saturating_add(len)) == Some(expected_focus)
-    });
+    let highlighted = candidate
+        .excerpt
+        .as_ref()
+        .ok_or("fixture row carries no match excerpt")?
+        .highlights
+        .iter()
+        .any(|span| {
+            let (Ok(start), Ok(len)) = (usize::try_from(span.start), usize::try_from(span.len))
+            else {
+                return false;
+            };
+            candidate
+                .excerpt
+                .as_ref()
+                .and_then(|excerpt| excerpt.snippet.get(start..start.saturating_add(len)))
+                == Some(expected_focus)
+        });
     if !highlighted {
         return Err(format!("{query:?}: expected focus absent from emitted highlights").into());
     }
@@ -123,9 +143,24 @@ fn assert_path_preview(client: &QuantaIndex, pin: &GenerationPin) -> TestResult 
         if response.generation != *pin
             || response.results.len() != 1
             || candidate.repo_relative_path.as_str() != "src/needlepath.rs"
-            || candidate.snippet != "src/needlepath.rs"
-            || !candidate.highlights.is_empty()
-            || candidate.snippet_hit_offset.is_some()
+            || candidate
+                .excerpt
+                .as_ref()
+                .ok_or("fixture row carries no match excerpt")?
+                .snippet
+                != "src/needlepath.rs"
+            || !candidate
+                .excerpt
+                .as_ref()
+                .ok_or("fixture row carries no match excerpt")?
+                .highlights
+                .is_empty()
+            || candidate
+                .excerpt
+                .as_ref()
+                .ok_or("fixture row carries no match excerpt")?
+                .snippet_hit_offset
+                .is_some()
         {
             return Err(format!("{query:?}: incorrect path-only candidate: {response:?}").into());
         }
@@ -176,9 +211,24 @@ fn assert_unavailable(
     if response.generation != *pin
         || response.results.len() != 1
         || candidate.repo_relative_path.as_str() != path
-        || !candidate.snippet.is_empty()
-        || !candidate.highlights.is_empty()
-        || candidate.snippet_hit_offset.is_some()
+        || !candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .snippet
+            .is_empty()
+        || !candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .highlights
+            .is_empty()
+        || candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .snippet_hit_offset
+            .is_some()
         || !candidate.preview.as_ref().is_some_and(|preview| {
             preview.kind == PreviewKind::SourceChunk
                 && preview.unavailable_reason == Some(reason)
@@ -213,9 +263,25 @@ fn assert_multihit_highlights(client: &QuantaIndex, pin: &GenerationPin) -> Test
     ];
     if response.results.len() != 1
         || candidate.repo_relative_path.as_str() != "src/multi.rs"
-        || candidate.snippet != "threehits threehits threehits"
-        || candidate.highlights.as_slice() != expected.as_slice()
-        || candidate.snippet_hit_offset != Some(0)
+        || candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .snippet
+            != "threehits threehits threehits"
+        || candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .highlights
+            .as_slice()
+            != expected.as_slice()
+        || candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .snippet_hit_offset
+            != Some(0)
     {
         return Err(format!("multi-hit SDK spans are incomplete: {response:?}").into());
     }
@@ -240,9 +306,25 @@ fn assert_overlapping_raw_highlights(client: &QuantaIndex, pin: &GenerationPin) 
     ];
     if response.results.len() != 1
         || candidate.repo_relative_path.as_str() != "src/overlap.rs"
-        || candidate.snippet != "ababa"
-        || candidate.highlights.as_slice() != expected.as_slice()
-        || candidate.snippet_hit_offset != Some(0)
+        || candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .snippet
+            != "ababa"
+        || candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .highlights
+            .as_slice()
+            != expected.as_slice()
+        || candidate
+            .excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .snippet_hit_offset
+            != Some(0)
     {
         return Err(format!("overlapping raw SDK spans are incomplete: {response:?}").into());
     }

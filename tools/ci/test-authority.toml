@@ -24,14 +24,6 @@ workflow = ".circleci/config.yml"
 job = "verify-rust-tests"
 step = "rust nextest"
 
-[rails.pr-ciborium-no-default]
-tier = "pr"
-command = "./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked"
-target_kind = "integration"
-workflow = ".circleci/config.yml"
-job = "verify-rust-tests"
-step = "ciborium no-default integration"
-
 [rails.manual-heavy-workspace-nextest]
 tier = "correctness"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
@@ -39,6 +31,14 @@ target_kind = "integration"
 workflow = ".circleci/config.yml"
 job = "heavy-correctness"
 step = "rust nextest authority receipt"
+
+[rails.correctness-catalog-checked-close]
+tier = "correctness"
+command = "just rust-test-catalog-checked-close"
+target_kind = "integration"
+workflow = ".circleci/config.yml"
+job = "heavy-correctness"
+step = "Catalog checked-close integration"
 
 [rails.correctness-pinned-legacy-readiness-no-default]
 tier = "correctness"
@@ -129,7 +129,6 @@ targets = [
   "lexical-boot-inventory-data",
   "lexical-native-text-policy",
   "ipc-admission",
-  "catalog-idempotency",
   "repomap-bootstrap-owner-flow",
   "repomap-owner-surface",
 ]
@@ -164,14 +163,6 @@ packages = [
   "quanta-index-ipc",
 ]
 lib = true
-
-[local_scopes.p02a-repomap-compiler]
-lane = "test-p02a-repomap-compiler-lane"
-test_threads = 4
-targets = [
-  "repomap-compiler-owner-v1",
-  "repomap-owner-surface",
-]
 
 [local_scopes.control-readiness-owner]
 lane = "test-control-readiness-owner-lane"
@@ -232,13 +223,19 @@ lane = "test-p02b-operation-journal-lane"
 test_threads = 2
 targets = [
   "operation-journal-owner-v1",
-  "catalog-idempotency",
 ]
+
+[local_scopes.p02b-native-journal-lib]
+lane = "test-p02b-native-journal-lane"
+test_threads = 2
+lib = true
+packages = ["quanta-index-catalog"]
 
 [local_scopes.candidate-activation-owner]
 lane = "test-candidate-activation-owner-lane"
-test_threads = 4
-targets = ["kernel-native-bootstrap"]
+test_threads = 2
+lib = true
+packages = ["quanta-index-catalog"]
 
 [local_scopes.candidate-activation-release]
 lane = "test-daemon-lane"
@@ -247,8 +244,9 @@ targets = ["searchd-runtime-native-product-process"]
 
 [local_scopes.read-view-lifetime-owner]
 lane = "test-read-view-lifetime-owner-lane"
-test_threads = 4
-targets = ["kernel-native-query-session-real"]
+test_threads = 2
+lib = true
+packages = ["quanta-index-catalog"]
 
 [local_scopes.read-view-lifetime]
 lane = "test-daemon-lane"
@@ -808,70 +806,10 @@ owner = "tools/ci/verify_ciborium_no_default.py"
 rail = "pr-benchmark-control-python"
 
 [[integration_targets]]
-id = "ciborium-admitted-seed-decode-v3"
-path = "vendor/ciborium-0.2.2/tests/admitted_seed_decode_v3.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-canonical"
-path = "vendor/ciborium-0.2.2/tests/canonical.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-codec"
-path = "vendor/ciborium-0.2.2/tests/codec.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-error"
-path = "vendor/ciborium-0.2.2/tests/error.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-finite-decode-v3"
-path = "vendor/ciborium-0.2.2/tests/finite_decode_v3.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-fuzz"
-path = "vendor/ciborium-0.2.2/tests/fuzz.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-macro"
-path = "vendor/ciborium-0.2.2/tests/macro.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-no-std"
-path = "vendor/ciborium-0.2.2/tests/no_std.rs"
-owner = "ciborium"
-rail = "pr-ciborium-no-default"
-
-[[integration_targets]]
-id = "ciborium-recursion"
-path = "vendor/ciborium-0.2.2/tests/recursion.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-pointer-integer"
-path = "vendor/ciborium-0.2.2/tests/pointer_integer.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
-
-[[integration_targets]]
-id = "ciborium-tag"
-path = "vendor/ciborium-0.2.2/tests/tag.rs"
-owner = "ciborium"
-rail = "pr-workspace-nextest"
+id = "catalog-checked-close"
+path = "tools/testing/catalog-checked-close/tests/checked_close.rs"
+owner = "quanta-index-catalog-checked-close"
+rail = "correctness-catalog-checked-close"
 
 [[integration_targets]]
 id = "contract-hybrid-candidate"

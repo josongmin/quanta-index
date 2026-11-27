@@ -78,6 +78,74 @@ def test_super_paths_are_edges(tmp_path: Path):
     assert keys(root) == ["demo: outer::left, outer::right"]
 
 
+@pytest.mark.parametrize("path", ["super::super::right::R", "super::super::{right :: R as R}"])
+def test_relative_paths_from_inline_modules_form_cross_file_edges(tmp_path: Path, path: str):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod outer;\n",
+            "outer/mod.rs": "mod left;\nmod right;\n",
+            "outer/left.rs": f"""
+                pub(crate) struct L;
+                mod nested {{
+                    use {path};
+                    fn edge() -> R {{ R }}
+                }}
+                """,
+            "outer/right.rs": """
+                pub(crate) struct R;
+                fn edge() -> super::left::L { super::left::L }
+                """,
+        },
+    )
+    [cycle] = MODULE.find_cycles([root])
+    assert cycle.links == ("outer::left -> outer::right", "outer::right -> outer::left")
+
+
+def test_inline_module_does_not_use_a_same_named_external_sibling(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod outer;\n",
+            "outer/mod.rs": "mod left;\nmod support;\n",
+            "outer/left.rs": """
+                pub(crate) struct L;
+                mod support { pub(super) struct S; }
+                mod nested {
+                    use super::support::S;
+                    fn edge() -> S { S }
+                }
+                """,
+            "outer/support.rs": """
+                pub(crate) struct S;
+                fn edge() -> super::left::L { super::left::L }
+                """,
+        },
+    )
+    assert keys(root) == []
+
+
+def test_inline_cfg_test_does_not_add_production_edges(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod a;\nmod b;\n",
+            "a.rs": """
+                pub(crate) struct A;
+                mod nested {
+                    #[cfg(/* only during tests */ test)]
+                    mod fixture {
+                        use crate::b::B;
+                        fn example() -> B { B }
+                    }
+                }
+                """,
+            "b.rs": "pub(crate) struct B;\nfn edge() -> crate::a::A { crate::a::A }\n",
+        },
+    )
+    assert keys(root) == []
+
+
 def test_test_code_comments_and_strings_are_not_edges(tmp_path: Path):
     root = crate(
         tmp_path,
@@ -119,6 +187,78 @@ def test_a_facade_re_export_resolves_to_the_defining_submodule(tmp_path: Path):
         },
     )
     assert keys(root) == ["demo: facade::inner, user"]
+
+
+@pytest.mark.parametrize(
+    ("export", "import_path"),
+    [
+        ("pub(crate) use owner::Item as Renamed;", "crate::Renamed"),
+        ("pub(crate) use owner::{Item as Renamed};", "crate::Renamed"),
+        ("pub(crate) use crate::{owner as Renamed};", "crate::Renamed::Item"),
+        ("#[cfg(not(test))] pub(crate) use owner::Item as Renamed;", "crate::Renamed"),
+    ],
+)
+def test_renamed_reexports_keep_the_defining_module_edge(tmp_path: Path, export, import_path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": f"pub(crate) mod owner;\nmod user;\n{export}\n",
+            "owner.rs": "pub(crate) struct Item;\nfn back(_: crate::user::User) {}\n",
+            "user.rs": f"use {import_path};\npub(crate) struct User;\n",
+        },
+    )
+    [cycle] = MODULE.find_cycles([root])
+    assert cycle.links == ("owner -> user", "user -> owner")
+
+
+def test_renamed_reexports_follow_a_chain_through_a_facade(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod user;\nmod facade;\npub(crate) use facade::Alias as Renamed;\n",
+            "facade.rs": "pub(crate) use crate::owner::Item as Alias;\n",
+            "owner.rs": "pub(crate) struct Item;\nfn back(_: crate::user::User) {}\n",
+            "user.rs": "use crate::Renamed;\npub(crate) struct User;\n",
+        },
+    )
+    assert keys(root) == ["demo: owner, user"]
+
+
+def test_renamed_reexports_include_alternative_production_configs(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": """
+                mod first;
+                mod second;
+                mod user;
+                #[cfg(unix)]
+                pub(crate) use first::Item as Renamed;
+                #[cfg(not(unix))]
+                pub(crate) use second::Item as Renamed;
+                """,
+            "first.rs": "pub(crate) struct Item;\nfn back(_: crate::user::User) {}\n",
+            "second.rs": "pub(crate) struct Item;\nfn back(_: crate::user::User) {}\n",
+            "user.rs": "use crate::Renamed;\npub(crate) struct User;\n",
+        },
+    )
+    [cycle] = MODULE.find_cycles([root])
+    assert cycle.links == ("first -> user", "second -> user", "user -> first", "user -> second")
+
+
+@pytest.mark.parametrize("external_path", ["std::time::Duration", "::std::time::Duration"])
+def test_external_reexport_does_not_pick_an_unrelated_local_definition(
+    tmp_path: Path, external_path
+):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": f"mod owner;\nmod user;\npub(crate) use {external_path} as Renamed;\n",
+            "owner.rs": "pub(crate) struct Renamed;\nfn back(_: crate::user::User) {}\n",
+            "user.rs": "use crate::Renamed;\npub(crate) struct User;\nfn forward(_: Renamed) {}\n",
+        },
+    )
+    assert keys(root) == []
 
 
 def test_nested_use_trees_are_expanded(tmp_path: Path):

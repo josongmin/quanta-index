@@ -25,12 +25,16 @@ pub struct NativeRecoveryCommandV1 {
     pub parent_executable_sha256: Digest,
 }
 
-/// The private exporter either streams one checkpoint or inventories one repo.
+/// Scope of the private History exporter. The all-repo modes name their source
+/// explicitly; Legacy and Native readers retain separate physical custody.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeHistoryExportScopeV1 {
     Protected,
     Checkpoint(AuxiliaryGenerationKeyV1),
     Inventory(RepoId),
+    CheckpointAll(AuxiliaryGenerationKeyV1),
+    InventoryAll,
+    NativeInventoryAll,
 }
 
 /// A private, read-only child request. Parsing never grants Legacy root custody.
@@ -145,6 +149,9 @@ impl NativeRecoveryInput {
         generation_json: Option<String>,
         inventory_repo_id: Option<String>,
         protected_native_heads: Option<String>,
+        all_history_inventory: Option<String>,
+        all_history_checkpoint_json: Option<String>,
+        all_native_history_inventory: Option<String>,
         config_path: Option<PathBuf>,
         config_digest: Option<String>,
     ) -> Result<NativeHistoryExportCommandV1> {
@@ -157,31 +164,45 @@ impl NativeRecoveryInput {
         {
             bail!("History exporter accepts only the active selection binding");
         }
-        let scope = match (generation_json, inventory_repo_id, protected_native_heads) {
-            (None, None, Some(value)) if value == "true" => NativeHistoryExportScopeV1::Protected,
-            (_, _, Some(_)) => {
-                bail!("Native protected export requires only --protected-native-heads true")
+        let selected = [generation_json.is_some(), inventory_repo_id.is_some(),
+            protected_native_heads.is_some(), all_history_inventory.is_some(),
+            all_history_checkpoint_json.is_some(), all_native_history_inventory.is_some()]
+            .into_iter().filter(|selected| *selected).count();
+        if selected != 1 {
+            bail!("History exporter requires exactly one export scope");
+        }
+        let scope = if let Some(value) = protected_native_heads {
+            if value != "true" {
+                bail!("Native protected export requires --protected-native-heads true");
             }
-            (Some(raw), None, None) => {
-                if raw.len() > 4096 {
-                    bail!("History exporter generation exceeds input bound");
-                }
-                NativeHistoryExportScopeV1::Checkpoint(serde_json::from_str(&raw)?)
+            NativeHistoryExportScopeV1::Protected
+        } else if let Some(value) = all_history_inventory {
+            if value != "true" {
+                bail!("all-repository History inventory requires true");
             }
-            (None, Some(raw), None) => {
-                if raw.len() > 4096 {
-                    bail!("History exporter repository exceeds input bound");
-                }
-                NativeHistoryExportScopeV1::Inventory(RepoId::new(raw)?)
+            NativeHistoryExportScopeV1::InventoryAll
+        } else if let Some(value) = all_native_history_inventory {
+            if value != "true" {
+                bail!("all-repository Native History inventory requires true");
             }
-            (Some(_), Some(_), None) => {
-                bail!(
-                    "History exporter requires exactly one of --generation-json and --inventory-repo-id"
-                );
+            NativeHistoryExportScopeV1::NativeInventoryAll
+        } else if let Some(raw) = all_history_checkpoint_json {
+            if raw.len() > 4096 {
+                bail!("History exporter generation exceeds input bound");
             }
-            (None, None, None) => {
-                bail!("History exporter requires --generation-json or --inventory-repo-id");
+            NativeHistoryExportScopeV1::CheckpointAll(serde_json::from_str(&raw)?)
+        } else if let Some(raw) = generation_json {
+            if raw.len() > 4096 {
+                bail!("History exporter generation exceeds input bound");
             }
+            NativeHistoryExportScopeV1::Checkpoint(serde_json::from_str(&raw)?)
+        } else if let Some(raw) = inventory_repo_id {
+            if raw.len() > 4096 {
+                bail!("History exporter repository exceeds input bound");
+            }
+            NativeHistoryExportScopeV1::Inventory(RepoId::new(raw)?)
+        } else {
+            unreachable!("one export scope was checked above")
         };
         let command = NativeHistoryExportCommandV1 {
             selection_path: PathBuf::from(

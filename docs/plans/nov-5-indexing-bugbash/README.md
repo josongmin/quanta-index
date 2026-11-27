@@ -9,7 +9,7 @@
 | 문서 | 권위 |
 | --- | --- |
 | 이 README의 `현재 판정` | source별 제품 결과, 원 기준, 최신 잔여 |
-| [RCA](RCA.md) | 동결 source의 실패 원본·실측·인과관계와 종료된 시도 |
+| [RCA][rca-preimage] | 동결 source의 실패 원본·실측·인과관계와 종료된 시도 |
 | [WORKPLAN](WORKPLAN.md) | 현재 수용 경로·실행 계약·고유 증거/퇴역 패킷 복구 |
 
 저장된 Native 실행은 capture 폴더 또는 `-control` 폴더를 지정해 조사한다.
@@ -20,12 +20,12 @@
 
 제품 결과, 호스트 사전 차단, 실패 단계, 작업 거절과 staging 진행을 구분한다.
 `--trace`는 daemon 구간·유실 상태, `--json`은 구조화 출력을 추가한다.
-[진단 절차](RCA.md#native-run-triage-20261111)
+[진단 절차][rca-preimage]
 
 ## 수용의 범위
 
 - source별 Large/XL/Mixed 결과는 아래 [현재 판정](#현재-판정) 한 곳에서 유지한다.
-  동결 pair의 본문 종료와 실패 원인은 [RCA](RCA.md#native-f2-xl-mixed-terminal-20261112)에 있다.
+  동결 pair의 본문 종료와 실패 원인은 [RCA][rca-preimage]에 있다.
 - 원 XL은 seed42·32,768 source·server dispatch120초의 최초 ACK·검색·재오픈,
   원 Mixed는 50QPS·1Hz·960초·pin600초·settle60초를 요구한다.
   timing/work/memory/disk와 case별 child terminal은 [원 기준](../nov-12-native-cutover/DOD.md)을 따른다.
@@ -38,7 +38,7 @@
 alias handoff·packed Diff·Posting 정규화·packed-run scratch의 상시 계약은
 [Native ADR](../../adr/NOV-07-001-native-index-execution-and-custody.md#consolidated-implementation-boundaries)에 통합했다.
 Session profile·Hybrid·종료 응답은 [Query ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md)이 소유한다.
-당시 회귀·source·중간 pair의 수치와 실패는 [WORKPLAN](WORKPLAN.md)·[RCA](RCA.md)에 남긴다.
+당시 회귀·source·중간 pair의 수치와 실패는 [WORKPLAN](WORKPLAN.md)·[RCA][rca-preimage]에 남긴다.
 후보 구현의 완료는 원 XL/Mixed·SDK60·현재 source 수용이 아니다.
 아래 옛 앵커는 이력 링크를 유지하며, 현재 제품 판정은 다음 절만 따른다.
 
@@ -57,10 +57,10 @@ Session profile·Hybrid·종료 응답은 [Query ADR](../../adr/NOV-12-001-nativ
 2026-11-12 SourceApply와 Native Text 본문 검증 합류의 집중 통합 12개는
 **VERIFIED**다. 동결 `824629e4`의 Large ACK 27.281458초·검색·재오픈은 **VERIFIED**다.
 후속 XL Off·Mixed Off·XL Record는 실제 실행에서 각각 **FAILED/exit1**로 종료했다.
-[본문 종료와 실패 분석](RCA.md#native-f2-xl-mixed-terminal-20261112)은 해당 동결 입력에
+[본문 종료와 실패 분석][rca-preimage]은 해당 동결 입력에
 귀속한다. 후행 SourceApply·Native Text 및 NC-A/B/C/D를 합친 후보의 원 XL/Mixed
 수용은 **NOT_RUN**이며 [Native 전환 F](../nov-12-native-cutover/tickets/NC-F-integration.md)가
-통합한다. [코드·검증 기록](RCA.md#native-source-body-single-read-20261112)
+통합한다. [코드·검증 기록][rca-preimage]
 
 [11월 10일 감사 게이트](WORKPLAN.md#final-audit-execution-20261110)는 당시 검증
 순서와 원 기준을 보존한다. 현재 Linux 공급·DELTA·통합 작업은
@@ -68,16 +68,34 @@ Session profile·Hybrid·종료 응답은 [Query ADR](../../adr/NOV-12-001-nativ
 
 | 동결 입력 | Large | XL | Mixed | 판정 한계와 원 기록 |
 | --- | --- | --- | --- | --- |
-| r4 `0a97e858` | Off·Record `FAILED`, BuildPrepare 120초 | — | — | Medium `mr4` fixed 512MiB `FAILED`; [원 RCA](RCA.md#최신-r4-고정본-정상-빌드와-세-실패-실행) |
-| r5–r9 | Large 첫 ACK `FAILED` | — | — | Medium fixed 512MiB도 각 입력에서 `FAILED`. 단계별 byte/child 수와 build/compile 경계는 [RCA](RCA.md#r5-후보-medium의-비용-이동과-남은-거절)·[WORKPLAN](WORKPLAN.md#b03-b3--inventory-block-child-dictionary)에 보존 |
-| r10–r31 | 소스별 `FAILED`와 이후 국소 성공 | — | Mixed 별도 | B5–B21의 코드·회귀·당시 제품 결과는 [WORKPLAN](WORKPLAN.md)·[RCA](RCA.md)의 각 packet으로 귀속; 뒤의 성공을 앞선 source에 전이하지 않음 |
-| r32 `58d69e24` | Off 46.419초, Record 48.192초 `VERIFIED` | — | — | B22 QIMAP005와 B25 v19 marker는 별도 계약. [원 결과](RCA.md#b22-large-실측) |
-| r40–r50 | 실행된 로컬 Large는 source별 `VERIFIED` | 실행된 XL은 원 120초 `FAILED` | 실행된 Mixed는 부하·pin·정산 `FAILED` | 단계별 원인은 [RCA](RCA.md#r49-mixed의-정산-실패와-검색-처리율)에 source별로 기록 |
-| r51 `1482d857` | — | Off·Record `FAILED`, BuildPrepare 120초 | `lm12` 600.475초 pin 해제 뒤 61회 poll에도 Pending, `FAILED` | [XL](RCA.md#r51-xl-off의-재실패) · [Mixed](RCA.md#r51-mixed의-custody-진행과-정산-미수용) |
-| r55 `b7ffae26` | — | — | `FAILED`, held search 555ms IPC timeout; Catalog 대기/COMMIT 관측 | pin 600초·정산 미검증. [원 RCA](RCA.md#r55-mixed의-catalog-대기와-반복-commit) |
-| r56 `2275203` | Off ACK 33.689초·검색·재오픈 `VERIFIED` | Off·Record `FAILED`, BuildPrepare 120초 | `lm16` `FAILED`, 검색 3,995/4,022 실패·pin 121.212초 조기 해제 | 제품 `execution.json`은 성공; 외부 `p56ctl` exit2는 부분 진단 분류 오류. capture `PARTIAL_DIAGNOSTIC`, binding `UNPROVEN`, 정식 성능 `NOT_RUN`. [원 RCA](RCA.md#r56-동결-pair-실행과-현재-코드-경계) |
-| r57 `813cb26` | Off ACK 45.700초·검색·재오픈 `VERIFIED` | `xr57` BuildPrepare 120초 `FAILED` | `lm17` `FAILED`, 검색 11,050/11,067 실패·pin 334.568초 조기 해제 | 로컬 pair build exit0, child와 전체 판정 분리. 최신 D 변경은 포함하지 않음. [실행/한계](RCA.md#r56-동결-pair-실행과-현재-코드-경계) |
-| F1/F2 `824629e4` | ACK 27.281458초·검색·재오픈 `VERIFIED` | Off·Record 각 body1 `FAILED/exit1` | Off body1 `FAILED/exit1` | 2026-11-12 08:14 KST 종료. XL ACK 미완료, Mixed held-read 정산·원 부하 미달. 후행 NC 후보 판정은 별도. [원 영수증 분석](RCA.md#native-f2-xl-mixed-terminal-20261112) |
+| r4 `0a97e858` | Off·Record `FAILED`, BuildPrepare 120초 | — | — | Medium `mr4` fixed 512MiB `FAILED`; [원 RCA][rca-preimage] |
+| r5–r9 | Large 첫 ACK `FAILED` | — | — | Medium fixed 512MiB도 각 입력에서 `FAILED`. 단계별 byte/child 수와 build/compile 경계는 [RCA][rca-preimage]·[WORKPLAN](WORKPLAN.md#b03-b3--inventory-block-child-dictionary)에 보존 |
+| r10–r31 | 소스별 `FAILED`와 이후 국소 성공 | — | Mixed 별도 | B5–B21의 코드·회귀·당시 제품 결과는 [WORKPLAN](WORKPLAN.md)·[RCA][rca-preimage]의 각 packet으로 귀속; 뒤의 성공을 앞선 source에 전이하지 않음 |
+| r32 `58d69e24` | Off 46.419초, Record 48.192초 `VERIFIED` | — | — | B22 QIMAP005와 B25 v19 marker는 별도 계약. [원 결과][rca-preimage] |
+| r40–r50 | 실행된 로컬 Large는 source별 `VERIFIED` | 실행된 XL은 원 120초 `FAILED` | 실행된 Mixed는 부하·pin·정산 `FAILED` | 단계별 원인은 [RCA][rca-preimage]에 source별로 기록 |
+| r51 `1482d857` | — | Off·Record `FAILED`, BuildPrepare 120초 | `lm12` 600.475초 pin 해제 뒤 61회 poll에도 Pending, `FAILED` | [XL][rca-preimage] · [Mixed][rca-preimage] |
+| r55 `b7ffae26` | — | — | `FAILED`, held search 555ms IPC timeout; Catalog 대기/COMMIT 관측 | pin 600초·정산 미검증. [원 RCA][rca-preimage] |
+| r56 `2275203` | Off ACK 33.689초·검색·재오픈 `VERIFIED` | Off·Record `FAILED`, BuildPrepare 120초 | `lm16` `FAILED`, 검색 3,995/4,022 실패·pin 121.212초 조기 해제 | 제품 `execution.json`은 성공; 외부 `p56ctl` exit2는 부분 진단 분류 오류. capture `PARTIAL_DIAGNOSTIC`, binding `UNPROVEN`, 정식 성능 `NOT_RUN`. [원 RCA][rca-preimage] |
+| r57 `813cb26` | Off ACK 45.700초·검색·재오픈 `VERIFIED` | `xr57` BuildPrepare 120초 `FAILED` | `lm17` `FAILED`, 검색 11,050/11,067 실패·pin 334.568초 조기 해제 | 로컬 pair build exit0, child와 전체 판정 분리. 최신 D 변경은 포함하지 않음. [실행/한계][rca-preimage] |
+| F1/F2 `824629e4` | ACK 27.281458초·검색·재오픈 `VERIFIED` | Off·Record 각 body1 `FAILED/exit1` | Off body1 `FAILED/exit1` | 2026-11-12 08:14 KST 종료. XL ACK 미완료, Mixed held-read 정산·원 부하 미달. 후행 NC 후보 판정은 별도. [원 영수증 분석][rca-preimage] |
+
+
+**동결 F2의 확인된 원인과 미확정 경계:** `824629e4`의 XL Off·Record는
+원 120초 BuildPrepare에서 각각 137,953.937542ms·139,539.724542ms 뒤
+원 key가 `refused`로 종료됐다. 두 본문 모두 ACK·검색·재오픈 미도달이다.
+첫 거절 checkpoint는 deadline이지만 그 한 지점이 누적 지연의 단독 원인이라는
+증거는 없다. 별도 Record trace는 complete diagnostic이지만 run binding이
+`UNBOUND`이므로 Off 시간 분해나 정식 비교 수치로 쓰지 않는다.
+
+같은 pair의 Mixed는 FULL ACK 23,232.51ms와 600.261초 pin 보유,
+release 확인91.63025ms를 관측했다. 이후 settlement 60회 poll에도
+`Pending(TerminalCustody→ReclaimQueue→UnretiredView)`였고 최종 정산은 없다.
+이는 진행 중인 custody debt이지 pin release 실패의 증거가 아니다.
+원 50QPS·1Hz·960초도 미완료다: 완료 query22,040건 중21,841건 실패,
+최초 query 실패는 queue1,608.361667ms를 동반한 IPC Read timeout이었다.
+최종 중단 owner `held_read`와 최초 query 실패를 같은 원인으로 합치지 않는다.
+외부 Rust 관측도 있어 이 실행의 비교 성능 수치는 미수용이다. 실제 실패 본문과
+정확한 capture/source 경계는 [RCA 원본 복구][rca-preimage]에서 확인한다.
 
 <a id="native-large-funding-boundary"></a>
 **원인 경계:** Medium fixed 1M reads/512MiB는 진단 profile이다. E07 Large는
@@ -98,7 +116,7 @@ Python profile 396/396은 소스별 집중 결과다. `2275203` scratch strict
 Clippy는 9개 진단으로 `FAILED`; scoped Core/Kernel module 검사는 통과했다.
 후속 `813cb26`은 lib 61/61·Python profile 402/402·hexagonal이
 `VERIFIED`다. 전체 workspace 또는 XL/Mixed 제품 수용으로 전용하지 않는다.
-[소유·검증 경계](WORKPLAN.md) · [E 코드 감사](RCA.md#e-source-audit-20261111)
+[소유·검증 경계](WORKPLAN.md) · [E 코드 감사][rca-preimage]
 
 <a id="native-cli-search-reopen-20261112"></a>
 **CLI·관측기 로컬 검증:** r57 prebuilt와 harness의 recipe/input-domain
@@ -110,7 +128,7 @@ XL/Mixed·Linux·전체 release 수용으로 승격하지 않는다.
 
 ## 구현·진단 이력의 압축 인덱스
 
-B1–B82의 source별 구현·회귀·제품 실패는 [WORKPLAN](WORKPLAN.md)과 [RCA](RCA.md)에서 회수한다.
+B1–B82의 source별 구현·회귀·제품 실패는 [WORKPLAN](WORKPLAN.md)과 [RCA][rca-preimage]에서 회수한다.
 B25의 구 marker/Map 형식은 당시 이력이며 현행 형식으로 재사용하지 않는다.
 B35의 선택적 cold ASCII scratch 후보는 [철회 기록](WORKPLAN.md#b03-b35--cold-ascii-owner의-토큰-scratch-후보-철회)이며 미구현 작업이 아니다.
 중복 요약의 원문은 [복구 색인](../../ARCHIVE-INDEX.md#2026-11-13-ownership-and-ticket-consolidation)에 보존했다.
@@ -136,9 +154,9 @@ memory/work cap이다. [계약과 원본](WORKPLAN.md#b03-b3--inventory-block-ch
 <a id="확인한-병목과-현재-수정"></a>
 ## 과거 비용 진단의 귀속
 
-lr4·mr5/mr6·r57의 비용과 수리는 [동결 RCA](RCA.md#최신-r4-고정본-정상-빌드와-세-실패-실행)에 있다.
+lr4·mr5/mr6·r57의 비용과 수리는 [동결 RCA][rca-preimage]에 있다.
 부모/하위 wall·CPU·실패-prefix 계수는 중복 합산하거나 속도 향상률로 해석하지 않는다.
-Posting batch별 COMMIT 가설과 관측기 wall/표본 한계는 [원 진단](RCA.md#additional-static-audit-20261110),
+Posting batch별 COMMIT 가설과 관측기 wall/표본 한계는 [원 진단][rca-preimage],
 완료된 Q3의 실제 회귀는 [증거 참조](WORKPLAN.md#causal-measurement-packet-20261110)를 따른다.
 현재 후보의 지배 비용·Native Text 수리는 NC-TEXT/NC-F가 실제 source에서 판정한다.
 
@@ -164,11 +182,11 @@ ASCII token·SDK cap과 다른 owner의 dirty File authority/Posting page는
 ## 과거 근거
 
 <a id="원본-가용성"></a>
-51b70b34의 mr2/lo2/lr2, C16/C17과 이전 실행은 [RCA](RCA.md) 및
+51b70b34의 mr2/lo2/lr2, C16/C17과 이전 실행은 [RCA][rca-preimage] 및
 [이전 VALIDATION](../oct-22-finalizing/VALIDATION.md#e07-indexing-versus-host-rca-20261105)의
 역사 근거다. `nov03-e07-wal-policy`/`e7n1105` 원본 경로가 현재 없어
 동일 replay는 `BLOCKED`; 현재 source의 새 측정과 혼동하지 않는다.
-구 E07·WAVES 원문은 [history](../../history/nov-5-indexing-bugbash/)에 있다.
+구 E07·WAVES 원문은 [history](../../ARCHIVE-INDEX.md#nov-5-e07-preimages)에 있다.
 후행 수용은 [Native 전환](../nov-12-native-cutover/README.md)이 소유한다.
 
 ### 종료된 F1/F2 예약 기록
@@ -180,8 +198,10 @@ ASCII token·SDK cap과 다른 owner의 dirty File authority/Posting page는
 <a id="native-final-executor-7200-20261111"></a>
 <a id="f2-7200초-예약의-preflight-차단"></a>
 
-| 동결824629e4의 당시 입장 | 원 기록 |
-| --- | --- |
-| F1 pair 결속 exit0·첫 F2 wait0 lock busy/body0 | [원본](RCA.md#native-final-executor-20261111) |
-| 단일900초 EX 예약 만료·해제, 제품0 | [원본](RCA.md#native-final-executor-retry2-20261111) |
-| EX/project 입장 뒤 timing600초 load22.57959/8.0 거절·제품0·예약 반환 | [원본](RCA.md#native-final-executor-7200-20261111) |
+동결 `824629e4`의 F1 pair 결속은 exit 0이었다. 첫 F2는 wait 0 lock busy로
+본문 0건, 후속 단일 900초 EX 예약은 만료·해제돼 제품 0건이었다.
+EX/project 입장 뒤에는 timing 600초 사전검사가 load 22.57959/8.0으로
+거절해 제품 0건으로 예약을 반환했다. 이는 현재 실행권이 아니다.
+[당시 terminal 원문](../../ARCHIVE-INDEX.md#benchmark-dispatch-and-diagnostic-preimages)
+
+[rca-preimage]: ../../ARCHIVE-INDEX.md#nov-5-indexing-rca-preimage

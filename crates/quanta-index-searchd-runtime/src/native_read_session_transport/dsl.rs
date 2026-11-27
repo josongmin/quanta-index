@@ -14,9 +14,11 @@ use quanta_index_contract::{
     },
     native_protocol::{
         NATIVE_DSL_HEADER_OWNER_V1, NATIVE_DSL_POLICY_V1, NATIVE_DSL_PRODUCER_V1,
-        NATIVE_DSL_SCHEMA_V1, NativeDslCorpusV1, NativeDslCursorV1, NativeDslFileV1,
+        NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1, NATIVE_DSL_SCHEMA_V1,
+        NativeDslCorpusV1, NativeDslCursorV1, NativeDslFileV1,
         NativeDslKindV1, NativeDslPageV1, NativeDslQueryV1, NativeDslRowsV1,
-        NativeDslRuntimeCatalogV1, NativeReadSessionId, native_dsl_file_owner_v1,
+        NativeDslRuntimeCatalogPageV1, NativeDslRuntimeCatalogV1, NativeDslScopeV1,
+        NativeIndexResponse, NativeReadSessionId, native_dsl_file_owner_v1,
     },
 };
 use quanta_index_core::index::{
@@ -38,6 +40,8 @@ use super::{NativeDispatcher, NativeReply, RetainedSearchTimer};
 const MAX_DSL_OBJECT_BYTES: usize = 16 * 1024 * 1024;
 
 mod publication;
+mod structural_chunks;
+pub(super) use structural_chunks::structural_chunks_page;
 pub(crate) use publication::NativeDslCommitValidator;
 
 fn native_dsl_binding(binding: &ProjectionBinding) -> bool {
@@ -162,7 +166,7 @@ pub(super) fn search(
         dispatcher,
         ticket,
         attempt,
-        query,
+        &query.scope,
         NativeDslKindV1::Structural,
         work,
     )?;
@@ -171,7 +175,7 @@ pub(super) fn search(
             dispatcher,
             ticket,
             attempt,
-            query,
+            &query.scope,
             NativeDslKindV1::RuntimeMetadata,
             work,
         )?)
@@ -307,17 +311,89 @@ pub(super) fn search(
     }))
 }
 
+pub(super) fn runtime_catalog_page(
+    dispatcher: &NativeDispatcher,
+    ticket: &ReadTicket,
+    attempt: &TicketReadAttempt<'_>,
+    session: NativeReadSessionId,
+    scope: &NativeDslScopeV1,
+    offset: u32,
+    work: &mut WorkBudget,
+) -> Result<NativeReply, IndexError> {
+    if !offset.is_multiple_of(NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1) {
+        return Err(IndexError::InvalidInput("unaligned RuntimeMetadata catalog offset".into()));
+    }
+    let (_, corpus) = binding(dispatcher, ticket, attempt, scope, NativeDslKindV1::Structural, work)?;
+    let (projection, runtime) = binding(
+        dispatcher, ticket, attempt, scope, NativeDslKindV1::RuntimeMetadata, work,
+    )?;
+    let storage = DslStorage {
+        objects: dispatcher.objects.as_ref(),
+        maps: dispatcher.objects.as_ref(),
+    };
+    let structural = load_header::<NativeDslCorpusV1>(storage, corpus, work)?;
+    // RuntimeMetadata also binds corpora published before parse trees are ready.
+    if !scope.matches_pin(&structural.value.pin) {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    let output = load_header_output(storage, runtime, work)?;
+    let catalog = decode::<NativeDslRuntimeCatalogV1>(&output, work)?;
+    if catalog.value.corpus_certificate != corpus.certificate {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    native_dsl::validate_native_runtime_catalog_pin_v1(&catalog.value, &structural.value.pin)
+        .map_err(|error| query_error(work, error))?;
+    drop(catalog);
+    drop(structural);
+    let start = usize::try_from(offset).map_err(|_| IndexError::ResourceLimited)?;
+    let window = usize::try_from(NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1)
+        .map_err(|_| IndexError::ResourceLimited)?;
+    let end = start.saturating_add(window).min(output.payload.len());
+    if start >= end {
+        return Err(IndexError::InvalidInput("RuntimeMetadata catalog offset is past the end".into()));
+    }
+    let bytes = u64::try_from(end - start).map_err(|_| IndexError::ResourceLimited)?;
+    work.charge(WorkUsage { bytes, ..WorkUsage::default() })?;
+    let slot = NativeReply::reserve_canonical(|bytes| {
+        dispatcher.resources.reserve_response_memory(bytes).map(Some)
+    })?;
+    let backing = dispatcher.resources.reserve_response_memory(bytes)?;
+    let mut page = Vec::new();
+    page.try_reserve_exact(end - start).map_err(|_| IndexError::ResourceLimited)?;
+    if page.capacity() > end - start {
+        return Err(IndexError::ResourceLimited);
+    }
+    for chunk in output.payload[start..end].chunks(64 * 1024) {
+        work.checkpoint()?;
+        page.extend_from_slice(chunk);
+    }
+    work.checkpoint()?;
+    Ok(slot.finish_with_extra_memory(NativeIndexResponse::DslRuntimeCatalogPageV1(
+        NativeDslRuntimeCatalogPageV1 {
+            session,
+            view: ticket.view().identity,
+            source: ticket.view().source,
+            structural_certificate: corpus.certificate,
+            projection,
+            output: output.registration.reference,
+            total_bytes: u32::try_from(output.payload.len()).map_err(|_| IndexError::ResourceLimited)?,
+            offset,
+            bytes: page,
+        },
+    ), Some(backing)))
+}
+
 fn binding(
     dispatcher: &NativeDispatcher,
     ticket: &ReadTicket,
     attempt: &TicketReadAttempt<'_>,
-    query: &NativeDslQueryV1,
+    scope: &NativeDslScopeV1,
     kind: NativeDslKindV1,
     work: &mut WorkBudget,
 ) -> Result<(ObjectRef, ProjectionBinding), IndexError> {
     let value = dispatcher
         .kernel
-        .projection_for_read_attempt(ticket, attempt, query.scope.projection(kind), work)?
+        .projection_for_read_attempt(ticket, attempt, scope.projection(kind), work)?
         .ok_or(IndexError::SnapshotUnavailable)?;
     let (_, binding) = value;
     if binding.source != ticket.view().source {

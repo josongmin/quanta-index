@@ -54,8 +54,11 @@ use quanta_index_retrieval_bench::sdk::{
     query_route_with_policy_client_observed_file_cap, query_route_with_policy_timed_file_cap,
     resolve_searchd_binary, verify_searchd_digest,
 };
+#[cfg(unix)]
+use quanta_index_retrieval_bench::symbols::preflight_corpus_symbols_from_candidate_manifest;
 use quanta_index_retrieval_bench::symbols::{
-    SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
+    SymbolCoveragePolicy, SymbolLanguage, SymbolPreflight, SymbolPreflightOptions,
+    preflight_corpus_symbols,
 };
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_file_hex, sha256_hex};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
@@ -89,6 +92,8 @@ fn print_help() -> BenchResult<()> {
          [--symbol-timeout-ms N] [--max-symbols-per-file N]\n\
          [--symbol-total-timeout-ms N] [--max-symbols-total N]\n\
          [--max-symbol-diagnostics-per-file N] [--max-symbol-diagnostics N]\n\
+         [--symbol-candidate-manifest PATH --symbol-candidate-manifest-sha256 HEX64]\n\
+           Required for a corpus containing Go, JavaScript, TypeScript or TSX.\n\
          \n\
          shared: --repo PATH --manifest PATH --strategy whole_file|fixed_window_strict|fixed_window_line_aligned|brace_heuristic\n\
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
@@ -106,6 +111,7 @@ fn print_help() -> BenchResult<()> {
          --searchd-bin PATH --searchd-expected-sha256 HEX\n\
          [--source-stream-id ID] [--source-event-id ID] [--source-base-event-id ID]\n\
          [--symbol-preflight-out PATH]\n\
+         [--symbol-candidate-manifest PATH --symbol-candidate-manifest-sha256 HEX64]\n\
          --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|potion-code-full-v2|local-code-jina-v2|hash-dev]\n\
          local-code-jina-v2: --local-code-origin URL --local-code-manifest PATH --local-code-manifest-sha256 HEX\n\
          [--request-events-out PATH] (diagnostic only; 1-2 serial lexical queries)\n\
@@ -699,6 +705,49 @@ fn symbol_preflight_options(
     })
 }
 
+fn selected_symbol_preflight(
+    args: &Args,
+    files: &BTreeMap<String, SourceFile>,
+    options: &SymbolPreflightOptions<'_>,
+) -> BenchResult<SymbolPreflight> {
+    match (
+        args.flags.get("symbol-candidate-manifest"),
+        args.flags.get("symbol-candidate-manifest-sha256"),
+    ) {
+        (None, None) => {
+            if let Some(path) = files.keys().find(|path| {
+                SymbolLanguage::from_path(path).is_some_and(SymbolLanguage::requires_projection)
+            }) {
+                return Err(BenchError::Config(format!(
+                    "{path} requires --symbol-candidate-manifest and --symbol-candidate-manifest-sha256"
+                )));
+            }
+            preflight_corpus_symbols(files, options)
+        }
+        (Some(manifest), Some(sha256)) => {
+            #[cfg(unix)]
+            {
+                preflight_corpus_symbols_from_candidate_manifest(
+                    files,
+                    options,
+                    Path::new(manifest),
+                    sha256,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (manifest, sha256);
+                Err(BenchError::Config(
+                    "candidate symbol producer requires Unix".into(),
+                ))
+            }
+        }
+        _ => Err(BenchError::Config(
+            "symbol candidate manifest and SHA-256 must be supplied together".into(),
+        )),
+    }
+}
+
 fn run_symbol_preflight(args: &Args) -> BenchResult<()> {
     reject_unknown(
         args,
@@ -714,6 +763,8 @@ fn run_symbol_preflight(args: &Args) -> BenchResult<()> {
             "symbol-total-timeout-ms",
             "max-symbol-diagnostics-per-file",
             "max-symbol-diagnostics",
+            "symbol-candidate-manifest",
+            "symbol-candidate-manifest-sha256",
         ],
     )?;
     let policy_text = args
@@ -745,7 +796,7 @@ fn run_symbol_preflight(args: &Args) -> BenchResult<()> {
         .into_iter()
         .map(|file| (file.path.clone(), file))
         .collect();
-    let preflight = preflight_corpus_symbols(&by_path, &options)?;
+    let preflight = selected_symbol_preflight(args, &by_path, &options)?;
     let value = serde_json::json!({
         "symbol_coverage_policy": policy_text,
         "repository_commit": manifest.repository_commit,
@@ -901,6 +952,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "max-symbols-total",
             "max-symbol-diagnostics-per-file",
             "max-symbol-diagnostics",
+            "symbol-candidate-manifest",
+            "symbol-candidate-manifest-sha256",
             "source-stream-id",
             "source-event-id",
             "source-base-event-id",
@@ -1170,7 +1223,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         .collect();
     let discovery_elapsed = overall.elapsed();
     let symbol_preflight_start = Instant::now();
-    let symbol_preflight = preflight_corpus_symbols(
+    let symbol_preflight = selected_symbol_preflight(
+        args,
         &by_path,
         &symbol_preflight_options(args, limits.max_file_bytes)?,
     )?;
@@ -1908,7 +1962,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "chunk_count": selection.coverage.chunks,
         "symbol_count": assembly.symbols,
         "symbol_producer_identity": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_IDENTITY,
-        "symbol_grammars": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_GRAMMARS,
+        "symbol_grammars": symbol_preflight.report().grammar_identity.clone(),
         "symbol_coverage": symbol_coverage,
         "symbol_coverage_policy": symbol_policy_text,
         "symbol_preflight_out": symbol_preflight_ref,
@@ -2197,6 +2251,52 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbol_cli_requires_pinned_install_for_projected_languages() {
+        let mut files = BTreeMap::new();
+        let options = SymbolPreflightOptions::default();
+        let mut args = Args {
+            positional: Vec::new(),
+            flags: BTreeMap::new(),
+            help: false,
+        };
+        let default = selected_symbol_preflight(&args, &files, &options)
+            .expect("corpus without projected languages can use the linked parser");
+        assert_eq!(
+            default.report().grammar_identity,
+            quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_GRAMMARS
+        );
+        let source = "export type * from './other';";
+        let _previous = files.insert(
+            "a.ts".into(),
+            SourceFile {
+                path: "a.ts".into(),
+                bytes: source.as_bytes().to_vec(),
+                text: source.into(),
+                line_starts: vec![0],
+                sha256: sha256_hex(source.as_bytes()),
+            },
+        );
+        assert!(matches!(
+            selected_symbol_preflight(&args, &files, &options),
+            Err(BenchError::Config(message)) if message.contains("a.ts requires")
+        ));
+        let _previous = args
+            .flags
+            .insert("symbol-candidate-manifest".into(), "/missing.json".into());
+        assert!(matches!(
+            selected_symbol_preflight(&args, &files, &options),
+            Err(BenchError::Config(_))
+        ));
+        let _previous = args
+            .flags
+            .insert("symbol-candidate-manifest-sha256".into(), "0".repeat(64));
+        assert!(matches!(
+            selected_symbol_preflight(&args, &files, &options),
+            Err(BenchError::Config(_))
+        ));
+    }
 
     #[test]
     fn capabilities_identify_the_actual_diagnostic_contract() {

@@ -182,10 +182,7 @@ impl Fixture {
 fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> TestResult {
     let mode = DeploymentRecoveryModeV1::RollbackLegacy;
     let fixture = Fixture::new(mode)?;
-    let parent = fixture
-        .selection
-        .parent()
-        .ok_or("missing deployment directory")?;
+    let parent = fixture.selection.parent().ok_or("missing deployment directory")?;
     let legacy_root = parent.join("legacy");
     let repomap_root = parent.join("legacy-repomap");
     fs::create_dir(&repomap_root)?;
@@ -195,10 +192,7 @@ fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> Tes
     let _prior = environment.insert("LANG", "ko_KR.UTF-8".into());
     let bytes = String::from_utf8(fixture.after.clone())?
         .replace(&quoted(&legacy_root)?, &quoted(&repomap_root)?)
-        .replace(
-            r#"{"LANG":"ko_KR.UTF-8"}"#,
-            &serde_json::to_string(&environment)?,
-        )
+        .replace(r#"{"LANG":"ko_KR.UTF-8"}"#, &serde_json::to_string(&environment)?)
         .into_bytes();
     fs::write(&saved, &bytes)?;
     fs::set_permissions(&saved, fs::Permissions::from_mode(0o600))?;
@@ -209,42 +203,40 @@ fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> Tes
         &mut budget,
         |locked, budget| {
             (|| -> Result<()> {
+                let configured = locked.read_saved_legacy_repomap_selection_v1(
+                    &saved, expected, budget,
+                )?;
+                ensure!(configured.state_root_v1() == repomap_root);
+                drop(configured);
+                ensure!(
+                    locked.read_saved_legacy_repomap_selection_v1(
+                        &fixture.selection, fingerprint(&fixture.before), budget,
+                    ).is_err()
+                );
+                ensure!(
+                    locked.read_saved_legacy_repomap_selection_v1(
+                        &saved, Digest([1; 32]), budget,
+                    ).is_err()
+                );
                 let selected = locked.read_legacy_repomap_selection_v1(
-                    &saved,
-                    expected,
-                    &repomap_root,
-                    budget,
+                    &saved, expected, &repomap_root, budget,
                 )?;
                 ensure!(selected.state_root_v1() == repomap_root);
-                ensure!(
-                    selected.legacy_physical_policy_v1(budget)?
-                        == quanta_index_searchd::app::config::TEST_STATE_ROOT_PHYSICAL_POLICY
-                );
+                ensure!(selected.legacy_physical_policy_v1(budget)?
+                    == quanta_index_searchd::app::config::TEST_STATE_ROOT_PHYSICAL_POLICY);
                 drop(selected);
                 ensure!(
-                    locked
-                        .read_legacy_repomap_selection_v1(&saved, expected, &legacy_root, budget)
-                        .is_err()
+                    locked.read_legacy_repomap_selection_v1(&saved, expected, &legacy_root, budget).is_err()
                 );
                 ensure!(
-                    locked
-                        .read_legacy_repomap_selection_v1(
-                            &saved,
-                            Digest([1; 32]),
-                            &repomap_root,
-                            budget
-                        )
-                        .is_err()
+                    locked.read_legacy_repomap_selection_v1(&saved, Digest([1; 32]), &repomap_root, budget).is_err()
                 );
                 Ok(())
-            })()
-            .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
+            })().map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
             locked.publish_with_custody_v1(budget, &mut |budget| {
                 let replacement = String::from_utf8(bytes.clone())?.replace("ko_KR.UTF-8", "C");
                 fs::write(&saved, replacement)?;
-                LockedDeploymentSelectionV1::require_legacy_repomap_selection_v1(
-                    &saved, expected, budget,
-                )
+                LockedDeploymentSelectionV1::require_legacy_repomap_selection_v1(&saved, expected, budget)
             })
         },
     );
@@ -253,10 +245,7 @@ fn saved_repomap_policy_is_bound_to_the_separate_root_and_exact_control() -> Tes
             if error.to_string() == "saved RepoMap selection changed during publication"),
         "changed saved RepoMap selection was not refused",
     )?;
-    require(
-        fs::read(&fixture.selection)? == fixture.before,
-        "refusal changed selection",
-    )
+    require(fs::read(&fixture.selection)? == fixture.before, "refusal changed selection")
 }
 
 #[test]
@@ -375,6 +364,250 @@ fn bound_reconciliation_requires_the_published_witness() -> TestResult {
 }
 
 #[test]
+fn source_only_witness_keeps_selection_inode_after_interrupted_rename() -> TestResult {
+    use quanta_index_contract::{
+        AuxEpochV1, ManifestGeneration,
+        index::{AuxiliaryGenerationKeyV1, HistorySourceCutV1, IndexInstanceId, MapRoot, StreamId},
+    };
+
+    let mode = DeploymentRecoveryModeV1::RestoreForward;
+    let fixture = Fixture::new(mode)?;
+    let before = fixture.before_document("source-only-witness-rename-interruption")?;
+    let previous_selection_inode = fs::metadata(&fixture.selection)?.ino();
+    let request = fixture.request(mode);
+    let installed_helper = fingerprint(b"#!/bin/sh\nexit 0\n");
+    let config_digest = fingerprint(&fs::read(fixture._temp.path().join("new.config.json"))?);
+    let root_metadata = fs::metadata(fixture._temp.path().join("new"))?;
+    let root = InodeKey {
+        device: root_metadata.dev(),
+        inode: root_metadata.ino(),
+    };
+    let boot_operation: OperationKey = serde_json::from_str(OPERATION)?;
+    let installed = SourceOnlyRecoveryIdentityV2 {
+        boot_root_nonce: Digest([2; 32]),
+        boot_operation,
+        install_catalog_digest: Digest([0x11; 32]),
+        source_operation: OperationKey {
+            stream: StreamId([0x33; 16]),
+            sequence: 2,
+            ..boot_operation
+        },
+        source_request: ObjectRef(Digest([0x55; 32])),
+        source_view: ViewRef {
+            workspace: boot_operation.workspace,
+            epoch: 1,
+            sequence: 3,
+            digest: Digest([0x66; 32]),
+        },
+        source_cut: SourceCut {
+            owners: MapRoot(None),
+            paths: MapRoot(None),
+            frontiers: MapRoot(Some(ObjectRef(Digest([0x77; 32])))),
+        },
+    };
+    let begin = NativeCutoverControlBeginV1 {
+        format_version: 1,
+        operation_id: before.operation_id_v1.to_owned(),
+        mode: NativeCutoverRecoveryModeV1::RestoreForward,
+        current_selection_sha256: fingerprint(&fixture.before),
+        candidate_selection_sha256: fingerprint(&fixture.after),
+        deadline_ns: 1,
+        evidence_length: 1,
+        evidence_sha256: Digest([9; 32]),
+        nonce: Digest([10; 32]),
+    };
+    let history = NativeCutoverInstalledHistoryV1 {
+        operation: boot_operation,
+        view: ViewRef {
+            sequence: 2,
+            digest: Digest([0x81; 32]),
+            ..installed.source_view
+        },
+        instance: IndexInstanceId([0x82; 16]),
+        member: ObjectRef(Digest([0x83; 32])),
+        source_input: ObjectRef(Digest([0x84; 32])),
+        cut: HistorySourceCutV1 {
+            generation: AuxiliaryGenerationKeyV1 {
+                repo_id: RepoId::new("retained")?,
+                revision_id: RevisionId::new("main")?,
+                generation: ManifestGeneration::new(1),
+            },
+            durable_epoch: AuxEpochV1::new(1),
+            snapshot_digest: Digest([0x85; 32]),
+            replay_start: Digest([0x86; 32]),
+        },
+    };
+    let wire = SourceOnlyRecoveryWitnessWireV2 {
+        binding: RecoveryWitnessBindingV1 {
+            mode: begin.mode,
+            nonce: begin.nonce,
+            config_sha256: config_digest,
+            helper_sha256: installed_helper,
+            evidence_length: begin.evidence_length,
+            evidence_sha256: begin.evidence_sha256,
+        },
+        root_device: root.device,
+        root_inode: root.inode,
+        installed,
+        history: Some(&history),
+    };
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&(2_u8, wire), &mut encoded)?;
+    assert!(matches!(decode_recovery_witness(&encoded)?,
+        ObservedRecoveryWitness::SourceOnlyV2(wire)
+            if wire.installed == installed && wire.history.as_ref() == Some(&history)));
+    encoded.push(0);
+    assert!(decode_recovery_witness(&encoded).is_err());
+    let _trailing = encoded.pop();
+    encoded[1] = 3;
+    assert!(decode_recovery_witness(&encoded).is_err());
+    let stage = |identity,
+                 history,
+                 refuse_custody: bool,
+                 interrupt: bool|
+     -> std::result::Result<_, DeploymentSelectionErrorV1> {
+        let (mut work, _execution) = budget()
+            .map_err(|cause| DeploymentSelectionErrorV1::RefusedBeforeRename(anyhow!("{cause}")))?;
+        with_locked_deployment_selection_reconciliation_v1(
+            &request,
+            &before,
+            &mut work,
+            |locked, work| {
+                locked
+                    .bind_recovery_witness_v1(&begin, config_digest, installed_helper)
+                    .and_then(|()| {
+                        locked
+                            .prepare_source_only_recovery_witness_v2(root, identity, history, work)
+                    })
+                    .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
+                locked.publish_inner_with_custody(
+                    work,
+                    &mut |_| {
+                        ensure!(
+                            !refuse_custody,
+                            "held root changed before Source-only rename"
+                        );
+                        Ok(())
+                    },
+                    &mut |stage| {
+                        if matches!(stage, PublishStage::AfterRename) {
+                            ensure!(
+                                interrupt,
+                                "Source-only retry unexpectedly renamed selection"
+                            );
+                            return Err(anyhow!("interrupted Source-only rename"));
+                        }
+                        Ok(())
+                    },
+                )
+            },
+        )
+    };
+    let foreign_install = SourceOnlyRecoveryIdentityV2 {
+        install_catalog_digest: Digest([0x12; 32]),
+        ..installed
+    };
+    require(
+        matches!(
+            stage(foreign_install, Some(&history), false, true),
+            Err(DeploymentSelectionErrorV1::RefusedBeforeRename(_))
+        ),
+        "an unrelated install digest must fail before rename",
+    )?;
+    let foreign_history = NativeCutoverInstalledHistoryV1 {
+        operation: installed.source_operation,
+        ..history.clone()
+    };
+    require(
+        matches!(stage(installed, Some(&foreign_history), false, true),
+        Err(DeploymentSelectionErrorV1::RefusedBeforeRename(cause))
+            if cause.to_string() == "Source-only History witness does not name the selected BOOT"),
+        "a later Source operation cannot supply the BOOT History terminal",
+    )?;
+    require(
+        matches!(stage(installed, Some(&history), true, false),
+        Err(DeploymentSelectionErrorV1::RefusedBeforeRename(cause))
+            if cause.to_string() == "held root changed before Source-only rename"),
+        "custody must be checked before the V2 rename",
+    )?;
+    assert_eq!(fs::read(&fixture.selection)?, fixture.before);
+    assert_eq!(fs::metadata(&fixture.selection)?.ino(), previous_selection_inode);
+    require(
+        matches!(stage(installed, Some(&history), false, true), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+        if cause.to_string() == "interrupted Source-only rename"),
+        "injected rename interruption",
+    )?;
+    let selection_inode = fs::metadata(&fixture.selection)?.ino();
+    assert_ne!(selection_inode, previous_selection_inode);
+    let wrong_cut = SourceOnlyRecoveryIdentityV2 {
+        source_cut: SourceCut {
+            frontiers: MapRoot(None),
+            ..installed.source_cut
+        },
+        ..installed
+    };
+    require(
+        matches!(stage(wrong_cut, Some(&history), false, false), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+        if cause.to_string() == "Source-only recovery witness differs from the verified outcome"),
+        "fresh data cannot replace the selected Source cut",
+    )?;
+    let wrong_member = NativeCutoverInstalledHistoryV1 {
+        member: ObjectRef(Digest([0x87; 32])),
+        ..history.clone()
+    };
+    require(
+        matches!(stage(installed, Some(&wrong_member), false, false), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+        if cause.to_string() == "Source-only recovery witness differs from the verified outcome"),
+        "fresh History data cannot replace the selected BOOT member",
+    )?;
+    let mut wrong_config_digest = config_digest;
+    wrong_config_digest.0[0] ^= 1;
+    {
+        let (mut work, _execution) = budget()?;
+        require(
+            matches!(
+                with_locked_published_recovery_v1(
+                    &request,
+                    &before,
+                    wrong_config_digest,
+                    &mut work,
+                    |_, _, _, _, _| unreachable!("foreign config reached the custody callback"),
+                ),
+                Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+                    if cause.to_string() == "published recovery witness differs from the requested mode or installed image"
+            ),
+            "published-only recovery must refuse a foreign config before re-sync",
+        )?;
+    }
+    assert_eq!(fs::metadata(&fixture.selection)?.ino(), selection_inode);
+    assert_eq!(fs::read(&fixture.selection)?, fixture.after);
+    let (mut work, _execution) = budget()?;
+    let settled = with_locked_published_recovery_v1(
+        &request,
+        &before,
+        config_digest,
+        &mut work,
+        |_, helper, witness, work, sync| {
+            ensure!(
+                helper == installed_helper
+                    && witness.root == root
+                    && witness.history == Some(&history)
+            );
+            ensure!(matches!(witness.disposition,
+                PublishedRecoveryDispositionV1::SourceOnlyV2(identity) if *identity == installed));
+            sync(work, &mut |_| Ok(()))
+        },
+    )?;
+    assert_eq!(
+        settled.publication.resolution_v1(),
+        DeploymentSelectionResolutionV1::Reconciled
+    );
+    assert_eq!(fs::metadata(&fixture.selection)?.ino(), selection_inode);
+    assert_eq!(fs::read(&fixture.selection)?, fixture.after);
+    Ok(())
+}
+
+#[test]
 fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -> TestResult {
     use quanta_index_contract::{
         ManifestGeneration, RepoMapMutationAck, RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2,
@@ -445,9 +678,7 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
             |locked, work| {
                 locked
                     .bind_recovery_witness_v1(&begin, config, installed_helper)
-                    .and_then(|()| {
-                        locked.prepare_recovery_witness_v1(None, root, None, disposition, work)
-                    })
+                    .and_then(|()| locked.prepare_recovery_witness_v1(None, root, None, disposition, work))
                     .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
                 locked.publish_inner(work, &mut |stage| {
                     ensure!(
@@ -481,8 +712,10 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
             |_, helper, witness, work, sync| {
                 verified_root.set(true);
                 ensure!(helper == installed_helper && witness.root == root);
-                ensure!(witness.history.is_none() && witness.legacy.is_none());
-                ensure!(witness.repomap == &repomap);
+                ensure!(witness.history.is_none());
+                ensure!(matches!(witness.disposition,
+                    PublishedRecoveryDispositionV1::HistoricalV1 { legacy: None, repomap: value }
+                    if value == &repomap));
                 sync(work, &mut |_| Ok(()))
             },
         )?;
@@ -548,10 +781,8 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
     let saved = directory.join("saved-witness");
     let disappeared = stage(expected_config, &repomap, false, Some((&sidecar, &saved)));
     require(
-        matches!(
-            disappeared,
-            Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))
-        ) && saved.is_file()
+        matches!(disappeared, Err(DeploymentSelectionErrorV1::PersistenceUncertain(_)))
+            && saved.is_file()
             && !sidecar.exists()
             && fs::metadata(&fixture.selection)?.ino() == selected_inode
             && fs::read(&fixture.selection)? == fixture.after,
@@ -568,9 +799,7 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         "a missing selected witness sidecar must retain the OS cause and refuse before root verification",
     )?;
     let mut corrupted = fs::read(&saved)?;
-    *corrupted
-        .last_mut()
-        .ok_or("empty recovery witness sidecar")? ^= 1;
+    *corrupted.last_mut().ok_or("empty recovery witness sidecar")? ^= 1;
     fs::write(&sidecar, corrupted)?;
     fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o600))?;
     require(
@@ -585,13 +814,7 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
     };
     replayed_activation.mutation.replayed = true;
     require(
-        stage(
-            expected_config,
-            &disposition(replayed_activation),
-            false,
-            None,
-        )?
-        .resolution_v1()
+        stage(expected_config, &disposition(replayed_activation), false, None)?.resolution_v1()
             == DeploymentSelectionResolutionV1::Reconciled,
         "a replay flag must not change the durable RepoMap disposition",
     )?;
@@ -1404,6 +1627,10 @@ fn invalid_selection_identity_reports_the_exact_rejection() -> TestResult {
 
 #[test]
 fn schema3_retired_policy_ref_is_exact_and_schema2_remains_readable() -> TestResult {
+    use quanta_index_contract::{
+        index::ObjectRef, native_cutover_evidence_v1::read_native_cutover_before_native_selector_v1,
+    };
+
     let fixture = Fixture::new(DeploymentRecoveryModeV1::RestoreForward)?;
     let (mut work, _execution) = budget()?;
     let old = codec::decode(&fixture.after, &mut work)?;
@@ -1411,49 +1638,61 @@ fn schema3_retired_policy_ref_is_exact_and_schema2_remains_readable() -> TestRes
         .native_command_v1()
         .and_then(|command| command.identity)
         .ok_or("schema-2 BOOT identity missing")?;
+    require(old_identity.retired_projection_policy.is_none(), "schema-2 policy absent")?;
+    let old_selector = read_native_cutover_before_native_selector_v1(&fixture.after)?
+        .ok_or("schema-2 Source BOOT selector missing")?;
+    let (nonce, operation) = old_selector;
     require(
-        old_identity.retired_projection_policy.is_none(),
-        "schema-2 policy absent",
+        operation == old_identity.manifest_operation
+            && codec::hex(std::str::from_utf8(&nonce.0)?)?.0 == old_identity.root_nonce,
+        "schema-2 BOOT operation and nonce parity",
     )?;
 
     let mut wire: serde_json::Value = serde_json::from_slice(&fixture.after)?;
+    wire["native_boot_receipt"]["protected_source_routes_hex"] = serde_json::json!("66".repeat(32));
+    let routed_schema2 = codec::canonical_payload(&wire)?;
+    let routed = codec::decode(&routed_schema2, &mut work)?;
+    require(
+        routed
+            .native_command_v1()
+            .and_then(|command| command.identity)
+            .is_some_and(|identity| {
+                identity.protected_source_routes == Some(ObjectRef(Digest([0x66; 32])))
+            })
+            && read_native_cutover_before_native_selector_v1(&routed_schema2)? == Some(old_selector),
+        "schema-2 protected Source route and exact BOOT selector",
+    )?;
     wire["schema_version"] = serde_json::json!(3);
     wire["native_boot_receipt"]["retired_policy_object_hex"] = serde_json::json!("44".repeat(32));
     wire["native_boot_receipt"]["retired_policy_sha256_hex"] = serde_json::json!("55".repeat(32));
     wire["native_boot_receipt"]["retired_policy_identity_count"] = serde_json::json!(2);
     let bytes = codec::canonical_payload(&wire)?;
     let selected = codec::decode(&bytes, &mut work)?;
+    require(
+        read_native_cutover_before_native_selector_v1(&bytes)? == Some(old_selector),
+        "schema-3 Source readback changed the BOOT selector",
+    )?;
     let reference = selected
         .native_command_v1()
         .and_then(|command| command.identity)
         .and_then(|identity| identity.retired_projection_policy)
         .ok_or("schema-3 BOOT policy missing")?;
-    require(
-        reference.object.0 == Digest([0x44; 32]),
-        "schema-3 object ref",
-    )?;
-    require(
-        reference.sha256 == Digest([0x55; 32]) && reference.identity_count == 2,
-        "schema-3 digest/count",
-    )?;
+    require(reference.object.0 == Digest([0x44; 32]), "schema-3 object ref")?;
+    require(reference.sha256 == Digest([0x55; 32]) && reference.identity_count == 2, "schema-3 digest/count")?;
 
     let removed_digest = wire["native_boot_receipt"]
         .as_object_mut()
         .ok_or("receipt object")?
         .remove("retired_policy_sha256_hex");
+    require(removed_digest.is_some(), "schema-3 fixture digest missing before removal")?;
+    let partial = codec::canonical_payload(&wire)?;
+    require(codec::decode(&partial, &mut work).is_err(), "missing schema-3 digest accepted")?;
     require(
-        removed_digest.is_some(),
-        "schema-3 fixture digest missing before removal",
-    )?;
-    require(
-        codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(),
-        "missing schema-3 digest accepted",
+        read_native_cutover_before_native_selector_v1(&partial).is_err(),
+        "partial retirement is not a valid Source selector",
     )?;
     wire["schema_version"] = serde_json::json!(2);
-    require(
-        codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(),
-        "schema-2 accepted schema-3 fields",
-    )?;
+    require(codec::decode(&codec::canonical_payload(&wire)?, &mut work).is_err(), "schema-2 accepted schema-3 fields")?;
     Ok(())
 }
 
@@ -1565,19 +1804,13 @@ fn independently_selected_candidate_cannot_complete_a_retained_intent() -> TestR
         let (mut work, _execution) = budget()?;
         let mut entered = false;
         let result = with_locked_deployment_selection_reconciliation_v1(
-            &fixture.request(mode),
-            &retained,
-            &mut work,
-            |locked, work| {
+            &fixture.request(mode), &retained, &mut work, |locked, work| {
                 entered = true;
                 locked.publish_v1(work)
             },
         );
         require(
-            matches!(
-                result,
-                Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))
-            ) && !entered,
+            matches!(result, Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))) && !entered,
             "independently selected candidate completed a retained intent",
         )?;
         require(
@@ -1859,10 +2092,7 @@ fn retained_terminal_cannot_repeat_rollback_after_a_forward_cycle() -> TestResul
             },
         );
         require(
-            matches!(
-                repeated,
-                Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))
-            ) && !entered,
+            matches!(repeated, Err(DeploymentSelectionErrorV1::PersistenceUncertain(_))) && !entered,
             "retained intent without terminal repeated rollback after forward",
         )?;
         require(

@@ -3,7 +3,9 @@
 
 use super::*;
 use quanta_index_core::index::ports::CatalogExactHistoryPort as _;
-use quanta_index_searchd_runtime::native::{NativeRetentionConfig, NativeRetentionScope};
+use quanta_index_searchd_runtime::native::{
+    NativeRetentionConfig, NativeRetentionMark, NativeRetentionObservation, NativeRetentionScope,
+};
 
 #[path = "physical_mixed_pressure/wal_reclaim.rs"]
 mod wal_reclaim;
@@ -12,7 +14,6 @@ const PRESSURE_BYTES: usize = 128 * 1024;
 const PRESSURE_MAX_STAGES: u8 = 48;
 const PRESSURE_CYCLES: u64 = 2;
 const PRESSURE_SPARE_BYTES: u64 = 4 * 1024 * 1024;
-const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 const EXTENDED_MIN_CYCLES: u64 = 4;
 const EXTENDED_MAX_CYCLES: u64 = 128;
 const EXTENDED_MIN_ACTIVE: Duration = Duration::from_secs(36);
@@ -197,6 +198,7 @@ fn oversized_wal_reclaim(automatic: bool) -> TestResult {
         automatic.then(test_reclaim_config),
     )?;
     let maintenance = service.maintenance_handle();
+    let observation = service.reclaim_observation();
     let running = NativeServiceGuard::start(service);
     assert!(std::fs::metadata(&wal)?.len() > threshold);
     assert_eq!(
@@ -219,12 +221,9 @@ fn oversized_wal_reclaim(automatic: bool) -> TestResult {
     // a later foreground request or daemon restart to reduce this WAL first.
     assert!(std::fs::metadata(&wal)?.len() > threshold);
     if automatic {
-        let deadline = Instant::now()
-            .checked_add(SETTLE_TIMEOUT)
-            .ok_or("oversized WAL reclaim deadline overflow")?;
-        while !native_object_absent_nofollow(&record_file)? && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // The discard was queued before this service started, so a drained
+        // round of its pump has reclaimed it; no wall clock is involved.
+        observation.wait_drained_after(observation.mark())?;
     } else {
         let mut after = None;
         for _step in 0..16 {
@@ -353,27 +352,88 @@ fn mixed_quiescent_census(
     Ok(())
 }
 
-fn await_reclaim_headroom<T>(
+/// Resource refusals tolerated per foreground request.
+///
+/// Each refusal waits for one reclaim round and one retention round that the
+/// pump records after it, so every maintenance reservation held when the
+/// request was refused has since been released. Callers first wait for the
+/// discarded work to drain, so a request still refused after this many such
+/// waits is a failure, not a slow pump. No wall clock bounds the wait.
+const PUMP_ROUND_RETRIES: u32 = 4;
+
+/// Pump waits that must retire and drain the view released before startup.
+///
+/// Each wait covers two completed retention rounds, and one completed round
+/// runs one phase of the single scope's Work, Views and Custody rotation, so
+/// three waits complete two full rotations unless retention declines its
+/// Views turns, which is a failure here. These are counts of pump events,
+/// not elapsed time.
+const LAST_PIN_WAITS: u32 = 3;
+
+/// The reclaim and retention observations of one running service.
+struct PumpObservation {
+    reclaim: Arc<NativeReclaimObservation>,
+    retention: Arc<NativeRetentionObservation>,
+}
+
+#[derive(Clone, Copy)]
+struct PumpMark {
+    reclaim: NativeReclaimMark,
+    retention: NativeRetentionMark,
+}
+
+impl PumpObservation {
+    fn of(service: &NativeIndexService) -> Self {
+        Self {
+            reclaim: service.reclaim_observation(),
+            retention: service.retention_observation(),
+        }
+    }
+
+    fn mark(&self) -> PumpMark {
+        PumpMark {
+            reclaim: self.reclaim.mark(),
+            retention: self.retention.mark(),
+        }
+    }
+
+    /// Block until reclaim has drained and retention has completed rounds
+    /// after `mark`, so every maintenance reservation held at `mark` has been
+    /// released and its work recorded.
+    fn wait_rounds_after(&self, mark: PumpMark) -> TestResult {
+        self.reclaim.wait_drained_after(mark.reclaim)?;
+        self.retention.wait_completed_after(mark.retention)?;
+        Ok(())
+    }
+}
+
+fn retry_after_pump_rounds<T>(
+    observation: &PumpObservation,
     phase: &str,
-    deadline: Instant,
     mut request: impl FnMut() -> Result<T, NativeUdsError>,
 ) -> TestResult<T> {
+    let mut refusals = 0_u32;
     loop {
+        let mark = observation.mark();
         match request() {
             Ok(result) => return Ok(result),
             Err(NativeUdsError::Refused(error))
                 if error.code == NativeIndexErrorCode::ResourceLimited
-                    && Instant::now() < deadline =>
+                    && refusals < PUMP_ROUND_RETRIES =>
             {
-                std::thread::sleep(Duration::from_millis(20));
+                refusals = refusals.checked_add(1).ok_or("refusal count overflow")?;
+                observation.wait_rounds_after(mark)?;
             }
-            Err(error) => return Err(format!("{phase}: {error:?}").into()),
+            Err(error) => {
+                return Err(format!("{phase} after {refusals} refusals: {error:?}").into());
+            }
         }
     }
 }
 
 fn pressure_cycle(
     client: &NativeUdsClient,
+    observation: &PumpObservation,
     root: &std::path::Path,
     identity: &FileObjectStore,
     cap_bytes: u64,
@@ -396,14 +456,9 @@ fn pressure_cycle(
     let mut accepted = 0_u8;
     let mut refused = false;
     let mut max_logical_bytes = native_regular_file_bytes(&native_regular_files(root)?)?;
-    let deadline = Instant::now()
-        .checked_add(SETTLE_TIMEOUT)
-        .ok_or("pressure stage deadline overflow")?;
+    let mut refusals = 0_u32;
     let mut index = 0_u8;
     while index < PRESSURE_MAX_STAGES {
-        if Instant::now() >= deadline {
-            return Err(format!("pressure cycle {cycle} exceeded its stage deadline").into());
-        }
         // Every cycle uses distinct bodies, so stale objects or dedup cannot
         // turn a physical-pressure assertion into a no-growth replay.
         let body = pressure_body(cycle, index, 1);
@@ -416,6 +471,7 @@ fn pressure_cycle(
         if !discarded_objects.contains(&next_body.reference) {
             discarded_objects.push(next_body.reference);
         }
+        let mark = observation.mark();
         let result = client.stage_sources(
             ingress,
             vec![SourceInput {
@@ -449,21 +505,29 @@ fn pressure_cycle(
                 }
                 accepted = accepted.checked_add(1).ok_or("stage count overflow")?;
                 index = index.checked_add(1).ok_or("stage index overflow")?;
+                refusals = 0;
             }
             Err(NativeUdsError::Refused(error))
                 if error.code == NativeIndexErrorCode::ResourceLimited =>
             {
-                // A prior cycle's discarded probe may still be reclaiming.
                 // Require new foreground progress in this cycle before its
                 // next physical-full observation can close the cycle.
                 if accepted > 0 && body_headroom < next_body_wire_bytes {
                     refused = true;
                     break;
                 }
-                // Other execution or in-flight funding can also report
-                // ResourceLimited. Retry until this independent census proves
-                // the next full body cannot fit in the physical allowance.
-                std::thread::sleep(Duration::from_millis(20));
+                // A maintenance round's reservation can also report
+                // ResourceLimited. Retry after the pump records rounds that
+                // released it, until this independent census proves the next
+                // full body cannot fit in the physical allowance.
+                if refusals >= PUMP_ROUND_RETRIES {
+                    return Err(format!(
+                        "pressure cycle {cycle} stage {index} refused {refusals} times with {body_headroom} bytes of headroom"
+                    )
+                    .into());
+                }
+                refusals = refusals.checked_add(1).ok_or("refusal count overflow")?;
+                observation.wait_rounds_after(mark)?;
             }
             Err(error) => {
                 return Err(format!("pressure cycle {cycle} stage {index}: {error:?}").into());
@@ -480,6 +544,7 @@ fn pressure_cycle(
     client
         .discard_input(ingress, &budget())
         .map_err(|error| format!("pressure cycle {cycle} discard staged input: {error:?}"))?;
+    let discard_mark = observation.mark();
     let mut discarded_debt = present_native_objects(root, &discarded_objects)?;
 
     // Reclaim uses the original service-owned maintenance class. A successful
@@ -487,22 +552,22 @@ fn pressure_cycle(
     let probe_sequence = operation_sequence
         .checked_add(50)
         .ok_or("pressure probe operation overflow")?;
-    // Discard releases logical custody; automatic physical GC is asynchronous.
-    // BeginInput also writes Catalog pages and must share the same recovery
-    // deadline as the full-size stage, rather than assuming immediate space.
-    let recovery_deadline = Instant::now()
-        .checked_add(SETTLE_TIMEOUT)
-        .ok_or("pressure recovery deadline overflow")?;
-    let probe = await_reclaim_headroom(
+    // Discard releases logical custody; automatic physical GC is
+    // asynchronous. Recovery begins once the pump has drained the queue that
+    // includes this discard, so the freed space is there, not merely due.
+    observation
+        .reclaim
+        .wait_drained_after(discard_mark.reclaim)?;
+    let probe = retry_after_pump_rounds(
+        observation,
         &format!("pressure cycle {cycle} begin recovery probe"),
-        recovery_deadline,
         || client.begin_input(operation(probe_sequence), &budget()),
     )?;
     check_pin_cutoff(pin_cutoff, "recovery ingress")?;
     let probe_body = pressure_body(cycle, 0, 2);
-    let staged = await_reclaim_headroom(
+    let staged = retry_after_pump_rounds(
+        observation,
         &format!("pressure cycle {cycle} full-size recovery stage"),
-        recovery_deadline,
         || {
             client.stage_sources(
                 probe,
@@ -539,19 +604,19 @@ fn pressure_cycle(
     client
         .discard_input(probe, &budget())
         .map_err(|error| format!("pressure cycle {cycle} discard recovery probe: {error:?}"))?;
+    let probe_mark = observation.mark();
     discarded_debt = discarded_debt.max(present_native_objects(root, &discarded_objects)?);
-    // Finish this cycle's physical debt while the old read pin is still live.
-    // The later last-pin watchdog must measure that release, not unrelated
-    // discarded staging work from earlier cycles. Both phases keep 10s.
-    let drain_deadline = Instant::now()
-        .checked_add(SETTLE_TIMEOUT)
-        .ok_or("discarded-object drain deadline overflow")?;
+    // Finish this cycle's physical debt while the old read pin is still live,
+    // so the later last-pin check measures that release, not earlier staging.
+    // The drain wall time is a diagnostic only; no assertion depends on it.
     let drain_started = Instant::now();
-    while !native_objects_absent_nofollow(root, &discarded_objects)? {
-        if Instant::now() >= drain_deadline {
-            return Err(format!("pressure cycle {cycle} discarded objects did not drain").into());
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    observation.reclaim.wait_drained_after(probe_mark.reclaim)?;
+    if !native_objects_absent_nofollow(root, &discarded_objects)? {
+        return Err(format!(
+            "pressure cycle {cycle} discarded objects remain after the queue drained: {}",
+            present_native_objects(root, &discarded_objects)?
+        )
+        .into());
     }
     check_pin_cutoff(pin_cutoff, "discarded-object drain")?;
     Ok(PressureCycleResult {
@@ -582,10 +647,7 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
     let socket = root.path().join("native.sock");
     let resources = mixed_resources();
     let retention = mixed_retention();
-    let reclaim = NativeReclaimConfig {
-        max_steps_per_round: 4,
-        ..test_reclaim_config()
-    };
+    let reclaim = release_bounded_reclaim_config();
     let running = NativeServiceGuard::start(mixed_service(
         root.path(),
         &socket,
@@ -676,6 +738,7 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
         Some(reclaim),
         retention.clone(),
     )?;
+    let observation = PumpObservation::of(&service);
     let running = NativeServiceGuard::start(service);
 
     let (second_ingress, second_record) = stage_source(
@@ -724,23 +787,19 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
         },
         &budget(),
     )?)?;
-    let floor_deadline = Instant::now()
-        .checked_add(SETTLE_TIMEOUT)
-        .ok_or("retention floor deadline overflow")?;
-    loop {
-        match client.read_view(ViewSelection::Exact(old_view), &budget()) {
-            Err(NativeUdsError::Refused(error))
-                if error.code == NativeIndexErrorCode::SnapshotUnavailable =>
-            {
-                break;
-            }
-            Ok(view) if view.identity == old_view => {}
-            other => return Err(format!("old-view retention probe: {other:?}").into()),
+    // Every retention round first advances the exact-history floor. The
+    // second round recorded after this commit has applied the floor to it.
+    let floor_mark = observation.retention.mark();
+    observation.retention.wait_completed_after(floor_mark)?;
+    match client.read_view(ViewSelection::Exact(old_view), &budget()) {
+        Err(NativeUdsError::Refused(error))
+            if error.code == NativeIndexErrorCode::SnapshotUnavailable => {}
+        other => {
+            return Err(format!(
+                "retention floor did not advance while old ticket was live: {other:?}"
+            )
+            .into());
         }
-        if Instant::now() >= floor_deadline {
-            return Err("retention floor did not advance while old ticket was live".into());
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
     let current_paths = client.query_paths(
         ViewSelection::Exact(current),
@@ -784,6 +843,7 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
         Some(reclaim),
         retention.clone(),
     )?;
+    let observation = PumpObservation::of(&service);
     let running = NativeServiceGuard::start(service);
 
     let pressure_started = Instant::now();
@@ -819,6 +879,7 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
         let cycle = summary.cycles;
         let pressure = pressure_cycle(
             &client,
+            &observation,
             root.path(),
             &identity,
             cap_bytes,
@@ -857,12 +918,9 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
         assert_eq!(std::fs::read(&record_file)?, record_wire);
         assert_eq!(std::fs::read(&body_file)?, body_wire);
         assert_eq!(pin.view.identity, old_view);
-        let served_deadline = Instant::now()
-            .checked_add(SETTLE_TIMEOUT)
-            .ok_or("post-discard serving deadline overflow")?;
-        let served = await_reclaim_headroom(
+        let served = retry_after_pump_rounds(
+            &observation,
             &format!("pressure cycle {cycle} read current view"),
-            served_deadline,
             || client.read_view(ViewSelection::Exact(current), &budget()),
         )?;
         assert_eq!(served.identity, current);
@@ -894,15 +952,18 @@ fn native_mixed_pin_pressure(pressure_profile: PressureProfile) -> TestResult {
         Some(reclaim),
         retention,
     )?;
+    let observation = PumpObservation::of(&service);
     let running = NativeServiceGuard::start(service);
-    let reclaim_deadline = Instant::now()
-        .checked_add(SETTLE_TIMEOUT)
-        .ok_or("last-pin reclaim deadline overflow")?;
-    while (!native_object_absent_nofollow(&record_file)?
-        || !native_object_absent_nofollow(&body_file)?)
-        && Instant::now() < reclaim_deadline
-    {
-        std::thread::sleep(Duration::from_millis(20));
+    // The pin was released offline, before this service started, so no
+    // release demand exists: the single scope's first Views turn sweeps from
+    // the head and retires the old view, then reclaim drains it.
+    for _ in 0..LAST_PIN_WAITS {
+        observation.wait_rounds_after(observation.mark())?;
+        if native_object_absent_nofollow(&record_file)?
+            && native_object_absent_nofollow(&body_file)?
+        {
+            break;
+        }
     }
     if !native_object_absent_nofollow(&record_file)? || !native_object_absent_nofollow(&body_file)?
     {

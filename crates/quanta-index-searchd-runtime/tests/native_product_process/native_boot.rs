@@ -1,6 +1,10 @@
 #[path = "native_boot/offline_semantic.rs"]
 mod offline_semantic;
 
+#[cfg(target_os = "linux")]
+#[path = "native_boot/stock_xfs.rs"]
+mod stock_xfs;
+
 use super::*;
 use std::{collections::BTreeMap, os::unix::fs::MetadataExt as _, path::PathBuf, process::Output};
 
@@ -11,9 +15,191 @@ use quanta_index_contract::index::{
     NATIVE_INDEX_STATE_MARKER_CONTENT, NATIVE_INDEX_STATE_MARKER_NAME, ViewRef,
 };
 use quanta_index_searchd_harness::legacy_reference::publish_legacy_source;
+use quanta_index_searchd_harness::product_xfs::ProductXfsProfile;
 
 #[path = "../common/searchd_fixture_env.rs"]
 mod searchd_fixture_env;
+
+// A launcher publication includes the offline verification budget (125s),
+// writer preflight budget (60s), executable hashing and filesystem commits.
+const NATIVE_LAUNCHER_PUBLICATION_LIMIT: Duration = Duration::from_secs(240);
+
+#[test]
+fn production_native_writer_requires_quota_before_state_creation() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let socket = parent.path().join("native.sock");
+    let config_path = parent.path().join("without-quota.json");
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&config(&state_root, &socket))?,
+    )?;
+    let expected = if cfg!(target_os = "linux") {
+        "Native SQLite writer requires state_root_quota"
+    } else {
+        "Native SQLite writer requires Linux XFS StateRoot quota"
+    };
+    expect_native_config_refusal_with_binary(
+        env!("CARGO_BIN_EXE_quanta-index-searchd"),
+        &state_root,
+        &socket,
+        &config_path,
+        expected,
+    )
+}
+
+#[test]
+fn product_writer_preflight_rejects_missing_quota_before_state_creation() -> TestResult {
+    require_product_writer_role(Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")))
+}
+
+#[test]
+fn stock_catalog_sqlite_without_state_root_quota_refuses_before_state_creation() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let socket = parent.path().join("native.sock");
+    let config_path = parent.path().join("stock-catalog-without-quota.json");
+    let mut configuration = config(&state_root, &socket);
+    configuration["stock_catalog_sqlite"] = serde_json::json!(true);
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    expect_native_config_refusal_with_binary(
+        env!("CARGO_BIN_EXE_quanta-index-searchd"),
+        &state_root,
+        &socket,
+        &config_path,
+        "stock_catalog_sqlite requires state_root_quota",
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn quota_root_defaults_to_stock_sqlite_and_checks_fd_ceiling_before_state_creation() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let socket = parent.path().join("native.sock");
+    let config_path = parent.path().join("stock-catalog-fd-ceiling.json");
+    let mut configuration = config(&state_root, &socket);
+    configuration["resources"]["scratch_reserved_bytes"] = serde_json::json!(1_u64 << 30);
+    configuration["state_root_quota"] = serde_json::json!({
+        "verifier_socket": parent.path().join("quota.sock"),
+        "project_id": 1,
+        "hard_bytes": 4_u64 << 30,
+        "hard_inodes": 4096
+    });
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    expect_native_config_refusal_with_binary(
+        env!("CARGO_BIN_EXE_quanta-index-searchd"),
+        &state_root,
+        &socket,
+        &config_path,
+        "stock SQLite requires a positive stock_sqlite_max_process_fds",
+    )?;
+
+    configuration["stock_sqlite_max_process_fds"] = serde_json::json!(1);
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    expect_native_config_refusal_with_binary(
+        env!("CARGO_BIN_EXE_quanta-index-searchd"),
+        &state_root,
+        &socket,
+        &config_path,
+        "stock SQLite RLIMIT_NOFILE",
+    )
+}
+
+#[test]
+fn quota_root_refuses_a_named_sqlite_override_before_state_creation() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let socket = parent.path().join("native.sock");
+    let config_path = parent.path().join("quota-root-with-named-scratch.json");
+    let mut configuration = config(&state_root, &socket);
+    configuration["state_root_quota"] = serde_json::json!({
+        "verifier_socket": parent.path().join("quota.sock"),
+        "project_id": 1,
+        "hard_bytes": 4096,
+        "hard_inodes": 32
+    });
+    configuration["stock_sqlite_max_process_fds"] = serde_json::json!(64);
+    configuration["stock_catalog_sqlite"] = serde_json::json!(true);
+    configuration["stock_scratch_sqlite"] = serde_json::json!(false);
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    expect_native_config_refusal_with_binary(
+        env!("CARGO_BIN_EXE_quanta-index-searchd"),
+        &state_root,
+        &socket,
+        &config_path,
+        "state_root_quota requires stock Catalog and Scratch SQLite",
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a disposable enforced XFS project and its privileged verifier socket"]
+fn xfs_product_writer_preflight_accepts_provisioned_stock_profile() -> TestResult {
+    let fixture = stock_xfs::Fixture::new()?;
+    fixture.preflight()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a disposable enforced XFS project and its privileged verifier socket"]
+fn xfs_quota_root_serves_stock_publish_query_and_reopen() -> TestResult {
+    let fixture = stock_xfs::Fixture::new()?;
+    let daemon = fixture.launch()?;
+    let client = NativeUdsClient::new(fixture.socket.clone());
+    let (view, source) = stock_xfs::publish_baseline(&client)?;
+    let query = TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: "xfsneedle".into(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k: 2,
+        cursor: None,
+    };
+    let search = |client: &NativeUdsClient| {
+        client.search_text(
+            ViewSelection::Exact(view),
+            text_spec().instance,
+            query.clone(),
+            &budget(),
+        )
+    };
+    let ranked = search(&client)?;
+    require_equal(&ranked.view, &view, "stock XFS published view")?;
+    require_equal(&ranked.matched, &1, "stock XFS match count")?;
+    let [hit] = ranked.hits.as_slice() else {
+        return Err("stock XFS query did not return exactly one hit".into());
+    };
+    require_equal(&hit.path.as_str(), &"quota.rs", "stock XFS hit path")?;
+    require_equal(&hit.source, &source, "stock XFS hit source")?;
+    let first_pid = daemon.0.id();
+    let first = read_view_daemon_witness::observe(first_pid)?;
+    daemon.stop()?;
+
+    let reopened = fixture.launch()?;
+    require(
+        reopened.0.id() != first_pid,
+        "stock XFS restart reused the original process",
+    )?;
+    let restored = NativeUdsClient::new(fixture.socket.clone());
+    require_equal(
+        &search(&restored)?,
+        &ranked,
+        "stock XFS result after process restart",
+    )?;
+    let second = read_view_daemon_witness::observe(reopened.0.id())?;
+    reopened.stop()?;
+    read_view_daemon_witness::write(
+        [first, second],
+        "stock-xfs-native.json",
+        &nextest_test_event(
+            module_path!(),
+            "xfs_quota_root_serves_stock_publish_query_and_reopen",
+        ),
+        None,
+    )
+}
 
 #[test]
 fn a_world_writable_pre_created_state_root_is_refused_typed_before_any_socket() -> TestResult {
@@ -40,7 +226,7 @@ fn a_world_writable_pre_created_state_root_is_refused_typed_before_any_socket() 
         .arg(r#"umask "$1" && exec "$2" serve-native --config "$3""#)
         .arg("native-umask-hardening")
         .arg("000")
-        .arg(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        .arg(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
         .arg(&config_path);
     let output = bounded_output(
         |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
@@ -95,7 +281,7 @@ fn recovery_helper_startup_refusal_with_history_fd(malformed_history_fd: bool) -
     let candidate = temp.path().join("candidate.json");
     fs::write(&config, b"{}")?;
     fs::write(&selection, b"active selection must stay untouched")?;
-    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"));
     let mut executable = fs::File::open(binary)?;
     let mut hash = Sha256::new();
     let _hashed = std::io::copy(&mut executable, &mut hash)?;
@@ -264,35 +450,21 @@ fn bounded_output(
     args: &[String],
     launcher: bool,
 ) -> TestResult<Output> {
+    let timeout = match (launcher, args.first().map(String::as_str)) {
+        (true, Some("install-native" | "switch-native")) => NATIVE_LAUNCHER_PUBLICATION_LIMIT,
+        _ => NATIVE_STARTUP_LIMIT,
+    };
     // A launcher child inherits stdout/stderr. Anonymous files keep a parent
     // exit from blocking forever while a grandchild still owns either FD.
-    let mut stdout = tempfile::tempfile()?;
-    let mut stderr = tempfile::tempfile()?;
+    let stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
     let mut child = spawn(stdout.try_clone()?.into(), stderr.try_clone()?.into())?;
     let deadline = Instant::now()
-        .checked_add(NATIVE_STARTUP_LIMIT)
+        .checked_add(timeout)
         .ok_or("native boot command deadline overflow")?;
-    loop {
+    let (status, timeout_error) = 'wait: loop {
         if let Some(status) = child.try_wait()? {
-            let stdout_offset = std::io::Seek::seek(&mut stdout, std::io::SeekFrom::Start(0))?;
-            let stderr_offset = std::io::Seek::seek(&mut stderr, std::io::SeekFrom::Start(0))?;
-            require_equal(&stdout_offset, &0, "native command stdout rewind")?;
-            require_equal(&stderr_offset, &0, "native command stderr rewind")?;
-            let mut stdout_bytes = Vec::new();
-            let mut stderr_bytes = Vec::new();
-            let _read = std::io::Read::read_to_end(
-                &mut std::io::Read::take(stdout, 16_384),
-                &mut stdout_bytes,
-            )?;
-            let _read = std::io::Read::read_to_end(
-                &mut std::io::Read::take(stderr, 16_384),
-                &mut stderr_bytes,
-            )?;
-            return Ok(Output {
-                status,
-                stdout: stdout_bytes,
-                stderr: stderr_bytes,
-            });
+            break (status, None);
         }
         if Instant::now() >= deadline {
             // The launcher forwards SIGTERM to its selected child. Give that
@@ -305,8 +477,8 @@ fn bounded_output(
                 .checked_add(Duration::from_secs(5))
                 .ok_or("native boot drain deadline overflow")?;
             while Instant::now() < drain_deadline {
-                if child.try_wait()?.is_some() {
-                    return Err(format!("native boot command timed out: {args:?}").into());
+                if let Some(status) = child.try_wait()? {
+                    break 'wait (status, Some("timed out"));
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -314,19 +486,46 @@ fn bounded_output(
                 kill_owned_launcher_group(child.id(), None);
             }
             let _killed = child.kill();
-            let _waited = child.wait();
-            return Err(format!("native boot command did not finish: {args:?}").into());
+            break (child.wait()?, Some("timed out and did not drain"));
         }
         thread::sleep(Duration::from_millis(10));
+    };
+    let read_capture = |mut file: fs::File| -> TestResult<Vec<u8>> {
+        let _offset = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        let _read = std::io::Read::read_to_end(
+            &mut std::io::Read::take(file, STDERR_OBSERVATION_BYTES),
+            &mut bytes,
+        )?;
+        Ok(bytes)
+    };
+    let stderr = read_capture(stderr)?;
+    if let Some(reason) = timeout_error {
+        return Err(format!(
+            "native boot command {reason} after {timeout:?}: {args:?}: {}",
+            String::from_utf8_lossy(&stderr),
+        )
+        .into());
     }
+    Ok(Output {
+        status,
+        stdout: read_capture(stdout)?,
+        stderr,
+    })
 }
 
 fn run_one_shot(args: &[String]) -> TestResult<Output> {
-    run_one_shot_from(Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")), args)
+    run_one_shot_from(
+        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture")),
+        args,
+    )
 }
 
 fn run_one_shot_from(binary: &Path, args: &[String]) -> TestResult<Output> {
-    let mut command = Command::new(binary);
+    run_one_shot_command(Command::new(binary), args)
+}
+
+fn run_one_shot_command(mut command: Command, args: &[String]) -> TestResult<Output> {
     let _args = command.args(args);
     bounded_output(
         |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
@@ -351,7 +550,7 @@ fn run_private_pipe_one_shot(args: &[&str]) -> TestResult<Output> {
         }
     }
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -440,11 +639,18 @@ fn launcher_refused(args: &[String]) -> TestResult {
 }
 
 fn successful(args: &[String]) -> TestResult<Output> {
-    successful_from(Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")), args)
+    successful_from(
+        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture")),
+        args,
+    )
 }
 
 fn successful_from(binary: &Path, args: &[String]) -> TestResult<Output> {
-    let output = run_one_shot_from(binary, args)?;
+    successful_command(Command::new(binary), args)
+}
+
+fn successful_command(command: Command, args: &[String]) -> TestResult<Output> {
+    let output = run_one_shot_command(command, args)?;
     require(
         output.status.success(),
         format!(
@@ -619,14 +825,22 @@ fn wait_for_socket(child: &mut Child, socket: &Path) -> TestResult {
 
 fn selected_daemon(args: &[String], socket: &Path) -> TestResult<Daemon> {
     selected_daemon_from(
-        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
+        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture")),
         args,
         socket,
     )
 }
 
 fn selected_daemon_from(binary: &Path, args: &[String], socket: &Path) -> TestResult<Daemon> {
-    let child = Command::new(binary)
+    selected_daemon_from_command(Command::new(binary), args, socket)
+}
+
+fn selected_daemon_from_command(
+    mut command: Command,
+    args: &[String],
+    socket: &Path,
+) -> TestResult<Daemon> {
+    let child = command
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -708,6 +922,7 @@ fn native_candidate_retains_predecessors_under_installed_retention_config() -> T
     let socket = base.join("native.sock");
     let config_path = base.join("native-config.json");
     let mut configuration = config_with_reclaim(&root, &socket)?;
+    release_bounded_maintenance(&mut configuration)?;
     let _prior = configuration.as_object_mut().ok_or("candidate fixture config")?.insert(
         "retention".into(),
         serde_json::json!({
@@ -744,7 +959,7 @@ fn native_candidate_retains_predecessors_under_installed_retention_config() -> T
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec()],
+            instances: vec![literal_spec(), text_spec()],
         },
         &budget(),
     )?;
@@ -843,7 +1058,7 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec()],
+            instances: vec![literal_spec(), text_spec()],
         },
         &budget(),
     )?;
@@ -1033,7 +1248,7 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
     )?;
 
     let selection_path = base.join("native-selection.json");
-    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")).canonicalize()?;
+    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture")).canonicalize()?;
     let install_args = vec![
         "install-native".into(),
         "--selection".into(),
@@ -1558,9 +1773,14 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
 const REBUILD_SOURCE_PATH: &str = "rebuild.rs";
 const CANDIDATE_REBUILD_SOURCE_PATH: &str = "candidate-rebuild.rs";
 
+fn p10_phase<T, E: std::fmt::Display>(phase: &str, result: Result<T, E>) -> TestResult<T> {
+    result.map_err(|error| format!("P10 {phase}: {error}").into())
+}
+
 struct RebuiltNativeRoot {
     binary: PathBuf,
     root: PathBuf,
+    fixture_noquota: bool,
     socket: PathBuf,
     config: PathBuf,
     receipt: PathBuf,
@@ -1577,7 +1797,7 @@ impl RebuiltNativeRoot {
             .binary
             .to_str()
             .ok_or("rebuild daemon path is not UTF-8")?;
-        Ok(vec![
+        let mut args = vec![
             mode.into(),
             "--selection".into(),
             selection.to_string_lossy().into_owned(),
@@ -1589,7 +1809,15 @@ impl RebuiltNativeRoot {
             self.config.to_string_lossy().into_owned(),
             "--receipt".into(),
             self.receipt.to_string_lossy().into_owned(),
-        ])
+        ];
+        if self.fixture_noquota {
+            let temporary = self
+                .root
+                .parent()
+                .ok_or("fixture StateRoot has no temporary parent")?;
+            args.extend(["--env".into(), format!("TMPDIR={}", temporary.display())]);
+        }
+        Ok(args)
     }
 }
 
@@ -1597,9 +1825,10 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
     rebuild_fixed_native_source_from(
         base,
         name,
-        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
+        Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture")),
         REBUILD_SOURCE_PATH,
         false,
+        None,
     )
 }
 
@@ -1609,24 +1838,65 @@ fn rebuild_fixed_native_source_from(
     binary: &Path,
     source_path: &str,
     observe_startup: bool,
+    product_profile: Option<&ProductXfsProfile>,
 ) -> TestResult<RebuiltNativeRoot> {
     // Use the production SDK ingress/build path, never copy a Catalog, object
     // store, index root or an old view into the fresh incarnation.
-    let binary = binary.canonicalize()?;
+    let binary = p10_phase("rebuild executable canonicalize", binary.canonicalize())?;
+    let fixture_noquota = product_profile.is_none()
+        && binary
+            == Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture")).canonicalize()?;
     let root = base.join(format!("{name}-state"));
-    let socket = base.join(format!("{name}.sock"));
+    let socket = if product_profile.is_some() {
+        ProductXfsProfile::service_socket(base, &format!("{name}-uds"))?
+    } else {
+        base.join(format!("{name}.sock"))
+    };
     let config_path = base.join(format!("{name}.json"));
     let receipt_path = base.join(format!("{name}-receipt.json"));
-    fs::write(&config_path, serde_json::to_vec(&config(&root, &socket))?)?;
+    let mut configuration = config(&root, &socket);
+    let sqlite_temp = if let Some(profile) = product_profile {
+        profile.configure(&mut configuration)?;
+        Some(p10_phase(
+            "rebuild XFS StateRoot admission",
+            profile.prepare_root(&root, &socket),
+        )?)
+    } else {
+        None
+    };
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
-    let daemon = Daemon::start_binary(&binary, &config_path, &socket, None, None)?;
+    if let Some(sqlite_temp) = sqlite_temp.as_ref() {
+        p10_phase(
+            "rebuild product writer preflight",
+            ProductXfsProfile::preflight(&binary, &config_path, sqlite_temp),
+        )?;
+    }
+    let daemon = if let Some(sqlite_temp) = sqlite_temp.as_ref() {
+        p10_phase(
+            "rebuild product daemon bind",
+            Daemon::start_command_before(
+                ProductXfsProfile::command(&binary, sqlite_temp),
+                &config_path,
+                &socket,
+                None,
+                None,
+                None,
+            ),
+        )?
+    } else {
+        Daemon::start_binary(&binary, &config_path, &socket, None, None)?
+    };
     let client = NativeUdsClient::new(socket.clone());
-    let NativeIndexResponse::Created(genesis) = client.request(
-        NativeIndexRequest::CreateWorkspace {
-            workspace: workspace(),
-            epoch: 1,
-        },
-        &budget(),
+    let NativeIndexResponse::Created(genesis) = p10_phase(
+        "rebuild create workspace",
+        client.request(
+            NativeIndexRequest::CreateWorkspace {
+                workspace: workspace(),
+                epoch: 1,
+            },
+            &budget(),
+        ),
     )?
     else {
         return Err("fresh-root workspace refusal".into());
@@ -1635,7 +1905,7 @@ fn rebuild_fixed_native_source_from(
     let profile = client.stage_profile(
         input,
         IndexProfile {
-            instances: vec![text_spec()],
+            instances: vec![literal_spec(), text_spec()],
         },
         &budget(),
     )?;
@@ -1712,26 +1982,37 @@ fn rebuild_fixed_native_source_from(
         )?
         .0)?;
     let startup_observation = if observe_startup {
-        read_view_daemon_witness::observe(daemon.0.id())?
+        p10_phase(
+            "rebuild daemon /proc executable witness",
+            read_view_daemon_witness::observe(daemon.0.id()),
+        )?
     } else {
         None
     };
-    daemon.stop()?;
-    let _selected = successful_from(
-        &binary,
-        &[
-            "select-native-state".into(),
-            "--config".into(),
-            config_path.to_string_lossy().into_owned(),
-            "--manifest-operation".into(),
-            serde_json::to_string(&operation(2))?,
-            "--receipt".into(),
-            receipt_path.to_string_lossy().into_owned(),
-        ],
+    p10_phase("rebuild daemon stop", daemon.stop())?;
+    let select = sqlite_temp.as_ref().map_or_else(
+        || Command::new(&binary),
+        |path| ProductXfsProfile::command(&binary, path),
+    );
+    let _selected = p10_phase(
+        "rebuild select-native-state one-shot",
+        successful_command(
+            select,
+            &[
+                "select-native-state".into(),
+                "--config".into(),
+                config_path.to_string_lossy().into_owned(),
+                "--manifest-operation".into(),
+                serde_json::to_string(&operation(2))?,
+                "--receipt".into(),
+                receipt_path.to_string_lossy().into_owned(),
+            ],
+        ),
     )?;
     Ok(RebuiltNativeRoot {
         binary,
         root,
+        fixture_noquota,
         socket,
         config: config_path,
         receipt: receipt_path,
@@ -1826,7 +2107,7 @@ fn legacy_boot_environment(base: &Path) -> TestResult<Vec<(String, String)>> {
         ("TMPDIR".into(), temporary.to_string_lossy().into_owned()),
         ("PATH".into(), "/usr/bin:/bin".into()),
     ];
-    let mut source = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let mut source = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"));
     searchd_fixture_env::apply_searchd_env(&mut source, LEGACY_FIXTURE_HISTORY_KEEP);
     for (name, value) in source.get_envs() {
         let name = name
@@ -1917,13 +2198,17 @@ fn require_legacy_boot_query(root: &Path) -> TestResult {
         "Legacy source bytes",
     )?;
     require(
-        row.snippet.contains(LEGACY_BOOT_TOKEN),
+        row.excerpt
+            .as_ref()
+            .ok_or("fixture row carries no match excerpt")?
+            .snippet
+            .contains(LEGACY_BOOT_TOKEN),
         "Legacy selected snippet lost fixed source token",
     )
 }
 
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestResult {
     use quanta_index_contract::index::AuxiliaryGenerationKeyV1;
     use quanta_index_contract::lex::DiffHunkRecord;
@@ -1988,6 +2273,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
 
     let old_process = legacy.start(&old_root, LEGACY_FIXTURE_HISTORY_KEEP)?;
     let publisher = old_process.connect()?;
+    eprintln!("History export fixture: publishing first Legacy Source generation");
     let (first_head, _) = publish_legacy_source(
         &publisher,
         &quanta_index_contract::RepoId::new("repo-e2e")?,
@@ -2055,11 +2341,13 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         diff_hunks: vec![first_hunk.clone()],
     };
     quanta_index_ipc::stamp_batch_digest_v1(&mut batch)?;
+    eprintln!("History export fixture: publishing first Legacy History generation");
     let ack = publisher.history().publish_history_borrowed_v1(&batch)?;
     require(
         ack.applied && ack.durable_sequence > 0,
         "Legacy History ACK was not durable",
     )?;
+    eprintln!("History export fixture: publishing second Legacy Source generation");
     let (second_head, _) = publish_legacy_source(
         &publisher,
         &quanta_index_contract::RepoId::new("repo-e2e")?,
@@ -2110,6 +2398,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         ..batch
     };
     quanta_index_ipc::stamp_batch_digest_v1(&mut next_batch)?;
+    eprintln!("History export fixture: publishing second Legacy History generation");
     let next_ack = publisher
         .history()
         .publish_history_borrowed_v1(&next_batch)?;
@@ -2125,7 +2414,6 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         &selected_bytes,
         "Legacy publication selection",
     )?;
-    let old_files = root_files(&old_root)?;
 
     let native_root = base.join("candidate-state");
     fs::create_dir(&native_root)?;
@@ -2137,6 +2425,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
     )?;
     fs::set_permissions(&native_config, fs::Permissions::from_mode(0o600))?;
     let config_sha = hex(&Sha256::digest(fs::read(&native_config)?))?;
+    eprintln!("History export fixture: running selected Legacy inventory");
     let inventory = run_private_pipe_one_shot(&[
         "export-native-history-checkpoint",
         "--selection-path",
@@ -2162,6 +2451,81 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
         &generation.repo_id,
         &[generation.clone(), next_generation.clone()],
     )?;
+    let old_process = legacy.start(&old_root, LEGACY_FIXTURE_HISTORY_KEEP)?;
+    let publisher = old_process.connect()?;
+    // This repository has no active SearchCorpus head. The all-repository
+    // inventory must still include its physical History generation.
+    let sibling_generation = AuxiliaryGenerationKeyV1 {
+        repo_id: quanta_index_contract::RepoId::new("history-only")?,
+        revision_id: quanta_index_contract::RevisionId::new("rev-history")?,
+        generation: quanta_index_contract::ManifestGeneration::new(7),
+    };
+    let sibling_commit = CommitRecord {
+        sha: CommitSha::from_bytes([45; 20]),
+        message: "history-only sibling commit".into(),
+        ..commit.clone()
+    };
+    let sibling_hunk = hunk(sibling_commit.sha, 32)?;
+    let mut sibling_batch = HistoryIngestBatch {
+        repo_id: sibling_generation.repo_id.clone(),
+        revision_id: sibling_generation.revision_id.clone(),
+        generation: sibling_generation.generation,
+        manifest_digest: None,
+        batch_digest: String::new(),
+        commits: vec![sibling_commit.clone()],
+        refs: Vec::new(),
+        tags: Vec::new(),
+        diff_hunks: vec![sibling_hunk.clone()],
+    };
+    quanta_index_ipc::stamp_batch_digest_v1(&mut sibling_batch)?;
+    let sibling_ack = publisher
+        .history()
+        .publish_history_borrowed_v1(&sibling_batch)?;
+    require(
+        sibling_ack.applied && sibling_ack.durable_sequence > 0,
+        "History-only sibling ACK was not durable",
+    )?;
+    require(
+        publisher
+            .generations()
+            .active_head(
+                sibling_generation.repo_id.clone(),
+                sibling_generation.revision_id.clone(),
+            )?
+            .is_none(),
+        "History-only sibling acquired a SearchCorpus head",
+    )?;
+    drop(publisher);
+    old_process.stop()?;
+    let old_files = root_files(&old_root)?;
+
+    let all_inventory = run_private_pipe_one_shot(&[
+        "export-native-history-checkpoint",
+        "--selection-path",
+        selection.to_str().ok_or("selection is not UTF-8")?,
+        "--expected-current-sha256",
+        &selected_sha,
+        "--all-history-inventory",
+        "true",
+        "--config",
+        native_config.to_str().ok_or("config is not UTF-8")?,
+        "--config-digest",
+        &config_sha,
+    ])?;
+    require(
+        all_inventory.status.success(),
+        format!(
+            "all-repo History inventory refused: {}",
+            String::from_utf8_lossy(&all_inventory.stderr),
+        ),
+    )?;
+    let mut expected = [
+        sibling_generation.clone(),
+        generation.clone(),
+        next_generation.clone(),
+    ];
+    expected.sort();
+    assert_legacy_history_inventory_all_v1(&all_inventory.stdout, &expected)?;
     for (generation, commits, hunks, ack, expect_shared_part) in [
         (&generation, &[&commit][..], &[&first_hunk][..], &ack, false),
         (
@@ -2171,6 +2535,13 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
             &next_ack,
             true,
         ),
+        (
+            &sibling_generation,
+            &[&sibling_commit][..],
+            &[&sibling_hunk][..],
+            &sibling_ack,
+            false,
+        ),
     ] {
         let generation_json = serde_json::to_string(generation)?;
         let output = run_private_pipe_one_shot(&[
@@ -2179,7 +2550,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
             selection.to_str().ok_or("selection is not UTF-8")?,
             "--expected-current-sha256",
             &selected_sha,
-            "--generation-json",
+            "--all-history-checkpoint-json",
             &generation_json,
             "--config",
             native_config.to_str().ok_or("config is not UTF-8")?,
@@ -2217,7 +2588,7 @@ fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestRes
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn assert_legacy_history_inventory_v1(
     mut bytes: &[u8],
     repo: &quanta_index_contract::RepoId,
@@ -2270,6 +2641,8 @@ fn assert_legacy_history_inventory_v1(
             | HistorySnapshotExportFrameV1::NativeObjectEnd { .. }
             | HistorySnapshotExportFrameV1::NativeHistory { .. }
             | HistorySnapshotExportFrameV1::NativeInventoryComplete { .. }
+            | HistorySnapshotExportFrameV1::NativeInventoryAllComplete { .. }
+            | HistorySnapshotExportFrameV1::InventoryAllComplete { .. }
             | HistorySnapshotExportFrameV1::NativeProtectedComplete { .. } => {
                 return Err("History inventory emitted a checkpoint frame".into());
             }
@@ -2279,7 +2652,58 @@ fn assert_legacy_history_inventory_v1(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn assert_legacy_history_inventory_all_v1(
+    mut bytes: &[u8],
+    expected: &[quanta_index_contract::index::AuxiliaryGenerationKeyV1],
+) -> TestResult {
+    use quanta_index_contract::index::{
+        HistorySnapshotExportFrameV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+    };
+
+    let mut count = 0_usize;
+    let mut completed = false;
+    while !bytes.is_empty() {
+        require(
+            !completed && bytes.len() >= 4,
+            "all-repo History inventory has trailing or truncated frame",
+        )?;
+        let length = usize::try_from(u32::from_le_bytes(bytes[..4].try_into()?))?;
+        require(
+            length <= MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096 && bytes.len() >= length + 4,
+            "all-repo History inventory frame exceeds bound or is truncated",
+        )?;
+        let frame = HistorySnapshotExportFrameV1::decode_json_v1(&bytes[4..4 + length])?;
+        bytes = &bytes[4 + length..];
+        match frame {
+            HistorySnapshotExportFrameV1::InventoryKey { generation } => {
+                require_equal(
+                    &Some(&generation),
+                    &expected.get(count),
+                    "all-repo History inventory key",
+                )?;
+                count += 1;
+            }
+            HistorySnapshotExportFrameV1::InventoryAllComplete { count: observed } => {
+                require_equal(
+                    &observed,
+                    &u64::try_from(expected.len())?,
+                    "all-repo History inventory terminal count",
+                )?;
+                require_equal(
+                    &count,
+                    &expected.len(),
+                    "all-repo History inventory key count",
+                )?;
+                completed = true;
+            }
+            _ => return Err("all-repo History inventory emitted a foreign frame".into()),
+        }
+    }
+    require(completed, "all-repo History inventory completion absent")
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn assert_legacy_history_export_v1(
     mut bytes: &[u8],
     generation: &quanta_index_contract::index::AuxiliaryGenerationKeyV1,
@@ -2292,7 +2716,7 @@ fn assert_legacy_history_export_v1(
     use quanta_index_contract::AuxEpochV1;
     use quanta_index_contract::index::{
         HistorySnapshotExportFrameV1, HistorySnapshotPageV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
-        ObjectRef, native_immutable_object_ref_v1,
+        NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1, ObjectRef, native_immutable_object_ref_v1,
     };
     use quanta_index_core::index::{
         IndexError, RegisteredObject, StoredObject, WorkBudget, WorkLimits,
@@ -2309,6 +2733,15 @@ fn assert_legacy_history_export_v1(
     let mut seen_large_parts = BTreeMap::<ObjectRef, ()>::new();
     let mut saw_shared_part = false;
     let mut large_hunks = 0_usize;
+    let registered_bytes = |payload: &[u8], children: &[ObjectRef]| -> Result<u64, IndexError> {
+        let bytes = children
+            .len()
+            .checked_mul(32)
+            .and_then(|refs| refs.checked_add(NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1))
+            .and_then(|overhead| overhead.checked_add(payload.len()))
+            .ok_or(IndexError::ResourceLimited)?;
+        u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)
+    };
     let mut digest = HistorySnapshotDigestV1::new(generation);
     let mut expected_commits = BTreeMap::<Vec<u8>, Vec<u8>>::new();
     for commit in commits {
@@ -2432,7 +2865,7 @@ fn assert_legacy_history_export_v1(
                 let storage = StoredObject::new(
                     RegisteredObject::unscoped(
                         marker.reference,
-                        u64::try_from(payload.1.len())?,
+                        registered_bytes(&payload.1, &payload.2)?,
                         payload.2.clone(),
                     ),
                     payload.1.clone(),
@@ -2461,7 +2894,7 @@ fn assert_legacy_history_export_v1(
                         Ok(StoredObject::new(
                             RegisteredObject::unscoped(
                                 reference,
-                                payload.len() as u64,
+                                registered_bytes(payload, children)?,
                                 children.clone(),
                             ),
                             payload.clone(),
@@ -2574,9 +3007,11 @@ fn assert_legacy_history_export_v1(
             }
             HistorySnapshotExportFrameV1::InventoryKey { .. }
             | HistorySnapshotExportFrameV1::InventoryComplete { .. }
+            | HistorySnapshotExportFrameV1::InventoryAllComplete { .. }
             | HistorySnapshotExportFrameV1::Page(_)
             | HistorySnapshotExportFrameV1::NativeHistory { .. }
             | HistorySnapshotExportFrameV1::NativeInventoryComplete { .. }
+            | HistorySnapshotExportFrameV1::NativeInventoryAllComplete { .. }
             | HistorySnapshotExportFrameV1::NativeProtectedComplete { .. } => {
                 return Err("History checkpoint emitted an inventory frame".into());
             }
@@ -2720,7 +3155,21 @@ fn assert_legacy_source_export_v1(
     let revision = RevisionId::new("rev-e2e")?;
     require_equal(repo_id, &repo, "Source head repository")?;
     require_equal(revision_id, &revision, "Source head revision")?;
-    require_equal(exported_active, active, "Source active head")?;
+    require_equal(
+        &exported_active.generation,
+        &active.generation,
+        "Source active generation",
+    )?;
+    require_equal(
+        &exported_active.activation_token.activation_sequence(),
+        &active.activation_token.activation_sequence(),
+        "Source activation sequence",
+    )?;
+    require(
+        exported_active.activation_token.root_incarnation()
+            != active.activation_token.root_incarnation(),
+        "restored Source root retained the seed incarnation",
+    )?;
     require_equal(applied_ack, receipt, "Source original SDK ACK")?;
     require(applied_ack.sealed, "Source head ACK is not sealed")?;
     require_equal(
@@ -2878,7 +3327,6 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         ],
         &environment,
     )?;
-
     let candidate = rebuild_fixed_native_source(&base, "candidate")?;
     let selection = base.join("selection.json");
     let installed_old_binary = legacy.installer_binary()?;
@@ -3052,7 +3500,7 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
     )?;
     let native_quiescent_files = root_files(&candidate.root)?;
     let selected_native = fs::read(&selection)?;
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         let native_digest = inspected_selection_digest(&selection)?;
         let native_inventory = run_private_pipe_one_shot(&[
             "export-native-history-checkpoint",
@@ -3074,9 +3522,64 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
                 String::from_utf8_lossy(&native_inventory.stderr)
             ),
         )?;
+        let native_all = run_private_pipe_one_shot(&[
+            "export-native-history-checkpoint",
+            "--selection-path",
+            selection.to_str().ok_or("selection is not UTF-8")?,
+            "--expected-current-sha256",
+            &native_digest,
+            "--all-native-history-inventory",
+            "true",
+            "--config",
+            candidate.config.to_str().ok_or("config is not UTF-8")?,
+            "--config-digest",
+            &config_digest,
+        ])?;
+        require(
+            native_all.status.success(),
+            format!(
+                "selected all-Native History inventory refused: {}",
+                String::from_utf8_lossy(&native_all.stderr),
+            ),
+        )?;
+        let bytes = native_all.stdout.as_slice();
+        require(
+            bytes.len() >= 4,
+            "all-Native History inventory has no terminal frame",
+        )?;
+        let width = usize::try_from(u32::from_le_bytes(bytes[..4].try_into()?))?;
+        require(
+            width <= quanta_index_contract::index::MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096
+                && bytes.len() == width + 4,
+            "empty all-Native History inventory has a missing or extra frame",
+        )?;
+        let frame = quanta_index_contract::index::HistorySnapshotExportFrameV1::decode_json_v1(
+            &bytes[4..],
+        )?;
+        let quanta_index_contract::index::HistorySnapshotExportFrameV1::NativeInventoryAllComplete {
+            source_root_nonce, source_view, count,
+        } = frame else {
+            return Err("empty all-Native History inventory has no scoped terminal".into());
+        };
+        let selected_receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&candidate.receipt)?)?;
+        let receipt_nonce = selected_receipt["root_nonce_hex"]
+            .as_str()
+            .ok_or("selected Native receipt root nonce is absent")?;
+        require_equal(
+            &hex(&source_root_nonce.0)?,
+            &receipt_nonce.to_owned(),
+            "all-Native History inventory root nonce",
+        )?;
+        require_equal(
+            &source_view,
+            &candidate.published_view,
+            "all-Native History inventory current view",
+        )?;
+        require_equal(&count, &0, "empty all-Native History inventory count")?;
 
         let foreign_config = base.join("foreign-native-config.json");
-        fs::copy(&candidate.config, &foreign_config)?;
+        let _copied_bytes = fs::copy(&candidate.config, &foreign_config)?;
         let foreign_path = foreign_config.to_str().ok_or("config is not UTF-8")?;
         let native_config_path = candidate.config.to_str().ok_or("config is not UTF-8")?;
         for (operation, extra) in [
@@ -3198,7 +3701,7 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         &native_quiescent_files,
         "Legacy rollback serve changed inactive Native root",
     )?;
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         require(
             source_export.status.success(),
             format!(
@@ -3211,16 +3714,16 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
         require_equal(
             &source_export.status.code(),
             &Some(70),
-            "Source export requires Linux owner",
+            "Source export requires admitted directory inventory",
         )?;
         require(
             source_export.stdout.is_empty(),
-            "Source export emitted frames without Linux owner",
+            "Source export emitted frames without directory inventory",
         )?;
         require(
             String::from_utf8_lossy(&source_export.stderr)
-                .contains("admitted boot inventory requires the installed Linux getdents owner"),
-            "Source export did not refuse the missing Linux getdents owner",
+                .contains("admitted boot inventory requires Linux or macOS directory admission"),
+            "Source export did not refuse the missing directory admission",
         )?;
     }
     require_equal(
@@ -3242,10 +3745,17 @@ fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -
 
 #[test]
 fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
-    let temp = tempfile::tempdir()?;
+    let release_proof = std::env::var_os("QUANTA_PROOF_DAEMON_WITNESS_DIR").is_some();
+    let profile = release_proof
+        .then(ProductXfsProfile::from_env)
+        .transpose()?;
+    let temp = if let Some(profile) = profile.as_ref() {
+        profile.tempdir()?
+    } else {
+        tempfile::tempdir()?
+    };
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let base = temp.path().canonicalize()?;
-    let release_proof = std::env::var_os("QUANTA_PROOF_DAEMON_WITNESS_DIR").is_some();
     let binary = if release_proof {
         let path = PathBuf::from(
             std::env::var_os("QUANTA_INDEX_SEARCHD_BIN")
@@ -3254,15 +3764,29 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
         require(path.is_absolute(), "P10 daemon path must be absolute")?;
         path
     } else {
-        PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
     };
-    let old = rebuild_fixed_native_source_from(&base, "old", &binary, REBUILD_SOURCE_PATH, true)?;
-    let new = rebuild_fixed_native_source_from(
-        &base,
-        "new",
-        &binary,
-        CANDIDATE_REBUILD_SOURCE_PATH,
-        true,
+    let old = p10_phase(
+        "old root rebuild",
+        rebuild_fixed_native_source_from(
+            &base,
+            "old",
+            &binary,
+            REBUILD_SOURCE_PATH,
+            true,
+            profile.as_ref(),
+        ),
+    )?;
+    let new = p10_phase(
+        "new root rebuild",
+        rebuild_fixed_native_source_from(
+            &base,
+            "new",
+            &binary,
+            CANDIDATE_REBUILD_SOURCE_PATH,
+            true,
+            profile.as_ref(),
+        ),
     )?;
     require(
         old.published_view != new.published_view
@@ -3271,7 +3795,10 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
         "old root and rebuild candidate must have distinct Published Source",
     )?;
     let selection = base.join("selection.json");
-    launcher_succeeded(&old.launcher_args("install-native", &selection)?)?;
+    p10_phase(
+        "install old root",
+        launcher_succeeded(&old.launcher_args("install-native", &selection)?),
+    )?;
     let old_wire = fs::read(&selection)?;
     let old_files = root_files(&old.root)?;
     let new_files = root_files(&new.root)?;
@@ -3315,7 +3842,10 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
         &new_files,
         "refused Native switch candidate root bytes/inodes",
     )?;
-    let daemon = launcher_daemon(&selection, &old.socket)?;
+    let daemon = p10_phase(
+        "launcher serve old root",
+        launcher_daemon(&selection, &old.socket),
+    )?;
     require_rebuilt_query(&old.socket)?;
     let selected_pid = daemon
         .owned_group
@@ -3329,8 +3859,11 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
             "selected launcher UDS peer",
         )?;
     }
-    let selected_observation = read_view_daemon_witness::observe(selected_pid)?;
-    daemon.stop()?;
+    let selected_observation = p10_phase(
+        "selected daemon /proc executable witness",
+        read_view_daemon_witness::observe(selected_pid),
+    )?;
+    p10_phase("launcher stop old root", daemon.stop())?;
     require_equal(
         &fs::read(&selection)?,
         &old_wire,
@@ -3377,7 +3910,23 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
     )?;
 
     let serve_args = identity_args("serve-native", &new.config, &receipt, &config_digest)?;
-    let reopened = selected_daemon_from(&new.binary, &serve_args, &new.socket)?;
+    let reopened = p10_phase(
+        "reopen rebuilt daemon",
+        if profile.is_some() {
+            selected_daemon_from_command(
+                ProductXfsProfile::command(
+                    &new.binary,
+                    &new.root.join(
+                        quanta_index_searchd::app::state_root_quota::STOCK_SQLITE_TEMP_DIR_NAME,
+                    ),
+                ),
+                &serve_args,
+                &new.socket,
+            )
+        } else {
+            selected_daemon_from(&new.binary, &serve_args, &new.socket)
+        },
+    )?;
     let client = NativeUdsClient::new(new.socket.clone());
     let latest = client.read_view(
         ViewSelection::Latest {
@@ -3411,8 +3960,11 @@ fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
         &new.published_source,
         "reopened rebuild hit Source",
     )?;
-    let reopened_observation = read_view_daemon_witness::observe(reopened.0.id())?;
-    reopened.stop()?;
+    let reopened_observation = p10_phase(
+        "reopened daemon /proc executable witness",
+        read_view_daemon_witness::observe(reopened.0.id()),
+    )?;
+    p10_phase("reopened daemon stop", reopened.stop())?;
     require_equal(
         &root_files(&old.root)?,
         &old_preserved,

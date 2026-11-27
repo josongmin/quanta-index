@@ -77,10 +77,10 @@ retains a bounded term/range/hash directory; queries read admitted posting range
 under one request work budget. Logical heap admission does not establish an RSS
 bound. Architecture decisions are recorded in the accepted ADRs; source-specific
 Large/XL failures and passes belong to
-[VALIDATION](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#performance-inputs).
+[VALIDATION](../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages).
 Explicit timeout/retention diagnostic success does not close default capacity.
 [E08](../plans/oct-22-finalizing/E08-integration-release.md)
-owns installed/paired/Linux/provider/release work; [SEP-21 execution records](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer)
+owns installed/paired/Linux/provider/release work; [SEP-21 execution records](../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages)
 remain evidence. Independent expected semantic partition/omission checking before
 dispatch is producer-owned under [E01](../plans/oct-22-finalizing/E01-producer-generation.md).
 The R3 fixed test oracle has an implementation history; its actual Runtime/pair
@@ -97,6 +97,6 @@ The [existing cross-repo recipe](../../scripts/verify-repomap-cross-repo.sh) and
 selection, canonical resolver mapping and CLI-owned completion receipts. Their
 `runner-candidate-only` result is distinct from actual exact-pair qualification
 and concrete operational target/observer acceptance. Current work status belongs
-to E08; [I0-03 records](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer)
+to E08; [I0-03 records](../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages)
 retain their source-scoped results.
 Local tests, code presence and documentation cleanup do not issue qualification.

@@ -1,49 +1,23 @@
 # RepoMap 출하 제거 및 저장 퇴역
 
-2026년 11월 23일 KST. **한 번의 S/Q 비호환 출하에서 RepoMap 호출·발행·공개 SDK·wire를 제거한다.** 중간 disabled 릴리스와 구 API stub은 출하 범위에서 뺀다. 이전 `Required` 세대는 승인된 이전 실행물과 보존 root로 읽는다. 새 root로 절체하는 데 필요한 과거 형식 검증은 기존 D/E08 복구 경계에 둔다. 역사 데이터의 물리 회수는 보존 계약을 따른다.
+2026년 11월 26일 KST. 제거 경로는 기존 C 소스 대조에 기록했다. C-04 잔여는 S `7d8c230f2de2`·Q `28784da2692e`와 공유 작업 트리에서 재확인했다. 동일 S/Q 서명 동결과 이전 Native 설치 활성화는 대기 중이다. [C 소스 대조](../../../../semantica-codegraph-v2/docs/plans/nov-21-architecture-audit/C-implementation-evidence-20261122.md#c-repomap-source-readback-20261126) · [C-04 잔여](04-integration-acceptance.md#c04-fd6-remaining-code) · [결정과 완료된 소스 계약](../../adr/NOV-23-001-repomap-retirement-and-source-custody.md)
 
-**검색 수용은 지금 시작한다.** 기존 TEXT의 SDK60·Large, B의 ANN4K·제품 4K, F-EVAL의 Hybrid를 기존 오너와 실행기로 진행한다. 특히 B의 제품 fixture는 이미 Text와 Semantic만 활성화하므로, RepoMap 퇴역은 4K 실패 수리의 선행 조건이 아니다. Root/F는 해당 출하 후보의 공통 입력과 실제 본문을 한 번 인수한다. [기존 검색 오너](../nov-20-native-cutover-closeout/tickets/LANES.md) · [4K fixture](../../../crates/quanta-index-searchd-runtime/tests/native_product_process/ann_quality.rs#L1984) · [4K 수용 계약](../nov-21-bugbash-source-advance-4k/04-product-acceptance.md#고정한-실행과-판정)
+## 현재 상태와 남은 코드
+
+**P11 공용 실행기에서 추가 구현 항목은 확인되지 않았다.** 이후 작업은 Root/F의 동일 후보 실행 증거 인수와 D/E08의 대상별 운영 계약·실제 절체다. [소유 경계와 재검증](04-integration-acceptance.md#p11-integration-remaining)
+
+**병렬 착수는 [작업 배치·파일 소유·합류 순서](04-integration-acceptance.md#parallel-work)를 따른다.** 아래 순서는 통합 우선순위다. [기존 채팅과 중복 여부](04-integration-acceptance.md#owner-overlap-audit) · [채팅 배정](04-integration-acceptance.md#dispatch-receipts)
+
+| 순서 | 남은 작업 | 코드에서 확인한 경계 | 기존 오너 |
+| --- | --- | --- | --- |
+| 1 | 운영 Dirty catalog 설치 수용 | signed catalog 발행기·피드 판독기와 resident CLI 등록이 소스에 연결됐다. 승인 배포의 grant·발행자 키와 동일 Source/세대의 실제 catalog를 공급해 변경·삭제·no-op과 새 PID 재생을 실행한다. 미공급 Required DELTA는 Source 게시 전에 거절한다. [S 작업](01-semantica.md#dirty-required) | 기존 Dirty 생산·설치 |
+| 2 | 새 PID의 DELTA QMP 복원과 구 V3 쓰기 전환 | Watch의 Changed·V16·RecordOnly와 후속 Changed 회귀는 [구현 ADR](../../adr/NOV-23-001-repomap-retirement-and-source-custody.md#signed-watch-v7-v16)에 정리했다. signed 설치 본문은 **0/2**이며 [Watch 수용](04-integration-acceptance.md#watch-v7-v16-acceptance)에서 관리한다. 공용 ACKed DELTA QMP 복원 API와 Resync 역사 SDK DELTA 호출은 반영됐다. 동일 Apply 재호출의 signed 분기는 S `2b84a09742c`에 반영됐다. SDK paid checkpoint는 staged V7 Host를 선택한다. pre-Source predecessor 활성화와 cold Rollback 입장이 S `4b9b84349b0`에 반영됐다. V98·V99는 signed V7 Host·Q peer를 공용 완료 판독에 넘긴다. 결손 QMP와 live successor Host 전달은 별도 SDK 오너가 이어간다. 공용 coordinator는 퇴역 RepoMap Required의 Ready 전이와 게시를 거절한다. 합류 뒤 나머지 신규 V3 Required 발급 0을 확인한다. [S 호출부](01-semantica.md#watch-resync-v3) · [현행 배정](04-integration-acceptance.md#remaining-dispatch-20261126) | Dirty 정산(공용·Resync), Watch SDK, 별도 SDK cold Host |
+| 3 | FD6 V7 양성 설치 fixture 1건 | 기존 AST-head의 두 번째 RestoreForward에 승인 V5 `Required`와 원 History, XFS 후보·V7 sidecar·CAS 뒤 기동 승인을 연결한다. 현재 확인 가능한 P07 CURRENT **0/4**, signed 본문 **NOT_RUN**. 별도 Legacy RepoMap root와 보호 route 없는 이전 Native는 지원 승인 대기다. [잔여 작업](04-integration-acceptance.md#c04-fd6-remaining-code) · [완료된 launcher와 peer 계약](../../adr/NOV-23-001-repomap-retirement-and-source-custody.md#c04-candidate-and-selected-peer) | C-04/D |
+| 4 | 기존 회귀 실행 | F의 퇴역 v2 승인 readback은 로컬 검증을 마쳤다. IFX150 V7 거절 fixture는 ACKed 12·staged 4를 포함한다. 실제 거절 0/16, Resync F23·IFX150 0/2, paired P11 0/2다. 기존 ranked·Workset·SCV2·Graph·File/Path 레인에서 같은 후보의 본문을 받는다. [등록과 수락](04-integration-acceptance.md#ifx150-p11) · [F 로컬 검증](02-quanta-index.md#c04-f-release-approval-v2) | Root/F와 기존 테스트 오너 |
+| 5 | Linux 대상별 action·관측과 실제 복구 | P11 공용 runner는 구현됐다. 승인 대상의 action·독립 observer 등록과 실제 실행이 남았다. 이전 Required 정산, selection CAS, 새 PID 조회와 첫 durable commit 전 기존 Native 역전환 또는 승인 동등 복구는 미실행이다. [절체 조건](04-integration-acceptance.md#c04-fd6-linux-acceptance-20261126) | D/E08 |
+| 별도 | 이전 데이터의 저장 퇴역 | 보존 만료와 마지막 참조 해제를 확인한 뒤 전용 범위만 회수한다. [저장 퇴역](03-storage-retirement.md) | S Store, Q Catalog/GC, D/H |
 
 ## 티켓과 담당
 
-| 티켓 | 기존 담당 | 완료 조건 |
-| --- | --- | --- |
-| [01 · Semantica] 호출자·발행·새 세대 재생 | S CLI/SDK·R5와 기존 Source 생산자, Root 통합 | 필수 RepoMap root, 공개 요청·빌더·응답, exporter와 게시를 제거한다. 일반 검색·ClusterCard/Graph 유지와 새 RepoMap 산출물 0건을 확인한다. |
-| [02 · Quanta Index] 공개 SDK·IPC·BOOT | 기존 Q Graph/SDK와 D 설치 | RepoMap CLI·SDK·wire와 전용 member·projection·보호 route를 제거한다. 퇴역 인스턴스의 `QueryGraph` 거절과 독립 Graph·File/Path·History의 실제 호출을 확인한다. |
-| [03 · 저장 퇴역] S/Q·Legacy 데이터 | 기존 S Store, Q Catalog/GC, D/H 복구 | 보존 종료 뒤 설치별로 독립 이전 root의 전체 퇴역 또는 공유 root의 전용 객체 회수를 판정한다. 실제 할당 바이트와 적용 quota를 대조한다. |
-| [04 · 통합과 수용] Root/F·E08 | 기존 Root/F, D, E08 및 TEXT/F-EVAL | 이전 승인 설치에서 Required를 복구하고, Source·History만 이관한 서명 후보에서 SDK 게시·조회·재시작과 실제 설치 절체를 검증한다. |
-
-## 착수와 합류
-
-```mermaid
-flowchart LR
-    A[단일 비호환 출하 계약] --> B[S 호출·응답 필드·신규 게시 제거]
-    A --> C[Q SDK·wire·제품 route 제거]
-    B --> D[Root 동일 후보 수용]
-    C --> D
-    E[이전 Required 설치 검증과 Source 이관] --> D
-    I[기존 TEXT · B · F-EVAL 검색 수용] --> D
-    D --> F[운영 절체 권위 확인과 활성화]
-    F --> G[보존 종료 승인과 마지막 참조 해제 후 전용 저장 회수]
-```
-
-1. **01과 02를 병렬로 준비한다.** S는 호출자·발행·응답을, Q는 SDK·wire·제품 등록을 맡는다. 지원 소비자의 동시 업그레이드 또는 지원 종료를 확인한 뒤 한 번에 출하한다.
-2. **Root가 기존 큐에서 한 S/Q 후보를 수용한다.** D/E08은 이전 `Required`의 쓰기를 차단하고 미결 작업을 정산한다. 현 Native restore-forward 검증은 이전 보호 RepoMap head의 복제를 요구하므로 Source-only 이관의 생성기와 검증기를 함께 전환한다. **기존 설치 활성화는 BLOCKED**다. 같은 서명 S/Q로 실제 Linux 선택 CAS·새 PID 조회를 관측하고 기존 E08 복구 조건을 충족한 뒤 승인한다. [운영 절체 조건](04-integration-acceptance.md#설치-절체와-중단-지점)
-3. **03은 보호 참조를 병렬로 조사한다.** 운영 절체와 보존 종료 뒤 물리 회수를 판정한다. 이전 root의 활성 선택이 바뀌어도 자체 BOOT·projection 보호는 남는다. [회수 방식](03-storage-retirement.md#선택할-이행-방식)
-
-새 root에 격리 후보를 만드는 경로를 먼저 검증한다. Q의 `Reconfigure`는 `CatalogView.projections`를 유지한다. 공유 root에서 전용 객체를 회수하거나 동일 root 절체가 요구되면 해당 참조를 해제하는 계약이 필요하다. [Q Catalog view 생성](../../../crates/quanta-index-kernel/src/update.rs#L2852)
-
-## 합류 때 고정할 계약
-
-- **RepoMap 공개 계약의 브레이킹 체인지를 허용한다.** S 요청·응답·Workset과 Q SDK·CLI·wire를 같은 출하에서 교체한다. 유지할 소비자는 새 계약으로 전환하고, 종료할 소비자는 지원 대상에서 제거한다. 과거 저장물과 절체 증거는 이전 승인 실행물·새 후보의 이관 검증 경계에 각각 결속한다. 이 범위는 [04의 운영 절체](04-integration-acceptance.md#설치-절체와-중단-지점)와 [03의 보존·회수](03-storage-retirement.md#완료-조건과-회수-증거)에서 판정한다.
-- [01 · Semantica]와 [02 · Quanta Index]는 같은 승인 프로필에서 repo·revision·Source 세대·배포 선택을 대조한다. `NotApplicable`은 기존 영속 증명이 요구하는 곳에서만 사용한다. 이전 root의 `Required`는 이전 입력과 권위에 결속한다.
-- [04 · 통합과 수용]은 **한 번의 공개 계약 제거와 운영 절체**, [03 · 저장 퇴역]은 **이전 데이터의 물리 회수**를 판정한다.
-- 기존 S 생산자, Q Graph/SDK와 D 설치, Store/Catalog의 파일 소유를 유지한다. 이전 실행 결과는 기존 원장에 남기고, 같은 대상·feature·선택자·동결 입력은 기존 큐에서 재사용한다. [S 기존 생산자 원장](/Users/songmin/Documents/code-new/semantica-codegraph-v2/docs/plans/oct-26-replay-query-read-custody/tickets/CURRENT_REMAINING.md) · [Q 기존 작성 범위](../nov-20-native-cutover-closeout/tickets/LANES.md)
-- 기존 06의 S/Q 오너는 이전 `Required` 복구와 이번 01/02 전환을 맡는다. 신규 RepoMap DELTA 최적화는 이번 출시에서 보류한다. 유지할 SDK·CLI·daemon 소비자의 전환 또는 지원 종료를 확인한 뒤 절체를 승인한다. 기존 검색 실행은 병렬로 진행한다. [기존 06의 작업 이력](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md#현행-코드-작업-순서)
-
-기존 증거와 DELTA 설계는 [06 이력](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md#현행-코드-작업-순서)에 보존한다. 후보 구현과 정적 검사는 진행 중이며 제품 실행과 출하 수용은 **NOT_RUN**이다. 현 상태와 실패한 검사는 [통합 검증](04-integration-acceptance.md)을 따른다.
-
-[01 · Semantica]: 01-semantica.md
-[02 · Quanta Index]: 02-quanta-index.md
-[03 · 저장 퇴역]: 03-storage-retirement.md
-[04 · 통합과 수용]: 04-integration-acceptance.md
+- [01 Semantica](01-semantica.md) · [02 Quanta Index](02-quanta-index.md) · [03 저장 퇴역](03-storage-retirement.md) · [04 통합·설치 수용](04-integration-acceptance.md)
+- 검색 검증은 기존 TEXT의 SDK60·Large, B의 ANN4K·제품 4K, F-EVAL의 Hybrid를 병렬로 진행한다. Root/F가 기존 큐에서 같은 입력과 실행 증거를 한 번 인수한다. B의 4K fixture는 Text와 Semantic만 활성화한다. [07 제품 기준](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md) · [실행 큐](../nov-20-native-cutover-closeout/tickets/LANES.md)

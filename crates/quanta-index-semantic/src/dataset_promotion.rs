@@ -18,13 +18,13 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lance_io::object_store::file_admission::FileAdmission;
 use quanta_index_core::CoreError;
 use quanta_index_core::publication_admission::PublicationOutputAdmission;
 use rustix::fs::{Mode, OFlags, open, openat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::SemanticGenerationFileIo;
 use crate::control_file::MAX_GENERATION_CONTRACT_BYTES;
 use crate::durable_write::{AtomicOutput, write_atomic};
 use crate::errors::{admitted_fs_err, fs_err};
@@ -223,7 +223,7 @@ impl Paths {
         let contract = layout::build_contract_path(generation);
         Self {
             dataset: layout::dataset_dir(generation),
-            staging: generation.join("dataset.staging"),
+            staging: generation.join(crate::legacy::layout::DATASET_STAGING_DIR_NAME),
             backup: generation.join("dataset.backup"),
             aborted: generation.join("dataset.aborted"),
             next: contract.with_extension("next"),
@@ -237,7 +237,7 @@ impl Paths {
 
 #[derive(Default)]
 struct FsOps {
-    admission: Option<Arc<dyn FileAdmission>>,
+    admission: Option<Arc<dyn SemanticGenerationFileIo>>,
     #[cfg(test)]
     fault: Option<(&'static str, usize)>,
     #[cfg(test)]
@@ -248,7 +248,7 @@ impl FsOps {
     fn reconcile_namespace(&self) -> Result<(), CoreError> {
         if let Some(admission) = &self.admission {
             admission
-                .reconcile_pending_namespace()
+                .reconcile_namespace()
                 .map_err(|error| admitted_fs_err("reconcile dataset promotion namespace", error))?;
         }
         Ok(())
@@ -285,7 +285,19 @@ impl FsOps {
     fn rename(&self, from: &Path, to: &Path) -> Result<(), CoreError> {
         #[cfg(test)]
         self.check("rename")?;
-        crate::qualified_fs::rename(from, to, self.admission.as_deref())
+        let Some(admission) = &self.admission else {
+            return fs::rename(from, to)
+                .map_err(|error| fs_err("rename dataset promotion entry", from, &error));
+        };
+        admission
+            .prepare_entry_parent(to)
+            .map_err(|error| admitted_fs_err("prepare dataset move parent", error))?;
+        let mut ticket = admission
+            .begin_move(from, to)
+            .map_err(|error| admitted_fs_err("reserve dataset move", error))?;
+        ticket
+            .perform_and_sync()
+            .map_err(|error| admitted_fs_err("settle dataset move", error))
     }
 
     fn sync(&self, generation: &Path) -> Result<(), CoreError> {
@@ -307,13 +319,25 @@ impl FsOps {
     fn remove_file(&self, path: &Path) -> Result<(), CoreError> {
         #[cfg(test)]
         self.check("remove_file")?;
-        crate::qualified_fs::remove_file(path, self.admission.as_deref())
+        let Some(admission) = &self.admission else {
+            return fs::remove_file(path)
+                .map_err(|error| fs_err("remove dataset promotion file", path, &error));
+        };
+        admission
+            .remove_file_and_sync(path)
+            .map_err(|error| admitted_fs_err("remove dataset promotion file", error))
     }
 
     fn remove_dir(&self, path: &Path) -> Result<(), CoreError> {
         #[cfg(test)]
         self.check("remove_dir")?;
-        crate::qualified_fs::remove_dir_all(path, self.admission.as_deref())
+        let Some(admission) = &self.admission else {
+            return fs::remove_dir_all(path)
+                .map_err(|error| fs_err("remove dataset promotion directory", path, &error));
+        };
+        admission
+            .remove_directory_and_sync(path)
+            .map_err(|error| admitted_fs_err("remove dataset tree", error))
     }
 }
 
@@ -593,7 +617,7 @@ impl DatasetPromotion {
         generation_dir: &Path,
         staged_contract: &AtomicOutput,
         publication: Option<PublicationOutputAdmission<'_>>,
-        admission: Option<Arc<dyn FileAdmission>>,
+        admission: Option<Arc<dyn SemanticGenerationFileIo>>,
     ) -> Result<Self, CoreError> {
         Self::begin_with_ops(
             generation_dir,
@@ -771,7 +795,7 @@ impl DatasetPromotion {
 
     pub(crate) fn recover_with_admission(
         generation_dir: &Path,
-        admission: Option<Arc<dyn FileAdmission>>,
+        admission: Option<Arc<dyn SemanticGenerationFileIo>>,
     ) -> Result<(), CoreError> {
         let ops = FsOps {
             admission,

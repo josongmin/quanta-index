@@ -37,6 +37,8 @@ impl MemoryScopePort for SnapshotMemory {
 struct SnapshotReadIo {
     entered: Arc<AtomicUsize>,
     active: Arc<AtomicUsize>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fd_directory: Option<std::path::PathBuf>,
 }
 
 struct SnapshotReadScope(Arc<AtomicUsize>);
@@ -54,24 +56,78 @@ impl CatalogIoScope for SnapshotReadScope {
 }
 
 impl CatalogReadOnlyIoAdmission for SnapshotReadIo {
-    fn read_only_vfs_name(&self) -> &str {
-        "unix"
-    }
-
-    fn enter_read_only_scope(
+    fn enter_named_read_only_scope(
         &self,
         _: &quanta_index_core::RequestBudgetV1,
         _: u64,
         _: u64,
-    ) -> Box<dyn CatalogIoScope> {
+    ) -> Option<(&str, Box<dyn CatalogIoScope>)> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.fd_directory.is_some() {
+            return None;
+        }
         let _previous_entries = self.entered.fetch_add(1, Ordering::AcqRel);
         assert_eq!(self.active.fetch_add(1, Ordering::AcqRel), 0);
-        Box::new(SnapshotReadScope(Arc::clone(&self.active)))
+        Some((
+            "unix",
+            Box::new(SnapshotReadScope(Arc::clone(&self.active))),
+        ))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn with_protected_catalog_directory_v1(
+        &self,
+        directory: &std::path::Path,
+        _: &quanta_index_core::RequestBudgetV1,
+        needs_wal: bool,
+        visit: &mut dyn FnMut(&std::fs::File),
+    ) -> Result<bool, IndexError> {
+        let Some(expected) = self.fd_directory.as_deref() else {
+            return Ok(false);
+        };
+        assert_eq!(directory, expected);
+        assert_eq!(
+            needs_wal,
+            expected
+                .join(format!("{}-wal", crate::CATALOG_FILE_NAME))
+                .exists()
+        );
+        let fd = std::fs::File::open(expected)
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        let _prior = self.entered.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(self.active.fetch_add(1, Ordering::AcqRel), 0);
+        let _scope = SnapshotReadScope(Arc::clone(&self.active));
+        visit(&fd);
+        Ok(true)
     }
 }
 
 #[test]
 fn public_snapshot_visitor_runs_after_catalog_scope_and_keeps_rows_funded() -> TestResult {
+    check_public_snapshot_visitor(|_| SnapshotReadIo::default())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn protected_fd_snapshot_visitor_runs_after_catalog_scope_and_keeps_rows_funded() -> TestResult {
+    check_public_snapshot_visitor(|directory| SnapshotReadIo {
+        fd_directory: Some(directory.to_path_buf()),
+        ..SnapshotReadIo::default()
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn portable_snapshot_visitor_runs_after_catalog_scope_and_keeps_rows_funded() -> TestResult {
+    check_public_snapshot_visitor(|directory| SnapshotReadIo {
+        fd_directory: Some(directory.to_path_buf()),
+        ..SnapshotReadIo::default()
+    })
+}
+
+fn check_public_snapshot_visitor(
+    io: impl FnOnce(&std::path::Path) -> SnapshotReadIo,
+) -> TestResult {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir()?;
@@ -104,7 +160,7 @@ fn public_snapshot_visitor_runs_after_catalog_scope_and_keeps_rows_funded() -> T
         }
     }
 
-    let io = SnapshotReadIo::default();
+    let io = io(path.parent().ok_or("catalog directory")?);
     let memory = SnapshotMemory::default();
     let mut budget = admission_budget();
     budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(memory.clone()))));

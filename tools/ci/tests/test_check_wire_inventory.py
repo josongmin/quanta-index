@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-wire-inventory.py"
 
@@ -189,6 +191,14 @@ def test_exact_inventory_passes(tmp_path: Path):
     assert MODULE.check(load(INVENTORY_OK), root) == []
 
 
+def test_checkout_under_tests_parent_still_scans_crate_sources(tmp_path: Path):
+    root = make_workspace(tmp_path / "tests")
+    sources = {path.relative_to(root).as_posix() for path in MODULE.crate_source_files(root)}
+    assert "crates/quanta-index-lexical/src/lib.rs" in sources
+    assert "crates/quanta-index-lexical/src/tests/fixture.rs" not in sources
+    assert MODULE.check(load(INVENTORY_OK), root) == []
+
+
 def test_tools_owned_schema_version_is_checked(tmp_path: Path):
     root = make_workspace(tmp_path)
     _write(root / "tools/ci/owner.py", "# owner\n")
@@ -280,7 +290,8 @@ def test_ipc_enum_parser_refuses_a_variant_shape_it_does_not_understand():
 
 
 def test_native_control_parser_reads_record_and_newtype_variants():
-    assert MODULE.parse_native_enums(textwrap.dedent(NATIVE_RS)) == {
+    enums = MODULE.parse_native_enums({MODULE.NATIVE_IPC_FILE: textwrap.dedent(NATIVE_RS)})
+    assert {name: enum.variants for name, enum in enums.items()} == {
         "NativeIndexRequest": ["CreateWorkspace", "Submit"],
         "NativeIndexResponse": ["Created", "Error"],
     }
@@ -297,7 +308,8 @@ def test_native_control_parser_reads_explicitly_tagged_unit_variants():
             structs { }
         });
     """
-    assert MODULE.parse_native_enums(textwrap.dedent(source))["NativeIndexRequest"] == [
+    enums = MODULE.parse_native_enums({MODULE.NATIVE_IPC_FILE: textwrap.dedent(source)})
+    assert enums["NativeIndexRequest"].variants == [
         "CreateWorkspace",
         "ObserveCandidateInstallationV1",
         "Submit",
@@ -307,7 +319,7 @@ def test_native_control_parser_reads_explicitly_tagged_unit_variants():
 def test_native_control_parser_refuses_unrecognized_variant_shape():
     source = NATIVE_RS.replace("Submit(UpdateRequest)", "Submit")
     try:
-        MODULE.parse_native_enums(textwrap.dedent(source))
+        MODULE.parse_native_enums({MODULE.NATIVE_IPC_FILE: textwrap.dedent(source)})
     except ValueError as error:
         assert "unrecognized native variant shape" in str(error)
     else:
@@ -336,6 +348,236 @@ def test_native_control_new_variant_requires_inventory_update(tmp_path: Path):
     )
 
 
+def make_nested_native_workspace(tmp_path: Path) -> tuple[Path, dict]:
+    root = make_workspace(tmp_path)
+    _write(
+        root / "crates/quanta-index-contract/src/native_protocol.rs",
+        "mod read_session;\n"
+        + NATIVE_RS.replace(
+            "Submit(UpdateRequest),",
+            "Submit(UpdateRequest),\nReadSession(NativeReadSessionRequest),",
+        ),
+    )
+    _write(
+        root / "crates/quanta-index-contract/src/native_protocol/read_session.rs",
+        """
+        pub enum NativeReadSessionRequest {
+            Release(NativeReadSessionId),
+        }
+
+        pub enum NativeReadSessionState { Closing }
+        """,
+    )
+    inventory = load(INVENTORY_OK)
+    next(row for row in inventory["ipc"] if row["enum"] == "NativeIndexRequest")["variants"].append(
+        "ReadSession"
+    )
+    return root, inventory
+
+
+def test_nested_native_request_requires_its_own_inventory_row(tmp_path: Path):
+    root, inventory = make_nested_native_workspace(tmp_path)
+    found = messages(MODULE.check(inventory, root))
+    assert len(found) == 1
+    assert "`NativeReadSessionRequest` has no [[ipc]] row" in found[0]
+
+
+def test_nested_native_request_variant_change_cannot_pass_with_stale_inventory(tmp_path: Path):
+    root, inventory = make_nested_native_workspace(tmp_path)
+    relative = "crates/quanta-index-contract/src/native_protocol/read_session.rs"
+    inventory["ipc"].append(
+        {
+            "enum": "NativeReadSessionRequest",
+            "file": relative,
+            "plane": "control",
+            "direction": "request",
+            "variants": ["Release"],
+        }
+    )
+    assert MODULE.check(inventory, root) == []
+    path = root / relative
+    path.write_text(path.read_text().replace("Release(", "ForceRelease("), encoding="utf-8")
+
+    found = messages(MODULE.check(inventory, root))
+    assert any(
+        "variant `ForceRelease` exists in the code but is not listed" in line for line in found
+    )
+    assert any(
+        "variant `Release` is listed but the enum has no such variant" in line for line in found
+    )
+
+
+def test_inline_qualified_native_payload_requires_its_own_inventory_row(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    relative = MODULE.NATIVE_IPC_FILE
+    path = root / relative
+    inline = """
+        pub mod routes {
+            pub enum ChildRequest { Enter(u8), Ping }
+            quanta_index_contract_base::native_serde_enum!(ChildRequest {
+                units { Ping = 1 }
+                newtypes { Enter = 0 => u8 }
+                records { }
+            });
+        }
+        pub mod decoy {
+            pub enum ChildRequest { Wrong(u8) }
+        }
+        #[cfg(test)]
+        mod tests {
+            pub enum ChildRequest { TestOnly(u8) }
+        }
+    """
+    inventory = load(INVENTORY_OK)
+    next(row for row in inventory["ipc"] if row["enum"] == "NativeIndexRequest")["variants"].append(
+        "Route"
+    )
+    for payload in ("crate::native_protocol::routes::ChildRequest", "routes::ChildRequest"):
+        source = NATIVE_RS.replace(
+            "Submit(UpdateRequest),", f"Submit(UpdateRequest), Route({payload}),"
+        ) + textwrap.dedent(inline)
+        path.write_text(source, encoding="utf-8")
+        found = messages(MODULE.check(inventory, root))
+        assert len(found) == 1
+        assert "`ChildRequest` has no [[ipc]] row" in found[0]
+
+        inventory["ipc"].append(
+            {
+                "enum": "ChildRequest",
+                "file": relative,
+                "plane": "control",
+                "direction": "request",
+                "variants": ["Enter", "Ping"],
+            }
+        )
+        assert MODULE.check(inventory, root) == []
+        inventory["ipc"].pop()
+
+
+def test_inline_native_unit_tags_stay_in_the_enum_module(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    path = root / MODULE.NATIVE_IPC_FILE
+    source = NATIVE_RS.replace(
+        "Submit(UpdateRequest),",
+        "Submit(UpdateRequest), Route(crate::native_protocol::routes::ChildRequest),",
+    ) + textwrap.dedent(
+        """
+        pub mod routes {
+            pub enum ChildRequest { Ping }
+            quanta_index_contract_base::native_serde_enum!(ChildRequest {
+                units { Ping = 1 } newtypes { } records { }
+            });
+        }
+        pub mod decoy {
+            quanta_index_contract_base::native_serde_enum!(ChildRequest {
+                units { Wrong = 2 } newtypes { } records { }
+            });
+        }
+        """
+    )
+    path.write_text(source, encoding="utf-8")
+    enums = MODULE.parse_native_enums({MODULE.NATIVE_IPC_FILE: source})
+    assert enums["ChildRequest"].variants == ["Ping"]
+    without_local_tag = source.replace("units { Ping = 1 }", "units { }")
+    with pytest.raises(ValueError, match="unrecognized native variant shape"):
+        MODULE.parse_native_enums({MODULE.NATIVE_IPC_FILE: without_local_tag})
+
+
+def test_unqualified_native_payload_ignores_test_only_inline_decoy():
+    source = NATIVE_RS.replace(
+        "Submit(UpdateRequest),", "Submit(UpdateRequest), Route(ChildRequest),"
+    ) + textwrap.dedent(
+        """
+        use routes::ChildRequest;
+        pub mod routes { pub enum ChildRequest { Enter(u8) } }
+        #[cfg(test)]
+        mod tests { pub enum ChildRequest { Fixture(u8) } }
+        """
+    )
+    enums = MODULE.parse_native_enums({MODULE.NATIVE_IPC_FILE: source})
+    assert enums["ChildRequest"].variants == ["Enter"]
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "use routes::ChildRequest as RouteRequest;",
+        "pub use crate::native_protocol::routes::ChildRequest as RouteRequest;",
+        "use routes::{ChildRequest as RouteRequest};",
+        "type RouteRequest = routes::ChildRequest;",
+    ],
+)
+def test_direct_native_alias_requires_target_enum_inventory_row(tmp_path: Path, binding: str):
+    root = make_workspace(tmp_path)
+    relative = MODULE.NATIVE_IPC_FILE
+    source = NATIVE_RS.replace(
+        "Submit(UpdateRequest),", "Submit(UpdateRequest), Route(RouteRequest),"
+    ) + textwrap.dedent(
+        f"""
+        {binding}
+        pub mod routes {{ pub enum ChildRequest {{ Enter(u8) }} }}
+        pub mod decoy {{ pub enum ChildRequest {{ Wrong(u8) }} }}
+        """
+    )
+    (root / relative).write_text(source, encoding="utf-8")
+    inventory = load(INVENTORY_OK)
+    next(row for row in inventory["ipc"] if row["enum"] == "NativeIndexRequest")["variants"].append(
+        "Route"
+    )
+
+    found = messages(MODULE.check(inventory, root))
+    assert len(found) == 1
+    assert "`ChildRequest` has no [[ipc]] row" in found[0]
+
+    inventory["ipc"].append(
+        {
+            "enum": "ChildRequest",
+            "file": relative,
+            "plane": "control",
+            "direction": "request",
+            "variants": ["Enter"],
+        }
+    )
+    assert MODULE.check(inventory, root) == []
+
+
+def test_non_native_import_alias_does_not_discover_unrelated_enum():
+    source = NATIVE_RS.replace(
+        "Submit(UpdateRequest),", "Submit(UpdateRequest), Route(RouteRequest),"
+    ) + textwrap.dedent(
+        """
+        use std::path::PathBuf as RouteRequest;
+        pub mod decoy { pub enum RouteRequest { Wrong(u8) } }
+        """
+    )
+    enums = MODULE.parse_native_enums({MODULE.NATIVE_IPC_FILE: source})
+    assert "RouteRequest" not in enums
+
+
+def test_native_reply_follows_newtype_families_and_leaves_record_data_out():
+    source = NATIVE_RS.replace("Created(ViewRef),", "Created(ViewRef), Nested(NestedReply),")
+    relative = "crates/quanta-index-contract/src/native_protocol/nested.rs"
+    enums = MODULE.parse_native_enums(
+        {
+            MODULE.NATIVE_IPC_FILE: textwrap.dedent(source),
+            relative: """
+                pub enum NestedReply {
+                    Finished(crate::native_protocol::nested::Completion),
+                    Snapshot { state: State },
+                }
+                pub enum Completion { Accepted(u8) }
+                enum State { Waiting }
+            """,
+        }
+    )
+
+    assert enums["NestedReply"] == MODULE.NativeOpcode(
+        relative, "response", ["Finished", "Snapshot"]
+    )
+    assert enums["Completion"] == MODULE.NativeOpcode(relative, "response", ["Accepted"])
+    assert "State" not in enums
+
+
 def test_native_control_inventory_rejects_unknown_and_duplicate_variants(tmp_path: Path):
     root = make_workspace(tmp_path)
     inventory = load(INVENTORY_OK)
@@ -360,6 +602,19 @@ def test_native_control_row_cannot_claim_another_plane_or_direction(tmp_path: Pa
     found = messages(MODULE.check(inventory, root))
     assert any(
         "native control row must use plane='control' and direction='request'" in message
+        for message in found
+    )
+
+
+def test_search_plane_row_labels_match_the_opcode_family(tmp_path: Path):
+    root = make_workspace(tmp_path)
+    inventory = load(INVENTORY_OK)
+    request = next(row for row in inventory["ipc"] if row["enum"] == "SearchPlaneQueryIpcRequest")
+    request.update(plane="ingest", direction="response")
+
+    found = messages(MODULE.check(inventory, root))
+    assert any(
+        "search-plane row must use plane='query' and direction='request'" in message
         for message in found
     )
 

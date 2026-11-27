@@ -107,17 +107,53 @@ impl PublicationFileDeletions {
         self.reconcile_pending(&mut pending)
     }
 
+    /// Reads cannot recover a mutation or consume its original caller's result.
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
+    pub(crate) fn require_namespace_settled_for_read(&self) -> Result<(), CoreError> {
+        let pending = self.lock_pending()?;
+        if pending.is_some() {
+            return Err(busy(pending.as_ref()));
+        }
+        Ok(())
+    }
+
     /// Drain retired Control creates before reserving another allowance. The
     /// shared deletion slot stays held across temporary recovery and deletion.
     pub fn reconcile_retired_control_creates(&self) -> Result<(), CoreError> {
+        self.reconcile_retired_control_creates_in(None)
+    }
+
+    /// Settle retired copies for one staging tree before deleting or reusing
+    /// it. This retry visits only targets in the supplied scope.
+    #[cfg(feature = "legacy-semantic-adapter")]
+    pub(crate) fn reconcile_retired_creates_under(
+        &self,
+        directory: &Path,
+    ) -> Result<(), CoreError> {
+        if self
+            .binder
+            .next_retired_control_create_in(Some(directory))?
+            .is_none()
+        {
+            return Ok(());
+        }
+        self.reconcile_retired_control_creates_in(Some(directory))
+    }
+
+    fn reconcile_retired_control_creates_in(
+        &self,
+        directory: Option<&Path>,
+    ) -> Result<(), CoreError> {
         let mut pending = self.lock_pending()?;
         // A cold Control probe must not consume another operation's outcome.
         // Its logical caller needs the original key and deletion receipt.
-        if matches!(pending.as_ref(), Some(PendingOperation::Namespace(_))) {
+        if (directory.is_some() && pending.is_some())
+            || matches!(pending.as_ref(), Some(PendingOperation::Namespace(_)))
+        {
             return Err(busy(pending.as_ref()));
         }
         self.reconcile_pending(&mut pending)?;
-        while let Some(target) = self.binder.next_retired_control_create()? {
+        while let Some(target) = self.binder.next_retired_control_create_in(directory)? {
             match self.binder.recover_retired_control_create(&target)? {
                 ControlCreateRecovery::RetainedTarget | ControlCreateRecovery::Absent => {}
                 ControlCreateRecovery::RetainedTemporary { path, inode, bytes } => {

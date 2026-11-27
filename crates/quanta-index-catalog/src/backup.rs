@@ -160,11 +160,7 @@ fn catalog_content_digest_with_mapper(
             let probe = connection
                 .prepare(&format!("SELECT * FROM \"{quoted}\" LIMIT 0"))
                 .map_err(|error| map_error("read snapshot table", path, &error))?;
-            probe
-                .column_names()
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect()
+            probe.column_names().map(str::to_string).collect()
         };
         let order_by = column_names
             .iter()

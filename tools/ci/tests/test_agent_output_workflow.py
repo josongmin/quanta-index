@@ -37,6 +37,20 @@ def validation_step() -> dict:
     )
 
 
+def test_local_validator_reads_payload_path_with_spaces(tmp_path: Path) -> None:
+    payload = tmp_path / "agent output.json"
+    payload.write_text("invalid json", encoding="utf-8")
+    result = subprocess.run(
+        ["just", "agent-output-validate", str(payload)],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONNOUSERSITE": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, result.stderr
+    assert "Expecting value" in result.stderr
+
+
 def run_changed_step(
     repo: Path, tmp_path: Path, event: str, base: str
 ) -> tuple[subprocess.CompletedProcess[str], str, list[str]]:

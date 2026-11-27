@@ -296,7 +296,7 @@ fn product_daemon_seals_managed_ann_region_and_reopens_selected_view() -> TestRe
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec(), semantic.clone()],
+            instances: vec![literal_spec(), text_spec(), semantic.clone()],
         },
         &budget(),
     )?;

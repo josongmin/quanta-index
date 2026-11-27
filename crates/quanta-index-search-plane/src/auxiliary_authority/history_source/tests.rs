@@ -209,6 +209,55 @@ fn fixture() -> Result<
 }
 
 #[test]
+fn native_initial_folds_original_without_legacy_ack_or_prior_cut() -> TestResult {
+    let (_, batches, _) = fixture()?;
+    let mut original = batches[0].clone();
+    original.manifest_digest = Some("a".repeat(64));
+    stamp_batch_digest_v1(&mut original)?;
+    let operation = OperationKey {
+        workspace: WorkspaceKey {
+            tenant: TenantId([1; 16]),
+            collection: CollectionId([2; 16]),
+            worktree: WorktreeId([3; 16]),
+            slot: SlotId([4; 16]),
+        },
+        epoch: 1,
+        producer: ProducerId([5; 16]),
+        stream: StreamId([6; 16]),
+        stream_epoch: 1,
+        sequence: 1,
+    };
+    let input = ObjectRef(Digest([7; 32]));
+    let first = ReplayedHistorySourceV1::native_initial(
+        operation, 1, input, &original, &mut budget(),
+    )?;
+    let repeated = ReplayedHistorySourceV1::native_initial(
+        operation, 1, input, &original, &mut budget(),
+    )?;
+    assert_eq!(first.cut(), repeated.cut());
+    assert_eq!(first.cut().durable_epoch, AuxEpochV1::new(1));
+    assert_eq!(first.sequence, 1);
+    let next_view = ReplayedHistorySourceV1::native_initial(
+        operation, 2, input, &original, &mut budget(),
+    )?;
+    assert_eq!(first.cut().snapshot_digest, next_view.cut().snapshot_digest);
+    assert_ne!(first.cut().replay_start, next_view.cut().replay_start);
+    let mut no_manifest = original.clone();
+    no_manifest.manifest_digest = None;
+    stamp_batch_digest_v1(&mut no_manifest)?;
+    assert!(ReplayedHistorySourceV1::native_initial(
+        operation, 1, input, &no_manifest, &mut budget(),
+    ).is_err());
+    let mut orphan = original;
+    orphan.commits.clear();
+    stamp_batch_digest_v1(&mut orphan)?;
+    assert!(ReplayedHistorySourceV1::native_initial(
+        operation, 1, input, &orphan, &mut budget(),
+    ).is_err());
+    Ok(())
+}
+
+#[test]
 fn complete_source_replay_keeps_moves_deletes_and_independent_row_digest() -> TestResult {
     let (fence, batches, acks) = fixture()?;
     let second_replay = replay_advance(fence.first_replay, 1, &batches[0], &acks[0])?;

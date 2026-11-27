@@ -11,7 +11,7 @@ use quanta_index_contract::{
         ObjectRef, OwnerKey, ViewSelection,
     },
     native_protocol::{
-        NativeIndexErrorCode, NativeIndexRequestEnvelope, NativeIndexResponseEnvelope,
+        NativeIndexErrorCode, NativeIndexRequestEnvelope, NativeIndexResponseEnvelope, NativeInitialHistoryCutV1,
         NativeIndexWireError, NativeReadSessionHistoryCutV1, NativeReadSessionHistoryGenerationV1,
         NativeTextCoverage, NativeTextHit, NativeTextResult,
     },
@@ -229,9 +229,9 @@ fn charged_borrow(reply: &AdmittedNativePublicationReply, counts: &Counts) -> Te
         NativeIndexResponse::ReadSessionProfile(profile) => {
             profile.profile.instances.capacity() * std::mem::size_of::<InstanceSpec>()
         }
-        NativeIndexResponse::HistoryCut(result) => {
-            result.cut.generation.repo_id.as_str().len()
-                + result.cut.generation.revision_id.as_str().len()
+        NativeIndexResponse::HistoryCut(NativeReadSessionHistoryCutV1 { cut, .. })
+        | NativeIndexResponse::InitialHistoryCutV1(NativeInitialHistoryCutV1 { cut, .. }) => {
+            cut.generation.repo_id.as_str().len() + cut.generation.revision_id.as_str().len()
         }
         NativeIndexResponse::TextRanked(result) => text_heap(&result.hits),
         NativeIndexResponse::TextRankedPage(result) => text_heap(&result.hits),
@@ -266,6 +266,56 @@ fn charged_borrow(reply: &AdmittedNativePublicationReply, counts: &Counts) -> Te
 }
 
 #[test]
+fn admitted_initial_history_preview_binds_request_and_funds_identity_bytes() -> TestResult {
+    use quanta_index_contract::index::{IngressRef, OperationKey, ProducerId, StreamId};
+
+    let (status, _) = super::super::profile::tests::fixture()?;
+    let ingress = IngressRef {
+        operation: OperationKey {
+            workspace: status.view.workspace,
+            epoch: status.view.epoch,
+            producer: ProducerId([6; 16]),
+            stream: StreamId([7; 16]),
+            stream_epoch: 1,
+            sequence: 4,
+        },
+        fence: 19,
+    };
+    let input = ObjectRef(Digest([12; 32]));
+    let profile = ObjectRef(Digest([13; 32]));
+    let request = NativeIndexRequest::PreviewInitialHistoryCutV1 {
+        ingress,
+        expected_view: status.view,
+        input,
+        profile,
+    };
+    let response = NativeIndexResponse::InitialHistoryCutV1(NativeInitialHistoryCutV1 {
+        instance: IndexInstanceId([8; 16]),
+        cut: HistorySourceCutV1 {
+            generation: quanta_index_contract::index::AuxiliaryGenerationKeyV1 {
+                repo_id: RepoId::new("r".repeat(RepoId::MAX_UTF8_BYTES_V1))?,
+                revision_id: RevisionId::new("revision-history-sdk-longer-than-an-identifier")?,
+                generation: ManifestGeneration::new(4),
+            },
+            durable_epoch: AuxEpochV1::new(1),
+            snapshot_digest: Digest([10; 32]),
+            replay_start: Digest([11; 32]),
+        },
+    });
+    let (memory, counts) = scope();
+    let reply = exchange(request, response.clone(), |client| {
+        client.preview_initial_history_cut_admitted_v1(
+            ingress, status.view, input, profile, &budget(), &memory,
+        )
+    })??;
+    assert_eq!(reply.response(), &response);
+    charged_borrow(&reply, &counts)?;
+    drop(reply);
+    empty(&counts);
+    Ok(())
+}
+
+#[test]
 fn admitted_history_cut_retains_reply_and_rejects_wrong_view() -> TestResult {
     let (status, _) = super::super::profile::tests::fixture()?;
     let instance = IndexInstanceId([8; 16]);
@@ -274,6 +324,7 @@ fn admitted_history_cut_retains_reply_and_rejects_wrong_view() -> TestResult {
         view: status.view,
         instance,
         member: ObjectRef(Digest([9; 32])),
+        source_input: ObjectRef(Digest([12; 32])),
         cut: HistorySourceCutV1 {
             generation: quanta_index_contract::index::AuxiliaryGenerationKeyV1 {
                 repo_id: RepoId::new("repo-history-sdk")?,
@@ -303,6 +354,18 @@ fn admitted_history_cut_retains_reply_and_rejects_wrong_view() -> TestResult {
     );
     charged_borrow(&reply, &counts)?;
     drop(reply);
+    empty(&counts);
+
+    let mut missing_source = cut.clone();
+    missing_source.source_input = ObjectRef(Digest([0; 32]));
+    let rejected = exchange(
+        request.clone(),
+        NativeIndexResponse::HistoryCut(missing_source),
+        |client| {
+            client.read_history_cut_in_read_session_admitted(&status, instance, &budget(), &memory)
+        },
+    )?;
+    assert!(matches!(rejected, Err(NativeUdsError::Protocol(_))));
     empty(&counts);
 
     let mut wrong_view = cut;
@@ -699,6 +762,7 @@ fn admitted_path_projection_and_page_accept_bound_uds_replies() -> TestResult {
         ranked: ranked_page,
         remaining: 2,
         after: Some(cursor),
+        code_search: Vec::new(),
     };
     let request = NativeReadSessionRequest::SearchTextPathPageV1 {
         session: status.session,

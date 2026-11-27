@@ -68,6 +68,7 @@ pub(super) fn plan_with_reservation(
             revision: row.revision,
             text: row.text.clone(),
             path: row.path.clone(),
+            repository_witness: row.repository_witness,
         });
     }
     Ok(plan_native_text(query, &reserve)?.with_overlay(documents, memory))
@@ -131,7 +132,11 @@ pub(super) fn convert(
     let view = outcome.view();
     let result = outcome.into_result();
     let count = result.hits.len();
-    let leases = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+    // Each hit retains a path and a repository grant beside the corpus grant.
+    let leases = count
+        .checked_mul(2)
+        .and_then(|leases| leases.checked_add(1))
+        .ok_or(IndexError::ResourceLimited)?;
     let value_bytes = shared_value_bytes::<NativeOverlayTextResult>()?;
     let bytes = count
         .checked_mul(std::mem::size_of::<NativeOverlayTextHit>())
@@ -185,7 +190,10 @@ pub(super) fn convert(
         _capacity_memory: memory,
     };
     output.payload_memory.push(corpus_memory);
-    for hit in input_hits {
+    for mut hit in input_hits {
+        let (repository, repository_memory) = hit.take_overlay_repository().ok_or_else(|| {
+            IndexError::BackendViolation("overlay read hit lacks its repository".into())
+        })?;
         let (owner, source, path, score, path_memory) = hit.into_parts();
         let source = match source {
             NativeTextHitSource::Durable(source) => NativeOverlayTextSource::Durable(source),
@@ -196,10 +204,12 @@ pub(super) fn convert(
         output.result.hits.push(NativeOverlayTextHit {
             owner,
             source,
+            repository,
             path,
             score,
         });
         output.payload_memory.push(path_memory);
+        output.payload_memory.push(repository_memory);
     }
     drop(old_memory);
     Ok(ScopedNativeResult::new(output))

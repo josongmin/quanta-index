@@ -6,7 +6,7 @@ use quanta_index_core::index::{
     HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, IndexError, MemoryLease,
     MemoryLifetime, OperationKey, OwnerMutationSet, ProducerCompleteness, ProducerId,
     ProjectionBinding, ProjectionId, ProjectionTransition, SchemaId, SourceCut, SourceEvent,
-    SourceHistoryTransitionV1, SourceTransition, UpdateKind, UpdateRequest, ViewRef, WorkBudget,
+    SourceHistoryBootstrapV1, SourceHistoryTransitionV1, SourceTransition, UpdateKind, UpdateRequest, ViewRef, WorkBudget,
     WorkClaim,
 };
 use quanta_index_core::index::{IndexInstanceId, ObjectRef, OwnerKey};
@@ -145,6 +145,7 @@ request_record_codec!(['de: 'a, 'a] Header<'a>, Header, closed {
 enum KindTag {
     SourceAdvance,
     SourceHistoryAdvance,
+    SourceHistoryBootstrap,
     SourceResync,
     SourceHistoryResync,
     ProjectionAdvance,
@@ -159,6 +160,7 @@ quanta_index_contract::native_serde_enum!(KindTag {
         SourceAdvance = 0, SourceHistoryAdvance = 1, SourceResync = 2,
         ProjectionAdvance = 3, HistoryAdvance = 4, HistoryAppend = 5,
         Reconfigure = 6, CompactSourceLocal = 7, Materialize = 8, SourceHistoryResync = 9,
+        SourceHistoryBootstrap = 10,
     }
     newtypes { }
     records { }
@@ -194,6 +196,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for RawKind<'a> {
             &[
                 "SourceAdvance",
                 "SourceHistoryAdvance",
+                "SourceHistoryBootstrap",
                 "SourceResync",
                 "ProjectionAdvance",
                 "HistoryAdvance",
@@ -500,6 +503,33 @@ fn source_history(
     ))
 }
 
+fn source_history_bootstrap(
+    parts: SourceHistoryParts<'_>,
+    budget: &WorkBudget,
+) -> Result<(Box<SourceHistoryBootstrapV1>, Option<MemoryLease>), IndexError> {
+    let history_raw = parts.history.get().as_bytes();
+    let layout: HistoryNameLayout = read(history_raw, budget)?;
+    let mut names = layout.expected.iter().chain(std::iter::once(&layout.next));
+    let backing = names.try_fold(std::mem::size_of::<SourceHistoryBootstrapV1>(), |size, cut| {
+        size.checked_add(cut.generation.repo_id.0)
+            .and_then(|size| size.checked_add(cut.generation.revision_id.0))
+            .ok_or(IndexError::ResourceLimited)
+    })?;
+    let (events, memory) = events(parts.source.events, backing, budget)?;
+    let history: HistoryTransition = read(history_raw, budget)?;
+    Ok((
+        Box::new(SourceHistoryBootstrapV1 {
+            source: SourceTransition {
+                expected_source: parts.source.expected_source,
+                owners: parts.source.owners,
+                events,
+            },
+            history,
+        }),
+        memory,
+    ))
+}
+
 pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest, IndexError> {
     budget.checkpoint()?;
     // This parser allowance funds copied/escaped serde keys and scratch. It
@@ -532,6 +562,10 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
             let (transition, memory) = source_history(read(raw, budget)?, budget)?;
             (UpdateKind::SourceHistoryAdvance(transition), memory)
         }
+        KindTag::SourceHistoryBootstrap => {
+            let (transition, memory) = source_history_bootstrap(read(raw, budget)?, budget)?;
+            (UpdateKind::SourceHistoryBootstrap(transition), memory)
+        }
         KindTag::SourceResync => {
             let parts: ResyncParts<'_> = read(raw, budget)?;
             let (events, memory) = events(parts.transition.events, 0, budget)?;
@@ -550,13 +584,7 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
         KindTag::SourceHistoryResync => {
             let parts: HistoryResyncParts<'_> = read(raw, budget)?;
             let (transition, memory) = source_history(parts.transition, budget)?;
-            (
-                UpdateKind::SourceHistoryResync {
-                    prior_epoch: parts.prior_epoch,
-                    transition,
-                },
-                memory,
-            )
+            (UpdateKind::SourceHistoryResync { prior_epoch: parts.prior_epoch, transition }, memory)
         }
         KindTag::ProjectionAdvance => {
             let parts: ProjectionParts<'_> = read(raw, budget)?;
@@ -758,6 +786,24 @@ pub(crate) mod tests {
                     .checked_add(std::mem::size_of_val(transition.as_ref()))
                     .and_then(|size| size.checked_add(generation.repo_id.as_str().len()))
                     .and_then(|size| size.checked_add(generation.revision_id.as_str().len()))
+                    .ok_or(IndexError::ResourceLimited)?
+            }
+            UpdateKind::SourceHistoryBootstrap(transition) => {
+                let mut names = transition
+                    .history
+                    .expected
+                    .iter()
+                    .chain(std::iter::once(&transition.history.next));
+                let backing = names.try_fold(
+                    std::mem::size_of_val(transition.as_ref()),
+                    |size, cut| {
+                        size.checked_add(cut.generation.repo_id.as_str().len())
+                            .and_then(|size| size.checked_add(cut.generation.revision_id.as_str().len()))
+                            .ok_or(IndexError::ResourceLimited)
+                    },
+                )?;
+                std::mem::size_of_val(transition.source.events.as_slice())
+                    .checked_add(backing)
                     .ok_or(IndexError::ResourceLimited)?
             }
             UpdateKind::HistoryAdvance(transition) => transition

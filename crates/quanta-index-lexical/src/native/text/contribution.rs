@@ -2,8 +2,8 @@
 //! object identity is claimed for inline data. Every source/occurrence remains
 //! an explicit physical child of the owning map node.
 use super::{
-    Contribution, EntryMap, ImmutableObjectPort, IndexError, WorkBudget, check_term_key,
-    contribution_children, entry_map,
+    Contribution, EntryMap, ImmutableObjectPort, IndexError, PostingStageMetric, WorkBudget,
+    check_term_key, contribution_children, entry_map,
 };
 use quanta_index_core::index::{MAX_MAP_INLINE_BYTES, MAX_MAP_INLINE_CHILDREN, MapValue};
 
@@ -101,11 +101,15 @@ pub(super) fn read(
     stored_value: MapValue,
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
+    object_probe: Option<&mut PostingStageMetric>,
 ) -> Result<Contribution, IndexError> {
     budget.checkpoint()?;
     let value = match stored_value {
         MapValue::Object(reference) => {
-            let stored = objects.get(reference, budget)?;
+            let stored = {
+                let _timing = object_probe.map(PostingStageMetric::watch);
+                objects.get(reference, budget)?
+            };
             let value =
                 super::super::metadata::decode_fixed::<Contribution>(&stored.payload, budget)?;
             if stored.registration.reference != reference

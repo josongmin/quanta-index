@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use quanta_index_core::{CoreError, index::MemoryLease};
-use rusqlite::TransactionBehavior;
+use rusqlite::{Connection, TransactionBehavior, limits::Limit};
 
 use crate::connection::{
     CatalogClockPort, SqliteCatalog, SystemCatalogClock, configure_connection, engine_error,
@@ -32,7 +32,7 @@ impl SqliteCatalog {
         busy_timeout: Duration,
         clock: Arc<dyn CatalogClockPort>,
     ) -> Result<Self, CoreError> {
-        Self::open_with_clock_and_admission(state_root, busy_timeout, clock, None, None)
+        Self::open_with_clock_and_admission(state_root, busy_timeout, clock, None, None, false)
     }
 
     /// Select an already registered VFS and retain its I/O custody through
@@ -49,6 +49,27 @@ impl SqliteCatalog {
             Arc::new(SystemCatalogClock),
             Some(admission),
             None,
+            false,
+        )
+    }
+
+    /// Open with the stock SQLite VFS while retaining the supplied admission
+    /// owner and entering its operation and checked-close scopes. Regular
+    /// read-session lock files still use that owner. The caller must first
+    /// establish kernel-enforced quota for the whole mutable StateRoot: stock
+    /// SQLite does not invoke native per-file capacity callbacks.
+    pub fn open_with_stock_vfs_and_io_admission(
+        state_root: &Path,
+        busy_timeout: Duration,
+        admission: Arc<dyn CatalogIoAdmission>,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_clock_and_admission(
+            state_root,
+            busy_timeout,
+            Arc::new(SystemCatalogClock),
+            Some(admission),
+            None,
+            true,
         )
     }
 
@@ -67,6 +88,26 @@ impl SqliteCatalog {
             Arc::new(SystemCatalogClock),
             Some(admission),
             Some((policy, memory)),
+            false,
+        )
+    }
+
+    /// Stock-VFS variant of the funded writer-cache open. The admission and
+    /// cache leases retain their original lifetime and close semantics.
+    pub fn open_with_stock_vfs_and_io_admission_and_writer_cache(
+        state_root: &Path,
+        busy_timeout: Duration,
+        admission: Arc<dyn CatalogIoAdmission>,
+        policy: CatalogWriterCachePolicy,
+        memory: MemoryLease,
+    ) -> Result<Self, CoreError> {
+        Self::open_with_clock_and_admission(
+            state_root,
+            busy_timeout,
+            Arc::new(SystemCatalogClock),
+            Some(admission),
+            Some((policy, memory)),
+            true,
         )
     }
 
@@ -76,6 +117,7 @@ impl SqliteCatalog {
         clock: Arc<dyn CatalogClockPort>,
         admission: Option<Arc<dyn CatalogIoAdmission>>,
         cache: Option<(CatalogWriterCachePolicy, MemoryLease)>,
+        stock_vfs: bool,
     ) -> Result<Self, CoreError> {
         if cache.is_some() && admission.is_none() {
             return Err(CoreError::InvalidContract(
@@ -92,8 +134,12 @@ impl SqliteCatalog {
             }
         }
         let _scope = ScopeLease::enter(admission.as_ref(), None);
-        let (connection, path) =
-            open_connection(state_root, admission.as_ref().map(|owner| owner.vfs_name()))?;
+        let vfs_name = if stock_vfs {
+            None
+        } else {
+            admission.as_ref().map(|owner| owner.vfs_name())
+        };
+        let (connection, path) = open_connection(state_root, vfs_name, stock_vfs)?;
         let mut owner = match (admission, cache) {
             (Some(admission), Some((_policy, memory))) => {
                 CatalogConnectionOwner::new_with_cache(connection, admission, memory)
@@ -107,6 +153,9 @@ impl SqliteCatalog {
         };
         let (writer_cache, pin_data_version, native_extensions) = {
             let connection = owner.initialization_connection()?;
+            if stock_vfs {
+                configure_stock_writer(connection, &path)?;
+            }
             configure_connection(connection, &path, busy_timeout)?;
             let writer_cache: Option<CatalogWriterCacheObservation> = policy
                 .map(|policy| crate::writer_cache::apply(connection, &path, policy))
@@ -203,8 +252,50 @@ impl SqliteCatalog {
             transient_source_body_quarantines: std::sync::RwLock::new(
                 std::collections::BTreeMap::new(),
             ),
+            abandoned_read_pins: std::sync::Mutex::new(Vec::new()),
+            maintenance_demand: std::sync::Mutex::new(
+                crate::native::MaintenanceDemandState::default(),
+            ),
         })
     }
+}
+
+fn configure_stock_writer(connection: &Connection, path: &Path) -> Result<(), CoreError> {
+    // Catalog operates on its main database and a TEMP schema. Keep the TEMP
+    // database in memory and prevent ATTACH from adding another database path.
+    let forces_file_temp: bool = connection
+        .query_row(
+            "SELECT sqlite_compileoption_used('TEMP_STORE=0')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("inspect SQLite temp storage build policy", path, &error))?;
+    if forces_file_temp {
+        return Err(CoreError::Storage(format!(
+            "catalog: {} SQLite build forces file-backed temporary storage",
+            path.display()
+        )));
+    }
+    let _previous_attached_limit = connection
+        .set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)
+        .map_err(|error| engine_error("disable attached databases", path, &error))?;
+    connection
+        .pragma_update(None, "temp_store", "MEMORY")
+        .map_err(|error| engine_error("set temp_store", path, &error))?;
+
+    let attached_limit = connection
+        .limit(Limit::SQLITE_LIMIT_ATTACHED)
+        .map_err(|error| engine_error("read attached database limit", path, &error))?;
+    let temp_store: i64 = connection
+        .pragma_query_value(None, "temp_store", |row| row.get(0))
+        .map_err(|error| engine_error("read temp_store", path, &error))?;
+    if attached_limit != 0 || temp_store != 2 {
+        return Err(CoreError::Storage(format!(
+            "catalog: {} stock writer requires no attached databases and temp_store=MEMORY",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -216,6 +307,86 @@ mod tests {
 
     use super::SqliteCatalog;
     use crate::connection::{CATALOG_FILE_NAME, catalog_dir};
+
+    #[cfg(unix)]
+    #[test]
+    fn stock_driver_creates_private_database_and_rejects_hardlinks() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
+        let directory = catalog_dir(root.path());
+        let (writer, path) = crate::connection::open_connection(root.path(), None, true)?;
+        writer.execute_batch(
+            "PRAGMA journal_mode=WAL; CREATE TABLE fixture(value); INSERT INTO fixture VALUES (37)",
+        )?;
+        assert_eq!(std::fs::metadata(&directory)?.mode() & 0o777, 0o700);
+        for name in [
+            CATALOG_FILE_NAME,
+            "catalog-v1.sqlite-wal",
+            "catalog-v1.sqlite-shm",
+        ] {
+            let metadata = std::fs::metadata(directory.join(name))?;
+            assert_eq!(metadata.mode() & 0o777, 0o600, "{name}");
+            assert_eq!(metadata.nlink(), 1, "{name}");
+        }
+        writer.close().map_err(|(_connection, error)| error)?;
+        let (reopened, _) = crate::connection::open_connection(root.path(), None, true)?;
+        let value: i64 = reopened.query_row("SELECT value FROM fixture", [], |row| row.get(0))?;
+        assert_eq!(value, 37);
+        reopened.close().map_err(|(_connection, error)| error)?;
+
+        std::fs::hard_link(&path, directory.join("outside-catalog-role.sqlite"))?;
+        assert!(matches!(
+            crate::connection::open_connection(root.path(), None, true),
+            Err(CoreError::Storage(message)) if message.contains("single-link")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn stock_driver_refuses_symlinked_catalog_database() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
+        let directory = catalog_dir(root.path());
+        std::fs::create_dir_all(&directory)?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        let real = directory.join("actual.sqlite");
+        rusqlite::Connection::open(&real)?.execute_batch("CREATE TABLE fixture(value INTEGER)")?;
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600))?;
+        let link = directory.join(CATALOG_FILE_NAME);
+        std::os::unix::fs::symlink(&real, &link)?;
+        assert!(matches!(
+            crate::connection::open_connection(root.path(), None, true),
+            Err(CoreError::Storage(_))
+        ));
+        for driver in [None, Some("unix")] {
+            if !matches!(
+                crate::connection::open_connection(root.path(), driver, false),
+                Err(CoreError::Storage(_))
+            ) {
+                return Err("symlinked catalog database was opened".into());
+            }
+        }
+        std::fs::remove_file(&link)?;
+        std::fs::rename(&real, &link)?;
+        let (stock, _) = crate::connection::open_connection(root.path(), None, true)?;
+        assert_eq!(
+            stock.query_row("SELECT count(*) FROM fixture", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
+        stock.close().map_err(|(_connection, error)| error)?;
+        for driver in [None, Some("unix")] {
+            let (connection, _) = crate::connection::open_connection(root.path(), driver, false)?;
+            let count: i64 =
+                connection.query_row("SELECT count(*) FROM fixture", [], |row| row.get(0))?;
+            if count != 0 {
+                return Err("regular catalog database changed".into());
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn auxiliary_only_existing_catalog_must_not_seed_a_new_fence() -> Result<(), Box<dyn Error>> {

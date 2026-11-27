@@ -114,9 +114,13 @@ fn same_original_hit(row: &LexicalCandidate, hit: &RankedHit) -> bool {
     row.candidate_id == hit.candidate_id
         && row.repo_relative_path.as_str() == hit.path
         && f64::from(row.score).to_bits() == hit.score.to_bits()
-        && row.start_line == hit.start_line
-        && row.end_line == hit.end_line
-        && row.snippet == hit.snippet
+        && row.lines.is_some_and(|lines| {
+            lines.start_line == hit.start_line && lines.end_line == hit.end_line
+        })
+        && row
+            .excerpt
+            .as_ref()
+            .is_some_and(|excerpt| excerpt.snippet == hit.snippet)
         && row.source.as_ref() == Some(&authority.source)
         && row.preview.as_ref() == Some(&authority.preview)
         && row.source_repo_id == authority.source_repo_id
@@ -341,18 +345,23 @@ mod tests {
         LexicalCandidate {
             source_repo_id: RepoId::new("repo").expect("valid repo"),
             source: None,
+            native_source: None,
             preview: None,
             candidate_id: format!("file:{path}"),
             repo_id: RepoId::new("repo").expect("valid repo"),
             revision_id: RevisionId::new("rev").expect("valid revision"),
             manifest_generation: ManifestGeneration::new(1),
             repo_relative_path: RepoRelativePath::new(path),
-            start_line: 1,
-            end_line: 1,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 1,
+                end_line: 1,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: String::new(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score,
-            snippet: String::new(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
         }
     }
     #[test]

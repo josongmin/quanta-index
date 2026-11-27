@@ -272,6 +272,7 @@ fn typed_code(response: &SearchPlaneIngestIpcResponse) -> Option<&str> {
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
         | SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_) => None,
     }
@@ -707,6 +708,7 @@ fn remote_code(error: &SdkError) -> Option<&str> {
         SdkError::UnsupportedNativeQuery { .. }
         | SdkError::Usage(_)
         | SdkError::Protocol(_)
+        | SdkError::Native(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
         | SdkError::Binding { .. }

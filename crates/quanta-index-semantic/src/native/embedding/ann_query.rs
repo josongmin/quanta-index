@@ -24,9 +24,7 @@ use super::{
     source_file, validate_search_query,
 };
 use crate::native::{
-    ann_files, ann_lance,
-    ann_session::{ANN_TABLE_NAME, AnnLanceSession},
-    ann_store::AnnStoreLimits,
+    ann_files, ann_lance, ann_session::AnnLanceSession, ann_store::AnnStoreLimits,
 };
 
 const MAX_ROUTED_GRAPH_REGIONS: usize = 8;
@@ -884,17 +882,8 @@ fn query_lance_region(
                 DiagnosticStageV1::QueryAnnOpen,
             );
             let region_result = async {
-                let connection = session.connect().await?;
-                let table = session.resolve(
-                    connection
-                        .open_table(ANN_TABLE_NAME)
-                        .execute()
-                        .await
-                        .map_err(|error| {
-                            IndexError::Storage(format!("ANN selected table: {error}"))
-                        }),
-                )?;
-                let opened = ann_lance::open_region(table, fileset.seal.clone(), budget).await;
+                let dataset = session.open_dataset().await?;
+                let opened = ann_lance::open_region(dataset, fileset.seal.clone(), budget).await;
                 session.resolve(opened)
             }
             .await;

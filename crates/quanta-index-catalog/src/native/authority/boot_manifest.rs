@@ -5,12 +5,13 @@ use quanta_index_contract::{
     RepoId, RevisionId,
     index::{
         MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
-        NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1, RetiredProjectionPolicyRefV1,
+        NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1,
+        RetiredProjectionPolicyRefV1,
     },
 };
 use quanta_index_core::index::{
     CatalogView, Digest, ImmutableOperation, IndexError, IngressRef, MemoryLease, MemoryLifetime,
-    ObjectRef, OperationKey, OperationStatus, WorkBudget, WorkUsage,
+    ObjectRef, OperationKey, OperationStatus, ViewRef, WorkBudget, WorkUsage,
 };
 use rusqlite::{Connection, OptionalExtension as _, params, types::ValueRef};
 
@@ -21,12 +22,169 @@ use super::{
         SCRATCH_BYTES, charge_operation, checksum, load_publication, read_stored, validate_custody,
         with_protected_operation,
     },
-    confirmed_ingress_membership, delete_ingress, exactly_one, fields_digest, object_key,
+    confirmed_ingress_membership, delete_ingress, exactly_one, fields_digest, int, object_key,
     operation_key, read_ingress, read_operation, reclaim, require_object,
     require_registered_edges_with_budget, retention, sql, uint,
     workspace_integrity::require_registered_workspace_rows_v1,
-    write_operation,
+    workspace_key, write_operation,
 };
+
+struct ProtectedRouteSelection<'a> {
+    object: ObjectRef,
+    routes: &'a NativeProtectedSourceRoutesV1,
+    ingress: IngressRef,
+    previous: Option<(&'a NativeBootManifest, &'a NativeProtectedSourceRoutesV1)>,
+}
+
+const PROTECTED_SOURCE_VIEW_DOMAIN: &[u8] = b"qidx.native.protected-source-view.v1";
+pub(super) const PROTECTED_SOURCE_VIEW_OBJECTS: &[(&str, &str, &str)] = &[(
+    "table",
+    "native_protected_source_view_v1",
+    "native protected Source view",
+)];
+pub(super) const PROTECTED_SOURCE_VIEW_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS native_protected_source_view_v1 (
+    workspace BLOB NOT NULL,
+    epoch INTEGER NOT NULL CHECK(epoch >= 0),
+    sequence INTEGER NOT NULL CHECK(sequence >= 0),
+    repo TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    row_digest BLOB NOT NULL CHECK(typeof(row_digest)='blob' AND length(row_digest)=32),
+    PRIMARY KEY(workspace, epoch, sequence, repo, revision),
+    FOREIGN KEY(workspace, epoch, sequence)
+        REFERENCES native_view_v1(workspace, epoch, sequence) ON DELETE CASCADE
+) WITHOUT ROWID;
+";
+
+fn protected_source_view_binding(
+    connection: &Connection,
+    repo: &RepoId,
+    revision: &RevisionId,
+    view: ViewRef,
+    budget: &mut WorkBudget,
+) -> Result<bool, IndexError> {
+    let workspace = workspace_key(view.workspace)?;
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes: 32,
+        ..WorkUsage::default()
+    })?;
+    let checksum: Option<Option<Vec<u8>>> = connection
+        .query_row(
+            "SELECT CASE WHEN length(row_digest)=32 THEN row_digest END
+             FROM native_protected_source_view_v1
+             WHERE workspace=?1 AND epoch=?2 AND sequence=?3 AND repo=?4 AND revision=?5",
+            params![
+                workspace,
+                int(view.epoch)?,
+                int(view.sequence)?,
+                repo.as_str(),
+                revision.as_str()
+            ],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .optional()
+        .map_err(|error| sql(&error))?;
+    let Some(checksum) = checksum else {
+        return Ok(false);
+    };
+    match checksum {
+        Some(actual)
+            if actual == fields_digest(PROTECTED_SOURCE_VIEW_DOMAIN, &(repo, revision, view))? =>
+        {
+            Ok(true)
+        }
+        _ => Err(IndexError::DigestConflict),
+    }
+}
+
+fn verify_selected_source_routes(
+    connection: &Connection,
+    manifest: &NativeBootManifest,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    validate_custody(connection, manifest, budget)?;
+    let selected = manifest
+        .protected_source_routes
+        .ok_or(IndexError::SnapshotUnavailable)?;
+    if usize::try_from(selected.count).ok() != Some(routes.heads.len()) {
+        return Err(IndexError::DigestConflict);
+    }
+    let _binding = validate_protected_routes(
+        connection,
+        manifest.operation.key,
+        selected.object,
+        routes,
+        false,
+        None,
+        budget,
+    )?;
+    Ok(())
+}
+
+fn remember_protected_source_views(
+    connection: &Connection,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    for head in &routes.heads {
+        budget.checkpoint()?;
+        let view = head.publication.identity;
+        let repo = &head.repo_id;
+        let revision = &head.revision_id;
+        if protected_source_view_binding(connection, repo, revision, view, budget)? {
+            continue;
+        }
+        let workspace = workspace_key(view.workspace)?;
+        let epoch = int(view.epoch)?;
+        let sequence = int(view.sequence)?;
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        let existing: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM native_protected_source_view_v1
+                 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+                params![&workspace, epoch, sequence],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql(&error))?;
+        if usize::try_from(existing).map_err(|_| IndexError::DigestConflict)?
+            >= MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1
+        {
+            return Err(IndexError::ResourceLimited);
+        }
+        let bytes = u64::try_from(workspace.len() + repo.as_str().len() + revision.as_str().len())
+            .map_err(|_| IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            writes: 1,
+            bytes: bytes.checked_add(48).ok_or(IndexError::ResourceLimited)?,
+            mutations: 1,
+            ..WorkUsage::default()
+        })?;
+        exactly_one(
+            connection
+                .execute(
+                    "INSERT INTO native_protected_source_view_v1
+                     (workspace,epoch,sequence,repo,revision,row_digest)
+                     VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![
+                        &workspace,
+                        epoch,
+                        sequence,
+                        repo.as_str(),
+                        revision.as_str(),
+                        fields_digest(PROTECTED_SOURCE_VIEW_DOMAIN, &(repo, revision, view))?
+                    ],
+                )
+                .map_err(|error| sql(&error))?,
+            "remember protected Source view",
+        )?;
+    }
+    Ok(())
+}
 
 fn protect(
     connection: &Connection,
@@ -686,9 +844,7 @@ impl SqliteCatalog {
         policy: RetiredProjectionPolicyRefV1,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        policy
-            .validate_v1()
-            .map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
         self.select_native_boot_manifest_impl(key, budget, true, None, Some(policy), None)
     }
 
@@ -701,9 +857,7 @@ impl SqliteCatalog {
         policy: RetiredProjectionPolicyRefV1,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        policy
-            .validate_v1()
-            .map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        policy.validate_v1().map_err(|reason| IndexError::InvalidInput(reason.into()))?;
         self.select_native_boot_manifest_impl(key, budget, true, None, Some(policy), Some(ingress))
     }
 
@@ -719,13 +873,8 @@ impl SqliteCatalog {
         ingress: IngressRef,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        self.select_native_boot_manifest_impl(
-            key,
-            budget,
-            true,
-            Some((route_object, routes, ingress)),
-            None,
-            None,
+        self.select_native_boot_manifest_with_protected_source_history_v1(
+            key, route_object, routes, ingress, None, None, budget,
         )
     }
 
@@ -738,15 +887,44 @@ impl SqliteCatalog {
         policy: RetiredProjectionPolicyRefV1,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        policy
-            .validate_v1()
-            .map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        self.select_native_boot_manifest_with_protected_source_history_v1(
+            key, route_object, routes, ingress, Some(policy), None, budget,
+        )
+    }
+
+    /// Install the new protected set and remember the exact views it
+    /// authorized. A serving caller can supply the physically authenticated
+    /// predecessor to preserve cursors from before the history table existed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the authenticated predecessor and new selection have separate custody"
+    )]
+    pub fn select_native_boot_manifest_with_protected_source_history_v1(
+        &self,
+        key: OperationKey,
+        route_object: ObjectRef,
+        routes: &NativeProtectedSourceRoutesV1,
+        ingress: IngressRef,
+        retired_policy: Option<RetiredProjectionPolicyRefV1>,
+        previous_routes: Option<(&NativeBootManifest, &NativeProtectedSourceRoutesV1)>,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeBootManifest, IndexError> {
+        if let Some(policy) = retired_policy {
+            policy
+                .validate_v1()
+                .map_err(|reason| IndexError::InvalidInput(reason.into()))?;
+        }
         self.select_native_boot_manifest_impl(
             key,
             budget,
             true,
-            Some((route_object, routes, ingress)),
-            Some(policy),
+            Some(ProtectedRouteSelection {
+                object: route_object,
+                routes,
+                ingress,
+                previous: previous_routes,
+            }),
+            retired_policy,
             None,
         )
     }
@@ -756,7 +934,7 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
         require_current: bool,
-        protected_routes: Option<(ObjectRef, &NativeProtectedSourceRoutesV1, IngressRef)>,
+        protected_routes: Option<ProtectedRouteSelection<'_>>,
         retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
         retired_policy_ingress: Option<IngressRef>,
     ) -> Result<NativeBootManifest, IndexError> {
@@ -789,15 +967,17 @@ impl SqliteCatalog {
             (row.immutable, identity)
         };
         let protected = protected_routes
-            .map(|(object, routes, ingress)| {
+            .map(|ProtectedRouteSelection { object, routes, ingress, previous: prior }| {
+                if let Some((manifest, previous_routes)) = prior {
+                    if previous.as_ref() != Some(manifest) {
+                        return Err(IndexError::Conflict);
+                    }
+                    verify_selected_source_routes(&tx, manifest, previous_routes, budget)?;
+                    remember_protected_source_views(&tx, previous_routes, budget)?;
+                }
                 let markers = validate_route_ingress(
-                    &tx,
-                    key,
-                    ingress,
-                    object,
-                    routes,
-                    retired_projection_policy.map(|policy| policy.object),
-                    budget,
+                    &tx, key, ingress, object, routes,
+                    retired_projection_policy.map(|policy| policy.object), budget,
                 )?;
                 let mut route = validate_protected_routes(
                     &tx,
@@ -817,6 +997,7 @@ impl SqliteCatalog {
                         budget,
                     )?;
                 }
+                remember_protected_source_views(&tx, routes, budget)?;
                 Ok::<_, IndexError>((route, ingress, routes.native_origin.is_some(), markers))
             })
             .transpose()?;
@@ -831,13 +1012,10 @@ impl SqliteCatalog {
                 return Err(IndexError::Conflict);
             }
             require_open_protected_route_ingress(&tx, ingress, budget)?;
-            let count: i64 = tx
-                .query_row(
-                    "SELECT count(*) FROM native_ingress_object_v1 WHERE operation=?1",
-                    params![operation_key(ingress.operation)?],
-                    |row| row.get(0),
-                )
-                .map_err(|error| sql(&error))?;
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM native_ingress_object_v1 WHERE operation=?1",
+                params![operation_key(ingress.operation)?], |row| row.get(0),
+            ).map_err(|error| sql(&error))?;
             if count != 1 || !confirmed_ingress_membership(&tx, ingress.operation, policy.object)? {
                 return Err(IndexError::Conflict);
             }
@@ -961,28 +1139,66 @@ impl SqliteCatalog {
         if read_stored(&guard)?.as_ref() != Some(expected_manifest) {
             return Err(IndexError::DigestConflict);
         }
-        validate_custody(&guard, expected_manifest, budget)?;
-        let selected = expected_manifest
-            .protected_source_routes
-            .ok_or(IndexError::SnapshotUnavailable)?;
-        if usize::try_from(selected.count).ok() != Some(routes.heads.len()) {
-            return Err(IndexError::DigestConflict);
-        }
-        let _binding = validate_protected_routes(
-            &guard,
-            expected_manifest.operation.key,
-            selected.object,
-            routes,
-            false,
-            None,
-            budget,
-        )?;
+        verify_selected_source_routes(&guard, expected_manifest, routes, budget)?;
         let publication = routes
             .heads
             .iter()
             .find(|head| &head.repo_id == repo_id && &head.revision_id == revision_id)
             .map(|head| head.publication.clone())
             .ok_or(IndexError::SnapshotUnavailable)?;
+        budget.checkpoint()?;
+        Ok(publication)
+    }
+
+    /// Resume the exact protected Source view previously selected for a
+    /// repo/revision, while the same repo scope and exact admission remain valid.
+    pub fn resolve_selected_native_protected_source_view_v1(
+        &self,
+        expected_manifest: &NativeBootManifest,
+        routes: &NativeProtectedSourceRoutesV1,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        view: ViewRef,
+        budget: &mut WorkBudget,
+    ) -> Result<CatalogView, IndexError> {
+        let guard = self.lock_native_budget(budget)?;
+        if read_stored(&guard)?.as_ref() != Some(expected_manifest) {
+            return Err(IndexError::DigestConflict);
+        }
+        verify_selected_source_routes(&guard, expected_manifest, routes, budget)?;
+        let mut authorized_scope = false;
+        let mut selected_view = None;
+        for head in &routes.heads {
+            let current = head.publication.identity;
+            if &head.repo_id != repo_id
+                || (current.workspace, current.epoch) != (view.workspace, view.epoch)
+            {
+                continue;
+            }
+            authorized_scope = true;
+            if &head.revision_id == revision_id && current == view {
+                selected_view = Some(&head.publication);
+                break;
+            }
+        }
+        if !authorized_scope {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        if view.sequence < retention::exact_floor_for_epoch(&guard, view.workspace, view.epoch)? {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        if let Some(publication) = selected_view {
+            budget.checkpoint()?;
+            return Ok(publication.clone());
+        }
+        if !protected_source_view_binding(&guard, repo_id, revision_id, view, budget)? {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        let publication = retention::charged_exact_view(&guard, view, budget)?;
         budget.checkpoint()?;
         Ok(publication)
     }

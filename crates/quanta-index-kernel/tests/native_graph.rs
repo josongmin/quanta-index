@@ -60,8 +60,10 @@ fn run<F: Future>(future: F) -> F::Output {
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
     FileId, RepoMapEdgeKind, RepoMapNodeRef,
+    index::Refusal,
     native_protocol::{GraphEdge, GraphNode, GraphOwnerOutput, NativeGraphDirection},
 };
+use quanta_index_core::RequestBudgetV1;
 use quanta_index_core::index::{
     CollectionId, Digest, GroupActivation, IndexError, IndexInstanceId, IndexKind, IndexProfile,
     IngressRef, InputDomain, InstanceSpec, MapRoot, ObjectRef, OperationKey, OperationStatus,
@@ -88,6 +90,10 @@ const POLICY: Digest = Digest([45; 32]);
 const SOURCE_STREAM: StreamId = StreamId([47; 16]);
 
 fn budget() -> WorkBudget {
+    budget_with_request(RequestBudgetV1::for_duration(Duration::from_secs(30)))
+}
+
+fn budget_with_request(request: RequestBudgetV1) -> WorkBudget {
     WorkBudget::with_request(
         WorkLimits {
             reads: 1_000_000,
@@ -95,7 +101,7 @@ fn budget() -> WorkBudget {
             bytes: 128 * 1024 * 1024,
             mutations: 1_000_000,
         },
-        quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        request,
     )
 }
 
@@ -482,6 +488,7 @@ fn advance(
         operation_sequence,
         event_sequence,
         mutations,
+        None,
     )?)
 }
 
@@ -492,6 +499,7 @@ fn advance_outcome(
     operation_sequence: u64,
     event_sequence: u64,
     mutations: Vec<OwnerMutation>,
+    submit_budget: Option<&mut WorkBudget>,
 ) -> TestResult<SubmitOutcome> {
     let key = operation(operation_sequence);
     let ingress = fixture.kernel.begin_input(key)?;
@@ -544,13 +552,21 @@ fn advance_outcome(
         sequence: event_sequence,
         payload: transition.payload_digest()?,
     });
+    let mut default_budget;
+    let submit_budget = match submit_budget {
+        Some(budget) => budget,
+        None => {
+            default_budget = budget();
+            &mut default_budget
+        }
+    };
     Ok(run(fixture.kernel.submit(
         UpdateRequest {
             operation: key,
             expected_view: view,
             kind: UpdateKind::ProjectionAdvance(Box::new(transition)),
         },
-        &mut budget(),
+        submit_budget,
     ))?)
 }
 
@@ -927,6 +943,7 @@ fn corrupt_selected_supporter_refuses_query_and_delta_without_publication() -> T
             expected: Some(first),
             next: None,
         }],
+        None,
     )?;
     // CorruptObject is deliberately nonterminal: the original operation stays
     // pending for exact-key recovery after the physical object is repaired.
@@ -969,6 +986,8 @@ fn over_bound_affected_fanout_refuses_without_publishing_a_prefix() -> TestResul
         edges: vec![],
     };
     let replacement = contribution_with_output(&fixture.objects, 1, &large)?;
+    // Exercise the graph apply cap independently of the request deadline.
+    let mut submit_budget = budget_with_request(RequestBudgetV1::unbounded());
     let outcome = advance_outcome(
         &fixture,
         selected,
@@ -980,11 +999,15 @@ fn over_bound_affected_fanout_refuses_without_publishing_a_prefix() -> TestResul
             expected: Some(first),
             next: Some(replacement),
         }],
+        Some(&mut submit_budget),
     )?;
-    check!(matches!(
-        outcome,
-        SubmitOutcome::Terminal(OperationStatus::Refused(_))
-    ));
+    check_eq!(
+        (outcome, submit_budget.first_denial()),
+        (
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::ResourceLimited)),
+            None,
+        )
+    );
     check_eq!(current(&fixture)?.identity, selected);
     assert_support(&query(&fixture, selected)?, 1);
     Ok(())

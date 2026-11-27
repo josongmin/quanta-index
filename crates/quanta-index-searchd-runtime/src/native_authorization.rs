@@ -17,6 +17,7 @@ pub(crate) fn request_authorized(
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+        | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupSourceOwners { .. }
@@ -26,6 +27,7 @@ pub(crate) fn request_authorized(
         | NativeIndexRequest::SearchLiteral { .. }
         | NativeIndexRequest::QueryPaths { .. }
         | NativeIndexRequest::QueryRepositoryPaths { .. }
+        | NativeIndexRequest::TextMatches(_)
         | NativeIndexRequest::SearchText { .. }
         | NativeIndexRequest::SearchTextPreview { .. }
         | NativeIndexRequest::SearchSemantic { .. }

@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -322,7 +324,7 @@ def test_shared_source_snapshot_revalidates_suite_and_refuses_checkout_drift(tmp
 
 
 @pytest.mark.parametrize("suffix", ["ts", "tsx"])
-def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
+def test_official_typescript_census_refuses_patch_dependent_source_without_projection(suffix):
     from tools.benchmark.retrieval import gold_oracle, source_oracle
 
     raw = (
@@ -334,14 +336,12 @@ def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
         + (b"  return <div />;\n" if suffix == "tsx" else b"")
         + b"}\n"
     )
-    rows = source_oracle.declaration_census("typescript", "input." + suffix, raw)
-    assert [raw[start:end] for start, end, *_ in rows] == [b"Overloads", b"Locate"]
+    with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+        source_oracle.declaration_census("typescript", "input." + suffix, raw)
     spans, refusal = gold_oracle._definition_spans(
         raw, b"Locate", "typescript", path="input." + suffix
     )
-    assert refusal is None
-    assert len(spans) == 1
-    assert raw[spans[0][0] : spans[0][1]] == b"Locate"
+    assert spans == [] and refusal == "parser_error"
     with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
         source_oracle.declaration_census(
             "typescript", "broken." + suffix, raw + b"function Broken( {"
@@ -351,39 +351,105 @@ def test_typescript_oracles_use_the_producer_compatibility_grammar(suffix):
             source_oracle.declaration_census("typescript", "broken." + suffix, invalid)
 
 
-def test_go_126_expression_operands_preserve_declaration_spans_and_refuse_malformed_calls():
+def test_official_go_census_refuses_patch_dependent_calls_without_projection():
     from tools.benchmark.retrieval import gold_oracle, source_oracle
 
     raw = b"package p\nfunc Locate(i int) { _ = new(1); _ = new(i > 0); _ = new(int); _ = make([]int, 2) }\n"
-    rows = source_oracle.declaration_census("go", "input.go", raw)
-    assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
+    with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+        source_oracle.declaration_census("go", "input.go", raw)
     spans, refusal = gold_oracle._definition_spans(raw, b"Locate", "go", path="input.go")
-    assert refusal is None
-    assert len(spans) == 1
-    assert raw[spans[0][0] : spans[0][1]] == b"Locate"
-    # Go's parser accepts calls independently of built-in arity/type checking.
-    # These fixed declarations are also accepted by the independent go/ast
-    # checker; shadowed new/make and variadic new compile with Go 1.25.
-    for name, body in [
-        (b"new", b"func new(a, b int) int { return a+b }\nfunc Locate() { _ = new(1, 2) }\n"),
-        (b"make", b"func make(a, b int) int { return a+b }\nfunc Locate() { _ = make(1, 2) }\n"),
-        (
-            b"new",
-            b"func new(a ...int) int { return len(a) }\nfunc Locate() { values:=[]int{1,2}; _=new(values...) }\n",
-        ),
-    ]:
-        shadowed = b"package p\n" + body
-        declarations = source_oracle.declaration_census("go", "shadowed.go", shadowed)
-        assert [shadowed[start:end] for start, end, *_ in declarations] == [name, b"Locate"]
-    syntax_only = b"package p\nfunc Locate() { _ = new(1, 2) }\n"
-    assert [
-        syntax_only[start:end]
-        for start, end, *_ in source_oracle.declaration_census("go", "arity.go", syntax_only)
-    ] == [b"Locate"]
+    assert spans == [] and refusal == "parser_error"
     for call in [b"new(, 2)", b"new(i +)", b"make(, 2)"]:
         invalid = b"package p\nfunc Broken() { _ = " + call + b" }"
         with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
             source_oracle.declaration_census("go", "broken.go", invalid)
+
+
+def test_pinned_projection_session_censuses_original_go_js_ts_spans(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import declaration_census_audit, source_oracle
+    from tools.benchmark.retrieval.ts_projection import SOURCE
+
+    if shutil.which("go") is None or shutil.which("node") is None or shutil.which("npm") is None:
+        pytest.skip("pinned Go and Node projection toolchains unavailable")
+    if "go1.25.4" not in subprocess.check_output(["go", "version"], text=True):
+        pytest.skip("pinned Go toolchain unavailable")
+    helper = tmp_path / "go-projector"
+    subprocess.run(
+        [
+            "go",
+            "build",
+            "-trimpath",
+            "-buildvcs=false",
+            "-o",
+            str(helper),
+            "tools/benchmark/retrieval/go_projection/main.go",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+        env={**os.environ, "GOTOOLCHAIN": "local", "GOPROXY": "off"},
+    )
+    node = Path(shutil.which("node")).resolve()
+    library = (
+        declaration_census_audit._build("typescript") / "node_modules/typescript/lib/typescript.js"
+    )
+    manifest = {
+        "go_helper": {
+            "path": str(helper),
+            "sha256": hashlib.sha256(helper.read_bytes()).hexdigest(),
+        },
+        "go_version": "go1.25.4",
+        "node": {"path": str(node), "sha256": hashlib.sha256(node.read_bytes()).hexdigest()},
+        "typescript_js": {
+            "path": str(library),
+            "sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
+        },
+        "script_sha256": hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
+        "node_version": subprocess.check_output([str(node), "--version"], text=True).strip(),
+        "typescript_version": "5.9.3",
+        "node_libraries": [
+            {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in sorted((node.parent.parent / "lib").glob("libnode*.dylib"))
+        ],
+    }
+    monkeypatch.setattr(source_oracle, "validate_candidate_manifest", lambda *_args: manifest)
+    pin = "a" * 64
+    candidate = tmp_path / "candidate.json"
+    files = {
+        "a.go": b"package p\nfunc Locate() { _ = new(1) }\n",
+        "b.js": b"function Locate() {} export { Locate as const };\n",
+        "c.ts": b"export type * from './b';\nfunction Locate() {}\n",
+        "d.tsx": b"export type * from './b';\nfunction Locate() { return <div/> }\n",
+    }
+    with source_oracle.declaration_census_session(
+        "go", candidate_manifest_path=candidate, candidate_manifest_sha256=pin
+    ) as census:
+        rows = census("a.go", files["a.go"])
+    assert [files["a.go"][start:end] for start, end, *_ in rows] == [b"Locate"]
+    with source_oracle.declaration_census_session(
+        "typescript", candidate_manifest_path=candidate, candidate_manifest_sha256=pin
+    ) as census:
+        for path in ("c.ts", "d.tsx"):
+            rows = census(path, files[path])
+            assert [files[path][start:end] for start, end, *_ in rows] == [b"Locate"]
+    oracle = source_oracle.SourceOracleIndex(
+        {path: (raw, hashlib.sha256(raw).hexdigest()) for path, raw in files.items()},
+        {"Locate"},
+        candidate_manifest_path=candidate,
+        candidate_manifest_sha256=pin,
+    )
+    assert len(oracle.expected_rows("declaration_name_exact", "Locate", "distinct_file")) == 4
+
+
+def test_candidate_manifest_pin_requires_both_fields_and_exact_digest(tmp_path):
+    from tools.benchmark.retrieval import source_oracle
+
+    path = tmp_path / "candidate.json"
+    path.write_text("{}")
+    with pytest.raises(source_oracle.SourceOracleError, match="digest differs"):
+        source_oracle.validate_candidate_manifest(path, "0" * 64)
+    with pytest.raises(source_oracle.SourceOracleError, match="requires path and digest"):
+        source_oracle.SourceOracleIndex({}, {"Locate"}, candidate_manifest_path=path)
 
 
 @pytest.mark.parametrize(
@@ -415,16 +481,22 @@ def test_producer_grammar_raw_references_and_template_strings_have_exact_spans(
 ):
     from tools.benchmark.retrieval import gold_oracle, source_oracle
 
-    rows = source_oracle.declaration_census(grammar, path, raw)
-    assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
     spans, refusal = gold_oracle._definition_spans(raw, b"Locate", grammar, path=path)
-    assert refusal is None
+    if grammar == "javascript":
+        with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
+            source_oracle.declaration_census(grammar, path, raw)
+        assert spans == [] and refusal == "parser_error"
+    else:
+        rows = source_oracle.declaration_census(grammar, path, raw)
+        assert [raw[start:end] for start, end, *_ in rows] == [b"Locate"]
+        assert refusal is None
     kind = {
         "rust": "function_item",
         "python": "function_definition",
         "javascript": "function_declaration",
     }[grammar]
-    assert spans == [(raw.index(b"Locate"), raw.index(b"Locate") + len(b"Locate"), kind)]
+    if grammar != "javascript":
+        assert spans == [(raw.index(b"Locate"), raw.index(b"Locate") + len(b"Locate"), kind)]
     with pytest.raises(source_oracle.SourceOracleError, match="parse error"):
         source_oracle.declaration_census(grammar, path, invalid)
 
@@ -450,27 +522,17 @@ def test_independent_rust_census_keeps_attributed_bodyless_function_signatures(t
     assert audit["agreeing_declarations"] == 0
 
 
-def test_vendored_parser_cache_refuses_identity_and_binary_tampering(tmp_path):
-    from hashlib import sha256
-
+def test_official_parser_sources_bind_all_five_wheels():
     from tools.benchmark.retrieval import declaration_parsers
 
-    binary = tmp_path / "parser.so"
-    binary.write_bytes(b"fixed parser bytes")
-    marker = tmp_path / "ready.json"
-    identity = {"grammar": "typescript"}
-    marker.write_text(
-        json.dumps({"identity": identity, "binary_sha256": sha256(binary.read_bytes()).hexdigest()})
-    )
-    assert declaration_parsers._checked_library(tmp_path, identity) == binary
-    with pytest.raises(ValueError, match="identity differs"):
-        declaration_parsers._checked_library(tmp_path, {"grammar": "tsx"})
-    binary.write_bytes(b"changed parser bytes")
-    with pytest.raises(ValueError, match="binary differs"):
-        declaration_parsers._checked_library(tmp_path, identity)
-    marker.write_text("null")
-    with pytest.raises(ValueError, match="identity differs"):
-        declaration_parsers._checked_library(tmp_path, identity)
+    digests = declaration_parsers.component_source_digests()
+    assert len(digests) == 5
+    for grammar in declaration_parsers.RELEASED_VERSIONS:
+        extension = declaration_parsers._released_extension(grammar)
+        assert (
+            digests[f"tree-sitter-{grammar}/{extension.name}"]
+            == hashlib.sha256(extension.read_bytes()).hexdigest()
+        )
 
 
 def test_loaded_released_parser_refuses_changed_extension_identity(monkeypatch):
@@ -496,28 +558,26 @@ def test_loaded_released_parser_refuses_changed_extension_identity(monkeypatch):
     assert so.census_parser_identity() == identity
 
 
-def test_vendored_parser_has_no_unpatched_fallback_when_compiler_is_missing(tmp_path, monkeypatch):
+def test_official_parser_does_not_fallback_when_wheel_is_missing(monkeypatch):
     from tools.benchmark.retrieval import declaration_parsers
 
-    monkeypatch.setenv("QUANTA_CENSUS_PARSER_CACHE", str(tmp_path / "empty-parser-cache"))
-    monkeypatch.setattr(declaration_parsers.shutil, "which", lambda _name: None)
-    with pytest.raises(ValueError, match="C compiler unavailable"):
-        declaration_parsers._library("typescript")
+    def unavailable(_grammar):
+        raise ValueError("released grammar extension missing")
+
+    monkeypatch.setattr(declaration_parsers, "_released_extension", unavailable)
+    with pytest.raises(ValueError, match="released grammar extension missing"):
+        declaration_parsers.get_parser("typescript")
 
 
-def test_vendored_parser_source_binding_rejects_linked_directories(tmp_path, monkeypatch):
+def test_official_parser_source_binding_rejects_unavailable_extension(monkeypatch):
     from tools.benchmark.retrieval import declaration_parsers
 
-    vendor = tmp_path / "vendor"
-    vendor.mkdir()
-    (vendor / "bound.c").write_bytes(b"fixed compiled source")
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "parser.c").write_bytes(b"unbound compiled source")
-    (vendor / "linked-src").symlink_to(outside, target_is_directory=True)
-    monkeypatch.setattr(declaration_parsers, "VENDOR", vendor)
-    monkeypatch.setattr(declaration_parsers, "ROOT", tmp_path)
-    with pytest.raises(ValueError, match="regular or directories"):
+    monkeypatch.setattr(
+        declaration_parsers,
+        "_released_extension",
+        lambda _grammar: (_ for _ in ()).throw(ValueError("wheel extension unavailable")),
+    )
+    with pytest.raises(ValueError, match="wheel extension unavailable"):
         declaration_parsers.component_source_digests()
 
 

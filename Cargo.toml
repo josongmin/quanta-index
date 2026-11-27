@@ -30,11 +30,11 @@ members = [
     "crates/quanta-index-corpus-smoke",
     "crates/quanta-index-catalog",
     "shared/quanta-installed-artifact-trust",
+    "shared/quanta-sqlite-retained-grant",
     "benchmarks/retrieval",
     "benchmarks/bench-protocol",
-    "vendor/ciborium-0.2.2",
 ]
-exclude = ["shared/quanta-explicit-fd-process", "vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/libsqlite3-sys-0.38.2", "vendor/rusqlite-0.40.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
+exclude = ["crates/quanta-index-sqlite-fd-ledger", "crates/quanta-index-sqlite-unix-syscall", "shared/quanta-explicit-fd-process", "shared/quanta-state-root-quota"]
 resolver = "2"
 
 [workspace.package]
@@ -85,13 +85,8 @@ let_underscore_untyped = "deny"
 lossy_float_literal = "deny"
 map_err_ignore = "deny"
 match_wild_err_arm = "deny"
-# lancedb's transitive subtree carries multiple versions of bitflags / hashbrown /
-# syn / thiserror etc.; supply-chain policy is enforced in deny.toml via the
-# `lancedb@0.30` skip-tree (LDB-00 §3.2). `clippy::multiple_crate_versions` reads
-# Cargo.lock directly and would otherwise re-flag the same allowlisted state.
-# Do not add a crate-local `expect` for this lint: it overrides this allowance
-# and triggers repeated full dependency-graph traversals even when the
-# duplicates are permitted. `cargo-deny` remains the dependency-policy gate.
+# Cargo-deny enforces the workspace dependency policy in deny.toml.
+# Clippy reads Cargo.lock and would repeat the same graph analysis per crate.
 multiple_crate_versions = "allow"
 missing_const_for_fn = "allow"
 missing_errors_doc = "allow"
@@ -122,18 +117,20 @@ wildcard_enum_match_arm = "deny"
 [workspace.dependencies]
 quanta-explicit-fd-process = { version = "0.1.0", path = "shared/quanta-explicit-fd-process" }
 quanta-installed-artifact-trust = { version = "0.1.0", path = "shared/quanta-installed-artifact-trust" }
+quanta-sqlite-retained-grant = { version = "0.1.0", path = "shared/quanta-sqlite-retained-grant" }
+quanta-state-root-quota = { version = "0.1.0", path = "shared/quanta-state-root-quota" }
 anyhow = "1.0.100"
 async-trait = "0.1.89"
-# arrow-array / arrow-schema pinned to the major version lancedb 0.30 uses
+# arrow-array / arrow-schema pinned to the major version Lance 7 uses
 # internally; mismatched majors silently fail downcast_ref::<StringArray>() etc.
-# at runtime. Bump in lockstep with lancedb on upgrade.
+# at runtime. Bump in lockstep with Lance on upgrade.
 arrow-array = "58"
 arrow-buffer = "58"
 arrow-data = "58"
 arrow-schema = "58"
 blake3 = { version = "1.5", default-features = false, features = ["pure"] }
 bytes = "1.12.0"
-ciborium = { version = "=0.2.2", path = "vendor/ciborium-0.2.2" }
+ciborium = "=0.2.2"
 ciborium-io = { version = "=0.2.2", features = ["std"] }
 ciborium-ll = "0.2.2"
 crc32fast = "1.4.2"
@@ -141,7 +138,6 @@ criterion = { version = "0.5.1", default-features = false, features = ["cargo_be
 fs2 = "0.4.3"
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
 libc = "0.2.186"
-libsqlite3-sys = "=0.38.2"
 libproc = "=0.14.11"
 # Persistent (structurally shared) ordered maps for the auxiliary authority
 # snapshots: a retained epoch shares every unchanged node with the current
@@ -150,13 +146,9 @@ libproc = "=0.14.11"
 imbl = { version = "7.0.2", default-features = false, features = ["serde"] }
 rustix = { version = "1.1.4", features = ["fs"] }
 futures = "0.3"
-# lancedb is the semantic-adapter backend (LDB-00 §3.2). Inline pin lives here,
-# in lockstep with deny.toml's `lancedb@0.30` skip-tree entry.
-lancedb = { version = "0.30", default-features = false }
-# lance is the dataset engine under lancedb 0.30 (same locked crate, no new
-# code): the semantic adapter reads per-segment index build parameters from
-# its statistics, which lancedb does not surface (QI-BB-027).
+# Native ANN and persisted Semantic use the same Lance Dataset and index metadata APIs.
 lance = { version = "=7.0.0", default-features = false }
+lance-index = { version = "=7.0.0", default-features = false }
 lance-io = { version = "=7.0.0", default-features = false }
 lance-linalg = "=7.0.0"
 memchr = "2.8"
@@ -175,9 +167,7 @@ proptest = "1.6.0"
 regex = "1"
 regex-syntax = "0.8"
 regex-automata = "=0.4.14"
-# Blocking HTTP for the OpenAI embedding provider. rustls (no openssl, per
-# deny.toml bans) + webpki roots; reuses the reqwest 0.12 / rustls 0.23 already
-# in-tree via lancedb, so no new TLS stack or duplicate version is introduced.
+# Blocking HTTP for the OpenAI embedding provider uses rustls and webpki roots.
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Compressed doc-id bitmaps for the lexical adapter's derived restriction
 # sets (QI-BB-024); the same locked crate the lance dataset engine already
@@ -185,10 +175,10 @@ reqwest = { version = "0.12.28", default-features = false, features = ["blocking
 roaring = "0.11.4"
 serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = "1.0"
-rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup"] }
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled", "backup"] }
 sha2 = "0.10"
 tempfile = "3.16.0"
-thiserror = "1.0.69"
+thiserror = "=2.0.18"
 tinyvec = "=1.11.0"
 toml = "0.8"
 tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "rt-multi-thread", "net", "io-util", "macros", "signal", "sync", "time"] }
@@ -199,14 +189,11 @@ zstd = { version = "0.13.3", default-features = false }
 # and the RBR-04 source-bound symbol producer: tree-sitter boundaries
 # replace the retired hand lexer. No product crate may depend on these.
 tree-sitter = "0.25"
-tree-sitter-go = { version = "=0.25.0", path = "vendor/tree-sitter-go" }
-tree-sitter-go-official = { package = "tree-sitter-go", version = "=0.25.0" }
-tree-sitter-javascript = { version = "=0.25.0", path = "vendor/tree-sitter-javascript" }
-tree-sitter-javascript-official = { package = "tree-sitter-javascript", version = "=0.25.0" }
+tree-sitter-go = "=0.25.0"
+tree-sitter-javascript = "=0.25.0"
 tree-sitter-python = "=0.25.0"
 tree-sitter-rust = "=0.24.2"
-tree-sitter-typescript = { version = "=0.23.2", path = "vendor/tree-sitter-typescript" }
-tree-sitter-typescript-official = { package = "tree-sitter-typescript", version = "=0.23.2" }
+tree-sitter-typescript = "=0.23.2"
 unicode-normalization = "=0.1.25"
 url = "2.5.8"
 
@@ -247,18 +234,3 @@ inherits = "release"
 # the command surface.
 lto = false
 codegen-units = 16
-
-[patch.crates-io]
-# One controlled CBOR parser for standalone Quanta and sibling consumers.
-ciborium = { path = "vendor/ciborium-0.2.2" }
-
-# One bundled SQLite instance; the pinned fork adds the admitted Unix VFS.
-libsqlite3-sys = { path = "vendor/libsqlite3-sys-0.38.2" }
-
-# IVF metadata caches must not retain self-referential open reader leases.
-lance = { path = "vendor/lance-7.0.0" }
-# Admitted local writers and readers keep the existing file URI.
-lance-io = { path = "vendor/lance-io-7.0.0" }
-object_store = { path = "vendor/object_store-0.13.2" }
-# The Native lexical engine owns text search. Skip LanceDB's unused Lindera tokenizer.
-lancedb = { path = "vendor/lancedb-0.30.0" }

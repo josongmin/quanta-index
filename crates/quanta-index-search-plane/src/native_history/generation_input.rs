@@ -5,7 +5,7 @@
 use super::{SourceInputData, build::source_input, history_work_error, invalid};
 use quanta_index_contract::{
     FileContributorIngestBatch, HistoryIngestBatch, RepoCommitRecencyIngestBatch,
-    index::HistoryGenerationInputV1,
+    index::{HistoryGenerationInputV1, NativeHistoryInitialInputV1},
 };
 use quanta_index_core::{
     CoreError, IngestBatchBodyV1,
@@ -51,12 +51,46 @@ pub(super) fn load_verified(
         .map_err(|error| history_work_error(context.budget, error))?;
     let closure = decode_closure(reference, &stored, context.budget)?;
     drop(stored);
+    load_children_verified(closure, context)
+}
+
+pub(super) fn verify_initial_with_get(
+    input: NativeHistoryInitialInputV1,
+    mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<SourceInputData<HistoryIngestBatch>, CoreError> {
+    if input.wire_version != NativeHistoryInitialInputV1::WIRE_VERSION {
+        return Err(invalid("Native History initial input version is invalid"));
+    }
+    let original = get(input.original, budget).map_err(|error| history_work_error(budget, error))?;
+    let original = source_input::decode_history_batch_object(input.original, &original, budget)?;
+    let recency = input.repo_commit_recency.map(|reference| {
+        let stored = get(reference, budget).map_err(|error| history_work_error(budget, error))?;
+        if !stored.registration.children.is_empty() {
+            return Err(invalid("History derived output has unexpected children"));
+        }
+        source_input::decode_history_object_allow_children::<RepoCommitRecencyIngestBatch>(
+            reference, &stored, budget,
+        )
+    }).transpose()?;
+    verify_recency(&original.value, recency.as_ref().map(|data| &data.value), budget)?;
+    drop(recency);
+    let contributor = input.file_contributor.map(|reference| {
+        let stored = get(reference, budget).map_err(|error| history_work_error(budget, error))?;
+        source_input::decode_history_contributor_object(reference, &stored, budget)
+    }).transpose()?;
+    verify_contributors(&original.value, contributor.as_ref().map(|data| &data.value), budget)?;
+    Ok(original)
+}
+
+fn load_children_verified(
+    closure: HistoryGenerationInputV1,
+    context: &mut AttemptContext<'_>,
+) -> Result<SourceInputData<HistoryIngestBatch>, CoreError> {
     let input = source_input::load_history_batch_object(closure.original, context)?;
     let recency = closure
         .repo_commit_recency
-        .map(|child| {
-            source_input::load_history_object::<RepoCommitRecencyIngestBatch>(child, context)
-        })
+        .map(|child| source_input::load_history_object::<RepoCommitRecencyIngestBatch>(child, context))
         .transpose()?;
     verify_recency(
         &input.value,

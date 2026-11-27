@@ -1,0 +1,17 @@
+[package]
+name = "quanta-index-sqlite-unix-syscall"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Keep the independent SQLite FD and syscall tests on the product's SQLite.
+[workspace]
+
+[dependencies]
+libc = "0.2"
+libsqlite3-sys = { version = "=0.39.1", features = ["bundled"] }
+quanta-index-sqlite-fd-ledger = { version = "0.1.0", path = "../quanta-index-sqlite-fd-ledger" }
+quanta-sqlite-retained-grant = { version = "0.1.0", path = "../../shared/quanta-sqlite-retained-grant" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rusqlite = "=0.41.0"

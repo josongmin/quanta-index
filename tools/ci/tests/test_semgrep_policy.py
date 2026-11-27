@@ -1,4 +1,4 @@
-"""Exercise all Semgrep rules against one shared counterexample repository."""
+"""Exercise the Semgrep workflow rules against one counterexample repository."""
 
 from __future__ import annotations
 
@@ -54,21 +54,27 @@ class SemgrepPolicyTest(unittest.TestCase):
           cargo \\
             test --workspace
       - run: 'echo name: && cargo test'
-""",
-            "crates/quanta-index-searchd/src/lib.rs": """fn bad() -> StructuralReadiness {
-    let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
-    let _ = value;
-    StructuralReadiness::Ready
-}
-""",
-            "crates/quanta-index-searchd/src/benign.rs": """const DOC: &str = r#"
-let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
-"#;
-""",
-            "crates/quanta-index-searchd/src/readiness/tests/bad.rs": """fn test_only() -> StructuralReadiness {
-    let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
-    StructuralReadiness::Ready
-}
+      - run: cargo +nightly test --workspace
+      - run: |
+          cargo \\
+            +1.92.0 \\
+            check --workspace
+      - run: ./scripts/cargow +nightly test --workspace
+      - run: cargo --locked test --workspace
+      - run: cargo --offline check --workspace
+      - run: cargo --config net.offline=true test --workspace
+      - run: cargo +nightly -Z unstable-options check --workspace
+      - run: cargo -vv --color always --frozen nextest run
+      - run: |
+          cargo \\
+            --locked \\
+            test --workspace
+      - run: ./scripts/cargow --locked test --workspace
+      - name: cargo --locked test example
+        run: echo safe
+      - run: cargo --config 'net.offline = true' test --workspace
+      - run: cargo --config="net.offline = true" check --workspace
+      - run: ./scripts/cargow --config 'net.offline = true' test --workspace
 """,
         }
         files[".github/workflows/ci.yaml"] = files[".github/workflows/ci.yml"]
@@ -107,12 +113,6 @@ let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
         self.assertEqual(len(configured), len(set(configured)))
         self.assertEqual({self.rule(item) for item in self.findings}, set(configured))
 
-    def test_raw_string_example_is_not_a_finding(self) -> None:
-        self.assertFalse([item for item in self.findings if Path(item["path"]).name == "benign.rs"])
-
-    def test_test_only_source_is_excluded(self) -> None:
-        self.assertFalse([item for item in self.findings if "/tests/" in item["path"]])
-
     def test_workflow_guards(self) -> None:
         self.assertIs(YAML(typ="safe").load("continue-on-error: True")["continue-on-error"], True)
         findings = {
@@ -130,32 +130,21 @@ let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
                     ("workflow-use-cargow", 10),
                     ("workflow-use-cargow", 24),
                     ("workflow-use-cargow", 26),
+                    ("workflow-use-cargow", 27),
+                    ("workflow-use-cargow", 29),
+                    ("workflow-use-cargow", 33),
+                    ("workflow-use-cargow", 34),
+                    ("workflow-use-cargow", 35),
+                    ("workflow-use-cargow", 36),
+                    ("workflow-use-cargow", 37),
+                    ("workflow-use-cargow", 39),
+                    ("workflow-use-cargow", 45),
+                    ("workflow-use-cargow", 46),
                     ("workflow-no-continue-on-error", 11),
                     ("workflow-no-continue-on-error", 13),
                     ("workflow-no-continue-on-error", 15),
                     ("workflow-no-continue-on-error", 17),
                 )
-            },
-        )
-
-    def test_other_rust_rules_and_test_exclusions(self) -> None:
-        expected_rules = {"rust-no-ready-on-failed-structural-precondition"}
-        self.assertEqual(
-            {self.rule(item) for item in self.findings if self.rule(item) in expected_rules},
-            expected_rules,
-        )
-        self.assertEqual(
-            {
-                (self.rule(item), item["path"], item["start"]["line"])
-                for item in self.findings
-                if self.rule(item) in expected_rules
-            },
-            {
-                (
-                    "rust-no-ready-on-failed-structural-precondition",
-                    "crates/quanta-index-searchd/src/lib.rs",
-                    2,
-                ),
             },
         )
 

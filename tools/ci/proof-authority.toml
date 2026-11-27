@@ -112,13 +112,22 @@ profile = "test-p02b-operation-journal"
 target = "operation-journal-owner"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
-test_authority_scopes = ["p02b-operation-journal"]
-test_authority_targets = ["operation-journal-owner-v1", "catalog-idempotency"]
+test_authority_scopes = ["p02b-operation-journal", "p02b-native-journal-lib"]
+test_authority_targets = ["operation-journal-owner-v1"]
 dependencies = ["p01-canonical-identity"]
 artifact = "artifacts/proof-authority/p02b-operation-journal.json"
 required_host = "any"
+
+[proofs.required_nextest_lib_cases]
+quanta-index-catalog = [
+  "native::authority::tests::missing_root_conflict_and_stale_fence_leave_pending_unpublished",
+  "native::authority::tests::restart_replays_original_receipt_and_preserves_exact_old_view",
+  "native::authority::tests::terminal_custody_budget_failure_rolls_back_and_refusal_replays",
+  "native::authority::tests::terminal_operation_replays_digest_and_receipt_without_request_object",
+]
 
 [[proofs]]
 id = "p03-candidate-activation-owner"
@@ -127,24 +136,30 @@ execution_mode = "test-authority"
 ticket = "S21-02"
 family = "A"
 checkpoint = "M1"
-owner = "crates/quanta-index-kernel/src/update.rs"
+owner = "crates/quanta-index-catalog/src/native/authority.rs"
 command = "just proof-p03-candidate-activation-owner"
 gate = "correctness"
 profile = "test-candidate-activation-owner"
 target = "candidate-activation-owner"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_scopes = ["candidate-activation-owner"]
-test_authority_targets = ["kernel-native-bootstrap"]
+test_authority_targets = []
 dependencies = ["p02b-operation-journal"]
 artifact = "artifacts/proof-authority/p03-candidate-activation-owner.json"
 required_host = "any"
 
-[proofs.required_nextest_cases]
-kernel-native-bootstrap = [
-  "existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens",
+[proofs.required_nextest_lib_cases]
+quanta-index-catalog = [
+  "native::authority::tests::bootstrap_confirmation_and_genesis_publication_transfer_root_custody_atomically",
+  "native::authority::tests::forged_bootstrap_reference_and_wrong_root_cannot_publish",
+  "native::authority::tests::missing_root_conflict_and_stale_fence_leave_pending_unpublished",
+  "native::authority::tests::recovery_claim_honors_deadline_and_preserves_commit_boundary",
+  "native::authority::tests::restart_replays_original_receipt_and_preserves_exact_old_view",
+  "native::authority::tests::shared_object_in_two_view_slots_keeps_distinct_logical_identity_and_old_pin",
 ]
 
 [[proofs]]
@@ -155,7 +170,7 @@ staged_reason = "The Native activation and restart case is registered; fresh Lin
 ticket = "S21-02"
 family = "F"
 checkpoint = "M1"
-owner = "crates/quanta-index-kernel/src/update.rs"
+owner = "crates/quanta-index-searchd-runtime/tests/native_product_process/native_release.rs"
 command = "just proof-p03-candidate-activation"
 gate = "release"
 profile = "candidate-activation-release"
@@ -181,25 +196,30 @@ execution_mode = "test-authority"
 ticket = "S21-05"
 family = "U"
 checkpoint = "M2"
-owner = "crates/quanta-index-kernel/src/update.rs"
+owner = "crates/quanta-index-catalog/src/native/authority.rs"
 command = "just proof-p04-read-view-lifetime-owner"
 gate = "correctness"
 profile = "read-view-lifetime-owner"
 target = "read-view-lifetime-owner"
 filter = "none"
 source_binding = "exact"
+execution_source_binding = true
 binary_binding = "none"
 artifact_schema = "tools/ci/proof-manifest.schema.json"
 test_authority_scopes = ["read-view-lifetime-owner"]
-test_authority_targets = ["kernel-native-query-session-real"]
+test_authority_targets = []
 dependencies = ["p03-candidate-activation-owner"]
 artifact = "artifacts/proof-authority/p04-read-view-lifetime-owner.json"
 required_host = "any"
 
-[proofs.required_nextest_cases]
-kernel-native-query-session-real = [
-  "real_text_then_semantic_and_text_keep_view_a_after_body_b_publishes",
-  "cancellation_of_original_request_after_fast_prevents_semantic_provider",
+[proofs.required_nextest_lib_cases]
+quanta-index-catalog = [
+  "native::authority::tests::exact_tail_policy_is_atomic_monotone_and_preserves_existing_pin",
+  "native::authority::tests::read_pin_digest_binds_exact_view_sequence",
+  "native::authority::tests::read_ticket_acquire_cancel_before_commit_rolls_back_pin",
+  "native::authority::tests::read_ticket_acquire_returns_committed_pin_after_commit_hook_cancels",
+  "native::authority::tests::shared_object_in_two_view_slots_keeps_distinct_logical_identity_and_old_pin",
+  "native::authority::tests::view_retirement_pages_skip_live_pin_and_pending_work_then_retry_after_restart",
 ]
 
 [[proofs]]
@@ -616,7 +636,7 @@ required_host = "linux-production-like"
 id = "p11-cross-repo-cutover"
 authority_state = "staged"
 execution_mode = "test-authority"
-staged_reason = "The Native Source-only restart and terminal-binding witnesses are registered. Fresh exact-pair Linux execution with the verified P10 daemon and attested proof inventory are pending."
+staged_reason = "The Source-only SDK caller, Source/History kernel cases, restart and terminal-binding witnesses are registered. Fresh exact-pair Linux execution bound to the verified P10 release daemon and attested proof inventory is pending."
 ticket = "S21-12"
 family = "X"
 checkpoint = "M4"

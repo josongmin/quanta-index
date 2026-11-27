@@ -305,8 +305,8 @@ pub(crate) fn verify_active_source_head_files_v1(
     Ok(())
 }
 
-// The physical activation census uses Common's Linux-only directory reader;
-// other platforms deliberately refuse that port with RebuildRequired.
+// The physical activation census uses Common's admitted directory reader.
+// The current behavioral fixture remains scoped to Linux publication data.
 #[cfg(all(test, target_os = "linux"))]
 #[path = "legacy_source_census_v1/tests.rs"]
 mod tests;

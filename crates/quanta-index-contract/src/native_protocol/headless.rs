@@ -56,6 +56,15 @@ impl NativeOverlaySaveIntent {
     }
 }
 
+/// Overlay file identity is `(repository, path)` within the selected view.
+///
+/// `Update.repository_witness` never names a repository directly. An owner
+/// that has a durable record in the selected view keeps that record's
+/// repository and must leave it `None`. An unsaved new owner sets `path` and
+/// names another owner with a durable record in the same selected view; that
+/// witness record's authenticated repository becomes the new file's
+/// repository. Each overlay query checks the witness against its selected view
+/// and refuses a witness outside it. Deletions (`text=None`) carry neither.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeOverlayRequest {
     Begin {
@@ -67,6 +76,7 @@ pub enum NativeOverlayRequest {
         revision: u64,
         text: Option<String>,
         path: Option<String>,
+        repository_witness: Option<OwnerKey>,
     },
     Snapshot {
         document: NativeOverlayDocument,
@@ -86,6 +96,8 @@ pub struct NativeOverlaySnapshot {
     pub revision: u64,
     pub text: Option<String>,
     pub path: Option<String>,
+    /// The durable owner whose repository this unsaved new file joins.
+    pub repository_witness: Option<OwnerKey>,
 }
 
 /// One unsaved owner mask. `deleted` masks the selected durable owner without
@@ -152,7 +164,7 @@ quanta_index_contract_base::native_serde_enum!(NativeOverlayRequest {
     newtypes {}
     records {
         Begin = 0 { session: NativeOverlaySession },
-        Update = 1 { document: NativeOverlayDocument, expected_revision: Option<u64>, revision: u64, text: Option<String>, path: Option<String> },
+        Update = 1 { document: NativeOverlayDocument, expected_revision: Option<u64>, revision: u64, text: Option<String>, path: Option<String>, repository_witness: Option<OwnerKey> },
         Snapshot = 2 { document: NativeOverlayDocument },
         Close = 4 { session: NativeOverlaySession },
         Masks = 6 { session: NativeOverlaySession }
@@ -161,7 +173,8 @@ quanta_index_contract_base::native_serde_enum!(NativeOverlayRequest {
 quanta_index_contract_base::native_serde_struct!(NativeOverlaySnapshot {
     revision: u64,
     text: Option<String>,
-    path: Option<String>
+    path: Option<String>,
+    repository_witness: Option<OwnerKey>
 });
 quanta_index_contract_base::native_serde_struct!(NativeOverlayMask {
     owner: OwnerKey,
@@ -211,10 +224,16 @@ pub struct NativeOverlayCorpusStamp {
     pub identity: Digest,
     pub revisions: Vec<NativeOverlayRevision>,
 }
+/// One overlay-read file hit, identified by `(repository, path)`.
+///
+/// `repository` is authenticated from the selected view (the durable record,
+/// or an unsaved file's repository witness); `None` is the unscoped
+/// repository slot. Path grouping is not offered for overlay reads.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeOverlayTextHit {
     pub owner: OwnerKey,
     pub source: NativeOverlayTextSource,
+    pub repository: Option<crate::RepoId>,
     pub path: String,
     pub score: FiniteScore,
 }
@@ -244,6 +263,7 @@ quanta_index_contract_base::native_serde_struct!(NativeOverlayCorpusStamp {
 quanta_index_contract_base::native_serde_struct!(NativeOverlayTextHit {
     owner: OwnerKey,
     source: NativeOverlayTextSource,
+    repository: Option<crate::RepoId>,
     path: String,
     score: FiniteScore
 });

@@ -23,6 +23,8 @@ fn retained_post_unlink_ticket_refuses_other_path_and_retries_after_reader_close
     let blocker = root.join("blocker");
     let target = root.join("target");
     let replacement = root.join("replacement");
+    let other_generation = root.join("target-sibling");
+    fs::create_dir(&other_generation)?;
     fs::write(&blocker, b"bbb")?;
     fs::write(&target, b"abc")?;
     fs::write(&replacement, b"xyz")?;
@@ -82,6 +84,14 @@ fn retained_post_unlink_ticket_refuses_other_path_and_retries_after_reader_close
     }
     fs::remove_file(&target)?;
     reader.retire()?;
+    let before_scoped_retry = authority.snapshot()?;
+    if !matches!(
+        deletions.reconcile_pending_namespace_under(&other_generation),
+        Err(CoreError::Typed { code, .. }) if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+    ) || authority.snapshot()? != before_scoped_retry
+    {
+        return Err("foreign generation consumed the retained unlink ticket".into());
+    }
     // A subsequent constructor cannot rediscover the absent target by scanning.
     // Drain the retained ticket directly without another unlink or pathname.
     deletions.retry_pending_deletion()?;
@@ -136,7 +146,7 @@ fn sidecar_post_unlink_ticket_refuses_generic_same_path_until_owned_retry() -> T
     let baseline = authority.snapshot()?;
     // The nested Sidecar path has two components, so fill both inode slots.
     let binder = PublicationFileCapacity::new(lease, authority.clone(), 16, 2, 256)?;
-    let deletions = PublicationFileDeletions::new(binder.clone());
+    let deletions = std::sync::Arc::new(PublicationFileDeletions::new(binder.clone()));
     let metadata = fs::metadata(&target)?;
     let inode = InodeKey {
         device: metadata.dev(),
@@ -178,6 +188,12 @@ fn sidecar_post_unlink_ticket_refuses_generic_same_path_until_owned_retry() -> T
     fs::set_permissions(&parent, fs::Permissions::from_mode(0o700))?;
     reader.retire()?;
     second_reader.retire()?;
+    let awaiting_owner = authority.snapshot()?;
+    assert!(matches!(
+        deletions.require_namespace_settled_for_read(),
+        Err(CoreError::Typed { code, .. }) if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+    ));
+    assert_eq!(authority.snapshot()?, awaiting_owner);
     deletions.delete_sidecar_owned_file_and_sync(&target, inode, 3)?;
     let settled = authority.snapshot()?;
     assert_eq!(settled.used_bytes, baseline.used_bytes - 9);

@@ -105,7 +105,7 @@ impl Drop for ScanFile {
         if let Some(file) = self.file.take() {
             match crate::owned_fd_close::close_owned_file(file) {
                 Ok(()) => self.state.release(),
-                Err(_) => self.state.mark_close_uncertain(),
+                Err(_close_error) => self.state.mark_close_uncertain(),
             }
         }
     }
@@ -251,7 +251,7 @@ pub(super) fn vector_slot<T, C: InventoryControl>(
 pub(super) fn entries<C: InventoryControl>(
     directory: &ScanFile,
     control: &mut C,
-    visit: &mut dyn FnMut(&[u8], &mut C) -> Result<(), C::Error>,
+    visit: &mut dyn FnMut(&[u8], Option<u64>, &mut C) -> Result<(), C::Error>,
 ) -> Result<(), C::Error> {
     let file = directory.file()?;
     if C::ADMITTED {
@@ -286,14 +286,53 @@ pub(super) fn entries<C: InventoryControl>(
                 let entry = entry.map_err(|error| {
                     inventory_error(format!("read inventory directory: {error}"))
                 })?;
-                visit(entry.file_name().to_bytes(), control)?;
+                visit(entry.file_name().to_bytes(), Some(entry.ino()), control)?;
             }
             return Ok(());
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            const BUFFER_BYTES: usize = 65_536;
+            let _memory = control.temporary(
+                u64::try_from(BUFFER_BYTES)
+                    .map_err(|_| inventory_error("inventory directory buffer width"))?,
+            )?;
+            let mut buffer = Vec::<u8>::new();
+            buffer
+                .try_reserve_exact(BUFFER_BYTES)
+                .map_err(|_| inventory_error("inventory directory buffer allocation failed"))?;
+            buffer.resize(BUFFER_BYTES, 0);
+            loop {
+                control.checkpoint("publication admitted inventory batch")?;
+                control.charge(
+                    1,
+                    u64::try_from(BUFFER_BYTES)
+                        .map_err(|_| inventory_error("inventory directory buffer width"))?,
+                )?;
+                let count = quanta_explicit_fd_process::visit_darwin_directory_batch_v1(
+                    file.as_fd(),
+                    &mut buffer,
+                    |name, inode| {
+                        control.checkpoint("publication admitted inventory entry")?;
+                        visit(name, Some(inode), control)
+                    },
+                )
+                .map_err(|error| match error {
+                    quanta_explicit_fd_process::DarwinDirectoryVisitErrorV1::Io(error) => {
+                        inventory_error(format!("read inventory directory: {error}")).into()
+                    }
+                    quanta_explicit_fd_process::DarwinDirectoryVisitErrorV1::Visit(error) => error,
+                })?;
+                if count == 0 {
+                    break;
+                }
+            }
+            return Ok(());
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             return Err(CoreError::NotImplemented(
-                "admitted boot inventory requires the installed Linux getdents owner".into(),
+                "admitted boot inventory requires Linux or macOS directory admission".into(),
             )
             .into());
         }
@@ -303,7 +342,7 @@ pub(super) fn entries<C: InventoryControl>(
     while let Some(entry) = entries.read() {
         control.checkpoint("publication boot inventory entry")?;
         let entry = entry.map_err(|error| inventory_error(format!("read directory: {error}")))?;
-        visit(entry.file_name().to_bytes(), control)?;
+        visit(entry.file_name().to_bytes(), None, control)?;
     }
     Ok(())
 }
@@ -322,7 +361,7 @@ pub(crate) struct AdmittedBootInventoryV1 {
     pub(crate) memory: InventoryMemory,
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use crate::native_resources::{NativeResourceClass, NativeResourceLedger, NativeResourcePlan};
@@ -481,7 +520,14 @@ mod tests {
         fixture(|root, registration, _ledger, budget| {
             let mut control = Admitted::new(budget, 1, registration)?;
             let lease = registration.lease()?;
-            let result = seed_with_control(lease, root, limits(), &[], &mut control);
+            let result = seed_with_control(
+                lease,
+                root,
+                limits(),
+                &[],
+                &mut control,
+                CatalogAccounting::AppLedger,
+            );
             require(
                 result.is_err(),
                 "one-handle inventory bypassed descriptor admission",
@@ -552,6 +598,69 @@ mod tests {
                 matches!(second,Err(CoreError::InvalidContract(ref detail)) if detail.contains("registration already started")),
                 "failed registration backing was reused by another attempt",
             )
+        })
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn admitted_batch_refuses_name_replaced_after_kernel_file_id() -> TestResult {
+        fixture(|root, registration, _ledger, budget| {
+            let mut control = Admitted::new(budget, 16, registration)?;
+            let directory = ScanFile::open(&mut control, || {
+                File::open(root)
+                    .map_err(|error| inventory_error(format!("open fixture root: {error}")))
+            })?;
+            let mut replaced = false;
+            let result = entries(
+                &directory,
+                &mut control,
+                &mut |name, listed_inode, _control| {
+                    if name == b"a" {
+                        let listed_inode = listed_inode.ok_or_else(|| {
+                            inventory_error("admitted Darwin entry lost its kernel file ID")
+                        })?;
+                        std::fs::rename(root.join("a"), root.join("a-old"))?;
+                        std::fs::write(root.join("a"), b"replacement")?;
+                        let stat =
+                            statat(directory.file()?, Path::new("a"), AtFlags::SYMLINK_NOFOLLOW)
+                                .map_err(std::io::Error::from)?;
+                        replaced = true;
+                        require_listed_inode(Some(listed_inode), stat.st_ino)?;
+                    }
+                    Ok(())
+                },
+            );
+            drop(directory);
+            require(
+                replaced && result.is_err(),
+                "changed listed inode was accepted",
+            )?;
+            require_retired(&control)?;
+            Ok(())
+        })
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn admitted_batch_cancellation_stops_before_next_entry_and_retires_fd() -> TestResult {
+        fixture(|root, registration, _ledger, budget| {
+            let cancel = budget.request().cancel_handle();
+            let mut control = Admitted::new(budget, 16, registration)?;
+            let directory = ScanFile::open(&mut control, || {
+                File::open(root)
+                    .map_err(|error| inventory_error(format!("open fixture root: {error}")))
+            })?;
+            let mut visited = 0;
+            let result = entries(&directory, &mut control, &mut |_name, _inode, _control| {
+                visited += 1;
+                cancel.cancel();
+                Ok(())
+            });
+            drop(directory);
+            require(
+                visited == 1 && result.is_err(),
+                "cancelled batch continued to another entry",
+            )?;
+            require_retired(&control)?;
+            Ok(())
         })
     }
 }

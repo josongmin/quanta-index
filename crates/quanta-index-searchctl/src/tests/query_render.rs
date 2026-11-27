@@ -34,12 +34,17 @@ fn pretty_renderer_names_go_trace_file_result_and_lane_windows() {
                             revision_id: RevisionId::new("rev").expect("fixture revision"),
                             manifest_generation: ManifestGeneration::new(7),
                             repo_relative_path: path,
-                            start_line: 1,
-                            end_line: 2,
+                            lines: Some(quanta_index_contract::LexicalLineRange {
+                                start_line: 1,
+                                end_line: 2,
+                            }),
+                            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                                snippet: "func source() {}".to_string(),
+                                snippet_hit_offset: None,
+                                highlights: Vec::new(),
+                            }),
                             score: 0.7,
-                            snippet: "func source() {}".to_string(),
-                            snippet_hit_offset: None,
-                            highlights: Vec::new(),
+                            native_source: None,
                         },
                     }),
                     dense: None,
@@ -158,12 +163,17 @@ fn pretty_renderer_supports_runtime_metadata_response() {
                         .expect("static fixture ID satisfies canonical policy"),
                     manifest_generation: ManifestGeneration::new(7),
                     repo_relative_path: RepoRelativePath::new("src/runtime.rs"),
-                    start_line: 1,
-                    end_line: 4,
+                    lines: Some(quanta_index_contract::LexicalLineRange {
+                        start_line: 1,
+                        end_line: 4,
+                    }),
+                    excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                        snippet: "runtime body".to_string(),
+                        snippet_hit_offset: None,
+                        highlights: Vec::new(),
+                    }),
                     score: 0.3,
-                    snippet: "runtime body".to_string(),
-                    snippet_hit_offset: None,
-                    highlights: Vec::new(),
+                    native_source: None,
                 }],
                 window: probe_window,
                 read_epoch: AuxEpochV1::new(4),
@@ -226,12 +236,17 @@ fn pretty_renderer_supports_sourcegraph_text_response() {
                     .expect("static fixture ID satisfies canonical policy"),
                 manifest_generation: ManifestGeneration::new(7),
                 repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
-                start_line: 1,
-                end_line: 3,
+                lines: Some(quanta_index_contract::LexicalLineRange {
+                    start_line: 1,
+                    end_line: 3,
+                }),
+                excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                    snippet: "fn sample() {}".to_string(),
+                    snippet_hit_offset: None,
+                    highlights: Vec::new(),
+                }),
                 score: 0.5,
-                snippet: "fn sample() {}".to_string(),
-                snippet_hit_offset: None,
-                highlights: Vec::new(),
+                native_source: None,
             }],
             window: QueryResultWindowV2::exact_probe(1),
             file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
@@ -260,6 +275,72 @@ fn pretty_renderer_supports_sourcegraph_text_response() {
         assert!(text.contains("file_owner_rows: 1"));
         assert!(text.contains("owners=@alice,@acme/platform"));
     }
+}
+
+#[test]
+fn pretty_renderer_omits_lines_of_rows_without_a_match_excerpt() {
+    let row = |path: &str,
+               lines: Option<quanta_index_contract::LexicalLineRange>,
+               excerpt: Option<quanta_index_contract::LexicalMatchExcerpt>| {
+        LexicalCandidate {
+            source_repo_id: RepoId::new("repo")
+                .expect("static fixture ID satisfies canonical policy"),
+            source: None,
+            preview: None,
+            candidate_id: format!("cand-{path}"),
+            repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+            revision_id: RevisionId::new("rev")
+                .expect("static fixture ID satisfies canonical policy"),
+            manifest_generation: ManifestGeneration::new(7),
+            repo_relative_path: quanta_index_contract::RepoRelativePath::new(path),
+            lines,
+            score: 0.5,
+            excerpt,
+            native_source: None,
+        }
+    };
+    let response = SearchPlaneQueryIpcResponseEnvelope {
+        request_id: 1,
+        payload: SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            selected_active_head: None,
+            explanation: quanta_index_contract::SearchExplanation::empty(),
+            rank_unit: TextRankUnit::File,
+            generation: GenerationPin::new(
+                RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
+                RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+                ManifestGeneration::new(7),
+            ),
+            results: vec![
+                row(
+                    "src/legacy.rs",
+                    Some(quanta_index_contract::LexicalLineRange {
+                        start_line: 2,
+                        end_line: 4,
+                    }),
+                    Some(quanta_index_contract::LexicalMatchExcerpt {
+                        snippet: "fn legacy() {}".to_string(),
+                        snippet_hit_offset: None,
+                        highlights: Vec::new(),
+                    }),
+                ),
+                row("src/native.rs", None, None),
+            ],
+            window: QueryResultWindowV2::exact_probe(2),
+            file_owner_rows: None,
+            next_cursor: None,
+        }),
+    };
+    let mut stdout = Vec::new();
+    assert!(render_response(OutputMode::Pretty, &response, &mut stdout).is_ok());
+    let text = String::from_utf8(stdout).expect("UTF-8 rendering");
+    assert!(
+        text.contains("path=src/legacy.rs lines=2-4 score=0.5"),
+        "{text}"
+    );
+    assert!(text.contains("   fn legacy() {}"), "{text}");
+    // No position is printed for a row that reports none, never `0-0`.
+    assert!(text.contains("path=src/native.rs score=0.5"), "{text}");
+    assert!(!text.contains("lines=0"), "{text}");
 }
 
 #[test]

@@ -94,7 +94,9 @@ pub trait CatalogIoScope {
     fn is_capacity_refusal(&self, error: &rusqlite::Error) -> bool;
 }
 
-/// Lifetime owner for one native VFS and its regular read-session lock files.
+/// Lifetime owner for Catalog operation scopes and read-session lock files.
+/// Existing named-VFS opens use `vfs_name`; explicit stock-VFS opens retain
+/// this owner but do not receive its native per-file SQLite callbacks.
 pub trait CatalogIoAdmission: Send + Sync {
     fn vfs_name(&self) -> &str;
     /// Entering is infallible after registration. The returned scope is local
@@ -124,25 +126,40 @@ pub trait CatalogIoAdmission: Send + Sync {
     ) -> Result<(), IndexError>;
 }
 
-/// Existing-root I/O with native mutation refusal.
-///
-/// The VFS denies creation, writes, truncation, deletion,
-/// mutating file controls and SHM access before the underlying syscall.
-/// The scope owns root custody through the connection's physical close.
-/// Main-file opens must acquire the actual `SQLite`-compatible exclusive DB lock
-/// before the first header read, including a checkpointed main-only URI open.
-/// Verification reads must check this original request even during native WAL
-/// recovery, which can run before a SQL VM progress callback is invoked.
-/// The main and WAL byte limits apply to the native descriptors that SQLite
-/// opens, including file-size observations during WAL recovery.
+/// Existing-root I/O with native mutation refusal. A selected protected route
+/// holds source descriptors and uses either an FD reader or a private offline
+/// Main/WAL copy. A named reader uses its admitted VFS scope instead.
+/// The root remains held through connection close and the original request is
+/// checked during WAL recovery, before SQL VM progress callbacks can run.
 pub trait CatalogReadOnlyIoAdmission: Send + Sync {
-    fn read_only_vfs_name(&self) -> &str;
-    fn enter_read_only_scope(
+    /// Legacy named readers enter a VFS scope before opening a connection.
+    /// A provider that requires the protected FD route has no named fallback.
+    fn enter_named_read_only_scope(
         &self,
-        request: &quanta_index_core::RequestBudgetV1,
-        main_bytes: u64,
-        wal_bytes: u64,
-    ) -> Box<dyn CatalogIoScope>;
+        _request: &quanta_index_core::RequestBudgetV1,
+        _main_bytes: u64,
+        _wal_bytes: u64,
+    ) -> Option<(&str, Box<dyn CatalogIoScope>)> {
+        None
+    }
+
+    /// A provider that selects the FD reader must anchor the directory in its
+    /// own root lease and hold the admitted FD envelope through `visit`. It
+    /// calls the visitor exactly once and returns true only after checking the
+    /// live namespace and retiring the directory. False declines this route
+    /// without calling the visitor. Errors refuse the selected route.
+    fn with_protected_catalog_directory_v1(
+        &self,
+        _directory: &std::path::Path,
+        _request: &quanta_index_core::RequestBudgetV1,
+        _needs_wal: bool,
+        _visit: &mut dyn FnMut(&std::fs::File),
+    ) -> Result<bool, IndexError> {
+        Ok(false)
+    }
+
+    /// Retain authority after the FD reader could not witness retirement.
+    fn poison_protected_catalog_close_v1(&self) {}
 }
 
 thread_local! {
@@ -156,14 +173,8 @@ pub(crate) struct ScopeLease {
 }
 
 impl ScopeLease {
-    pub(crate) fn enter_read_only(
-        owner: &dyn CatalogReadOnlyIoAdmission,
-        request: &quanta_index_core::RequestBudgetV1,
-        main_bytes: u64,
-        wal_bytes: u64,
-    ) -> Self {
-        let scope: Rc<dyn CatalogIoScope> =
-            Rc::from(owner.enter_read_only_scope(request, main_bytes, wal_bytes));
+    pub(crate) fn enter_read_only(scope: Box<dyn CatalogIoScope>) -> Self {
+        let scope: Rc<dyn CatalogIoScope> = Rc::from(scope);
         let previous = CURRENT_SCOPE.with(|slot| slot.replace(Some(Rc::downgrade(&scope))));
         Self {
             previous,
@@ -349,7 +360,7 @@ impl CatalogConnectionOwner {
     }
 
     fn quarantine_failed_cache_close(&mut self) {
-        // Keep the native handle and its named VFS/funding authority together.
+        // Keep the native handle and its admission/funding authority together.
         std::mem::forget((
             self.connection.take(),
             self.admission.take(),
@@ -684,6 +695,62 @@ mod tests {
     }
 
     #[test]
+    fn explicitly_selected_stock_vfs_keeps_admission_through_checked_close()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let entries = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        // The fixture names no registered VFS. Only the explicit stock entry
+        // point may create a database while retaining this admission owner.
+        let admission: Arc<dyn CatalogIoAdmission> = Arc::new(CloseTrackingAdmission {
+            entries: Arc::clone(&entries),
+            active: Arc::clone(&active),
+        });
+        let weak = Arc::downgrade(&admission);
+        let mut catalog = SqliteCatalog::open_with_stock_vfs_and_io_admission(
+            root.path(),
+            Duration::from_secs(1),
+            admission,
+        )?;
+        assert!(
+            crate::catalog_dir(root.path())
+                .join(crate::CATALOG_FILE_NAME)
+                .is_file()
+        );
+        assert!(weak.upgrade().is_some());
+        let external = tempfile::tempdir()?;
+        let attachment = external.path().join("attachment.sqlite");
+        {
+            let connection = catalog.lock()?;
+            let attached_limit =
+                connection.limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED)?;
+            let temp_store: i64 =
+                connection.pragma_query_value(None, "temp_store", |row| row.get(0))?;
+            assert_eq!((attached_limit, temp_store), (0, 2));
+            assert!(
+                connection
+                    .execute(
+                        "ATTACH DATABASE ?1 AS external",
+                        [attachment.to_str().ok_or("attachment path is not UTF-8")?],
+                    )
+                    .is_err()
+            );
+            assert!(!attachment.exists());
+            connection.execute_batch(
+                "CREATE TEMP TABLE work_key(value BLOB PRIMARY KEY) WITHOUT ROWID;
+                 INSERT INTO temp.work_key VALUES (x'1234');",
+            )?;
+            let key: Vec<u8> =
+                connection.query_row("SELECT value FROM temp.work_key", [], |row| row.get(0))?;
+            assert_eq!(key, [0x12, 0x34]);
+        }
+        catalog.close_checked()?;
+        assert_eq!(entries.load(Ordering::SeqCst), 1);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
     fn checked_close_balances_one_scope_and_rejects_reuse_after_success()
     -> Result<(), Box<dyn std::error::Error>> {
         let connection = Connection::open_in_memory()?;
@@ -703,6 +770,10 @@ mod tests {
             native_source_stage_schema: std::sync::atomic::AtomicBool::new(false),
             transient_source_body_quarantines: std::sync::RwLock::new(
                 std::collections::BTreeMap::new(),
+            ),
+            abandoned_read_pins: std::sync::Mutex::new(Vec::new()),
+            maintenance_demand: std::sync::Mutex::new(
+                crate::native::MaintenanceDemandState::default(),
             ),
         };
         catalog.close_checked()?;

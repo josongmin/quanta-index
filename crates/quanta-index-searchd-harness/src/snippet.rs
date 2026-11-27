@@ -819,11 +819,13 @@ mod tests {
         assert!(
             quanta_index_lexical::native::validate_native_text_input(&phrase)
                 .expect("phrase fixture must be admitted by Native")
+                .retained
                 > 0
         );
         assert!(
             quanta_index_lexical::native::validate_native_text_input(&regex)
                 .expect("anchored regex fixture must be admitted by Native")
+                .retained
                 > 0
         );
     }

@@ -1,5 +1,6 @@
 //! One admitted bridge to the canonical sealed-artifact hasher.
 use super::ExistingFileReadFailureV1 as Failure;
+use crate::domains::generation::TreeReaderSettlement;
 use crate::{
     CoreError, SealedArtifactCommitmentV1, TreeScrubVerdictV1, hash_committed_step_opened_v1,
     index::{IndexError, MemoryLifetime, ObjectReadFile, ObjectReadIoPort, WorkBudget, WorkUsage},
@@ -115,6 +116,14 @@ impl Read for HashReader<'_, '_> {
                 Err(io::Error::other("committed admitted hash read refused"))
             }
         }
+    }
+}
+
+impl TreeReaderSettlement for HashReader<'_, '_> {
+    fn settle(self) -> io::Result<()> {
+        // ObjectReadFile already owns close and physical custody in Drop.
+        drop(self);
+        Ok(())
     }
 }
 

@@ -458,6 +458,11 @@ def test_fresh_join_global_matrix_adapts_to_same_admission_shape(tmp_path, parse
         "parser_runtime_versions": {
             **parser_versions,
             "regex": "2025.10.23",
+            "tree-sitter-go": "0.25.0",
+            "tree-sitter-javascript": "0.25.0",
+            "tree-sitter-python": "0.25.0",
+            "tree-sitter-rust": "0.24.2",
+            "tree-sitter-typescript": "0.23.2",
             "unicodedata2": "17.0.0",
         },
         "pyproject_sha256": "project",

@@ -19,13 +19,7 @@
 //! dataset tree and the two decoded sidecars only), so writing one never
 //! makes a sealed generation look tampered with.
 
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
-)]
-
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest as _, Sha256};
@@ -36,20 +30,21 @@ use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_SIDECAR_CORRUPT_CODE,
     GenerationQuarantineReasonV1, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
     IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort, IntegrityScrubReportV1,
-    MetricPointV1, QuarantinedGenerationV1,
+    QuarantinedGenerationV1,
 };
 
 use crate::SemanticAdapter;
-use crate::codec::decode_current_format;
-use crate::codec::{self, cbor_serde};
+use crate::codec;
+use crate::control_file::receipt::{
+    QUARANTINE_RECEIPT_FORMAT_VERSION, QuarantineReceiptV1, SCRUB_RECEIPT_FORMAT_VERSION,
+    ScrubReceiptV1, read_quarantine_receipt, read_scrub_receipt, refuse_if_quarantined,
+};
 use crate::durable_write::write_atomic_with_reserved_permit;
 use crate::layout;
 use crate::sealed_manifest::{
     SealedManifestScrubV1, SealedManifestScrubVerdictV1, scrub_sealed_manifest,
 };
 
-const SCRUB_RECEIPT_FORMAT_VERSION: u32 = 1;
-const QUARANTINE_RECEIPT_FORMAT_VERSION: u32 = 1;
 const MAX_QUARANTINE_DETAIL_BYTES: usize = 4 * 1024;
 
 fn bounded_quarantine_detail(detail: &str) -> String {
@@ -69,40 +64,6 @@ fn bounded_quarantine_detail(detail: &str) -> String {
     format!("{prefix}{suffix}")
 }
 
-/// The receipt of a completed scrub pass: when it completed and what it
-/// covered, as the seal committed it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ScrubReceiptV1 {
-    pub(crate) format_version: u32,
-    pub(crate) completed_unix: u64,
-    pub(crate) files_verified: u64,
-    pub(crate) bytes_verified: u64,
-}
-
-cbor_serde!(ScrubReceiptV1 {
-    format_version: u32,
-    completed_unix: u64,
-    files_verified: u64,
-    bytes_verified: u64,
-});
-
-/// The receipt of a corruption the scrub proved: the quarantine reason's
-/// code, what did not match, and when.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct QuarantineReceiptV1 {
-    pub(crate) format_version: u32,
-    pub(crate) reason: String,
-    pub(crate) detail: String,
-    pub(crate) detected_unix: u64,
-}
-
-cbor_serde!(QuarantineReceiptV1 {
-    format_version: u32,
-    reason: String,
-    detail: String,
-    detected_unix: u64,
-});
-
 fn now_unix() -> Result<u64, CoreError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -110,118 +71,6 @@ fn now_unix() -> Result<u64, CoreError> {
         .map_err(|err| {
             CoreError::Storage(format!("semantic: system clock before unix epoch: {err}"))
         })
-}
-
-/// Read a receipt beside a generation, `None` when there is none.
-fn read_receipt<T: serde::de::DeserializeOwned>(
-    path: &Path,
-    what: &str,
-    format_version: u32,
-    admission: Option<&dyn lance_io::object_store::file_admission::FileAdmission>,
-) -> Result<Option<T>, CoreError> {
-    let bytes = match crate::control_file::read_bounded_with_admission(
-        path,
-        crate::control_file::MAX_RECEIPT_BYTES,
-        admission,
-    ) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
-                message: format!("semantic: {what} {} is invalid: {error}", path.display()),
-            });
-        }
-        Err(error) => {
-            return Err(crate::errors::fs_err(&format!("read {what}"), path, &error));
-        }
-    };
-    decode_current_format(&bytes, what, format_version)
-        .map(Some)
-        .map_err(|error| CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
-            message: format!("semantic: {what} {} is invalid: {error}", path.display()),
-        })
-}
-
-pub(crate) fn read_scrub_receipt_with_admission(
-    generation_dir: &Path,
-    admission: Option<&dyn lance_io::object_store::file_admission::FileAdmission>,
-) -> Result<Option<ScrubReceiptV1>, CoreError> {
-    let path = layout::scrub_receipt_path(generation_dir);
-    let bytes = match crate::control_file::read_bounded_with_admission(
-        &path,
-        crate::control_file::MAX_RECEIPT_BYTES,
-        admission,
-    ) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
-                message: format!(
-                    "semantic: scrub receipt {} is invalid: {error}",
-                    path.display()
-                ),
-            });
-        }
-        Err(error) => {
-            return Err(crate::errors::fs_err("read scrub receipt", &path, &error));
-        }
-    };
-    decode_current_format(&bytes, "scrub receipt", SCRUB_RECEIPT_FORMAT_VERSION)
-        .map(Some)
-        .map_err(|error| CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
-            message: format!(
-                "semantic: scrub receipt {} is invalid: {error}",
-                path.display()
-            ),
-        })
-}
-
-pub(crate) fn read_quarantine_receipt_with_admission(
-    generation_dir: &Path,
-    admission: Option<&dyn lance_io::object_store::file_admission::FileAdmission>,
-) -> Result<Option<QuarantineReceiptV1>, CoreError> {
-    let receipt: Option<QuarantineReceiptV1> = read_receipt(
-        &layout::quarantine_receipt_path(generation_dir),
-        "quarantine receipt",
-        QUARANTINE_RECEIPT_FORMAT_VERSION,
-        admission,
-    )?;
-    if let Some(receipt) = receipt.as_ref()
-        && GenerationQuarantineReasonV1::from_code_str(&receipt.reason).is_none()
-    {
-        return Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
-            message: format!(
-                "semantic: quarantine receipt under {} names an unknown reason `{}`",
-                generation_dir.display(),
-                receipt.reason
-            ),
-        });
-    }
-    Ok(receipt)
-}
-
-pub(crate) fn refuse_if_quarantined_with_admission(
-    generation_dir: &Path,
-    admission: Option<&dyn lance_io::object_store::file_admission::FileAdmission>,
-) -> Result<(), CoreError> {
-    let Some(receipt) = read_quarantine_receipt_with_admission(generation_dir, admission)? else {
-        return Ok(());
-    };
-    Err(CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationQuarantined,
-        message: format!(
-            "semantic: generation {} is quarantined as {} since unix {}: {}; discard it through the quarantine surface or rebuild it from its producer",
-            generation_dir.display(),
-            receipt.reason,
-            receipt.detected_unix,
-            receipt.detail
-        ),
-    })
 }
 
 /// Write the quarantine receipt the inventory and every door will read.
@@ -263,49 +112,6 @@ fn quarantine(
     })
 }
 
-/// What the adapter's seals measured, for the metrics scrape
-/// (QI-BB-006 #4): the bytes a seal hashed itself against the bytes and
-/// files whose digest it inherited from its base.
-#[derive(Debug, Default)]
-pub(crate) struct SealTalliesV1 {
-    hashed_bytes: AtomicU64,
-    inherited_bytes: AtomicU64,
-    inherited_files: AtomicU64,
-}
-
-impl SealTalliesV1 {
-    pub(crate) fn record(&self, measurement: crate::sealed_manifest::SealMeasurementV1) {
-        let _previous = self
-            .hashed_bytes
-            .fetch_add(measurement.hashed_bytes, Ordering::Relaxed);
-        let _previous = self
-            .inherited_bytes
-            .fetch_add(measurement.inherited_bytes, Ordering::Relaxed);
-        let _previous = self
-            .inherited_files
-            .fetch_add(measurement.inherited_files, Ordering::Relaxed);
-    }
-
-    /// `semantic_seal_hashed_bytes_total`, `semantic_seal_inherited_bytes_total`
-    /// and `semantic_seal_inherited_files_total`.
-    pub(crate) fn scrape(&self) -> Vec<MetricPointV1> {
-        vec![
-            MetricPointV1::counter(
-                "semantic_seal_hashed_bytes_total",
-                self.hashed_bytes.load(Ordering::Relaxed),
-            ),
-            MetricPointV1::counter(
-                "semantic_seal_inherited_bytes_total",
-                self.inherited_bytes.load(Ordering::Relaxed),
-            ),
-            MetricPointV1::counter(
-                "semantic_seal_inherited_files_total",
-                self.inherited_files.load(Ordering::Relaxed),
-            ),
-        ]
-    }
-}
-
 impl SemanticAdapter {
     fn maintenance_output_permit(
         &self,
@@ -318,7 +124,7 @@ impl SemanticAdapter {
             .max(1);
         match &self.maintenance_file_factory {
             Some(factory) => factory.reserve_sidecar_output(bound).map(Some),
-            None if self.lance_read_admission.is_some() => Err(CoreError::Typed {
+            None if self.file_authority.is_qualified() => Err(CoreError::Typed {
                 code: quanta_index_core::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE,
                 message: "qualified semantic maintenance lacks same-ledger sidecar admission"
                     .into(),
@@ -337,10 +143,8 @@ impl SemanticAdapter {
         let _mutation = self.generation_mutation_guard(generation)?;
         let _lifecycle = self.directory_lifecycle_read_guard()?;
         let (generation_dir, sealed_digest) = self.sealed_generation_dir(generation, "scrub")?;
-        refuse_if_quarantined_with_admission(
-            &generation_dir,
-            self.lance_read_admission.as_deref(),
-        )?;
+        let lifetime = self.generation_control_lifetime();
+        refuse_if_quarantined(&generation_dir, lifetime)?;
         let mut progress = self.scrub_progress.lock().map_err(|error| {
             CoreError::Storage(format!("semantic scrub progress poisoned: {error}"))
         })?;
@@ -350,7 +154,7 @@ impl SemanticAdapter {
             &sealed_digest,
             start,
             budget.max_bytes,
-            self.lance_read_admission.as_deref(),
+            lifetime,
         );
         // An absent or unsupported seal is not proof of corrupt content. The
         // scheduler must nevertheless retire any resident handle before it
@@ -420,9 +224,10 @@ impl SemanticAdapter {
 impl IntegrityScrubPort for SemanticAdapter {
     fn scrub_candidates(&self) -> Result<Vec<IntegrityScrubCandidateV1>, CoreError> {
         let _lifecycle = self.directory_lifecycle_read_guard()?;
-        let inventory = crate::inventory_persisted_generations_with_admission(
+        let control_lifetime = self.generation_control_lifetime();
+        let inventory = crate::inventory_persisted_generations_with_control_lifetime(
             self.state_root(),
-            self.lance_read_admission.as_deref(),
+            control_lifetime,
         )?;
         let mut candidates: Vec<_> = inventory
             .sealed
@@ -437,7 +242,7 @@ impl IntegrityScrubPort for SemanticAdapter {
                 );
                 // An invalid completion receipt cannot prove a previous pass.
                 // Rescrub this generation without starving other candidates.
-                let last_completed_unix = match read_scrub_receipt_with_admission(&generation_dir, self.lance_read_admission.as_deref()) {
+                let last_completed_unix = match read_scrub_receipt(&generation_dir, control_lifetime) {
                     Ok(receipt) => receipt.map(|receipt| receipt.completed_unix),
                     Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid, .. }) => None,
                     Err(error) => return Err(error),
@@ -453,10 +258,10 @@ impl IntegrityScrubPort for SemanticAdapter {
         // still identify the resident key that the scrub must fence. A
         // persistent quarantine receipt is excluded by the identity reader.
         for entry in &inventory.quarantined {
-            if let Some(record) = crate::scrub_candidate_from_quarantined_with_admission(
+            if let Some(record) = crate::scrub_candidate_from_quarantined_with_control_lifetime(
                 self.state_root(),
                 entry,
-                self.lance_read_admission.as_deref(),
+                control_lifetime,
             )? {
                 candidates.push(IntegrityScrubCandidateV1 {
                     identity: record.identity(),
@@ -498,10 +303,8 @@ impl DoorFindingQuarantinePort for SemanticAdapter {
         let _lifecycle = self.directory_lifecycle_guard()?;
         let (generation_dir, sealed_digest) =
             self.sealed_generation_dir(generation, "door-finding quarantine")?;
-        if let Some(receipt) = read_quarantine_receipt_with_admission(
-            &generation_dir,
-            self.lance_read_admission.as_deref(),
-        )? {
+        let lifetime = self.generation_control_lifetime();
+        if let Some(receipt) = read_quarantine_receipt(&generation_dir, lifetime)? {
             return Ok(DoorFindingOutcome::Quarantined {
                 quarantined: QuarantinedGenerationV1 {
                     track: SearchPlaneTrackKind::Semantic,
@@ -511,10 +314,10 @@ impl DoorFindingQuarantinePort for SemanticAdapter {
                 },
             });
         }
-        match crate::sealed_manifest::verify_sealed_manifest_with_admission(
+        match crate::sealed_manifest::verify_sealed_manifest(
             &generation_dir,
             &sealed_digest,
-            self.lance_read_admission.as_deref(),
+            lifetime,
         ) {
             Ok(_manifest) => Ok(DoorFindingOutcome::NotReproduced),
             Err(CoreError::Typed { code, message }) if code == GENERATION_SIDECAR_CORRUPT_CODE => {
@@ -548,10 +351,10 @@ impl SemanticAdapter {
             generation.manifest_generation,
         );
         let marker_path = layout::sealed_marker_path(&generation_dir);
-        let sealed_digest = crate::control_file::read_string_bounded_with_admission(
+        let sealed_digest = crate::control_file::read_string_for_generation(
             &marker_path,
             crate::control_file::MAX_SEALED_MARKER_BYTES,
-            self.lance_read_admission.as_deref(),
+            self.generation_control_lifetime(),
         )
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {

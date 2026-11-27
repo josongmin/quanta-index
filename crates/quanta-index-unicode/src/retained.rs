@@ -134,22 +134,54 @@ pub fn is_nfc_into_v1<A: ScratchAdmission>(
             if source.len() > 512 {
                 return Err(NfcError::InputTooLong);
             }
-            let mut original = source.chars();
-            let mut decomposition = Decomposition {
-                input: source.chars(),
-                ready: 0..0,
-            };
-            let mut recomposition = Recomposition::default();
-            loop {
-                let next = next_composed(&mut scratch, &mut decomposition, &mut recomposition)?;
-                work(&mut scratch, 1)?;
-                match (next, original.next()) {
-                    (None, None) => return Ok(NormalizationOutcomeV1::IsNfc(true)),
-                    (Some(left), Some(right)) if left == right => {}
-                    _ => return Ok(NormalizationOutcomeV1::IsNfc(false)),
-                }
-            }
+            compare_nfc(source, &mut scratch).map(NormalizationOutcomeV1::IsNfc)
         })()
     };
     data.record(result)
+}
+
+/// Compare borrowed text of any length under the caller's work and scratch policy.
+/// The caller retains the data and all admitted backing through its finisher.
+pub fn is_nfc_unbounded_into_v1<A: ScratchAdmission>(
+    source: &str,
+    data: &mut NormalizationDataV1<A::Error>,
+    admission: &mut A,
+) -> Result<(), NormalizationDataRefusalV1> {
+    data.begin()?;
+    let result = {
+        let mut scratch = Scratch::new(admission, &mut data.buffers);
+        compare_nfc_with_completion(source, &mut scratch).map(NormalizationOutcomeV1::IsNfc)
+    };
+    data.record(result)
+}
+
+pub(super) fn compare_nfc_with_completion<A: ScratchAdmission>(
+    source: &str,
+    scratch: &mut Scratch<'_, A>,
+) -> Result<bool, NfcError<A::Error>> {
+    work(scratch, 0)?;
+    let canonical = compare_nfc(source, scratch)?;
+    work(scratch, 0)?;
+    Ok(canonical)
+}
+
+fn compare_nfc<A: ScratchAdmission>(
+    source: &str,
+    scratch: &mut Scratch<'_, A>,
+) -> Result<bool, NfcError<A::Error>> {
+    let mut original = source.chars();
+    let mut decomposition = Decomposition {
+        input: source.chars(),
+        ready: 0..0,
+    };
+    let mut recomposition = Recomposition::default();
+    loop {
+        let next = next_composed(scratch, &mut decomposition, &mut recomposition)?;
+        work(scratch, 1)?;
+        match (next, original.next()) {
+            (None, None) => return Ok(true),
+            (Some(left), Some(right)) if left == right => {}
+            _ => return Ok(false),
+        }
+    }
 }

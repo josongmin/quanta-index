@@ -49,12 +49,17 @@ fn row(id: &str, score: f32, path: &str, line: u32) -> LexicalCandidate {
             .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new(path),
-        start_line: line,
-        end_line: line,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: line,
+            end_line: line,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "fn x() {}".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score,
-        snippet: "fn x() {}".to_string(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 
@@ -241,6 +246,11 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
     }
 
     let symbol = |row: &LexicalCandidate| -> Result<SymbolCandidate, Box<dyn Error>> {
+        let lines = row.lines.ok_or("fixture rows carry lines")?;
+        let excerpt = row
+            .excerpt
+            .as_ref()
+            .ok_or("fixture rows carry an excerpt")?;
         Ok(SymbolCandidate {
             source_repo_id: row.source_repo_id.clone(),
             source: row.source.clone(),
@@ -250,10 +260,10 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
             revision_id: row.revision_id.clone(),
             manifest_generation: row.manifest_generation,
             repo_relative_path: row.repo_relative_path.clone(),
-            start_line: row.start_line,
-            end_line: row.end_line,
+            start_line: lines.start_line,
+            end_line: lines.end_line,
             score: row.score,
-            snippet: row.snippet.clone(),
+            snippet: excerpt.snippet.clone(),
             symbol_kind: SymbolKindCode::new("function")?,
             symbol_kind_family: None,
         })

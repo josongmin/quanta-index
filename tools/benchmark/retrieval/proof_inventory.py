@@ -116,7 +116,14 @@ def verify_inventory_authority(
         except NextestEvidenceError as error:
             raise ValueError(f"invalid {role} nextest inventory: {error}") from error
     if actual != required:
-        raise ValueError(f"{role} collection differs from source-controlled required tests")
+        expected, collected = set(required), set(actual)
+        missing = sorted(expected - collected)
+        unexpected = sorted(collected - expected)
+        raise ValueError(
+            f"{role} collection differs from source-controlled required tests "
+            f"(missing={len(missing)} {missing[:20]!r}, "
+            f"unexpected={len(unexpected)} {unexpected[:20]!r})"
+        )
 
 
 def junit_identity(nodeid: str) -> str:
@@ -177,14 +184,14 @@ def main() -> int:
     if args.run_local:
         return int(pytest.main([*PYTHON_SELECTORS, "-q"]))
     payload = collect_pytest()
-    authority = _load_json(DEFAULT_AUTHORITY)
-    if not isinstance(authority, dict) or payload["tests"] != _identities(
-        authority.get("python"), "python required"
-    ):
-        raise SystemExit("pytest collection differs from source-controlled required tests")
+    encoded = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    try:
+        verify_inventory_authority(encoded, "python", DEFAULT_AUTHORITY)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+    with args.out.open("xb") as stream:
+        stream.write(encoded)
         stream.flush()
         os.fsync(stream.fileno())
     return 0

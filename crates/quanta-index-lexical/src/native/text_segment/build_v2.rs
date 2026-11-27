@@ -10,7 +10,7 @@ use super::super::token_prefix_cache::TokenPrefixCache;
 use super::super::{TextRecipe, check_admission, owner_key};
 use super::build::{Window, copy_work, funded_vec, seal_observed};
 use super::wire::{self, SegmentEdge};
-use super::wire_v2::{self, LayerRow, PartitionKind, RootRow};
+use super::wire_v2::{self, LayerRow, PartitionKind, RootRow, TextCut};
 use crate::native::text_path::{PathIndex, PathPostingValue, PathWrites};
 use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
@@ -115,17 +115,26 @@ fn read_root(
         return Err(wire::corrupt("V2 prior root identity"));
     }
     copy_work(context.budget, object.payload.len())?;
+    if let Some(refusal) = super::retired::refuse_retired_root(
+        &object.payload,
+        recipe.output_policy(),
+        &object.registration.children,
+        Some(member.logical_commitment),
+    ) {
+        return Err(refusal);
+    }
     let view = wire_v2::decode_root(
         &object.payload,
         recipe.output_policy(),
         &object.registration.children,
     )?;
-    if view.source != source {
+    let cut = TextCut::of(source);
+    if view.cut != cut {
         return Err(IndexError::Conflict);
     }
     let (docs, tokens) = view.totals();
     if member.logical_commitment
-        != wire_v2::logical_commitment(recipe.output_policy(), source, docs, tokens, view.path)
+        != wire_v2::logical_commitment(recipe.output_policy(), cut, docs, tokens, view.path)
     {
         return Err(wire::corrupt("V2 prior logical commitment"));
     }
@@ -469,7 +478,7 @@ fn can_split_root(already_emitted: usize, old_remaining: usize, source: SourceCu
     already_emitted
         .checked_add(old_remaining)
         .and_then(|n| n.checked_add(1))
-        .is_some_and(|total| total <= wire_v2::root_row_capacity(source, true))
+        .is_some_and(|total| total <= wire_v2::root_row_capacity(TextCut::of(source), true))
 }
 
 fn write_root(
@@ -485,14 +494,15 @@ fn write_root(
         diagnostic.as_ref(),
         DiagnosticStageV1::NativeTextRoot,
         |_child, context| {
-            let source_count = wire::source_edges(source).count();
+            let cut = TextCut::of(source);
+            let source_count = cut.edges().count();
             let children_count = source_count
                 .checked_add(usize::from(path.postings.0.is_some()))
                 .and_then(|n| n.checked_add(rows.len()))
                 .ok_or(IndexError::ResourceLimited)?;
             let bytes = 8usize
                 .checked_add(
-                    32 + 3
+                    32 + 2
                         + source_count * 32
                         + 1
                         + usize::from(path.postings.0.is_some()) * 32
@@ -504,19 +514,19 @@ fn write_root(
                 .ok_or(IndexError::ResourceLimited)?;
             let (mut payload, _payload_memory) = funded_vec(bytes, context.budget)?;
             let (docs, tokens) =
-                wire_v2::encode_root(&mut payload, recipe.output_policy(), source, path, rows)?;
+                wire_v2::encode_root(&mut payload, recipe.output_policy(), cut, path, rows)?;
             if payload.len() != bytes {
                 return Err(IndexError::ResourceLimited);
             }
             let (mut children, _children_memory) = funded_vec(children_count, context.budget)?;
-            children.extend(wire::source_edges(source));
+            children.extend(cut.edges());
             children.extend(path.postings.0);
             children.extend(rows.iter().map(|row| row.reference));
             copy_work(context.budget, payload.len())?;
             let artifact = context.put(&payload, &children)?;
             Ok((
                 artifact,
-                wire_v2::logical_commitment(recipe.output_policy(), source, docs, tokens, path),
+                wire_v2::logical_commitment(recipe.output_policy(), cut, docs, tokens, path),
             ))
         },
     )
@@ -530,26 +540,35 @@ pub(in crate::native::text) fn build(
     base: Option<&MemberBinding>,
     context: &mut AttemptContext<'_>,
 ) -> Result<(ObjectRef, Digest), IndexError> {
-    let prior = match &input {
+    let (prior, change_count) = match &input {
         DeltaInput::Bootstrap => {
             if base.is_some() {
                 return Err(IndexError::Conflict);
             }
-            None
+            (None, 0)
         }
         DeltaInput::Patch(delta) => {
             if delta.next != source || (delta.prior.owners.0.is_some() && base.is_none()) {
                 return Err(IndexError::Conflict);
             }
-            Some(delta.prior)
+            (Some(delta.prior), delta.changed.count)
         }
     };
-    let (base_rows, _base_memory, base_path) = match (prior, base) {
+    let (base_rows, base_memory, base_path) = match (prior, base) {
         (Some(cut), Some(member)) => read_root(member, recipe, cut, context)?,
         _ => (Vec::new(), None, PathIndex::default()),
     };
-    let (mut rows, _rows_memory) =
-        funded_vec::<RootRow>(wire_v2::STORAGE_CHILDREN, context.budget)?;
+    // Each mutated owner reaches one prior partition. An affected partition
+    // emits at most two rows, so reserve only the prior rows and the possible
+    // splits. Cold builds know their exact count after sealing the segments.
+    let possible_splits = usize::try_from(change_count)
+        .unwrap_or(usize::MAX)
+        .min(base_rows.len());
+    let row_capacity = base_rows
+        .len()
+        .saturating_add(possible_splits)
+        .min(wire_v2::STORAGE_CHILDREN);
+    let mut rows = funded_vec::<RootRow>(row_capacity, context.budget)?;
     let (mut cold_edges, mut cold_memory) =
         funded_vec::<SegmentEdge>(if base_rows.is_empty() { 4 } else { 0 }, context.budget)?;
     let mut changes = SourceInputCursor::new(source, input, context.maps, context.objects)?;
@@ -621,7 +640,8 @@ pub(in crate::native::text) fn build(
                     _ => false,
                 };
                 // Reserve a potential path root before sealing body children.
-                let row_capacity = wire_v2::root_row_capacity(source, true).min(wire::MAX_SEGMENTS);
+                let row_capacity =
+                    wire_v2::root_row_capacity(TextCut::of(source), true).min(wire::MAX_SEGMENTS);
                 if cold_edges.len() + 1 + usize::from(seal_before) > row_capacity {
                     return Err(IndexError::ResourceLimited);
                 }
@@ -646,16 +666,17 @@ pub(in crate::native::text) fn build(
         }
         while base_index < base_rows.len() && owner > base_rows[base_index].upper {
             if let Some(partition) = active.take() {
-                let allow_split = can_split_root(rows.len(), base_rows.len() - base_index, source);
+                let allow_split =
+                    can_split_root(rows.0.len(), base_rows.len() - base_index, source);
                 for row in partition
                     .finish(recipe, allow_split, &mut cache, context)?
                     .into_iter()
                     .flatten()
                 {
-                    push_root_row(&mut rows, row, context)?;
+                    push_root_row(&mut rows.0, row, context)?;
                 }
             } else {
-                push_root_row(&mut rows, base_rows[base_index], context)?;
+                push_root_row(&mut rows.0, base_rows[base_index], context)?;
             }
             base_index += 1;
         }
@@ -713,35 +734,37 @@ pub(in crate::native::text) fn build(
                 context,
             )?;
         }
+        rows = funded_vec(cold_edges.len(), context.budget)?;
         for (index, edge) in cold_edges.iter().enumerate() {
             let upper = if index + 1 == cold_edges.len() {
                 MAX_OWNER
             } else {
                 edge.last
             };
-            push_root_row(&mut rows, direct_row(*edge, upper), context)?;
+            push_root_row(&mut rows.0, direct_row(*edge, upper), context)?;
         }
     } else {
         if let Some(partition) = active.take() {
-            let allow_split = can_split_root(rows.len(), base_rows.len() - base_index, source);
+            let allow_split = can_split_root(rows.0.len(), base_rows.len() - base_index, source);
             for row in partition
                 .finish(recipe, allow_split, &mut cache, context)?
                 .into_iter()
                 .flatten()
             {
-                push_root_row(&mut rows, row, context)?;
+                push_root_row(&mut rows.0, row, context)?;
             }
             base_index += 1;
         }
         for row in base_rows.iter().skip(base_index) {
-            push_root_row(&mut rows, *row, context)?;
+            push_root_row(&mut rows.0, *row, context)?;
         }
-        if let Some(last) = rows.last_mut() {
+        if let Some(last) = rows.0.last_mut() {
             last.upper = MAX_OWNER;
         }
     }
     drop(cache);
     drop(cold_window);
+    drop((base_rows, base_memory, cold_edges, cold_memory));
     let path = match paths {
         Some(writer) => {
             let diagnostic = context.budget.request().diagnostic_context().cloned();
@@ -755,7 +778,7 @@ pub(in crate::native::text) fn build(
         }
         None => base_path,
     };
-    write_root(recipe, source, path, &rows, context)
+    write_root(recipe, source, path, &rows.0, context)
 }
 
 /// Repack one selected partition without changing SourceCut or logical text.
@@ -786,7 +809,7 @@ pub(in crate::native::text) fn repack(
             .len()
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
-        if next_rows > wire_v2::root_row_capacity(source, path.postings.0.is_some()) {
+        if next_rows > wire_v2::root_row_capacity(TextCut::of(source), path.postings.0.is_some()) {
             return Err(IndexError::ResourceLimited);
         }
         let (cut, mut left, _left_memory, mut right, _right_memory) =

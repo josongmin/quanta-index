@@ -9,6 +9,7 @@ import signal
 import stat
 import sys
 import time
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -53,6 +54,94 @@ def check_lock(fd: int, path: Path) -> tuple:
     return opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode, opened.st_nlink
 
 
+def _try_lock(fd: int) -> bool:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _wait_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise AdmissionTimeout("resource admission wait timed out")
+    return remaining
+
+
+@contextmanager
+def _queue_guard(fd: int, path: Path, identity: tuple, deadline: float):
+    while True:
+        _wait_remaining(deadline)
+        if _try_lock(fd):
+            break
+        time.sleep(min(0.05, _wait_remaining(deadline)))
+    try:
+        if check_lock(fd, path) != identity:
+            raise ValueError("resource queue lock identity changed")
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _waiters(queue: Path) -> list[Path]:
+    return sorted(
+        (entry for entry in queue.iterdir() if entry.suffix == ".waiter"),
+        key=lambda entry: int(entry.stem),
+    )
+
+
+def _is_first_waiter(queue: Path, ticket: Path) -> bool:
+    for entry in _waiters(queue):
+        if entry == ticket:
+            return True
+        try:
+            fd = os.open(entry, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            continue
+        try:
+            if not _try_lock(fd):
+                return False
+            # The owner is gone. Its ticket lock was closed by the kernel.
+            try:
+                check_lock(fd, entry)
+                entry.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
+        finally:
+            os.close(fd)
+    raise ValueError("resource admission lost its wait ticket")
+
+
+def _acquire_lease(lock: Path, fd: int, identity: tuple, deadline: float) -> int:
+    queue = lock.with_name(f"{lock.name}.queue")
+    queue.mkdir(mode=0o700, exist_ok=True)
+    info = queue.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError("resource queue must be an owned directory")
+    order = queue / "order.lock"
+    with ExitStack() as cleanup:
+        order_fd = os.open(order, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        cleanup.callback(os.close, order_fd)
+        order_identity = check_lock(order_fd, order)
+        with _queue_guard(order_fd, order, order_identity, deadline):
+            pending = _waiters(queue)
+            number = int(pending[-1].stem) + 1 if pending else 0
+            ticket = queue / f"{number}.waiter"
+            ticket_fd = os.open(ticket, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            cleanup.callback(os.close, ticket_fd)
+            cleanup.callback(ticket.unlink, missing_ok=True)
+            fcntl.flock(ticket_fd, fcntl.LOCK_EX)
+        print(f"resource admission: waiting lock={lock}", file=sys.stderr, flush=True)
+        while True:
+            with _queue_guard(order_fd, order, order_identity, deadline):
+                if check_lock(fd, lock) != identity:
+                    raise ValueError("resource lock identity changed while waiting")
+                if _is_first_waiter(queue, ticket) and _try_lock(fd):
+                    return time.monotonic_ns()
+            time.sleep(min(0.05, _wait_remaining(deadline)))
+
+
 def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str]) -> int:
     """Retain the lease through owned group cleanup, including controller loss."""
     lock = Path(os.path.abspath(lock))
@@ -62,22 +151,7 @@ def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str])
     acquired_at = None
     try:
         identity = check_lock(fd, lock)
-        deadline = time.monotonic() + wait_seconds
-        print(f"resource admission: waiting lock={lock}", file=sys.stderr, flush=True)
-        while True:
-            if time.monotonic() >= deadline:
-                raise AdmissionTimeout("resource admission wait timed out")
-            if check_lock(fd, lock) != identity:
-                raise ValueError("resource lock identity changed while waiting")
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired_at = time.monotonic_ns()
-                break
-            except BlockingIOError:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise AdmissionTimeout("resource admission wait timed out") from None
-                time.sleep(min(0.05, remaining))
+        acquired_at = _acquire_lease(lock, fd, identity, time.monotonic() + wait_seconds)
         if check_lock(fd, lock) != identity:
             raise ValueError("resource lock identity changed during admission")
         print(

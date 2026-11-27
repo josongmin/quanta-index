@@ -58,7 +58,7 @@ impl HistorySnapshotPageV1 {
 }
 
 /// Private child stdout stream. Checkpoint pages are provisional until Complete;
-/// inventory keys are provisional until InventoryComplete. Native BOOT later
+/// inventory keys are provisional until InventoryComplete or InventoryAllComplete. Native BOOT later
 /// independently verifies the saved Legacy source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistorySnapshotExportFrameV1 {
@@ -90,6 +90,11 @@ pub enum HistorySnapshotExportFrameV1 {
         repo_id: RepoId,
         count: u64,
     },
+    NativeInventoryAllComplete {
+        source_root_nonce: crate::index::Digest,
+        source_view: crate::index::ViewRef,
+        count: u64,
+    },
     Page(HistorySnapshotPageV1),
     Complete {
         generation: AuxiliaryGenerationKeyV1,
@@ -104,6 +109,9 @@ pub enum HistorySnapshotExportFrameV1 {
     },
     InventoryComplete {
         repo_id: RepoId,
+        count: u64,
+    },
+    InventoryAllComplete {
         count: u64,
     },
 }
@@ -153,6 +161,11 @@ impl serde::Serialize for HistoryExportBodyRef<'_> {
             HistorySnapshotExportFrameV1::NativeInventoryComplete { repo_id, count } => {
                 history_export_body!(serializer, "NativeInventoryComplete", { repo_id, count })
             }
+            HistorySnapshotExportFrameV1::NativeInventoryAllComplete {
+                source_root_nonce, source_view, count,
+            } => history_export_body!(serializer, "NativeInventoryAllComplete", {
+                source_root_nonce, source_view, count
+            }),
             HistorySnapshotExportFrameV1::Page(page) => {
                 serde::Serialize::serialize(page, serializer)
             }
@@ -172,6 +185,9 @@ impl serde::Serialize for HistoryExportBodyRef<'_> {
             HistorySnapshotExportFrameV1::InventoryComplete { repo_id, count } => {
                 history_export_body!(serializer, "InventoryComplete", { repo_id, count })
             }
+            HistorySnapshotExportFrameV1::InventoryAllComplete { count } => {
+                history_export_body!(serializer, "InventoryAllComplete", { count })
+            }
         }
     }
 }
@@ -185,10 +201,12 @@ impl serde::Serialize for HistorySnapshotExportFrameV1 {
             Self::NativeObjectEnd { .. } => "native_object_end",
             Self::NativeHistory { .. } => "native_history",
             Self::NativeInventoryComplete { .. } => "native_inventory_complete",
+            Self::NativeInventoryAllComplete { .. } => "native_inventory_all_complete",
             Self::Page(_) => "page",
             Self::Complete { .. } => "complete",
             Self::InventoryKey { .. } => "inventory_key",
             Self::InventoryComplete { .. } => "inventory_complete",
+            Self::InventoryAllComplete { .. } => "inventory_all_complete",
         };
         let mut frame = serializer.serialize_struct("HistorySnapshotExportFrameV1", 2)?;
         serde::ser::SerializeStruct::serialize_field(&mut frame, "kind", kind)?;
@@ -389,6 +407,11 @@ mod tests {
                 r#"{"kind":"inventory_complete","body":{"repo_id":"repo","count":4}}"#,
                 "a2646b696e6472696e76656e746f72795f636f6d706c65746564626f6479a2677265706f5f6964647265706f65636f756e7404",
             ),
+            (
+                HistorySnapshotExportFrameV1::InventoryAllComplete { count: 4 },
+                r#"{"kind":"inventory_all_complete","body":{"count":4}}"#,
+                "a2646b696e6476696e76656e746f72795f616c6c5f636f6d706c65746564626f6479a165636f756e7404",
+            ),
         ];
 
         for (frame, expected_json, expected_cbor) in cases {
@@ -412,5 +435,108 @@ mod tests {
                 frame
             );
         }
+    }
+
+    #[test]
+    fn inventory_all_complete_requires_one_unsigned_count() {
+        let valid = br#"{"kind":"inventory_all_complete","body":{"count":0}}"#;
+        assert_eq!(
+            HistorySnapshotExportFrameV1::decode_json_v1(valid).expect("empty all-repo inventory"),
+            HistorySnapshotExportFrameV1::InventoryAllComplete { count: 0 },
+        );
+        for malformed in [
+            &br#"{"kind":"inventory_all_complete","body":{}}"#[..],
+            br#"{"kind":"inventory_all_complete","body":{"count":1,"count":2}}"#,
+            br#"{"kind":"inventory_all_complete","body":{"count":-1}}"#,
+            br#"{"kind":"inventory_all_complete","body":{"count":1.0}}"#,
+            br#"{"kind":"inventory_all_complete","body":{"count":18446744073709551616}}"#,
+        ] {
+            assert!(HistorySnapshotExportFrameV1::decode_json_v1(malformed).is_err());
+            assert!(serde_json::from_slice::<HistorySnapshotExportFrameV1>(malformed).is_err());
+        }
+        let bignum = b"\xa2\x64kind\x76inventory_all_complete\x64body\xa1\x65count\xc2\x41\x04";
+        assert!(ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(bignum.as_slice()).is_err());
+    }
+
+    #[test]
+    fn native_inventory_all_complete_preserves_scope_and_terminal_bytes() {
+        use crate::index::{
+            CollectionId, Digest, SlotId, TenantId, ViewRef, WorkspaceKey, WorktreeId,
+        };
+
+        let nonce = Digest([9; 32]);
+        let view = ViewRef {
+            workspace: WorkspaceKey {
+                tenant: TenantId([1; 16]),
+                collection: CollectionId([2; 16]),
+                worktree: WorktreeId([3; 16]),
+                slot: SlotId([4; 16]),
+            },
+            epoch: 1,
+            sequence: 2,
+            digest: Digest([8; 32]),
+        };
+        let frame = HistorySnapshotExportFrameV1::NativeInventoryAllComplete {
+            source_root_nonce: nonce,
+            source_view: view,
+            count: 3,
+        };
+        let json = format!(
+            r#"{{"kind":"native_inventory_all_complete","body":{{"source_root_nonce":{},"source_view":{},"count":3}}}}"#,
+            serde_json::to_string(&nonce).expect("nonce JSON"),
+            serde_json::to_string(&view).expect("view JSON"),
+        );
+        assert_eq!(serde_json::to_string(&frame).expect("frame JSON"), json);
+        assert_eq!(HistorySnapshotExportFrameV1::decode_json_v1(json.as_bytes()).expect("direct JSON"), frame);
+        assert_eq!(serde_json::from_str::<HistorySnapshotExportFrameV1>(&json).expect("generic JSON"), frame);
+        let body_first = format!(
+            r#"{{"body":{{"source_root_nonce":{},"source_view":{},"count":3}},"kind":"native_inventory_all_complete"}}"#,
+            serde_json::to_string(&nonce).expect("nonce JSON"),
+            serde_json::to_string(&view).expect("view JSON"),
+        );
+        let sequence = format!(
+            r#"{{"kind":"native_inventory_all_complete","body":[{},{},3]}}"#,
+            serde_json::to_string(&nonce).expect("nonce JSON"),
+            serde_json::to_string(&view).expect("view JSON"),
+        );
+        for raw in [&body_first, &sequence] {
+            assert_eq!(
+                HistorySnapshotExportFrameV1::decode_json_v1(raw.as_bytes()).expect("direct JSON"),
+                frame
+            );
+            assert_eq!(
+                serde_json::from_str::<HistorySnapshotExportFrameV1>(raw).expect("generic JSON"),
+                frame
+            );
+        }
+
+        let mut expected = b"\xa2\x64kind\x78\x1dnative_inventory_all_complete\x64body\xa3\x71source_root_nonce".to_vec();
+        ciborium::into_writer(&nonce, &mut expected).expect("nonce CBOR");
+        expected.extend_from_slice(b"\x6bsource_view");
+        ciborium::into_writer(&view, &mut expected).expect("view CBOR");
+        expected.extend_from_slice(b"\x65count\x03");
+        let mut cbor = Vec::new();
+        ciborium::into_writer(&frame, &mut cbor).expect("frame CBOR");
+        assert_eq!(cbor, expected);
+        assert_eq!(ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(cbor.as_slice()).expect("CBOR readback"), frame);
+
+        let duplicate_count = json.replace("\"count\":3", "\"count\":3,\"count\":4");
+        let missing_view = json.replace(&format!("\"source_view\":{},", serde_json::to_string(&view).expect("view JSON")), "");
+        let unknown_field = json.replace("\"count\":3", "\"count\":3,\"foreign\":0");
+        for malformed in [&duplicate_count, &missing_view, &unknown_field] {
+            assert!(HistorySnapshotExportFrameV1::decode_json_v1(malformed.as_bytes()).is_err());
+            assert!(serde_json::from_str::<HistorySnapshotExportFrameV1>(malformed).is_err());
+        }
+        let mut bignum = expected;
+        assert_eq!(bignum.pop(), Some(3));
+        bignum.extend_from_slice(b"\xc2\x41\x03");
+        assert!(ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(bignum.as_slice()).is_err());
+        let mut unknown_cbor = cbor;
+        let body_count = unknown_cbor.windows(6)
+            .position(|window| window == b"\x64body\xa3")
+            .expect("body map header") + 5;
+        unknown_cbor[body_count] = 0xa4;
+        unknown_cbor.extend_from_slice(b"\x67foreign\x00");
+        assert!(ciborium::from_reader::<HistorySnapshotExportFrameV1, _>(unknown_cbor.as_slice()).is_err());
     }
 }

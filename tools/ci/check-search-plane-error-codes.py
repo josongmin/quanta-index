@@ -104,6 +104,8 @@ def source_codes(root: Path) -> list[str]:
 
     codes = [lexical_wires[variant] for variant in lexical_variants]
     codes.extend(wire for _variant, wire in native_entries)
+    if "BAD_REQUEST" in codes:
+        raise TableError("BAD_REQUEST is not an accepted V2 code")
     if len(codes) != len(set(codes)):
         duplicates = sorted({code for code in codes if codes.count(code) > 1})
         raise TableError(f"wire codes are not unique: {duplicates}")

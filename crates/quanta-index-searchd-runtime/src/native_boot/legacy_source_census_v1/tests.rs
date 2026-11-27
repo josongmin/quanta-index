@@ -10,7 +10,6 @@ use super::*;
 use std::{
     collections::BTreeSet,
     error::Error,
-    ffi::CString,
     fs,
     os::unix::fs::PermissionsExt as _,
     sync::{
@@ -22,8 +21,11 @@ use std::{
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    GenerationSnapshot, IngestOperationKindV1, ManifestGeneration, SearchPlaneTrackKind,
-    SemanticContentRootsV1,
+    FileId, GenerationSnapshot, IngestOperationKindV1, ManifestGeneration,
+    RepoMapActivateGenerationRequestV2, RepoMapExactnessSummary, RepoMapFileNode,
+    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+    RepoMapPublishBundleRequestV2, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
+    SearchPlaneTrackKind, SemanticContentRootsV1,
 };
 use quanta_index_core::{
     ClaimOutcomeV1, CoreError, IdempotencyCatalogPort, IdempotencyKeyV1, RequestBudgetV1,
@@ -45,7 +47,6 @@ use crate::{
     native_object_read_io::NativeObjectReadIo,
     publication_file_capacity::PublicationFileCapacity,
     publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity},
-    publication_sqlite_vfs::SqliteCapacityVfs,
 };
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
@@ -230,15 +231,16 @@ fn with_source_read_authority<T>(
         &RequestBudgetV1::unbounded(),
     )?;
     let common = PublicationFileCapacity::new(lease, authority, 32, 256, 256)?;
-    let vfs = SqliteCapacityVfs::register(
-        Arc::clone(&common),
-        CString::new("quanta-publication-capacity")?,
-        512,
-    )?;
     let objects = NativeObjectReadIo::new(Arc::clone(&common));
     let metadata = common.existing_tree_read_io_v1();
-    let result = read(&root, &vfs, &objects, &metadata, &mut read_budget());
-    vfs.drain_retirements()?;
+    let result = read(
+        &root,
+        common.as_ref(),
+        &objects,
+        &metadata,
+        &mut read_budget(),
+    );
+    common.sweep_retired()?;
     Ok(result)
 }
 
@@ -290,6 +292,54 @@ fn source_high_water_accepts_only_the_latest_matching_actual_ack() -> TestResult
             .as_ref()
             .map(|ack| ack.durable_sequence),
         sequences.get(1).copied()
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_source_census_retains_physical_repomap_without_source_head() -> TestResult {
+    let (directory, _) = fixture(&[], false)?;
+    let root = directory.path();
+    let catalog = Arc::new(SqliteCatalog::open(root, Duration::from_secs(1))?);
+    let store =
+        quanta_index_repomap::RepoMapGenerationStore::open(root.join("repo-map"), catalog)?.store;
+    let bundle = RepoMapSourceBundle::new(
+        RepoId::new(REPO)?,
+        RevisionId::new(REVISION)?,
+        ManifestGeneration::new(7),
+        "a".repeat(64),
+        "map-only-snapshot",
+        1,
+        "b".repeat(64),
+        RepoMapGraphCoverage {
+            item_index_availability: RepoMapItemIndexAvailability::Available,
+            graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+        },
+        RepoMapExactnessSummary::Exact,
+        RepoMapRedactionState::Unredacted,
+    )
+    .with_node(RepoMapNode::File(RepoMapFileNode {
+        file_id: FileId::new("file://src/map_only.rs"),
+        repo_relative_path: RepoRelativePath::new("src/map_only.rs"),
+        line_count: 1,
+    }));
+    let published = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle.clone())?)?;
+    let activated =
+        store.activate_generation_v2(&RepoMapActivateGenerationRequestV2::for_bundle(&bundle)?)?;
+    assert!(!published.mutation.replayed);
+    assert!(!activated.mutation.replayed);
+    drop(store);
+
+    let census = actual_census(root)??;
+    assert!(census.heads.is_empty());
+    assert_eq!(census.catalog.published_search_corpus_rows, 0);
+    assert_eq!(census.repomap_heads.len(), 1);
+    assert_eq!(census.catalog.active_repomap_heads, 1);
+    assert_eq!(census.repomap_heads[0].activation.repo_id, REPO);
+    assert_eq!(census.repomap_heads[0].activation.revision_id, REVISION);
+    assert_eq!(
+        census.repomap_heads[0].activation.epoch,
+        activated.mutation.activation_epoch
     );
     Ok(())
 }

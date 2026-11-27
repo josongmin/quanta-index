@@ -16,6 +16,3 @@ sha2.workspace = true
 rustix = { workspace = true, features = ["process"] }
 rusqlite = { workspace = true, features = ["cache"] }
 tempfile.workspace = true
-
-[target.'cfg(unix)'.dev-dependencies]
-libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs"] }

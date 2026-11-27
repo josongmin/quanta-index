@@ -6,23 +6,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use lance_io::object_store::file_admission::{AdmittedFileStoreProvider, FileAdmission};
-use lance_io::object_store::{
-    ChainedWrappingObjectStore, ObjectStore, ObjectStoreParams, ObjectStoreRegistry, uri_to_url,
-};
+use lance_io::object_store::{ObjectStoreParams, uri_to_url};
+use object_store::ObjectStore as _;
 use object_store::{ObjectStoreExt as _, PutMode, PutMultipartOptions, PutPayload};
 use quanta_index_core::publication_capacity::{CapacitySnapshot, PublicationCapacity};
 use quanta_index_core::{CoreError, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, RequestBudgetV1};
 use quanta_index_searchd::app::runtime::StateRootLease;
 use tokio::io::AsyncWriteExt as _;
 
-use super::PublicationLanceAdmission;
 use crate::publication_file_capacity::PublicationFileCapacity;
 use crate::publication_file_deletions::PublicationFileDeletions;
 use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
 
-type TestResult = Result<(), Box<dyn Error>>;
-type Fixture = (
+pub(super) type TestResult = Result<(), Box<dyn Error>>;
+pub(super) type Fixture = (
     tempfile::TempDir,
     PathBuf,
     StateRootLease,
@@ -34,14 +31,14 @@ type Fixture = (
     clippy::disallowed_methods,
     reason = "test-only Lance futures run on a current-thread runtime owned by this helper"
 )]
-fn run_test(future: impl core::future::Future<Output = TestResult>) -> TestResult {
+pub(super) fn run_test(future: impl core::future::Future<Output = TestResult>) -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(future)
 }
 
-fn require(condition: bool, message: &'static str) -> io::Result<()> {
+pub(super) fn require(condition: bool, message: &'static str) -> io::Result<()> {
     if condition {
         Ok(())
     } else {
@@ -49,7 +46,7 @@ fn require(condition: bool, message: &'static str) -> io::Result<()> {
     }
 }
 
-fn fixture() -> Result<Fixture, Box<dyn Error>> {
+pub(super) fn fixture() -> Result<Fixture, Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path().join("state");
     fs::create_dir(&root)?;
@@ -76,22 +73,22 @@ fn fixture() -> Result<Fixture, Box<dyn Error>> {
     Ok((directory, root, lease, authority, binder))
 }
 
-fn qualified_registry(admission: Arc<dyn FileAdmission>) -> Arc<ObjectStoreRegistry> {
-    let registry = Arc::new(ObjectStoreRegistry::default());
-    registry.insert("file", Arc::new(AdmittedFileStoreProvider::new(admission)));
-    registry
-}
-
-fn deletion_owner(binder: &Arc<PublicationFileCapacity>) -> Arc<PublicationFileDeletions> {
+pub(super) fn deletion_owner(
+    binder: &Arc<PublicationFileCapacity>,
+) -> Arc<PublicationFileDeletions> {
     Arc::new(PublicationFileDeletions::new(Arc::clone(binder)))
 }
 
-fn root_uri(root: &Path) -> io::Result<&str> {
+pub(super) fn root_uri(root: &Path) -> io::Result<&str> {
     root.to_str()
         .ok_or_else(|| io::Error::other("test state root is not UTF-8"))
 }
 
-fn contains_budget_cause(error: &(dyn Error + 'static)) -> bool {
+pub(super) fn memory_uri(root: &Path) -> io::Result<String> {
+    Ok(format!("memory://{}", root_uri(root)?))
+}
+
+pub(super) fn contains_budget_cause(error: &(dyn Error + 'static)) -> bool {
     let mut source = Some(error);
     while let Some(current) = source {
         if matches!(
@@ -113,236 +110,596 @@ fn contains_budget_cause(error: &(dyn Error + 'static)) -> bool {
 fn real_local_writer_refuses_growth_beyond_held_work_parent() -> TestResult {
     run_test(async {
         let (_directory, root, _lease, authority, binder) = fixture()?;
+        let boot = authority.snapshot()?;
+        let disk = regular_file_census(&root)?;
         let parent = Arc::new(authority.reserve_publication(3, 1)?);
-        let charged = authority.snapshot()?;
-        let admission: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            Arc::clone(&parent),
-        )?);
-        let registry = qualified_registry(admission);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            registry,
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
+        let (store, staging) =
+            candidate_staged_store(&root, deletion_owner(&binder), Arc::clone(&parent), None)?;
+        let physical = staging.join("table.lance/data/overgrowth.lance");
+        let path = object_store::path::Path::from_absolute_path(&physical)?;
+        let mut writer = store.put_multipart(&path).await?;
+        writer.put_part(PutPayload::from_static(b"abc")).await?;
+        require_one_staged_payload(&root, b"abc")?;
+        let admitted = authority.snapshot()?;
+        let refusal = writer.put_part(PutPayload::from_static(b"x")).await;
         require(
-            store.is_local(),
-            "qualified store changed local-file semantics",
+            matches!(refusal, Err(ref error) if contains_budget_cause(error))
+                && !physical.exists()
+                && authority.snapshot()? == admitted,
+            "product writer growth changed capacity or exposed the final path",
         )?;
-        require(
-            store.has_file_admission(),
-            "qualified store lost its admission",
-        )?;
-        let target = root.join("data.lance");
-        let path = base_path.join("data.lance");
-        let mut writer = store.create(&path).await?;
-        writer.write_all(b"abc").await?;
-        writer.flush().await?;
-        let before_refusal = authority.snapshot()?;
-        let refusal = writer
-            .write_all(b"d")
-            .await
-            .err()
-            .ok_or_else(|| io::Error::other("writer exceeded held byte parent"))?;
-        require(
-            contains_budget_cause(&refusal),
-            "writer refusal lost its typed budget source",
-        )?;
-        require(!target.exists(), "failed writer published a final file")?;
-        require(
-            authority.snapshot()? == before_refusal,
-            "failed growth changed the existing physical charge",
-        )?;
-        require(
-            before_refusal.used_bytes == charged.used_bytes
-                && before_refusal.used_files == charged.used_files,
-            "admitted child double charged its held parent",
-        )?;
-        let mut staged = 0_u64;
-        for item in fs::read_dir(&root)? {
-            let item = item?;
-            if item
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".lance-admitted-")
-            {
-                staged = staged
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("staged file count overflow"))?;
-                require(
-                    item.metadata()?.len() == 3,
-                    "refused append touched staged bytes",
-                )?;
-            }
-        }
-        require(staged == 1, "expected one actual admitted staging file")?;
+        require_one_staged_payload(&root, b"abc")?;
+        writer.abort().await?;
         drop(writer);
+        drop(store);
+        drop(parent);
+        binder.sweep_retired()?;
+        require(
+            regular_file_census(&root)? == disk
+                && authority.snapshot()? == boot
+                && binder.is_quiescent()?,
+            "refused product writer left a staged file, charge, or pin",
+        )?;
         Ok(())
     })
 }
 
+fn candidate_staged_store(
+    root: &Path,
+    deletions: Arc<PublicationFileDeletions>,
+    held: Arc<quanta_index_core::publication_capacity::PublicationAllowance>,
+    base_generation: Option<u64>,
+) -> Result<(quanta_index_semantic::AdmittedMemoryWorkStore, PathBuf), Box<dyn Error>> {
+    use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+    use quanta_index_semantic::legacy::layout::{DATASET_STAGING_DIR_NAME, generation_dir};
+    use quanta_index_semantic::{
+        AdmittedMemoryWorkStore, SemanticFileAdmissionFactory as _, semantic_state_root,
+    };
+
+    let generation = generation_dir(
+        &semantic_state_root(root),
+        &RepoId::new("repo-staging-write").map_err(io::Error::other)?,
+        &RevisionId::new("rev-staging-write").map_err(io::Error::other)?,
+        ManifestGeneration::new(3),
+    );
+    let base = base_generation.map(|number| generation.with_file_name(format!("g{number}")));
+    let staging = generation.join(DATASET_STAGING_DIR_NAME);
+    let factory =
+        crate::semantic_file_factory::CanonicalSemanticFileAdmissionFactory::new(deletions);
+    let work = factory.for_work(held, &generation, base.as_deref())?;
+    Ok((AdmittedMemoryWorkStore::new(work), staging))
+}
+
+#[cfg(feature = "qualified-memory-uri-candidate")]
+fn candidate_published_dataset_file(
+    root: &Path,
+    deletions: Arc<PublicationFileDeletions>,
+    held: Arc<quanta_index_core::publication_capacity::PublicationAllowance>,
+    generation_number: u64,
+    relative: &Path,
+    bytes: &[u8],
+) -> Result<PathBuf, Box<dyn Error>> {
+    use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+    use quanta_index_semantic::legacy::layout::{DATASET_STAGING_DIR_NAME, generation_dir};
+    use quanta_index_semantic::{SemanticFileAdmissionFactory as _, SemanticStagingTargetMode};
+
+    let generation = generation_dir(
+        &quanta_index_semantic::semantic_state_root(root),
+        &RepoId::new("repo-staging-write").map_err(io::Error::other)?,
+        &RevisionId::new("rev-staging-write").map_err(io::Error::other)?,
+        ManifestGeneration::new(generation_number),
+    );
+    let staging = generation.join(DATASET_STAGING_DIR_NAME);
+    let dataset = staging.with_file_name("dataset");
+    let factory =
+        crate::semantic_file_factory::CanonicalSemanticFileAdmissionFactory::new(deletions);
+    let work = factory.for_work(held, &generation, None)?;
+    require(
+        work.put_staging_file(
+            &staging.join(relative),
+            SemanticStagingTargetMode::Create,
+            &[bytes],
+        )?
+        .is_some(),
+        "product fixture did not create its staging file",
+    )?;
+    work.begin_move(&staging, &dataset)?.perform_and_sync()?;
+    Ok(dataset.join(relative))
+}
+
+#[cfg(feature = "qualified-memory-uri-candidate")]
 #[test]
-fn real_local_writer_reader_and_unlink_retain_exact_inode_charge() -> TestResult {
+fn candidate_staged_put_and_delete_preserve_scope_and_inode_charge() -> TestResult {
     run_test(async {
         let (_directory, root, _lease, authority, binder) = fixture()?;
         let boot = authority.snapshot()?;
-        let lock = root.join(".searchd-state-root.lock");
-        require(
-            lock.metadata()?.len() == 0
-                && boot.used_bytes == 0
-                && boot.used_files == 1
-                && boot.retained_inodes == 1
-                && boot.active_allowances == 0
-                && boot.active_tickets == 0,
-            "boot inventory did not count exactly the empty state-root lock",
-        )?;
-        let committed_bytes = boot
-            .used_bytes
-            .checked_add(3)
-            .ok_or_else(|| io::Error::other("three-byte charge overflow"))?;
-        let committed_files = boot
-            .used_files
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("one-file charge overflow"))?;
-        let committed_inodes = boot
-            .retained_inodes
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("one-inode charge overflow"))?;
-
-        // Reserve slack deliberately: after every unused work-parent owner is
-        // dropped, only the lock and three-byte output remain charged.
-        let parent = Arc::new(authority.reserve_publication(8, 1)?);
+        let outside = root
+            .parent()
+            .ok_or_else(|| io::Error::other("state root has no parent"))?
+            .join("foreign-literal%2Fname");
+        fs::write(&outside, b"outside")?;
         let deletions = deletion_owner(&binder);
-        let work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
+        let parent = Arc::new(authority.reserve_publication(9, 3)?);
+        let (store, staging) =
+            candidate_staged_store(&root, Arc::clone(&deletions), Arc::clone(&parent), None)?;
+        let physical = staging.join("table.lance/_transactions/literal%2Fname");
+        let protected = candidate_published_dataset_file(
+            &root,
             Arc::clone(&deletions),
             Arc::clone(&parent),
-        )?);
-        let work_registry = qualified_registry(work);
-        let (work_store, base_path) = ObjectStore::from_uri_and_params(
-            Arc::clone(&work_registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let path = base_path.join("retained.lance");
-        let physical = root.join("retained.lance");
-        let mut writer = work_store.create(&path).await?;
-        writer.write_all(b"abc").await?;
-        let result = lance_io::traits::Writer::shutdown(writer.as_mut()).await?;
-        require(result.size == 3, "vendor finish reported the wrong width")?;
-        drop(writer);
-        require(
-            physical.metadata()?.len() == 3,
-            "vendor finish published the wrong physical width",
+            3,
+            Path::new("table.lance/_transactions/literal%2Fname"),
+            b"abc",
         )?;
-
-        let reader = work_store.open(&path).await?;
         require(
-            reader.get_range(0..3).await?.as_ref() == b"abc",
-            "admitted reader returned the wrong payload",
+            protected
+                == staging
+                    .with_file_name("dataset")
+                    .join("table.lance/_transactions/literal%2Fname"),
+            "product fixture published outside the expected generation dataset",
         )?;
-        drop(work_store);
-        drop(work_registry);
-        drop(parent);
+        let encoded = object_store::path::Path::from_absolute_path(&physical)?;
+        let foreign = object_store::path::Path::from_absolute_path(&outside)?;
+        let published = object_store::path::Path::from_absolute_path(&protected)?;
+        let created = store
+            .put_opts(
+                &encoded,
+                PutPayload::from_static(b"abc"),
+                PutMode::Create.into(),
+            )
+            .await?;
+        require(
+            fs::read(&physical)? == b"abc" && fs::read(&outside)? == b"outside",
+            "encoded path selected another physical file",
+        )?;
+        require(
+            created.e_tag.is_some() && created.e_tag == store.head(&encoded).await?.e_tag,
+            "created ETag differs from the staged inode's HEAD",
+        )?;
+        let created_snapshot = authority.snapshot()?;
+        require(
+            matches!(
+                store
+                    .put_opts(
+                        &encoded,
+                        PutPayload::from_static(b"bad"),
+                        PutMode::Create.into()
+                    )
+                    .await,
+                Err(object_store::Error::AlreadyExists { .. })
+            ) && authority.snapshot()? == created_snapshot
+                && fs::read(&physical)? == b"abc",
+            "create conflict mutated the staging file or capacity",
+        )?;
+        require(
+            store
+                .put_opts(
+                    &published,
+                    PutPayload::from_static(b"bad"),
+                    PutMode::Overwrite.into(),
+                )
+                .await
+                .is_err()
+                && authority.snapshot()? == created_snapshot
+                && fs::read(&protected)? == b"abc",
+            "candidate staging PUT crossed into the published dataset",
+        )?;
+        let replaced = store
+            .put_opts(
+                &encoded,
+                PutPayload::from_static(b"new"),
+                PutMode::Overwrite.into(),
+            )
+            .await?;
+        require(
+            replaced.e_tag != created.e_tag
+                && replaced.e_tag == store.head(&encoded).await?.e_tag
+                && fs::read(&physical)? == b"new",
+            "overwrite did not atomically install a new tagged inode",
+        )?;
         let committed = authority.snapshot()?;
         require(
-            committed.used_bytes == committed_bytes
-                && committed.used_files == committed_files
-                && committed.retained_inodes == committed_inodes
-                && committed.active_allowances == boot.active_allowances,
-            "committed inode kept unused work-parent slack or lost its charge",
+            store.delete(&foreign).await.is_err()
+                && fs::read(&outside)? == b"outside"
+                && authority.snapshot()? == committed,
+            "candidate delete crossed the admitted state root",
         )?;
-
-        let retirement: Arc<dyn FileAdmission> = Arc::new(
-            PublicationLanceAdmission::retirement_only(Arc::clone(&deletions)),
-        );
-        let retirement_registry = qualified_registry(retirement);
-        let (retirement_store, _retirement_base) = ObjectStore::from_uri_and_params(
-            Arc::clone(&retirement_registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        retirement_store.delete(&path).await?;
-        require(!physical.exists(), "delete left the pathname visible")?;
         require(
-            reader.get_range(0..3).await?.as_ref() == b"abc",
-            "unlinked admitted reader lost its original inode",
+            store.delete(&published).await.is_err()
+                && fs::read(&protected)? == b"abc"
+                && authority.snapshot()? == committed,
+            "candidate staging delete crossed into the published dataset",
         )?;
-        let pinned = authority.snapshot()?;
+        store.delete(&encoded).await?;
         require(
-            pinned.used_bytes == committed_bytes
-                && pinned.used_files == committed_files
-                && pinned.retained_inodes == committed_inodes,
-            "unlink refunded a still-open reader inode",
+            matches!(
+                store.delete(&encoded).await,
+                Err(object_store::Error::NotFound { .. })
+            ),
+            "missing staging file lost its typed NotFound",
         )?;
-
-        drop(reader);
+        drop(store);
+        drop(parent);
+        deletions.delete_file_and_sync(&protected)?;
         binder.sweep_retired()?;
-        drop(retirement_store);
-        drop(retirement_registry);
         require(
-            authority.snapshot()? == boot,
-            "last reader retirement did not restore the boot capacity baseline",
+            !physical.exists() && authority.snapshot()? == boot,
+            "candidate delete did not restore the admitted baseline",
         )?;
         Ok(())
     })
 }
 
+#[cfg(feature = "qualified-memory-uri-candidate")]
 #[test]
-#[expect(
-    deprecated,
-    reason = "test exercises the pinned legacy custom inner-store bypass field"
-)]
-fn qualified_session_rejects_explicit_inner_store_bypass() -> TestResult {
+fn candidate_staging_multipart_orders_parts_and_recovers_aborted_writes() -> TestResult {
     run_test(async {
         let (_directory, root, _lease, authority, binder) = fixture()?;
-        let parent = Arc::new(authority.reserve_publication(8, 1)?);
-        let admission: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            parent,
-        )?);
-        let registry = qualified_registry(admission);
-        let (store, _path) = ObjectStore::from_uri_and_params(
-            Arc::clone(&registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
+        let baseline = authority.snapshot()?;
+        let disk = regular_file_census(&root)?;
+        let parent = Arc::new(authority.reserve_publication(10, 3)?);
+        let (store, staging) =
+            candidate_staged_store(&root, deletion_owner(&binder), Arc::clone(&parent), None)?;
+        let target = staging.join("table.lance/data/committed.lance");
+        let path = object_store::path::Path::from_absolute_path(&target)?;
+        let mut upload = store.put_multipart(&path).await?;
+        let first = upload.put_part(PutPayload::from_static(b"one"));
+        let second = upload.put_part(PutPayload::from_static(b"two"));
+        second.await?;
+        require(!target.exists(), "part write exposed the final name")?;
+        first.await?;
+        let committed = upload.complete().await?;
+        require(
+            fs::read(&target)? == b"onetwo"
+                && committed.e_tag.is_some()
+                && committed.e_tag == store.head(&path).await?.e_tag,
+            "out-of-order part writes changed payload order or final ETag",
+        )?;
+
+        let cancelled = staging.join("table.lance/data/cancelled.lance");
+        let cancelled_path = object_store::path::Path::from_absolute_path(&cancelled)?;
+        let mut upload = store.put_multipart(&cancelled_path).await?;
+        let denied = upload
+            .put_part(PutPayload::from_static(b"over-budget"))
+            .await;
+        require(
+            matches!(denied, Err(ref error) if contains_budget_cause(error)),
+            "multipart growth escaped held Work or lost the typed refusal",
+        )?;
+        let waiting = upload.put_part(PutPayload::from_static(b"one"));
+        upload.abort().await?;
+        require(
+            waiting.await.is_err() && !cancelled.exists(),
+            "queued part wrote after abort or exposed its target",
+        )?;
+
+        let mut incomplete = store.put_multipart(&cancelled_path).await?;
+        let unpolled = incomplete.put_part(PutPayload::from_static(b"one"));
+        require(
+            incomplete.complete().await.is_err() && unpolled.await.is_err() && !cancelled.exists(),
+            "completion published a reservation whose payload never ran",
+        )?;
+        store.delete(&path).await?;
+        let mut abandoned = store.put_multipart(&cancelled_path).await?;
+        abandoned.put_part(PutPayload::from_static(b"one")).await?;
+        let staged_disk = regular_file_census(&root)?;
+        require(
+            !cancelled.exists()
+                && disk.0.checked_add(3) == Some(staged_disk.0)
+                && disk.1.checked_add(1) == Some(staged_disk.1),
+            "written part did not remain in one private staging inode before drop",
+        )?;
+        let late = abandoned.put_part(PutPayload::from_static(b"x"));
+        drop(abandoned);
+        drop(store);
+        drop(parent);
+        wait_for_boot_refund(&authority, baseline).await?;
+        binder.sweep_retired()?;
+        require(
+            late.await.is_err()
+                && !cancelled.exists()
+                && !target.exists()
+                && authority.snapshot()? == baseline
+                && regular_file_census(&root)? == disk
+                && binder.is_quiescent()?,
+            "multipart completion or abort failed to restore capacity",
         )
-        .await?;
+        .map_err(Into::into)
+    })
+}
+
+#[cfg(feature = "qualified-memory-uri-candidate")]
+#[test]
+fn candidate_staging_copy_and_rename_preserve_scope_and_shared_inode() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+
+    run_test(async {
+        let (_directory, root, _lease, authority, binder) = fixture()?;
+        let boot = authority.snapshot()?;
+        let parent = Arc::new(authority.reserve_publication(7, 2)?);
+        let (store, staging) =
+            candidate_staged_store(&root, deletion_owner(&binder), Arc::clone(&parent), None)?;
+        let source = staging.join("table.lance/data/source.lance");
+        let target = staging.join("table.lance/data/target.lance");
+        let alias = staging.join("table.lance/data/alias.lance");
+        let moved = staging.join("table.lance/data/moved.lance");
+        let out_of_scope = staging.with_file_name("dataset").join("escape.lance");
+        let source_path = object_store::path::Path::from_absolute_path(&source)?;
+        let target_path = object_store::path::Path::from_absolute_path(&target)?;
+        let alias_path = object_store::path::Path::from_absolute_path(&alias)?;
+        let moved_path = object_store::path::Path::from_absolute_path(&moved)?;
+        let foreign_path = object_store::path::Path::from_absolute_path(&out_of_scope)?;
+        let _source_put = store
+            .put(&source_path, PutPayload::from_static(b"new"))
+            .await?;
+        let _target_put = store
+            .put(&target_path, PutPayload::from_static(b"old!"))
+            .await?;
+        let both = authority.snapshot()?;
+
         require(
-            store.is_local(),
-            "qualified store changed local-file semantics",
+            matches!(
+                store.copy_if_not_exists(&source_path, &target_path).await,
+                Err(object_store::Error::AlreadyExists { .. })
+            ) && fs::read(&target)? == b"old!"
+                && authority.snapshot()? == both,
+            "create-only copy replaced the destination or changed the charge",
+        )?;
+        store.copy_if_not_exists(&source_path, &alias_path).await?;
+        require(
+            authority.snapshot()? == both
+                && fs::metadata(&source)?.ino() == fs::metadata(&alias)?.ino(),
+            "copy allocated a separate inode or charge",
+        )?;
+        store.copy(&source_path, &target_path).await?;
+        require(
+            fs::read(&target)? == b"new"
+                && fs::metadata(&source)?.ino() == fs::metadata(&target)?.ino()
+                && fs::metadata(&source)?.nlink() == 3,
+            "overwrite copy changed the source or left a staging alias",
         )?;
         require(
-            store.has_file_admission(),
-            "qualified store lost its admission",
+            matches!(
+                store.rename_if_not_exists(&alias_path, &target_path).await,
+                Err(object_store::Error::AlreadyExists { .. })
+            ),
+            "create-only rename did not report its existing inode alias",
         )?;
-        let before = authority.snapshot()?;
-        let params = ObjectStoreParams {
-            object_store: Some((ObjectStore::memory().inner, uri_to_url("memory:///")?)),
-            ..ObjectStoreParams::default()
+        require(
+            store.rename(&alias_path, &foreign_path).await.is_err()
+                && store.copy(&source_path, &foreign_path).await.is_err()
+                && !out_of_scope.exists(),
+            "staging namespace mutation reached the sealed dataset scope",
+        )?;
+        store.rename_if_not_exists(&alias_path, &moved_path).await?;
+        require(
+            !alias.exists() && fs::metadata(&moved)?.ino() == fs::metadata(&source)?.ino(),
+            "rename did not move the original alias",
+        )?;
+        require(
+            matches!(
+                store.copy(&alias_path, &target_path).await,
+                Err(object_store::Error::NotFound { .. })
+            ),
+            "missing staging source lost its typed NotFound",
+        )?;
+        for path in [&source_path, &target_path, &moved_path] {
+            store.delete(path).await?;
+        }
+        drop(store);
+        drop(parent);
+        binder.sweep_retired()?;
+        require(
+            authority.snapshot()? == boot,
+            "namespace mutations leaked a retained inode",
+        )?;
+        Ok(())
+    })
+}
+
+#[cfg(feature = "qualified-memory-uri-candidate")]
+async fn collect_candidate_work_list(
+    store: &quanta_index_semantic::AdmittedMemoryWorkStore,
+    prefix: &object_store::path::Path,
+    offset: Option<&object_store::path::Path>,
+) -> Result<Vec<object_store::ObjectMeta>, object_store::Error> {
+    let mut entries = match offset {
+        Some(offset) => store.list_with_offset(Some(prefix), offset),
+        None => store.list(Some(prefix)),
+    };
+    let mut objects = Vec::new();
+    while let Some(entry) =
+        std::future::poll_fn(|context| entries.as_mut().poll_next(context)).await
+    {
+        objects.push(entry?);
+    }
+    Ok(objects)
+}
+
+#[cfg(feature = "qualified-memory-uri-candidate")]
+#[test]
+fn candidate_work_reads_staging_and_declared_base_without_consuming_a_move() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    run_test(async {
+        let (_directory, root, _lease, authority, binder) = fixture()?;
+        let boot = authority.snapshot()?;
+        let deletions = deletion_owner(&binder);
+        let held = Arc::new(authority.reserve_publication(16, 4)?);
+        let (store, staging) =
+            candidate_staged_store(&root, Arc::clone(&deletions), Arc::clone(&held), Some(1))?;
+        let base = candidate_published_dataset_file(
+            &root,
+            Arc::clone(&deletions),
+            Arc::clone(&held),
+            1,
+            Path::new("table.lance/base.lance"),
+            b"base",
+        )?;
+        let foreign = candidate_published_dataset_file(
+            &root,
+            Arc::clone(&deletions),
+            Arc::clone(&held),
+            2,
+            Path::new("table.lance/foreign.lance"),
+            b"out",
+        )?;
+        let generation = staging
+            .parent()
+            .ok_or("fixture generation directory is absent")?;
+        require(
+            base == generation
+                .with_file_name("g1")
+                .join("dataset/table.lance/base.lance")
+                && foreign
+                    == generation
+                        .with_file_name("g2")
+                        .join("dataset/table.lance/foreign.lance"),
+            "product fixture published outside the declared base or foreign generation",
+        )?;
+        let staged = staging.join("table.lance/staged.lance");
+        let moved = staging.join("table.lance/moved.lance");
+        let table = staging.join("table.lance");
+        let nested = table.join("z-nested/data.lance");
+        let empty = table.join("empty");
+        let upload_temporary = table.join("payload#1");
+        let base_path = object_store::path::Path::from_absolute_path(&base)?;
+        let foreign_path = object_store::path::Path::from_absolute_path(&foreign)?;
+        let staged_path = object_store::path::Path::from_absolute_path(&staged)?;
+        let moved_path = object_store::path::Path::from_absolute_path(&moved)?;
+        let table_path = object_store::path::Path::from_absolute_path(&table)?;
+        let nested_path = object_store::path::Path::from_absolute_path(&nested)?;
+        let empty_path = object_store::path::Path::from_absolute_path(&empty)?;
+
+        let staged_put = store
+            .put(&staged_path, PutPayload::from_static(b"stage"))
+            .await?;
+        let _nested_put = store
+            .put(&nested_path, PutPayload::from_static(b"data"))
+            .await?;
+        fs::create_dir(&empty)?;
+        fs::set_permissions(&empty, fs::Permissions::from_mode(0o700))?;
+        fs::write(&upload_temporary, [])?;
+
+        let delimiter = store.list_with_delimiter(Some(&table_path)).await?;
+        let expected_prefixes = [empty_path, table_path.clone().join("z-nested")];
+        require(
+            delimiter.common_prefixes == expected_prefixes
+                && delimiter.objects.as_slice() == [store.head(&staged_path).await?],
+            "delimiter lost the empty directory or disclosed a temporary upload",
+        )?;
+        let listed = collect_candidate_work_list(&store, &table_path, None).await?;
+        let after_offset =
+            collect_candidate_work_list(&store, &table_path, Some(&staged_path)).await?;
+        require(
+            listed
+                .iter()
+                .map(|object| &object.location)
+                .eq([&staged_path, &nested_path])
+                && after_offset
+                    .iter()
+                    .map(|object| &object.location)
+                    .eq([&nested_path]),
+            "recursive list order or exclusive offset changed",
+        )?;
+        let missing = table_path.clone().join("absent");
+        for prefix in [&staged_path, &missing] {
+            require(
+                collect_candidate_work_list(&store, prefix, None)
+                    .await?
+                    .is_empty(),
+                "missing or file prefix enumerated its parent",
+            )?;
+        }
+        let base_table = object_store::path::Path::from_absolute_path(
+            base.parent().ok_or("base table absent")?,
+        )?;
+        let foreign_table = object_store::path::Path::from_absolute_path(
+            foreign.parent().ok_or("foreign table absent")?,
+        )?;
+        require(
+            store
+                .list_with_delimiter(Some(&base_table))
+                .await?
+                .objects
+                .as_slice()
+                == [store.head(&base_path).await?]
+                && store
+                    .list_with_delimiter(Some(&foreign_table))
+                    .await
+                    .is_err()
+                && store.list_with_delimiter(None).await.is_err(),
+            "work listing escaped the staging or declared base scope",
+        )?;
+        let unsafe_entry = table.join("foreign-link");
+        symlink(&foreign, &unsafe_entry)?;
+        require(
+            store.list_with_delimiter(Some(&table_path)).await.is_err(),
+            "work listing accepted a symlink child",
+        )?;
+        fs::remove_file(unsafe_entry)?;
+        fs::remove_file(upload_temporary)?;
+
+        let ranges = store.get_ranges(&base_path, &[2..10, 0..2]).await?;
+        let [tail, start] = ranges.as_slice() else {
+            return Err("base read returned the wrong number of ranges".into());
         };
-        let bypass =
-            ObjectStore::from_uri_and_params(Arc::clone(&registry), root_uri(&root)?, &params)
-                .await;
         require(
-            bypass.is_err(),
-            "qualified provider accepted explicit inner store",
-        )?;
-        let wrapped_params = ObjectStoreParams {
-            object_store_wrapper: Some(Arc::new(ChainedWrappingObjectStore::new(Vec::new()))),
-            ..ObjectStoreParams::default()
-        };
-        let wrapped =
-            ObjectStore::from_uri_and_params(registry, root_uri(&root)?, &wrapped_params).await;
-        require(
-            wrapped.is_err(),
-            "qualified provider accepted a store wrapper",
+            tail.as_ref() == b"se" && start.as_ref() == b"ba",
+            "base range ordering or EOF clipping changed",
         )?;
         require(
-            authority.snapshot()? == before,
-            "rejected inner store changed physical charges",
+            store.head(&staged_path).await?.e_tag == staged_put.e_tag
+                && store.get(&staged_path).await?.bytes().await?.as_ref() == b"stage",
+            "staging HEAD or body did not use the staged inode",
+        )?;
+        require(
+            matches!(
+                store
+                    .get_opts(
+                        &staged_path,
+                        object_store::GetOptions {
+                            if_match: Some("stale-etag".to_owned()),
+                            ..object_store::GetOptions::default()
+                        }
+                    )
+                    .await,
+                Err(object_store::Error::Precondition { .. })
+            ),
+            "staging GET accepted a stale ETag",
+        )?;
+        require(
+            store.head(&foreign_path).await.is_err()
+                && store.get_ranges(&foreign_path, &[0..1]).await.is_err()
+                && store.get_ranges(&base_path, &[9..10]).await.is_err(),
+            "work reader crossed generations or accepted an invalid range",
+        )?;
+
+        let mut original = deletions.begin_file_move(&staged, &moved, true)?;
+        original.perform_move()?;
+        drop(original);
+        require(
+            store.head(&moved_path).await.is_err()
+                && store.list_with_delimiter(Some(&table_path)).await.is_err(),
+            "work observation consumed an unfinished move's original receipt",
+        )?;
+        store.rename(&staged_path, &moved_path).await?;
+        require(
+            store.head(&moved_path).await?.e_tag == staged_put.e_tag,
+            "same-path retry did not settle the original inode",
+        )?;
+
+        store.delete(&moved_path).await?;
+        store.delete(&nested_path).await?;
+        for path in [&base, &foreign] {
+            deletions.delete_file_and_sync(path)?;
+        }
+        drop(store);
+        drop(held);
+        binder.sweep_retired()?;
+        require(
+            authority.snapshot()? == boot && binder.is_quiescent()?,
+            "work reader left retained fixture capacity or reader custody",
         )?;
         Ok(())
     })
@@ -350,203 +707,157 @@ fn qualified_session_rejects_explicit_inner_store_bypass() -> TestResult {
 
 #[test]
 fn readonly_and_foreign_parent_refuse_before_namespace_creation() -> TestResult {
+    use quanta_index_semantic::{AdmittedMemorySealedStore, SemanticFileAdmissionFactory as _};
+
     run_test(async {
         let (_directory, root, _lease, authority, binder) = fixture()?;
-        let read_only: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::read_only(
-            Arc::new(PublicationFileDeletions::new(Arc::clone(&binder))),
-        ));
-        let registry = qualified_registry(read_only);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            registry,
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        require(
-            store.is_local(),
-            "qualified store changed local-file semantics",
-        )?;
-        require(
-            store.has_file_admission(),
-            "qualified store lost its admission",
-        )?;
         let before = authority.snapshot()?;
-        let target = root.join("not-created/deep/data.lance");
-        let path = base_path
-            .join("not-created")
-            .join("deep")
-            .join("data.lance");
-        require(
-            store.create(&path).await.is_err(),
-            "read-only store created a writer",
+        let deletions = deletion_owner(&binder);
+        let factory = crate::semantic_file_factory::CanonicalSemanticFileAdmissionFactory::new(
+            Arc::clone(&deletions),
+        );
+        let dataset = root.join("not-created/deep/dataset");
+        let store = AdmittedMemorySealedStore::new(
+            &dataset,
+            Vec::new(),
+            factory.control_reader_lifetime(),
         )?;
+        let physical = dataset.join("data.lance");
+        let path = object_store::path::Path::from_absolute_path(&physical)?;
+        for result in [
+            store
+                .put_opts(&path, PutPayload::from_static(b"x"), PutMode::Create.into())
+                .await
+                .map(|_| ()),
+            store
+                .put_multipart_opts(&path, PutMultipartOptions::default())
+                .await
+                .map(|_| ()),
+            store.delete(&path).await,
+        ] {
+            let error = result
+                .err()
+                .ok_or_else(|| io::Error::other("sealed write was admitted"))?;
+            require(
+                matches!(error, object_store::Error::Generic { source, .. }
+                    if source.downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied)),
+                "sealed mutation lost its permission denial",
+            )?;
+        }
         require(
-            !root.join("not-created").exists(),
-            "read-only admission created a parent directory",
-        )?;
-        require(
-            !target.exists(),
-            "read-only admission created its target file",
-        )?;
-        require(
-            authority.snapshot()? == before,
-            "read-only path changed charges",
+            !root.join("not-created").exists()
+                && !physical.exists()
+                && authority.snapshot()? == before,
+            "sealed mutation created a namespace or changed capacity charges",
         )?;
 
         let (_other_directory, _other_root, _other_lease, foreign, _other_binder) = fixture()?;
         let foreign_parent = Arc::new(foreign.reserve_publication(1, 1)?);
         let foreign_before = foreign.snapshot()?;
+        let refusal = candidate_staged_store(&root, deletions, Arc::clone(&foreign_parent), None)
+            .err()
+            .ok_or_else(|| io::Error::other("foreign work parent entered the product store"))?;
         require(
-            PublicationLanceAdmission::for_work(
-                deletion_owner(&binder),
-                Arc::clone(&foreign_parent),
-            )
-            .is_err(),
-            "foreign work parent entered local-file admission",
-        )?;
-        require(
-            authority.snapshot()? == before,
-            "foreign parent charged local ledger",
-        )?;
-        require(
-            foreign.snapshot()? == foreign_before,
-            "foreign parent changed after refusal",
-        )?;
-        require(
-            !root.join("not-created").exists(),
-            "foreign parent created a namespace before validation",
+            matches!(
+                refusal.downcast_ref::<CoreError>(),
+                Some(CoreError::InvalidContract(_))
+            ) && authority.snapshot()? == before
+                && foreign.snapshot()? == foreign_before
+                && !root.join("indexes").exists(),
+            "foreign work parent changed a ledger or created a namespace before validation",
         )?;
         Ok(())
     })
 }
 
 async fn real_local_put_opts_mode(overwrite: bool) -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+
     let (_directory, root, lease, authority, binder) = fixture()?;
     let boot = authority.snapshot()?;
-    let lock = root.join(".searchd-state-root.lock");
-    require(
-        lock.metadata()?.len() == 0
-            && boot.used_bytes == 0
-            && boot.used_files == 1
-            && boot.retained_inodes == 1
-            && boot.active_allowances == 0
-            && boot.active_tickets == 0,
-        "put boot inventory did not count exactly the empty state-root lock",
-    )?;
-    let committed_bytes = boot
-        .used_bytes
-        .checked_add(3)
-        .ok_or_else(|| io::Error::other("three-byte charge overflow"))?;
-    let committed_files = boot
-        .used_files
-        .checked_add(1)
-        .ok_or_else(|| io::Error::other("one-file charge overflow"))?;
-    let committed_inodes = boot
-        .retained_inodes
-        .checked_add(1)
-        .ok_or_else(|| io::Error::other("one-inode charge overflow"))?;
-
-    // An overwrite temporarily owns both the old and new physical inodes.
-    let parent = Arc::new(authority.reserve_publication(8, if overwrite { 2 } else { 1 })?);
+    let disk = regular_file_census(&root)?;
     let deletions = deletion_owner(&binder);
-    let work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-        Arc::clone(&deletions),
-        Arc::clone(&parent),
-    )?);
-    let work_registry = qualified_registry(work);
-    let (work_store, base_path) = ObjectStore::from_uri_and_params(
-        Arc::clone(&work_registry),
-        root_uri(&root)?,
-        &ObjectStoreParams::default(),
-    )
-    .await?;
-    require(
-        work_store.is_local() && work_store.has_file_admission(),
-        "put session lost its qualified local-file provider",
-    )?;
-    let path = base_path.join("put-opts.lance");
-    let physical = root.join("put-opts.lance");
-    if overwrite {
-        let _seed = work_store
-            .inner
+    let parent = Arc::new(authority.reserve_publication(8, if overwrite { 2 } else { 1 })?);
+    let (store, staging) =
+        candidate_staged_store(&root, Arc::clone(&deletions), Arc::clone(&parent), None)?;
+    let physical = staging.join("table.lance/data/put-opts.lance");
+    let path = object_store::path::Path::from_absolute_path(&physical)?;
+    let replaced = if overwrite {
+        let _seed = store
             .put_opts(
                 &path,
                 PutPayload::from_static(b"old"),
                 PutMode::Create.into(),
             )
             .await?;
-        require(
-            fs::read(&physical)? == b"old",
-            "overwrite seed was not the expected three-byte inode",
-        )?;
-    }
+        Some((fs::metadata(&physical)?.ino(), store.get(&path).await?))
+    } else {
+        None
+    };
     let mode = if overwrite {
         PutMode::Overwrite
     } else {
         PutMode::Create
     };
-    let _published = work_store
-        .inner
+    let published = store
         .put_opts(&path, PutPayload::from_static(b"abc"), mode.into())
         .await?;
+    let metadata = fs::metadata(&physical)?;
+    let reader = store.get(&path).await?;
     require(
-        fs::read(&physical)? == b"abc" && physical.metadata()?.len() == 3,
-        "put_opts did not publish its exact three-byte payload",
+        fs::read(&physical)? == b"abc"
+            && metadata.len() == 3
+            && published.e_tag.is_some()
+            && reader.meta.e_tag == published.e_tag,
+        "product put did not publish and open the exact committed output",
     )?;
-    let reader = work_store.open(&path).await?;
-    require(
-        reader.get_range(0..3).await?.as_ref() == b"abc",
-        "admitted put reader returned the wrong bytes",
-    )?;
-    drop(work_store);
-    drop(work_registry);
+    if let Some((old_inode, old_reader)) = replaced {
+        require(
+            old_inode != metadata.ino() && old_reader.bytes().await?.as_ref() == b"old",
+            "replacement mutated the reader's old inode or reused its pathname",
+        )?;
+    }
+    drop(store);
     drop(parent);
+    binder.sweep_retired()?;
     let committed = authority.snapshot()?;
     require(
-        committed.used_bytes == committed_bytes
-            && committed.used_files == committed_files
-            && committed.retained_inodes == committed_inodes
+        boot.used_bytes.checked_add(3) == Some(committed.used_bytes)
+            && boot.used_files.checked_add(1) == Some(committed.used_files)
+            && boot.retained_inodes.checked_add(1) == Some(committed.retained_inodes)
             && committed.active_allowances == boot.active_allowances
-            && committed.active_tickets == boot.active_tickets,
-        "put commit retained old inode, unused parent slack, or an unsettled ticket",
+            && committed.active_tickets == boot.active_tickets
+            && regular_file_census(&root)? == (committed.used_bytes, committed.used_files),
+        "product put left a replaced inode, unused allowance, or pending ticket",
     )?;
 
-    let retirement: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::retirement_only(
-        Arc::clone(&deletions),
-    ));
-    let retirement_registry = qualified_registry(retirement);
-    let (retirement_store, _retirement_base) = ObjectStore::from_uri_and_params(
-        Arc::clone(&retirement_registry),
-        root_uri(&root)?,
-        &ObjectStoreParams::default(),
-    )
-    .await?;
-    retirement_store.delete(&path).await?;
-    require(!physical.exists(), "put delete left the pathname visible")?;
+    let retire_parent = Arc::new(authority.reserve_publication(1, 1)?);
+    let (retirement, _) =
+        candidate_staged_store(&root, deletions, Arc::clone(&retire_parent), None)?;
+    retirement.delete(&path).await?;
+    drop(retirement);
+    drop(retire_parent);
     require(
-        reader.get_range(0..3).await?.as_ref() == b"abc",
-        "unlinked put reader lost its original inode",
+        !physical.exists()
+            && regular_file_census(&root)? == disk
+            && authority.snapshot()? == committed
+            && !binder.is_quiescent()?,
+        "unlink exposed the name or refunded an active reader's inode",
     )?;
-    let pinned = authority.snapshot()?;
     require(
-        pinned.used_bytes == committed_bytes
-            && pinned.used_files == committed_files
-            && pinned.retained_inodes == committed_inodes,
-        "put unlink refunded a still-open reader inode",
+        reader.bytes().await?.as_ref() == b"abc",
+        "unlinked product reader lost the original file bytes",
     )?;
-
-    drop(reader);
     binder.sweep_retired()?;
-    drop(retirement_store);
-    drop(retirement_registry);
     require(
-        authority.snapshot()? == boot,
-        "put reader retirement did not restore exact boot capacity",
+        authority.snapshot()? == boot && binder.is_quiescent()?,
+        "last product reader did not refund the inode",
     )?;
-    drop(deletions);
     drop(binder);
     drop(authority);
     drop(lease);
+
     let reacquired = StateRootLease::acquire(&root)?;
     let recovered = seed_publication_capacity(
         &reacquired,
@@ -564,7 +875,7 @@ async fn real_local_put_opts_mode(overwrite: bool) -> TestResult {
     )?;
     require(
         recovered.snapshot()? == boot,
-        "put handoff failed to recover exact boot inventory",
+        "root handoff changed inventory",
     )?;
     let _recovered_binder = PublicationFileCapacity::new(reacquired, recovered, 16, 64, 256)?;
     Ok(())
@@ -580,44 +891,7 @@ fn real_local_put_opts_overwrite_keeps_original_writer_fd() -> TestResult {
     run_test(real_local_put_opts_mode(true))
 }
 
-#[test]
-fn real_local_put_opts_preserves_typed_budget_refusal() -> TestResult {
-    run_test(async {
-        let (_directory, root, _lease, authority, binder) = fixture()?;
-        let parent = Arc::new(authority.reserve_publication(3, 1)?);
-        let work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            parent,
-        )?);
-        let registry = qualified_registry(work);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            registry,
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let path = base_path.join("put-over-budget.lance");
-        let physical = root.join("put-over-budget.lance");
-        let error = store
-            .inner
-            .put_opts(
-                &path,
-                PutPayload::from_static(b"abcd"),
-                PutMode::Create.into(),
-            )
-            .await
-            .err()
-            .ok_or_else(|| io::Error::other("put_opts exceeded the held byte parent"))?;
-        require(
-            contains_budget_cause(&error),
-            "put_opts refusal lost its typed budget source",
-        )?;
-        require(!physical.exists(), "over-budget put published a final path")?;
-        Ok(())
-    })
-}
-
-async fn wait_for_boot_refund(
+pub(super) async fn wait_for_boot_refund(
     authority: &PublicationCapacity,
     boot: CapacitySnapshot,
 ) -> TestResult {
@@ -630,32 +904,16 @@ async fn wait_for_boot_refund(
     Err(io::Error::other("detached cleanup did not restore exact boot capacity").into())
 }
 
-fn require_only_boot_lock(root: &Path) -> TestResult {
-    let mut entries = fs::read_dir(root)?;
-    let only = entries
-        .next()
-        .transpose()?
-        .ok_or_else(|| io::Error::other("boot lock missing after cleanup"))?;
-    require(
-        only.file_name().to_string_lossy() == ".searchd-state-root.lock",
-        "cleanup left a non-lock entry in the private root",
-    )?;
-    require(
-        entries.next().transpose()?.is_none(),
-        "cleanup left extra private-root entries",
-    )?;
-    Ok(())
-}
-
-fn require_one_staged_payload(root: &Path, expected: &[u8]) -> TestResult {
+pub(super) fn require_one_staged_payload(root: &Path, expected: &[u8]) -> TestResult {
     let mut staged = 0_u64;
     for entry in fs::read_dir(root)? {
         let entry = entry?;
-        if entry.file_name().to_string_lossy() == ".searchd-state-root.lock" {
+        let kind = entry.file_type()?;
+        if entry.file_name() == ".searchd-state-root.lock" || kind.is_dir() {
             continue;
         }
         require(
-            entry.file_type()?.is_file() && fs::read(entry.path())? == expected,
+            kind.is_file() && fs::read(entry.path())? == expected,
             "multipart staging did not contain the exact payload",
         )?;
         staged = staged
@@ -667,106 +925,234 @@ fn require_one_staged_payload(root: &Path, expected: &[u8]) -> TestResult {
 }
 
 #[test]
-fn real_local_put_budget_refusal_refunds_and_retries() -> TestResult {
+fn candidate_memory_scheme_put_refuses_overgrowth_and_reclaims_through_binder() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+
     run_test(async {
         let (_directory, root, _lease, authority, binder) = fixture()?;
         let boot = authority.snapshot()?;
-        require(
-            boot.used_bytes == 0 && boot.used_files == 1 && boot.retained_inodes == 1,
-            "retry boot baseline was not the empty lock inode",
-        )?;
-        let parent = Arc::new(authority.reserve_publication(3, 1)?);
         let deletions = deletion_owner(&binder);
-        let work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            Arc::clone(&deletions),
-            Arc::clone(&parent),
-        )?);
-        let registry = qualified_registry(work);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            Arc::clone(&registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let path = base_path.join("retry.lance");
-        let physical = root.join("retry.lance");
+        let parent = Arc::new(authority.reserve_publication(3, 1)?);
+        let (store, staging) =
+            candidate_staged_store(&root, Arc::clone(&deletions), Arc::clone(&parent), None)?;
+        let physical = staging.join("semantic.lance/_versions/selected.manifest");
+        let selected = object_store::path::Path::from_absolute_path(&physical)?;
         let error = store
-            .inner
             .put_opts(
-                &path,
+                &selected,
                 PutPayload::from_static(b"abcd"),
                 PutMode::Create.into(),
             )
             .await
             .err()
-            .ok_or_else(|| io::Error::other("over-budget put unexpectedly succeeded"))?;
+            .ok_or_else(|| io::Error::other("candidate over-budget put succeeded"))?;
         require(
-            contains_budget_cause(&error),
-            "over-budget put lost the typed budget cause",
+            contains_budget_cause(&error) && !physical.exists(),
+            "candidate refusal lost the typed budget cause or published the original target",
         )?;
-        require(!physical.exists(), "over-budget put published a final file")?;
         drop(store);
-        drop(registry);
         drop(parent);
         require(
-            authority.snapshot()? == boot,
-            "failed put retained a charge after authenticated writer retirement",
+            authority.snapshot()? == boot
+                && regular_file_census(&root)? == (boot.used_bytes, boot.used_files),
+            "candidate over-budget put left a temporary or retained capacity",
         )?;
-        require_only_boot_lock(&root)?;
 
         let retry_parent = Arc::new(authority.reserve_publication(3, 1)?);
-        let retry_work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
+        let (retry_store, _) = candidate_staged_store(
+            &root,
             Arc::clone(&deletions),
             Arc::clone(&retry_parent),
-        )?);
-        let retry_registry = qualified_registry(retry_work);
-        let (retry_store, retry_base) = ObjectStore::from_uri_and_params(
-            Arc::clone(&retry_registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let retry_path = retry_base.join("retry.lance");
-        let _published = retry_store
-            .inner
+            None,
+        )?;
+        let _written = retry_store
             .put_opts(
-                &retry_path,
+                &selected,
                 PutPayload::from_static(b"abc"),
                 PutMode::Create.into(),
             )
             .await?;
-        require(fs::read(&physical)? == b"abc", "retry did not publish abc")?;
+        let inode = fs::metadata(&physical)?.ino();
+
+        let collision_parent = Arc::new(authority.reserve_publication(3, 1)?);
+        let (collision_store, _) = candidate_staged_store(
+            &root,
+            Arc::clone(&deletions),
+            Arc::clone(&collision_parent),
+            None,
+        )?;
+        let before_collision = authority.snapshot()?;
+        let collision = collision_store
+            .put_opts(
+                &selected,
+                PutPayload::from_static(b"xyz"),
+                PutMode::Create.into(),
+            )
+            .await;
+        require(
+            matches!(collision, Err(object_store::Error::AlreadyExists { .. }))
+                && fs::read(&physical)? == b"abc"
+                && fs::metadata(&physical)?.ino() == inode
+                && authority.snapshot()? == before_collision,
+            "candidate create collision changed the payload, inode, or physical charge",
+        )?;
+        drop(collision_store);
+        drop(collision_parent);
         drop(retry_store);
-        drop(retry_registry);
         drop(retry_parent);
+        binder.sweep_retired()?;
         let committed = authority.snapshot()?;
         require(
-            committed.used_bytes == 3
-                && committed.used_files == 2
-                && committed.retained_inodes == 2,
-            "successful retry had an incorrect physical charge",
+            boot.used_bytes.checked_add(3) == Some(committed.used_bytes)
+                && boot.used_files.checked_add(1) == Some(committed.used_files)
+                && boot.retained_inodes.checked_add(1) == Some(committed.retained_inodes)
+                && regular_file_census(&root)? == (committed.used_bytes, committed.used_files),
+            "candidate retry ledger differs from physical bytes",
         )?;
-        let retirement: Arc<dyn FileAdmission> = Arc::new(
-            PublicationLanceAdmission::retirement_only(Arc::clone(&deletions)),
-        );
-        let retirement_registry = qualified_registry(retirement);
-        let (retirement_store, _base) = ObjectStore::from_uri_and_params(
-            Arc::clone(&retirement_registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        retirement_store.delete(&retry_path).await?;
+
+        let retirement_parent = Arc::new(authority.reserve_publication(1, 1)?);
+        let (retirement_store, _) =
+            candidate_staged_store(&root, deletions, Arc::clone(&retirement_parent), None)?;
+        retirement_store.delete(&selected).await?;
+        require(
+            staging.is_dir() && !physical.exists(),
+            "candidate cleanup removed the staging directory or left the file visible",
+        )?;
         drop(retirement_store);
-        drop(retirement_registry);
+        drop(retirement_parent);
         binder.sweep_retired()?;
         require(
-            authority.snapshot()? == boot,
-            "retry cleanup missed boot baseline",
+            authority.snapshot()? == boot
+                && regular_file_census(&root)? == (boot.used_bytes, boot.used_files),
+            "candidate cleanup did not restore boot charge",
         )?;
-        require_only_boot_lock(&root)?;
         Ok(())
     })
+}
+
+#[test]
+fn candidate_memory_scheme_reopens_existing_file_table_read_only() -> TestResult {
+    use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+    use quanta_index_core::SemanticIndexOpenPort as _;
+    use quanta_index_semantic::{
+        SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
+        sealed_replace_batch_v1, semantic_state_root,
+    };
+
+    #[cfg(target_os = "linux")]
+    fn generation_fd_count(generation_dir: &Path) -> io::Result<usize> {
+        let mut count = 0;
+        for entry in fs::read_dir("/proc/self/fd")? {
+            match fs::read_link(entry?.path()) {
+                Ok(path) if path.starts_with(generation_dir) => count += 1,
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(count)
+    }
+
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("state");
+    fs::create_dir(&root)?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    let lease = StateRootLease::acquire(&root)?;
+    let root = lease.state_root_identity_v1().to_path_buf();
+    let repo = RepoId::new("repo-file-interop").map_err(io::Error::other)?;
+    let revision = RevisionId::new("rev-file-interop").map_err(io::Error::other)?;
+    let generation = ManifestGeneration::new(1);
+    let path = "src/file_interop.rs";
+    let record = legacy_chunk_embedding_record_v1("file-interop", path, vec![1.0, 0.0, 0.0])
+        .map_err(io::Error::other)?;
+    let writer = SemanticAdapter::with_state_root(semantic_state_root(&root))?;
+    build_resident_batch_v1(
+        &writer,
+        &sealed_replace_batch_v1(
+            repo.clone(),
+            revision.clone(),
+            generation,
+            path,
+            vec![record],
+            3,
+        ),
+    )?;
+    drop(writer);
+
+    #[cfg(target_os = "linux")]
+    let generation_dir = quanta_index_semantic::legacy::layout::generation_dir(
+        &semantic_state_root(&root),
+        &repo,
+        &revision,
+        generation,
+    );
+    let authority = seed_publication_capacity(
+        &lease,
+        &root,
+        PublicationBootInventoryLimits {
+            max_bytes: 16 * 1024 * 1024,
+            max_files: 256,
+            max_pending: 256,
+            max_entries: 4096,
+            max_depth: 16,
+            max_pending_frames: 32,
+        },
+        &[],
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let binder = PublicationFileCapacity::new(lease, authority.clone(), 512, 4096, 256)?;
+    let baseline = authority.snapshot()?;
+    require(
+        baseline.used_files > 1
+            && regular_file_census(&root)? == (baseline.used_bytes, baseline.used_files),
+        "unqualified File build did not produce an inventoried sealed generation",
+    )?;
+    #[cfg(target_os = "linux")]
+    require(
+        generation_fd_count(&generation_dir)? == 0,
+        "unqualified File writer retained a generation descriptor after drop",
+    )?;
+
+    let deletions = deletion_owner(&binder);
+    let factory = Arc::new(
+        crate::semantic_file_factory::CanonicalSemanticFileAdmissionFactory::new(Arc::clone(
+            &deletions,
+        )),
+    );
+    let maintenance = Arc::new(
+        crate::semantic_file_factory::CanonicalSemanticMaintenanceFileFactory::new(deletions),
+    );
+    let reader = SemanticAdapter::with_state_root(semantic_state_root(&root))?
+        .with_qualified_memory_uri_candidate(factory, maintenance);
+    let searcher = reader.open(&repo, &revision, generation)?;
+    let hits = searcher.search_hits(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
+    require(
+        hits.len() == 1
+            && hits.first().is_some_and(|hit| {
+                hit.record_id == "record-file-interop" && hit.owner_id == "owner-file-interop"
+            }),
+        "qualified candidate did not reopen the File-built row identity",
+    )?;
+    require(
+        authority.snapshot()? == baseline
+            && regular_file_census(&root)? == (baseline.used_bytes, baseline.used_files),
+        "qualified candidate read changed the inventoried File generation",
+    )?;
+    drop(searcher);
+    drop(reader);
+    binder.sweep_retired()?;
+    require(
+        binder.is_quiescent()?
+            && authority.snapshot()? == baseline
+            && regular_file_census(&root)? == (baseline.used_bytes, baseline.used_files),
+        "qualified candidate reader retained an FD pin or changed File generation charges",
+    )?;
+    #[cfg(target_os = "linux")]
+    require(
+        generation_fd_count(&generation_dir)? == 0,
+        "qualified candidate retained a generation descriptor after drop",
+    )?;
+    Ok(())
 }
 
 #[test]
@@ -774,39 +1160,32 @@ fn real_local_multipart_abort_refunds_and_releases_root() -> TestResult {
     run_test(async {
         let (_directory, root, lease, authority, binder) = fixture()?;
         let boot = authority.snapshot()?;
+        let disk = regular_file_census(&root)?;
         let parent = Arc::new(authority.reserve_publication(3, 1)?);
-        let work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            Arc::clone(&parent),
-        )?);
-        let registry = qualified_registry(work);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            Arc::clone(&registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let path = base_path.join("aborted.lance");
-        let mut upload = store
-            .inner
-            .put_multipart_opts(&path, PutMultipartOptions::default())
-            .await?;
+        let (store, staging) =
+            candidate_staged_store(&root, deletion_owner(&binder), Arc::clone(&parent), None)?;
+        let physical = staging.join("table.lance/data/aborted.lance");
+        let path = object_store::path::Path::from_absolute_path(&physical)?;
+        let mut upload = store.put_multipart(&path).await?;
         upload.put_part(PutPayload::from_static(b"abc")).await?;
-        require_one_staged_payload(&root, b"abc")?;
+        let written = regular_file_census(&root)?;
         require(
-            !root.join("aborted.lance").exists(),
-            "multipart part published the final path",
+            !physical.exists()
+                && disk.0.checked_add(3) == Some(written.0)
+                && disk.1.checked_add(1) == Some(written.1),
+            "multipart part was not held in exactly one private file",
         )?;
         upload.abort().await?;
         drop(upload);
         drop(store);
-        drop(registry);
         drop(parent);
+        binder.sweep_retired()?;
         require(
-            authority.snapshot()? == boot,
-            "multipart abort missed boot baseline",
+            authority.snapshot()? == boot
+                && regular_file_census(&root)? == disk
+                && binder.is_quiescent()?,
+            "product multipart abort left a file, charge or pin",
         )?;
-        require_only_boot_lock(&root)?;
         drop(binder);
         drop(authority);
         drop(lease);
@@ -817,74 +1196,52 @@ fn real_local_multipart_abort_refunds_and_releases_root() -> TestResult {
 }
 
 #[test]
-fn real_local_multipart_drop_eventually_refunds() -> TestResult {
-    run_test(async {
-        let (_directory, root, _lease, authority, binder) = fixture()?;
-        let boot = authority.snapshot()?;
-        let parent = Arc::new(authority.reserve_publication(3, 1)?);
-        let work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            Arc::clone(&parent),
-        )?);
-        let registry = qualified_registry(work);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            Arc::clone(&registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let path = base_path.join("dropped-upload.lance");
-        let mut upload = store
-            .inner
-            .put_multipart_opts(&path, PutMultipartOptions::default())
-            .await?;
-        upload.put_part(PutPayload::from_static(b"abc")).await?;
-        require_one_staged_payload(&root, b"abc")?;
-        drop(upload);
-        drop(store);
-        drop(registry);
-        drop(parent);
-        wait_for_boot_refund(&authority, boot).await?;
-        require_only_boot_lock(&root)?;
-        drop(binder);
-        Ok(())
-    })
-}
-
-#[test]
 fn real_local_dropped_lance_writer_eventually_refunds() -> TestResult {
     run_test(async {
+        use lance_io::object_store::ObjectStoreProvider as _;
+        use lance_io::object_store::providers::local::FileStoreProvider;
+
         let (_directory, root, _lease, authority, binder) = fixture()?;
         let boot = authority.snapshot()?;
+        let disk = regular_file_census(&root)?;
         let parent = Arc::new(authority.reserve_publication(3, 1)?);
-        let work: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            Arc::clone(&parent),
-        )?);
-        let registry = qualified_registry(work);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            Arc::clone(&registry),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let path = base_path.join("dropped-writer.lance");
+        let (work, staging) =
+            candidate_staged_store(&root, deletion_owner(&binder), Arc::clone(&parent), None)?;
+        let mut store = FileStoreProvider
+            .new_store(
+                uri_to_url(&memory_uri(&staging)?)?,
+                &ObjectStoreParams::default(),
+            )
+            .await?;
+        store.inner = Arc::new(work);
+        let physical = staging.join("table.lance/data/dropped-writer.lance");
+        let path = object_store::path::Path::from_absolute_path(&physical)?;
         let mut writer = store.create(&path).await?;
         writer.write_all(b"abc").await?;
         drop(writer);
         drop(store);
-        drop(registry);
         drop(parent);
         wait_for_boot_refund(&authority, boot).await?;
-        require_only_boot_lock(&root)?;
-        drop(binder);
+        binder.sweep_retired()?;
+        require(
+            !physical.exists() && regular_file_census(&root)? == disk && binder.is_quiescent()?,
+            "dropping the Lance writer left a final file, temporary, or pin",
+        )?;
         Ok(())
     })
 }
 
 fn fixture_with_limits(max_bytes: u64, max_files: u64) -> Result<Fixture, Box<dyn Error>> {
+    fixture_with_root_name("state", max_bytes, max_files)
+}
+
+fn fixture_with_root_name(
+    root_name: &str,
+    max_bytes: u64,
+    max_files: u64,
+) -> Result<Fixture, Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
-    let root = directory.path().join("state");
+    let root = directory.path().join(root_name);
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let lease = StateRootLease::acquire(&root)?;
@@ -1056,91 +1413,66 @@ fn settled_sidecar_can_move_without_allowing_another_output() -> TestResult {
 }
 
 #[test]
-fn admitted_reader_preserves_absence_and_refuses_symlinks_without_charge() -> TestResult {
-    use std::os::unix::fs::symlink;
-
-    let (_directory, root, _lease, authority, binder) = fixture()?;
-    let boot = authority.snapshot()?;
-    let admission = PublicationLanceAdmission::read_only(Arc::new(PublicationFileDeletions::new(
-        Arc::clone(&binder),
-    )));
-    for relative in ["missing", "missing-parent/receipt.cbor"] {
-        let error = admission
-            .begin_reader_open(&root.join(relative))
-            .err()
-            .ok_or("absent reader unexpectedly opened")?;
-        require(
-            error.kind() == io::ErrorKind::NotFound
-                && error
-                    .get_ref()
-                    .and_then(|source| source.downcast_ref::<CoreError>())
-                    .is_some_and(|source| matches!(source, CoreError::NotFound(_))),
-            "absent reader lost its typed NotFound cause",
-        )?;
-    }
-    symlink(root.join("missing"), root.join("unsafe-receipt"))?;
-    let error = admission
-        .begin_reader_open(&root.join("unsafe-receipt"))
-        .err()
-        .ok_or("symlink reader unexpectedly opened")?;
-    require(
-        error.kind() != io::ErrorKind::NotFound,
-        "unsafe symlink was accepted as an optional absent receipt",
-    )?;
-    let lookalike = super::io_error(CoreError::Storage(
-        "open anchored file: No such file or directory".into(),
-    ));
-    require(
-        lookalike.kind() != io::ErrorKind::NotFound,
-        "Storage text was classified as typed absence",
-    )?;
-    require(
-        authority.snapshot()? == boot && binder.is_quiescent()?,
-        "failed reader open changed the capacity or retained a pin",
-    )?;
-    Ok(())
-}
-
-#[test]
 fn local_get_preserves_not_found_and_refuses_unsafe_optional_files() -> TestResult {
     run_test(async {
         use std::os::unix::fs::symlink;
 
         let (_directory, root, _lease, authority, binder) = fixture()?;
         let boot = authority.snapshot()?;
-        let admission: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::read_only(
-            Arc::new(PublicationFileDeletions::new(Arc::clone(&binder))),
-        ));
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            qualified_registry(admission),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let missing = store
-            .inner
-            .get(&base_path.clone().join("missing-receipt"))
-            .await;
+        let disk = regular_file_census(&root)?;
+        let held = Arc::new(authority.reserve_publication(1, 1)?);
+        let (store, staging) =
+            candidate_staged_store(&root, deletion_owner(&binder), Arc::clone(&held), None)?;
+        let missing_path = staging.join("table.lance/missing-receipt");
+        let missing_parent_path = staging.join("table.lance/absent/receipt.cbor");
+        let unsafe_path = staging.join("table.lance/unsafe-receipt");
+        binder.ensure_private_parent_directories(&unsafe_path)?;
+        let before = authority.snapshot()?;
+        for physical in [&missing_path, &missing_parent_path] {
+            let path = object_store::path::Path::from_absolute_path(physical)?;
+            require(
+                matches!(
+                    store.get(&path).await,
+                    Err(object_store::Error::NotFound { .. })
+                ) && matches!(
+                    store.head(&path).await,
+                    Err(object_store::Error::NotFound { .. })
+                ) && authority.snapshot()? == before,
+                "product GET or HEAD lost typed absence or changed capacity",
+            )?;
+        }
+        symlink(&missing_path, &unsafe_path)?;
+        let unsafe_object = object_store::path::Path::from_absolute_path(&unsafe_path)?;
         require(
-            matches!(missing, Err(object_store::Error::NotFound { .. })),
-            "qualified get lost the public NotFound outcome",
+            fs::read_link(&unsafe_path)? == missing_path
+                && matches!(
+                    store.get(&unsafe_object).await,
+                    Err(object_store::Error::Generic { .. })
+                )
+                && matches!(
+                    store.head(&unsafe_object).await,
+                    Err(object_store::Error::Generic { .. })
+                )
+                && authority.snapshot()? == before
+                && binder.is_quiescent()?,
+            "product GET or HEAD treated an unsafe symlink as optional absence",
         )?;
-        symlink(root.join("missing-receipt"), root.join("unsafe-receipt"))?;
-        let unsafe_file = store.inner.get(&base_path.join("unsafe-receipt")).await;
+        fs::remove_file(&unsafe_path)?;
+        drop(store);
+        drop(held);
+        binder.sweep_retired()?;
         require(
-            matches!(unsafe_file, Err(object_store::Error::Generic { .. })),
-            "qualified get accepted unsafe optional content as absent",
-        )?;
-        require(
-            authority.snapshot()? == boot && binder.is_quiescent()?,
-            "refused qualified get retained capacity or a reader pin",
+            authority.snapshot()? == boot
+                && regular_file_census(&root)? == disk
+                && binder.is_quiescent()?,
+            "refused product GET or HEAD retained capacity, a reader pin, or a physical file",
         )?;
         Ok(())
     })
 }
 
 // The qualified Semantic build below uses the canonical admission port.
-fn regular_file_census(root: &Path) -> io::Result<(u64, u64)> {
+pub(super) fn regular_file_census(root: &Path) -> io::Result<(u64, u64)> {
     use std::collections::BTreeMap;
     use std::os::unix::fs::MetadataExt as _;
 
@@ -1175,8 +1507,38 @@ fn regular_file_census(root: &Path) -> io::Result<(u64, u64)> {
     Ok((bytes, count))
 }
 
+fn first_nonempty_regular_file(root: &Path) -> io::Result<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.is_file() && metadata.len() != 0 {
+                return Ok(path);
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "sealed dataset has no nonempty regular file for candidate reads",
+    ))
+}
+
 #[test]
 fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult {
+    managed_semantic_build_reopen_and_reclaim("state")
+}
+
+#[cfg(feature = "qualified-memory-uri-candidate")]
+#[test]
+fn managed_semantic_candidate_preserves_escaped_state_root() -> TestResult {
+    managed_semantic_build_reopen_and_reclaim("state with #한글%2F?")
+}
+
+fn managed_semantic_build_reopen_and_reclaim(root_name: &str) -> TestResult {
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
         ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
@@ -1186,18 +1548,21 @@ fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult
     };
     use quanta_index_core::{
         IngestResourcePolicy, PublicationValidationOwner, ResidentScopeSource,
-        SealedGenerationReclaimPort as _, SemanticIndexOpenPort as _, SemanticIngestHeaderV1,
-        SemanticScopeStreamBuildPort as _, SemanticStreamWindowPolicy,
+        SealedGenerationReclaimPort as _, SemanticContentRootsPort as _,
+        SemanticIndexOpenPort as _, SemanticIngestHeaderV1, SemanticScopeStreamBuildPort as _,
+        SemanticStreamWindowPolicy,
     };
     use quanta_index_searchd_harness::{
         SourceCorpusFixture, semantic_source_scopes_for_chunk_records,
     };
+    use quanta_index_semantic::SemanticFileAdmissionFactory as _;
     use quanta_index_semantic::{
         SemanticAdapter, legacy_chunk_embedding_record_v1, sealed_replace_batch_v1,
         semantic_state_root,
     };
 
-    let (_directory, root, _lease, authority, binder) = fixture_with_limits(16 * 1024 * 1024, 256)?;
+    let (_directory, root, _lease, authority, binder) =
+        fixture_with_root_name(root_name, 16 * 1024 * 1024, 256)?;
     let boot = authority.snapshot()?;
     require(
         boot.used_bytes == 0 && boot.used_files == 1 && boot.retained_inodes == 1,
@@ -1268,14 +1633,34 @@ fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult
             &deletions,
         )),
     );
+    let foreign_control = root.join("indexes/semantic/foreign/MARKER_SEALED");
+    require(
+        matches!(
+            factory
+                .control_reader_lifetime()
+                .begin_control_reader_open(&foreign_control),
+            Err(quanta_index_core::CoreError::InvalidContract(_))
+        ),
+        "semantic Control lifetime accepted a foreign generation path",
+    )?;
+    let foreign_dataset = root.join("indexes/semantic/foreign/dataset/data/1.lance");
+    require(
+        matches!(
+            factory
+                .control_reader_lifetime()
+                .begin_reader_open(&foreign_dataset),
+            Err(quanta_index_core::CoreError::InvalidContract(_))
+        ),
+        "semantic dataset lifetime accepted a foreign generation path",
+    )?;
     let maintenance = Arc::new(
         crate::semantic_file_factory::CanonicalSemanticMaintenanceFileFactory::new(Arc::clone(
             &deletions,
         )),
     );
+    let candidate_lifetime = factory.control_reader_lifetime();
     let adapter = SemanticAdapter::with_state_root(semantic_state_root(&root))?
-        .with_qualified_file_admission(factory.read_only(), factory)
-        .with_maintenance_file_admission(maintenance);
+        .with_qualified_memory_uri_candidate(factory, maintenance);
     let embedding = legacy_chunk_embedding_record_v1(record_id, path, vec![1.0, 0.0, 0.0])
         .map_err(io::Error::other)?;
     // This fixture's embedding ID and owner-document record ID are distinct.
@@ -1306,6 +1691,37 @@ fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult
     drop(port);
     binder.sweep_retired()?;
 
+    let held = authority.snapshot()?;
+    let sealed = adapter.sealed_generations_for_pair(&repo, &revision, None)?;
+    let candidate = sealed
+        .first()
+        .ok_or_else(|| io::Error::other("managed semantic generation was not sealed"))?;
+    let roots = adapter.sealed_content_roots(candidate)?;
+    require(
+        roots.is_canonical_v1(),
+        "product-owned sealed Control reader returned invalid content roots",
+    )?;
+    let measured = adapter.measure_sealed_generations(
+        &repo,
+        &revision,
+        &std::collections::BTreeSet::from([generation]),
+        None,
+    )?;
+    let generation_dir = quanta_index_semantic::legacy::layout::generation_dir(
+        &semantic_state_root(&root),
+        &repo,
+        &revision,
+        generation,
+    );
+    require(
+        measured.absent.is_empty() && measured.bytes == regular_file_census(&generation_dir)?.0,
+        "qualified retention measurement differs from the generation inode census",
+    )?;
+    require(
+        authority.snapshot()? == held,
+        "sealed Control reader retained a physical pin after checked retirement",
+    )?;
+
     let searcher = adapter.open(&repo, &revision, generation)?;
     let hits = searcher.search_hits(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
     require(
@@ -1315,6 +1731,39 @@ fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult
             }),
         "cold reopened semantic generation returned wrong fixed record",
     )?;
+    #[cfg(feature = "qualified-memory-uri-candidate")]
+    {
+        let second_maintenance = Arc::new(
+            crate::semantic_file_factory::CanonicalSemanticMaintenanceFileFactory::new(Arc::clone(
+                &deletions,
+            )),
+        );
+        let second_adapter = SemanticAdapter::with_state_root(semantic_state_root(&root))?
+            .with_maintenance_file_admission(second_maintenance);
+        let held = authority.snapshot()?;
+        let disk = regular_file_census(&root)?;
+        let generations = second_adapter.sealed_generations_for_pair(&repo, &revision, None)?;
+        let sealed = generations
+            .first()
+            .ok_or_else(|| io::Error::other("candidate sealed generation is absent"))?;
+        let early_file = second_adapter.reclaim_sealed_generation(sealed, None);
+        let early_candidate = adapter.reclaim_sealed_generation(sealed, None);
+        require(
+            matches!(early_file, Err(quanta_index_core::CoreError::Storage(ref message)) if message.contains("live reader view(s)"))
+                && matches!(early_candidate, Err(quanta_index_core::CoreError::Storage(ref message)) if message.contains("live reader view(s)"))
+                && authority.snapshot()? == held
+                && regular_file_census(&root)? == disk,
+            "File or candidate adapter reclaimed a live candidate reader or changed quota on refusal",
+        )?;
+        // A failed proven open acquires a candidate view before checking the
+        // digest; its error path must release that view for the retry below.
+        let mut wrong = sealed.clone();
+        wrong.manifest_digest = "wrong-candidate-digest".into();
+        require(
+            adapter.open_proven(&wrong).is_err(),
+            "wrong candidate digest unexpectedly opened",
+        )?;
+    }
     drop(searcher);
     binder.sweep_retired()?;
     let built = authority.snapshot()?;
@@ -1327,6 +1776,137 @@ fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult
             && built.active_tickets == boot.active_tickets
             && built.uncertain_pending == boot.uncertain_pending,
         "managed semantic build ledger differs from physical census after reader retirement",
+    )?;
+
+    let generation_dir = quanta_index_semantic::legacy::layout::generation_dir(
+        &semantic_state_root(&root),
+        &repo,
+        &revision,
+        generation,
+    );
+    let dataset_dir = quanta_index_semantic::legacy::layout::dataset_dir(&generation_dir);
+    run_test(async {
+        {
+            use quanta_index_core::SealedArtifactCommitmentV1;
+            use quanta_index_semantic::AdmittedMemorySealedStore;
+            use sha2::Digest as _;
+
+            let physical = first_nonempty_regular_file(&dataset_dir)?;
+            let relative = physical
+                .strip_prefix(&generation_dir)?
+                .to_str()
+                .ok_or("sealed fixture artifact name is not UTF-8")?;
+            let committed = SealedArtifactCommitmentV1 {
+                name: relative.to_owned(),
+                bytes: fs::metadata(&physical)?.len(),
+                sha256: sha2::Sha256::digest(fs::read(&physical)?).into(),
+            };
+            let store =
+                AdmittedMemorySealedStore::new(&dataset_dir, vec![committed], candidate_lifetime)?;
+            let path = object_store::path::Path::from_absolute_path(&physical)?;
+            let meta = store.head(&path).await?;
+            require(
+                meta.size > 0 && meta.size == fs::metadata(&physical)?.len(),
+                "candidate HEAD returned a different or empty physical file width",
+            )?;
+            let conditional = object_store::GetOptions {
+                head: true,
+                if_match: meta.e_tag.clone(),
+                range: Some(object_store::GetRange::Suffix(1)),
+                version: Some("ignored-local-version".into()),
+                ..Default::default()
+            };
+            let result = store.get_opts(&path, conditional).await?;
+            require(
+                result.meta == meta && result.range == (meta.size.saturating_sub(1)..meta.size),
+                "candidate HEAD changed conditional/range/version metadata behavior",
+            )?;
+            let invalid_range = store
+                .get_opts(
+                    &path,
+                    object_store::GetOptions {
+                        head: true,
+                        range: Some(object_store::GetRange::Offset(meta.size)),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            require(
+                matches!(
+                    invalid_range,
+                    Err(object_store::Error::Generic {
+                        store: "LocalFileSystem",
+                        ..
+                    })
+                ),
+                "candidate HEAD changed the local store's invalid range classification",
+            )?;
+            let not_modified = store
+                .get_opts(
+                    &path,
+                    object_store::GetOptions {
+                        head: true,
+                        if_none_match: meta.e_tag.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            require(
+                matches!(not_modified, Err(object_store::Error::NotModified { .. })),
+                "candidate HEAD lost the delegated ETag precondition",
+            )?;
+            let ranges = [
+                meta.size - 1..meta.size.saturating_add(3),
+                0..meta.size.min(3),
+                0..1,
+            ];
+            let ordered = store.get_ranges(&path, &ranges).await?;
+            require(
+                ordered.len() == ranges.len(),
+                "candidate returned a different number of ranges",
+            )?;
+            let expected = fs::File::open(&physical)?;
+            for (range, bytes) in ranges.iter().zip(ordered) {
+                let width = range.end.min(meta.size) - range.start;
+                let mut on_disk = vec![0; usize::try_from(width)?];
+                std::os::unix::fs::FileExt::read_exact_at(&expected, &mut on_disk, range.start)?;
+                require(
+                    bytes.as_ref() == on_disk.as_slice(),
+                    "candidate returned incorrect bytes or changed the range order",
+                )?;
+            }
+            drop(expected);
+            require(
+                binder.is_quiescent()?,
+                "completed candidate ranges retained a reader FD",
+            )?;
+            let pending = store.get(&path).await?.into_stream();
+            require(
+                !binder.is_quiescent()?,
+                "candidate body did not hold the reader FD across stream consumption",
+            )?;
+            drop(pending);
+            require(
+                binder.is_quiescent()?,
+                "dropping the candidate body did not release its reader FD",
+            )?;
+            let control_file = generation_dir.join("MARKER_SEALED");
+            require(
+                control_file.is_file(),
+                "sealed Control fixture is missing before candidate HEAD",
+            )?;
+            let control = object_store::path::Path::from_absolute_path(control_file)?;
+            require(
+                store.head(&control).await.is_err() && store.get(&control).await.is_err(),
+                "candidate HEAD or GET bypassed product dataset path admission",
+            )?;
+        }
+        Ok(())
+    })?;
+    binder.sweep_retired()?;
+    require(
+        authority.snapshot()? == built && regular_file_census(&root)? == (disk_bytes, disk_files),
+        "candidate sealed-generation read changed physical file charges",
     )?;
 
     let generations = adapter.sealed_generations_for_pair(&repo, &revision, None)?;
@@ -1354,610 +1934,217 @@ fn managed_semantic_build_reopen_and_reclaim_matches_disk_census() -> TestResult
     Ok(())
 }
 
-// Real local-file regression for one failed pre-publication callback. The
-// injected error is a fixed test oracle, not a filesystem fault.
-use std::fs::File;
-use std::sync::atomic::{AtomicBool, Ordering};
+// The one-row managed fixture above exercises the exact lane. This fixture
+// crosses the production IVF floor and observes the real qualified candidate
+// session, including its index-reader lifetime after a warm query.
+#[cfg(target_os = "linux")]
+#[test]
+fn managed_semantic_ivf_reader_fds_retire_before_reclaim() -> TestResult {
+    use quanta_index_contract::lex::LanguageCode;
+    use quanta_index_contract::{
+        ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    };
+    use quanta_index_core::publication_admission::{
+        PublicationAdmissionRequest, PublicationBuildWork,
+    };
+    use quanta_index_core::{
+        IngestResourcePolicy, MetricSourcePort as _, MetricValueV1, PublicationValidationOwner,
+        ResidentScopeSource, SealedGenerationReclaimPort as _, SemanticIndexOpenPort as _,
+        SemanticIngestHeaderV1, SemanticScopeStreamBuildPort as _, SemanticStreamWindowPolicy,
+    };
+    use quanta_index_searchd_harness::{
+        SourceCorpusFixture, semantic_source_scopes_for_chunk_records,
+    };
+    use quanta_index_semantic::{
+        SemanticAdapter, legacy_chunk_embedding_record_v1, sealed_replace_batch_v1,
+        semantic_state_root,
+    };
 
-use lance_io::object_store::file_admission::{
-    FileDirectoryDeleteTicket, FileDirectoryPathTicket, FileMoveMode, FilePathTicket,
-    FileReaderOpenTicket, FileWriteTicket,
-};
-
-const BEFORE_REPLACE_REFUSAL: &str = "injected once before_replace refusal";
-
-#[derive(Debug)]
-struct RefuseBeforeReplaceOnce {
-    delegate: Arc<dyn FileAdmission>,
-    fired: Arc<AtomicBool>,
-}
-
-impl FileAdmission for RefuseBeforeReplaceOnce {
-    fn validate_list_scope(&self, path: &Path) -> io::Result<()> {
-        self.delegate.validate_list_scope(path)
-    }
-    fn reconcile_pending_namespace(&self) -> io::Result<()> {
-        self.delegate.reconcile_pending_namespace()
-    }
-    fn prepare_parent_dirs(&self, final_path: &Path) -> io::Result<()> {
-        self.delegate.prepare_parent_dirs(final_path)
-    }
-
-    fn begin_create(&self, final_path: &Path) -> io::Result<Box<dyn FileWriteTicket>> {
-        Ok(Box::new(RefuseBeforeReplaceOnceTicket {
-            delegate: self.delegate.begin_create(final_path)?,
-            fired: Arc::clone(&self.fired),
-        }))
-    }
-
-    fn begin_byte_copy(
-        &self,
-        source: &File,
-        final_path: &Path,
-    ) -> io::Result<Box<dyn FileWriteTicket>> {
-        Ok(Box::new(RefuseBeforeReplaceOnceTicket {
-            delegate: self.delegate.begin_byte_copy(source, final_path)?,
-            fired: Arc::clone(&self.fired),
-        }))
-    }
-
-    fn begin_link(&self, source: &Path, target: &Path) -> io::Result<Box<dyn FilePathTicket>> {
-        self.delegate.begin_link(source, target)
-    }
-
-    fn begin_move(
-        &self,
-        source: &Path,
-        target: &Path,
-        mode: FileMoveMode,
-    ) -> io::Result<Box<dyn FilePathTicket>> {
-        self.delegate.begin_move(source, target, mode)
-    }
-
-    fn delete_file_and_sync(&self, path: &Path) -> io::Result<()> {
-        self.delegate.delete_file_and_sync(path)
-    }
-
-    fn begin_directory_move(
-        &self,
-        source: &Path,
-        target: &Path,
-    ) -> io::Result<Box<dyn FileDirectoryPathTicket>> {
-        self.delegate.begin_directory_move(source, target)
-    }
-
-    fn begin_directory_delete(
-        &self,
-        path: &Path,
-    ) -> io::Result<Box<dyn FileDirectoryDeleteTicket>> {
-        self.delegate.begin_directory_delete(path)
-    }
-
-    fn begin_reader_open(&self, path: &Path) -> io::Result<Box<dyn FileReaderOpenTicket>> {
-        self.delegate.begin_reader_open(path)
-    }
-}
-
-#[derive(Debug)]
-struct RefuseBeforeReplaceOnceTicket {
-    delegate: Box<dyn FileWriteTicket>,
-    fired: Arc<AtomicBool>,
-}
-
-impl FileWriteTicket for RefuseBeforeReplaceOnceTicket {
-    fn declare_temp_path(&mut self, path: &Path) -> io::Result<()> {
-        self.delegate.declare_temp_path(path)
-    }
-
-    fn creation_started(&mut self) -> io::Result<()> {
-        self.delegate.creation_started()
-    }
-
-    fn created(&mut self, file: &File, temporary_path: &Path) -> io::Result<()> {
-        self.delegate.created(file, temporary_path)
-    }
-
-    fn reserve_end(&mut self, candidate_end: u64) -> io::Result<()> {
-        self.delegate.reserve_end(candidate_end)
-    }
-
-    fn before_replace(&mut self, final_path: &Path) -> io::Result<()> {
-        if !self.fired.swap(true, Ordering::SeqCst) {
-            return Err(io::Error::other(BEFORE_REPLACE_REFUSAL));
-        }
-        self.delegate.before_replace(final_path)
-    }
-
-    fn replaced_and_synced(&mut self, file: &File, final_path: &Path) -> io::Result<()> {
-        self.delegate.replaced_and_synced(file, final_path)
-    }
-
-    fn confirmed_writer_fd_retired(&mut self, writer: File) -> io::Result<()> {
-        self.delegate.confirmed_writer_fd_retired(writer)
-    }
-
-    fn confirmed_auxiliary_writer_fd_retired(&mut self, writer: File) -> io::Result<()> {
-        self.delegate.confirmed_auxiliary_writer_fd_retired(writer)
-    }
-
-    fn confirmed_uncreated_absent_and_synced(&mut self) -> io::Result<()> {
-        self.delegate.confirmed_uncreated_absent_and_synced()
-    }
-
-    fn confirmed_safe_absent_after_writer_close(&mut self, writer: File) -> io::Result<()> {
-        self.delegate
-            .confirmed_safe_absent_after_writer_close(writer)
-    }
-}
-
-fn contains_before_replace_refusal(error: &(dyn Error + 'static)) -> bool {
-    let mut source = Some(error);
-    while let Some(current) = source {
-        if current
-            .downcast_ref::<io::Error>()
-            .is_some_and(|io_error| io_error.to_string() == BEFORE_REPLACE_REFUSAL)
-        {
-            return true;
-        }
-        source = current.source();
-    }
-    false
-}
-
-fn fail_once_registry(
-    deletions: Arc<PublicationFileDeletions>,
-    parent: Arc<quanta_index_core::publication_capacity::PublicationAllowance>,
-    fired: Arc<AtomicBool>,
-) -> Result<Arc<ObjectStoreRegistry>, Box<dyn Error>> {
-    let delegate: Arc<dyn FileAdmission> =
-        Arc::new(PublicationLanceAdmission::for_work(deletions, parent)?);
-    Ok(qualified_registry(Arc::new(RefuseBeforeReplaceOnce {
-        delegate,
-        fired,
-    })))
-}
-
-#[derive(Clone, Copy)]
-enum LocalPublishMode {
-    Multipart,
-    Put,
-}
-
-async fn publish_abc(
-    store: &ObjectStore,
-    path: &object_store::path::Path,
-    mode: LocalPublishMode,
-    staged_root: Option<&Path>,
-) -> TestResult {
-    match mode {
-        LocalPublishMode::Multipart => {
-            let mut upload = store
-                .inner
-                .put_multipart_opts(path, PutMultipartOptions::default())
-                .await?;
-            upload.put_part(PutPayload::from_static(b"abc")).await?;
-            if let Some(root) = staged_root {
-                require_one_staged_payload(root, b"abc")?;
+    fn generation_fd_count(generation_dir: &Path) -> io::Result<usize> {
+        let mut count = 0;
+        for entry in fs::read_dir("/proc/self/fd")? {
+            match fs::read_link(entry?.path()) {
+                Ok(path) if path.starts_with(generation_dir) => count += 1,
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
-            let _published = upload.complete().await?;
         }
-        LocalPublishMode::Put => {
-            let _published = store
-                .inner
-                .put_opts(
-                    path,
-                    PutPayload::from_static(b"abc"),
-                    PutMode::Create.into(),
-                )
-                .await?;
-        }
+        Ok(count)
     }
-    Ok(())
-}
 
-#[test]
-fn real_local_rename_replays_retained_move_before_missing_source_probe() -> TestResult {
-    run_test(async {
-        let (_directory, root, _lease, authority, binder) = fixture()?;
-        let owner = deletion_owner(&binder);
-        let parent = Arc::new(authority.reserve_publication(3, 1)?);
-        let admission: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            Arc::clone(&owner),
-            Arc::clone(&parent),
-        )?);
-        let (store, base) = ObjectStore::from_uri_and_params(
-            qualified_registry(admission),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let source = root.join("source.lance");
-        let destination = root.join("moved.lance");
-        let source_object = base.clone().join("source.lance");
-        let destination_object = base.join("moved.lance");
-        publish_abc(&store, &source_object, LocalPublishMode::Put, None).await?;
-        let before = authority.snapshot()?;
-        let mut original = owner.begin_move(&source, &destination)?;
-        original.change_started()?;
-        fs::rename(&source, &destination)?;
-        drop(original);
-        store
-            .inner
-            .rename_opts(
-                &source_object,
-                &destination_object,
-                object_store::RenameOptions::default(),
-            )
-            .await?;
-        require(!source.exists(), "replay restored the removed source")?;
-        require(
-            fs::read(&destination)? == b"abc",
-            "replay changed destination bytes",
-        )?;
-        require(
-            authority.snapshot()? == before,
-            "replay changed the original charge",
-        )?;
-        require(binder.is_quiescent()?, "replay retained namespace claims")?;
-        Ok(())
-    })
-}
-
-#[test]
-fn real_local_create_rename_collision_keeps_kind_and_original_inodes() -> TestResult {
-    use std::os::unix::fs::MetadataExt as _;
-    run_test(async {
-        let (_directory, root, _lease, authority, binder) = fixture()?;
-        let parent = Arc::new(authority.reserve_publication(6, 2)?);
-        let admission: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            Arc::clone(&parent),
-        )?);
-        let (store, base) = ObjectStore::from_uri_and_params(
-            qualified_registry(admission),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let source = base.clone().join("source.lance");
-        let destination = base.join("target.lance");
-        publish_abc(&store, &source, LocalPublishMode::Put, None).await?;
-        publish_abc(&store, &destination, LocalPublishMode::Put, None).await?;
-        let source_path = root.join("source.lance");
-        let target_path = root.join("target.lance");
-        let source_before = fs::metadata(&source_path)?;
-        let target_before = fs::metadata(&target_path)?;
-        let before = authority.snapshot()?;
-        let error = store
-            .inner
-            .rename_opts(
-                &source,
-                &destination,
-                object_store::RenameOptions::new()
-                    .with_target_mode(object_store::RenameTargetMode::Create),
-            )
-            .await
-            .err()
-            .ok_or_else(|| io::Error::other("create rename replaced a target"))?;
-        let object_store::Error::AlreadyExists { source: cause, .. } = error else {
-            return Err(
-                io::Error::other(format!("collision lost its typed kind: {error:?}")).into(),
-            );
-        };
-        let io = cause
-            .downcast_ref::<io::Error>()
-            .ok_or_else(|| io::Error::other("collision lost the original IO error"))?;
-        require(
-            io.kind() == io::ErrorKind::AlreadyExists,
-            "collision IO kind changed",
-        )?;
-        require(
-            matches!(
-                io.get_ref()
-                    .and_then(|source| source.downcast_ref::<CoreError>()),
-                Some(CoreError::StorageIo {
-                    kind: io::ErrorKind::AlreadyExists,
-                    raw_os_error: None,
-                    ..
-                })
-            ),
-            "verified collision lost its Core filesystem cause",
-        )?;
-        let source_after = fs::metadata(&source_path)?;
-        let target_after = fs::metadata(&target_path)?;
-        require(
-            source_after.dev() == source_before.dev()
-                && source_after.ino() == source_before.ino()
-                && target_after.dev() == target_before.dev()
-                && target_after.ino() == target_before.ino(),
-            "create refusal replaced an original inode",
-        )?;
-        require(
-            fs::read(&source_path)? == b"abc" && fs::read(&target_path)? == b"abc",
-            "create refusal changed fixed bytes",
-        )?;
-        require(
-            authority.snapshot()? == before && binder.is_quiescent()?,
-            "create refusal changed ledger or retained claims",
-        )?;
-        Ok(())
-    })
-}
-
-async fn before_replace_refusal_refunds_and_retries(mode: LocalPublishMode) -> TestResult {
-    let (_directory, root, _lease, authority, binder) = fixture()?;
+    let (_directory, root, _lease, authority, binder) = fixture_with_limits(64 * 1024 * 1024, 512)?;
     let boot = authority.snapshot()?;
-    let fired = Arc::new(AtomicBool::new(false));
-    let deletions = deletion_owner(&binder);
-    let parent = Arc::new(authority.reserve_publication(3, 1)?);
-    let registry = fail_once_registry(
-        Arc::clone(&deletions),
-        Arc::clone(&parent),
-        Arc::clone(&fired),
+    let repo = RepoId::new("repo-managed-ivf").map_err(io::Error::other)?;
+    let revision = RevisionId::new("rev-managed-ivf").map_err(io::Error::other)?;
+    let generation = ManifestGeneration::new(1);
+    let path = "src/ivf.rs";
+    let mut chunks = Vec::with_capacity(256);
+    let mut embeddings = Vec::with_capacity(256);
+    for index in 0..256_u32 {
+        let id = format!("ivf-row-{index:03}");
+        chunks.push(ChunkRecord {
+            chunk_id: ChunkId::new(id.clone()),
+            repo_relative_path: RepoRelativePath::new(path),
+            language: LanguageCode::new("rust").map_err(io::Error::other)?,
+            start_byte: index * 3,
+            end_byte: index * 3 + 3,
+            start_line: index + 1,
+            end_line: index + 2,
+            text: "abc".to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: None,
+        });
+        embeddings.push(
+            legacy_chunk_embedding_record_v1(&id, path, vec![1.0, index as f32 / 256.0, 0.0])
+                .map_err(io::Error::other)?,
+        );
+    }
+    let source_scopes = semantic_source_scopes_for_chunk_records(&repo, &chunks);
+    let mut producer = SourceCorpusFixture::new(
+        repo.clone(),
+        revision.clone(),
+        generation,
+        "managed-ivf-event".into(),
+    );
+    producer.stage_fixture(chunks, Vec::new(), source_scopes)?;
+    let source_batch = producer.frozen_batch()?;
+    let footprint = IngestResourcePolicy::DEFAULT.admit_search_corpus_batch(&source_batch, 3)?;
+    let port = crate::canonical_publication_admission::CanonicalPublicationAdmission::new(
+        Arc::new(PublicationFileDeletions::new(Arc::clone(&binder))),
+        crate::canonical_publication_admission::PublicationAllowanceLimit::new(1, 1)?,
+        crate::canonical_publication_admission::PublicationAllowanceLimit::new(
+            64 * 1024 * 1024,
+            256,
+        )?,
+    );
+    let mut owner = PublicationValidationOwner::default();
+    owner.admit_publication_resources(
+        &PublicationAdmissionRequest {
+            batch: &source_batch,
+            footprint,
+            work: PublicationBuildWork::Materialize {
+                lexical: false,
+                semantic: true,
+            },
+        },
+        &RequestBudgetV1::unbounded(),
+        &port,
     )?;
-    let (store, base_path) = ObjectStore::from_uri_and_params(
-        Arc::clone(&registry),
-        root_uri(&root)?,
-        &ObjectStoreParams::default(),
-    )
-    .await?;
-    let path = base_path.join("before-replace.lance");
-    let physical = root.join("before-replace.lance");
-    {
-        let refusal = publish_abc(&store, &path, mode, Some(&root))
-            .await
-            .err()
-            .ok_or_else(|| io::Error::other("injected publication unexpectedly succeeded"))?;
+    let deletions = port.file_deletions();
+    let factory = Arc::new(
+        crate::semantic_file_factory::CanonicalSemanticFileAdmissionFactory::new(Arc::clone(
+            &deletions,
+        )),
+    );
+    let maintenance = Arc::new(
+        crate::semantic_file_factory::CanonicalSemanticMaintenanceFileFactory::new(Arc::clone(
+            &deletions,
+        )),
+    );
+    let adapter = SemanticAdapter::with_state_root(semantic_state_root(&root))?
+        .with_qualified_memory_uri_candidate(factory, maintenance);
+    let mut semantic_batch = sealed_replace_batch_v1(
+        repo.clone(),
+        revision.clone(),
+        generation,
+        path,
+        embeddings,
+        3,
+    );
+    semantic_batch.manifest_digest = source_batch.manifest_digest.clone();
+    semantic_batch.batch_digest = source_batch.batch_digest.clone();
+    let header = SemanticIngestHeaderV1::of_batch(&semantic_batch);
+    let mut scopes = ResidentScopeSource::new(
+        &semantic_batch.replace_scopes,
+        SemanticStreamWindowPolicy::DEFAULT,
+    )?;
+    let (tally, _stages) =
+        adapter.build_stream(&header, &mut scopes, Some(owner.output_admission()), None)?;
+    require(
+        tally.rows == 256,
+        "managed IVF build did not consume 256 rows",
+    )?;
+    drop(owner);
+    drop(port);
+    binder.sweep_retired()?;
+
+    let generation_dir = quanta_index_semantic::legacy::layout::generation_dir(
+        &semantic_state_root(&root),
+        &repo,
+        &revision,
+        generation,
+    );
+    let manifest_bytes = fs::read(quanta_index_semantic::legacy::layout::manifest_path(
+        &generation_dir,
+    ))?;
+    let manifest: serde_json::Value = ciborium::from_reader(manifest_bytes.as_slice())?;
+    require(
+        manifest["row_count"] == 256
+            && manifest["vector_index"]["mode"] == "ivf_hnsw_sq"
+            && manifest["vector_index"]["ann"]["indexed_rows"] == 256,
+        "managed fixture did not seal a trained 256-row IVF index",
+    )?;
+    let built = authority.snapshot()?;
+    let built_disk = regular_file_census(&root)?;
+    require(
+        built.used_bytes == built_disk.0 && built.used_files == built_disk.1,
+        "IVF build ledger differs from physical disk census",
+    )?;
+    require(
+        generation_fd_count(&generation_dir)? == 0,
+        "IVF build left an open generation descriptor",
+    )?;
+    for _cycle in 0..2 {
+        let searcher = adapter.open(&repo, &revision, generation)?;
+        for _query in 0..2 {
+            let hits = searcher.search_hits(&[1.0, 0.0, 0.0], 1, &RequestBudgetV1::unbounded())?;
+            require(
+                hits.len() == 1
+                    && hits
+                        .first()
+                        .is_some_and(|hit| hit.record_id.starts_with("record-ivf-row-")),
+                "cold or warm IVF query did not return a sealed fixture row",
+            )?;
+            require(
+                authority.snapshot()? == built && regular_file_census(&root)? == built_disk,
+                "IVF read changed physical file charges or disk census",
+            )?;
+        }
+        drop(searcher);
+        binder.sweep_retired()?;
         require(
-            contains_before_replace_refusal(refusal.as_ref()),
-            "publication lost the original before_replace error cause",
+            binder.is_quiescent()?
+                && generation_fd_count(&generation_dir)? == 0
+                && authority.snapshot()? == built,
+            "IVF reader drop retained an FD, product pin, or physical charge",
         )?;
     }
     require(
-        fired.load(Ordering::SeqCst) && !physical.exists(),
-        "before_replace refusal did not precede final-path publication",
-    )?;
-    drop(store);
-    drop(registry);
-    drop(parent);
-    require(
-        authority.snapshot()? == boot && binder.is_quiescent()?,
-        "failed publication retained charge or binder custody after cleanup",
-    )?;
-    require_only_boot_lock(&root)?;
-
-    let retry_parent = Arc::new(authority.reserve_publication(3, 1)?);
-    let retry_registry = fail_once_registry(
-        Arc::clone(&deletions),
-        Arc::clone(&retry_parent),
-        Arc::clone(&fired),
-    )?;
-    let (retry_store, retry_base) = ObjectStore::from_uri_and_params(
-        Arc::clone(&retry_registry),
-        root_uri(&root)?,
-        &ObjectStoreParams::default(),
-    )
-    .await?;
-    let retry_path = retry_base.join("before-replace.lance");
-    publish_abc(&retry_store, &retry_path, mode, None).await?;
-    drop(retry_store);
-    drop(retry_registry);
-    drop(retry_parent);
-    require(
-        fs::read(&physical)? == b"abc",
-        "same-target retry did not publish fixed abc bytes",
-    )?;
-    let committed = authority.snapshot()?;
-    require(
-        committed.used_bytes
-            == boot
-                .used_bytes
-                .checked_add(3)
-                .ok_or("test oracle addition overflow")?
-            && committed.used_files
-                == boot
-                    .used_files
-                    .checked_add(1)
-                    .ok_or("test oracle addition overflow")?
-            && committed.retained_inodes
-                == boot
-                    .retained_inodes
-                    .checked_add(1)
-                    .ok_or("test oracle addition overflow")?
-            && committed.active_allowances == boot.active_allowances
-            && committed.active_tickets == boot.active_tickets,
-        "same-target retry did not hold exactly one three-byte inode",
+        adapter.scrape()?.iter().any(|point| {
+            point.name == "semantic_dense_queries_ann_total"
+                && point.value == MetricValueV1::Counter(4)
+        }),
+        "the four queries did not execute the trained ANN lane",
     )?;
 
-    let retirement: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::retirement_only(
-        Arc::clone(&deletions),
-    ));
-    let retirement_registry = qualified_registry(retirement);
-    let (retirement_store, _base) = ObjectStore::from_uri_and_params(
-        Arc::clone(&retirement_registry),
-        root_uri(&root)?,
-        &ObjectStoreParams::default(),
-    )
-    .await?;
-    retirement_store.delete(&retry_path).await?;
-    drop(retirement_store);
-    drop(retirement_registry);
+    let sealed = adapter.sealed_generations_for_pair(&repo, &revision, None)?;
+    require(sealed.len() == 1, "expected one sealed IVF generation")?;
+    let outcome = adapter.reclaim_sealed_generation(&sealed[0], None)?;
+    require(
+        matches!(
+            outcome,
+            quanta_index_core::SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+        ),
+        "qualified IVF reclaim did not report reclaimed generation",
+    )?;
     binder.sweep_retired()?;
     require(
-        authority.snapshot()? == boot && binder.is_quiescent()?,
-        "retry deletion did not restore exact boot baseline",
+        authority.snapshot()? == boot
+            && regular_file_census(&root)? == (boot.used_bytes, boot.used_files)
+            && generation_fd_count(&generation_dir)? == 0,
+        "qualified IVF reclaim did not restore boot census or retained FDs",
     )?;
-    require_only_boot_lock(&root)?;
     Ok(())
-}
-
-#[test]
-fn real_local_multipart_before_replace_refusal_refunds_and_retries_same_target() -> TestResult {
-    run_test(before_replace_refusal_refunds_and_retries(
-        LocalPublishMode::Multipart,
-    ))
-}
-
-#[test]
-fn real_local_put_before_replace_refusal_refunds_and_retries_same_target() -> TestResult {
-    run_test(before_replace_refusal_refunds_and_retries(
-        LocalPublishMode::Put,
-    ))
-}
-
-#[test]
-fn fresh_inode_copy_before_replace_refusal_refunds_and_allows_retry() -> TestResult {
-    run_test(async {
-        let (_directory, root, _lease, authority, binder) = fixture()?;
-        let boot = authority.snapshot()?;
-        let parent = Arc::new(authority.reserve_publication(6, 2)?);
-        let delegate: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            Arc::clone(&parent),
-        )?);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            qualified_registry(Arc::clone(&delegate)),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let source = base_path.clone().join("copy-source.lance");
-        publish_abc(&store, &source, LocalPublishMode::Put, None).await?;
-        let target = root.join("copy-target.lance");
-        let before = authority.snapshot()?;
-        let disk_before = regular_file_census(&root)?;
-        let fired = Arc::new(AtomicBool::new(false));
-        let admission = RefuseBeforeReplaceOnce {
-            delegate: Arc::clone(&delegate),
-            fired: Arc::clone(&fired),
-        };
-        {
-            let refusal = lance_io::object_store::file_admission::copy_file_admitted(
-                &root.join("copy-source.lance"),
-                &target,
-                &admission,
-            )
-            .err()
-            .ok_or("copy unexpectedly published before the injected refusal")?;
-            require(
-                contains_before_replace_refusal(&refusal),
-                "copy lost the original before_replace error",
-            )?;
-        }
-        require(
-            fired.load(Ordering::SeqCst)
-                && !target.exists()
-                && authority.snapshot()? == before
-                && regular_file_census(&root)? == disk_before
-                && binder.is_quiescent()?,
-            "failed fresh-inode copy left a temp file, pending charge or path claim",
-        )?;
-        lance_io::object_store::file_admission::copy_file_admitted(
-            &root.join("copy-source.lance"),
-            &target,
-            &admission,
-        )?;
-        require(
-            fs::read(&target)? == b"abc",
-            "copy retry changed fixed bytes",
-        )?;
-        store
-            .inner
-            .delete(&base_path.join("copy-target.lance"))
-            .await?;
-        store.inner.delete(&source).await?;
-        drop(admission);
-        drop(delegate);
-        drop(store);
-        drop(parent);
-        require(
-            authority.snapshot()? == boot && binder.is_quiescent()?,
-            "fresh-inode copy retirement did not restore boot capacity",
-        )?;
-        require_only_boot_lock(&root)?;
-        Ok(())
-    })
-}
-
-#[test]
-fn overwrite_copy_busy_target_retires_staging_alias_and_allows_retry() -> TestResult {
-    run_test(async {
-        let (_directory, root, _lease, authority, binder) = fixture()?;
-        let boot = authority.snapshot()?;
-        let parent = Arc::new(authority.reserve_publication(6, 2)?);
-        let admission: Arc<dyn FileAdmission> = Arc::new(PublicationLanceAdmission::for_work(
-            deletion_owner(&binder),
-            Arc::clone(&parent),
-        )?);
-        let (store, base_path) = ObjectStore::from_uri_and_params(
-            qualified_registry(admission),
-            root_uri(&root)?,
-            &ObjectStoreParams::default(),
-        )
-        .await?;
-        let source = base_path.clone().join("alias-source.lance");
-        let target = base_path.join("alias-target.lance");
-        publish_abc(&store, &source, LocalPublishMode::Put, None).await?;
-        let _published = store
-            .inner
-            .put_opts(
-                &target,
-                PutPayload::from_static(b"old"),
-                PutMode::Create.into(),
-            )
-            .await?;
-        let before = authority.snapshot()?;
-        let disk_before = regular_file_census(&root)?;
-        let opening = binder.begin_reader_open(&root.join("alias-target.lance"))?;
-        for _attempt in 0..2 {
-            {
-                let refusal = store
-                    .inner
-                    .copy_opts(&source, &target, object_store::CopyOptions::default())
-                    .await
-                    .err()
-                    .ok_or("overwrite copy ignored the held reader-open guard")?;
-                require(
-                    contains_budget_cause(&refusal),
-                    "overwrite copy lost the path-busy capacity refusal",
-                )?;
-            }
-            require(
-                fs::read(root.join("alias-source.lance"))? == b"abc"
-                    && fs::read(root.join("alias-target.lance"))? == b"old"
-                    && authority.snapshot()? == before
-                    && regular_file_census(&root)? == disk_before,
-                "refused overwrite copy changed bytes or retained a staging charge",
-            )?;
-            for entry in fs::read_dir(&root)? {
-                require(
-                    !entry?
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with(".lance-admitted-copy-"),
-                    "refused overwrite copy left a staging hardlink",
-                )?;
-            }
-        }
-        drop(opening);
-        require(binder.is_quiescent()?, "refused copy retained path custody")?;
-        store
-            .inner
-            .copy_opts(&source, &target, object_store::CopyOptions::default())
-            .await?;
-        require(
-            fs::read(root.join("alias-target.lance"))? == b"abc",
-            "overwrite copy retry changed fixed bytes",
-        )?;
-        store.inner.delete(&target).await?;
-        store.inner.delete(&source).await?;
-        drop(store);
-        drop(parent);
-        require(
-            authority.snapshot()? == boot && binder.is_quiescent()?,
-            "overwrite alias retirement did not restore boot capacity",
-        )?;
-        require_only_boot_lock(&root)?;
-        Ok(())
-    })
 }

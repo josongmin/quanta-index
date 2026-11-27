@@ -8,7 +8,7 @@ use arrow_array::{
     UInt64Array,
 };
 use futures::TryStreamExt as _;
-use lancedb::query::{ExecutableQuery as _, QueryBase as _};
+use lance::Dataset;
 use quanta_index_contract::{RepoId, RepoRelativePath, SourceFileKey};
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
@@ -140,18 +140,21 @@ const OPTIONAL_NAMES: [&str; 4] = [
     COLUMN_VISIBILITY,
 ];
 
-/// Commit the rows and derive manifest coverage in the same table scan.
+// Preserve the previous local table query's maximum output batch width.
+const ROW_COMMITMENT_BATCH_ROWS: usize = 1024;
+
+/// Commit the rows and derive manifest coverage in one pinned dataset scan.
 #[expect(
     clippy::print_stderr,
     reason = "Opt-in ingest diagnosis writes source-bound span markers."
 )]
-pub(crate) async fn semantic_row_commitment_v1(
-    table: &lancedb::Table,
+pub(crate) async fn dataset_row_commitment_v1(
+    dataset: &Dataset,
 ) -> Result<SemanticRowCommitmentV1, CoreError> {
     let started = std::env::var_os("QUANTA_INDEX_CAUSAL_PROFILE_V1")
         .is_some_and(|value| value == std::ffi::OsStr::new("1"))
         .then(std::time::Instant::now);
-    let result = semantic_row_commitment_inner_v1(table).await;
+    let result = semantic_row_commitment_inner_v1(dataset).await;
     if let Some(started) = started {
         eprintln!(
             "QI_INGEST_TRACE_V1 label=semantic_row_commitment ok={} elapsed_ns={}",
@@ -163,21 +166,22 @@ pub(crate) async fn semantic_row_commitment_v1(
 }
 
 async fn semantic_row_commitment_inner_v1(
-    table: &lancedb::Table,
+    dataset: &Dataset,
 ) -> Result<SemanticRowCommitmentV1, CoreError> {
-    let counted = table
+    let capacity = dataset
         .count_rows(None)
         .await
         .map_err(|error| lancedb_err("count semantic rows for root", error))?;
-    let capacity = counted;
     let mut rows = Vec::with_capacity(capacity);
     let mut present_corpora = BTreeSet::new();
     let mut card_schema_versions = BTreeSet::new();
     let mut render_policy_digests = BTreeSet::new();
-    let mut stream = table
-        .query()
+    let mut scanner = dataset.scan();
+    let mut stream = scanner
         .with_row_id()
-        .execute()
+        .batch_size(ROW_COMMITMENT_BATCH_ROWS)
+        .strict_batch_size(true)
+        .try_into_stream()
         .await
         .map_err(|error| lancedb_err("query semantic rows for root", error))?;
     while let Some(batch) = stream

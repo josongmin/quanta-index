@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.benchmark.retrieval import portable_proof
+from tools.benchmark.retrieval import portable_proof, proof_inventory
 from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
 from tools.ci import source_closure
 from tools.ci.junit_events import parse_pytest_junit_bytes
@@ -57,6 +57,28 @@ def test_required_python_inventory_matches_live_collection(tmp_path: Path) -> No
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert inventory.is_file()
+
+
+def test_collection_writer_validates_authority_before_writing(tmp_path: Path, monkeypatch) -> None:
+    cases = ["tools.ci.tests.test_retrieval_benchmark.test_one"]
+    payload = json.loads(_python_inventory(tmp_path, cases).read_text(encoding="utf-8"))
+    authority = tmp_path / "required.json"
+    output = tmp_path / "issued-inventory.json"
+    monkeypatch.setattr(proof_inventory, "DEFAULT_AUTHORITY", authority)
+    monkeypatch.setattr(proof_inventory, "collect_pytest", lambda: payload)
+    monkeypatch.setattr(sys, "argv", ["proof_inventory.py", "--out", str(output)])
+
+    authority.write_text(json.dumps({"python": cases}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="invalid source-controlled proof inventory authority"):
+        proof_inventory.main()
+    assert not output.exists()
+
+    authority.write_text(
+        json.dumps({"schema_version": 1, "python": cases, "rust": ["r"], "sdk": ["s"]}),
+        encoding="utf-8",
+    )
+    assert proof_inventory.main() == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == payload
 
 
 def test_sourcegraph_junit_matches_each_required_case(tmp_path: Path) -> None:
@@ -658,7 +680,13 @@ def test_source_controlled_inventory_refuses_coordinated_partial_proof(tmp_path:
     # Raw evidence and a forged smaller collection agree, but neither may replace
     # the source-controlled authority for the rail.
     assert MODULE.pytest_summary(junit, inventory)["passed"] == 1
-    with pytest.raises(ValueError, match="differs from source-controlled"):
+    with pytest.raises(ValueError, match="differs from source-controlled") as refused:
         verify_inventory_authority(inventory, "python", authority)
+    assert f"missing=1 {[required[1]]!r}" in str(refused.value)
+    unexpected = "tools.ci.tests.test_retrieval_benchmark.test_unregistered"
+    _python_inventory(tmp_path, sorted([*required, unexpected]))
+    with pytest.raises(ValueError, match="differs from source-controlled") as refused:
+        verify_inventory_authority(inventory, "python", authority)
+    assert f"unexpected=1 {[unexpected]!r}" in str(refused.value)
     _python_inventory(tmp_path, required)
     verify_inventory_authority(inventory, "python", authority)

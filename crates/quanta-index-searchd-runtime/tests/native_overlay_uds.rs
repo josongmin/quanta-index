@@ -2,12 +2,22 @@
 
 #[path = "native_overlay_uds/excluded_save.rs"]
 mod excluded_save;
+#[path = "common/interaction_lease.rs"]
+#[expect(
+    dead_code,
+    reason = "overlay daemon tests never report a user interaction"
+)]
+mod interaction_lease;
+#[path = "native_overlay_uds/metadata_filters.rs"]
+mod metadata_filters;
 #[path = "common/native_object_files.rs"]
 mod native_object_files;
 #[path = "common/native_physical_profile.rs"]
 mod native_physical_profile;
 #[path = "native_overlay_uds/overlay_search.rs"]
 mod overlay_search;
+#[path = "native_overlay_uds/repository_identity.rs"]
+mod repository_identity;
 
 use std::{
     error::Error,
@@ -17,6 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use interaction_lease::LivePublisher;
 use quanta_index_contract::{
     QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
     index::{
@@ -215,6 +226,7 @@ fn service(
             literal: QueryAdapterRegistry::new(),
             path: QueryAdapterRegistry::new(),
             text,
+            text_matches: QueryAdapterRegistry::new(),
             semantic: QueryAdapterRegistry::new(),
             pump: None,
             provider_attempt_pool: None,
@@ -284,23 +296,26 @@ fn expect_conflict(result: Result<NativeOverlayReply, NativeUdsError>) -> TestRe
     )
 }
 
+/// A Conflict from the request itself, proven by renewing the live lease.
+fn expect_live_conflict(
+    live: &LivePublisher<'_>,
+    result: Result<NativeOverlayReply, NativeUdsError>,
+) -> TestResult {
+    live.refused(result, NativeIndexErrorCode::Conflict)
+}
+
+fn expect_live_stub_conflict(
+    live: &LivePublisher<'_>,
+    result: Result<NativeStubReply, NativeUdsError>,
+) -> TestResult {
+    live.refused(result, NativeIndexErrorCode::Conflict)
+}
+
 fn expect_snapshot_unavailable(result: Result<NativeOverlayReply, NativeUdsError>) -> TestResult {
     require(
         matches!(result, Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::SnapshotUnavailable),
         "overlay request should be refused with SnapshotUnavailable",
     )
-}
-
-fn expect_stub_conflict(result: Result<NativeStubReply, NativeUdsError>) -> TestResult {
-    match result {
-        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict => {
-            Ok(())
-        }
-        other => Err(format!(
-            "stale Native Stub request should be refused with Conflict; got {other:?}"
-        )
-        .into()),
-    }
 }
 
 fn published(
@@ -562,7 +577,8 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
             &budget(),
         )?,
     )?;
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(30))?;
+    let publisher = live.id();
     let session = NativeOverlaySession {
         workspace: workspace(),
         publisher,
@@ -585,6 +601,7 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
                 revision: 1,
                 text: Some(SAVED_SOURCE_TEXT.into()),
                 path: Some("src/a.rs".into()),
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -614,6 +631,7 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
                 2,
                 Some("invalid path".into()),
                 Some("../outside.rs".into()),
+                None,
                 &budget(),
             ),
             Err(NativeUdsError::Refused(error))
@@ -682,23 +700,23 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
     };
     let mut forged = intent.clone();
     forged.expected_source = Some(source);
-    expect_conflict(client.bind_overlay_save(forged, &budget()))?;
+    expect_live_conflict(&live, client.bind_overlay_save(forged, &budget()))?;
     let mut forged_document = intent.clone();
     forged_document.document.owner.stable_id = StableOwnerId([8; 16]);
-    expect_conflict(client.bind_overlay_save(forged_document, &budget()))?;
+    expect_live_conflict(&live, client.bind_overlay_save(forged_document, &budget()))?;
     let mut forged_revision = intent.clone();
     forged_revision.revision = 2;
-    expect_conflict(client.bind_overlay_save(forged_revision, &budget()))?;
+    expect_live_conflict(&live, client.bind_overlay_save(forged_revision, &budget()))?;
     require(
         matches!(client.bind_overlay_save(intent.clone(), &budget()).map_err(|cause| format!("initial save bind: {cause:?}"))?, NativeOverlayReply::SaveBound { operation, revision: 1, .. } if operation == key),
         "source save intent was not bound",
     )?;
     let mut forged_request = intent.clone();
     forged_request.request.expected_view = genesis;
-    expect_conflict(client.bind_overlay_save(forged_request, &budget()))?;
+    expect_live_conflict(&live, client.bind_overlay_save(forged_request, &budget()))?;
     let mut forged_operation = intent.clone();
     forged_operation.request.operation = operation(99);
-    expect_conflict(client.bind_overlay_save(forged_operation, &budget()))?;
+    expect_live_conflict(&live, client.bind_overlay_save(forged_operation, &budget()))?;
     for _retry in 0..2 {
         require(
             client.bind_overlay_save(intent.clone(), &budget())?
@@ -717,8 +735,9 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         source: Some(source),
         selected: configured,
     };
-    expect_conflict(client.complete_overlay_save(&prepublish, &budget()))?;
+    expect_live_conflict(&live, client.complete_overlay_save(&prepublish, &budget()))?;
     let selected = published(&client, key, &client.submit(request, &budget())?)?;
+    live.renew()?;
     require(
         client.bind_overlay_save(intent.clone(), &budget())?
             == NativeOverlayReply::SaveBound {
@@ -728,13 +747,13 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
             },
         "published original save intent did not survive an ACK-loss retry",
     )?;
-    expect_conflict(client.complete_overlay_save(&prepublish, &budget()))?;
+    expect_live_conflict(&live, client.complete_overlay_save(&prepublish, &budget()))?;
     let forged_op = NativeOverlaySaveReceipt {
         operation: operation(99),
         selected,
         ..prepublish
     };
-    expect_conflict(client.complete_overlay_save(&forged_op, &budget()))?;
+    expect_live_conflict(&live, client.complete_overlay_save(&forged_op, &budget()))?;
     let receipt = NativeOverlaySaveReceipt {
         selected,
         ..prepublish
@@ -743,7 +762,10 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         source: Some(quanta_index_contract::index::ObjectRef(Digest([99; 32]))),
         ..receipt
     };
-    expect_conflict(client.complete_overlay_save(&forged_source, &budget()))?;
+    expect_live_conflict(
+        &live,
+        client.complete_overlay_save(&forged_source, &budget()),
+    )?;
     let forged_document = NativeOverlaySaveReceipt {
         document: NativeOverlayDocument {
             owner: OwnerKey {
@@ -754,12 +776,18 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         },
         ..receipt
     };
-    expect_conflict(client.complete_overlay_save(&forged_document, &budget()))?;
+    expect_live_conflict(
+        &live,
+        client.complete_overlay_save(&forged_document, &budget()),
+    )?;
     let forged_revision = NativeOverlaySaveReceipt {
         revision: 2,
         ..receipt
     };
-    expect_conflict(client.complete_overlay_save(&forged_revision, &budget()))?;
+    expect_live_conflict(
+        &live,
+        client.complete_overlay_save(&forged_revision, &budget()),
+    )?;
     let NativeOverlayReply::Snapshot {
         overlay: Some(still_present),
         ..
@@ -798,26 +826,30 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         forged_document,
         forged_revision,
     ] {
-        expect_conflict(client.complete_overlay_save(&forged, &budget()))?;
+        expect_live_conflict(&live, client.complete_overlay_save(&forged, &budget()))?;
     }
     // Source save and AST publication are distinct Catalog views. Missing
     // evidence refuses, then the later projection authenticates the same source.
-    expect_stub_conflict(client.stub(
-        NativeStubRequest::Certify {
-            binding: NativeStubBinding {
-                document,
-                revision: 1,
-                selected,
-                source,
-                language: "fixture".into(),
+    expect_live_stub_conflict(
+        &live,
+        client.stub(
+            NativeStubRequest::Certify {
+                binding: NativeStubBinding {
+                    document,
+                    revision: 1,
+                    selected,
+                    source,
+                    language: "fixture".into(),
+                },
+                items: stub_items(),
             },
-            items: stub_items(),
-        },
-        SAVED_SOURCE_TEXT,
-        &budget(),
-    ))?;
+            SAVED_SOURCE_TEXT,
+            &budget(),
+        ),
+    )?;
     let selected = publish_stub_certificate(&client, selected, source)
         .map_err(|cause| format!("AST projection publish: {cause}"))?;
+    live.renew()?;
     require(
         selected.sequence > receipt.selected.sequence,
         "AST certificate did not publish after the immutable save receipt",
@@ -919,17 +951,20 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         .find(|item| item.stable_id == Digest([1; 32]))
         .ok_or("fixed Stub item missing")?;
     changed_item.ast_digest = Digest([99; 32]);
-    expect_stub_conflict(client.stub(
-        NativeStubRequest::Preflight {
-            binding: stub_binding.clone(),
-            items: stale_ast_items,
-            selected_id: Digest([1; 32]),
-            edits: vec![stale_ast],
-            unit: NativeStubCoordinateUnit::Utf16Units,
-        },
-        SAVED_SOURCE_TEXT,
-        &budget(),
-    ))?;
+    expect_live_stub_conflict(
+        &live,
+        client.stub(
+            NativeStubRequest::Preflight {
+                binding: stub_binding.clone(),
+                items: stale_ast_items,
+                selected_id: Digest([1; 32]),
+                edits: vec![stale_ast],
+                unit: NativeStubCoordinateUnit::Utf16Units,
+            },
+            SAVED_SOURCE_TEXT,
+            &budget(),
+        ),
+    )?;
     for stale_binding in [
         NativeStubBinding {
             revision: 2,
@@ -963,14 +998,17 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
             ..stub_binding.clone()
         },
     ] {
-        expect_stub_conflict(client.stub(
-            NativeStubRequest::Certify {
-                binding: stale_binding,
-                items: stub_items(),
-            },
-            SAVED_SOURCE_TEXT,
-            &budget(),
-        ))?;
+        expect_live_stub_conflict(
+            &live,
+            client.stub(
+                NativeStubRequest::Certify {
+                    binding: stale_binding,
+                    items: stub_items(),
+                },
+                SAVED_SOURCE_TEXT,
+                &budget(),
+            ),
+        )?;
     }
     require(
         client.overlay(NativeOverlayRequest::Snapshot { document }, &budget())?
@@ -988,16 +1026,20 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
             },
         "saved mask remained visible",
     )?;
-    expect_conflict(client.overlay(
-        NativeOverlayRequest::Update {
-            document,
-            expected_revision: None,
-            revision: 1,
-            text: Some("stale replay".into()),
-            path: None,
-        },
-        &budget(),
-    ))?;
+    expect_live_conflict(
+        &live,
+        client.overlay(
+            NativeOverlayRequest::Update {
+                document,
+                expected_revision: None,
+                revision: 1,
+                text: Some("stale replay".into()),
+                path: None,
+                repository_witness: None,
+            },
+            &budget(),
+        ),
+    )?;
     require(
         client.overlay(NativeOverlayRequest::Snapshot { document }, &budget())?
             == NativeOverlayReply::Snapshot {
@@ -1014,6 +1056,7 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
                 revision: 2,
                 text: Some("next local revision".into()),
                 path: None,
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -1022,8 +1065,8 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         },
         "post-save monotonic revision was rejected",
     )?;
-    expect_conflict(client.bind_overlay_save(intent.clone(), &budget()))?;
-    expect_conflict(client.complete_overlay_save(&receipt, &budget()))?;
+    expect_live_conflict(&live, client.bind_overlay_save(intent.clone(), &budget()))?;
+    expect_live_conflict(&live, client.complete_overlay_save(&receipt, &budget()))?;
     require(
         client.overlay(NativeOverlayRequest::Masks { session }, &budget())?
             == NativeOverlayReply::Masks {
@@ -1036,23 +1079,32 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
             },
         "post-save revision mask mismatch",
     )?;
-    expect_stub_conflict(client.stub(
-        NativeStubRequest::Certify {
-            binding: stub_binding,
-            items: stub_items(),
-        },
-        SAVED_SOURCE_TEXT,
-        &budget(),
-    ))?;
+    expect_live_stub_conflict(
+        &live,
+        client.stub(
+            NativeStubRequest::Certify {
+                binding: stub_binding,
+                items: stub_items(),
+            },
+            SAVED_SOURCE_TEXT,
+            &budget(),
+        ),
+    )?;
     require(
         client.overlay(NativeOverlayRequest::Close { session }, &budget())?
             == NativeOverlayReply::Closed(session),
         "overlay close identity mismatch",
     )?;
-    expect_conflict(client.bind_overlay_save(intent, &budget()))?;
-    expect_conflict(client.complete_overlay_save(&receipt, &budget()))?;
-    expect_conflict(client.overlay(NativeOverlayRequest::Masks { session }, &budget()))?;
-    expect_conflict(client.overlay(NativeOverlayRequest::Begin { session }, &budget()))?;
+    expect_live_conflict(&live, client.bind_overlay_save(intent, &budget()))?;
+    expect_live_conflict(&live, client.complete_overlay_save(&receipt, &budget()))?;
+    expect_live_conflict(
+        &live,
+        client.overlay(NativeOverlayRequest::Masks { session }, &budget()),
+    )?;
+    expect_live_conflict(
+        &live,
+        client.overlay(NativeOverlayRequest::Begin { session }, &budget()),
+    )?;
     let fenced_session = NativeOverlaySession {
         epoch: 2,
         ..session
@@ -1078,6 +1130,7 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
                 revision: 1,
                 text: Some("unsaved".into()),
                 path: None,
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -1110,6 +1163,7 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
                 revision: 2,
                 text: None,
                 path: None,
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -1189,6 +1243,7 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         delete_key,
         &client.submit(delete_request, &budget())?,
     )?;
+    live.renew()?;
     require(
         client.bind_overlay_save(delete_intent.clone(), &budget())?
             == NativeOverlayReply::SaveBound {
@@ -1249,16 +1304,20 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         },
         "saved tombstone mask remained visible",
     )?;
-    expect_conflict(client.overlay(
-        NativeOverlayRequest::Update {
-            document: fenced_document,
-            expected_revision: None,
-            revision: 1,
-            text: Some("stale after deletion".into()),
-            path: None,
-        },
-        &budget(),
-    ))?;
+    expect_live_conflict(
+        &live,
+        client.overlay(
+            NativeOverlayRequest::Update {
+                document: fenced_document,
+                expected_revision: None,
+                revision: 1,
+                text: Some("stale after deletion".into()),
+                path: None,
+                repository_witness: None,
+            },
+            &budget(),
+        ),
+    )?;
     require(
         client.overlay(
             NativeOverlayRequest::Update {
@@ -1267,6 +1326,7 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
                 revision: 3,
                 text: Some("post deletion edit".into()),
                 path: None,
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -1275,9 +1335,16 @@ fn overlay_save_requires_original_source_cas_and_live_publisher() -> TestResult 
         },
         "post-deletion monotonic revision was rejected",
     )?;
-    expect_conflict(client.bind_overlay_save(delete_intent.clone(), &budget()))?;
-    expect_conflict(client.complete_overlay_save(&delete_receipt, &budget()))?;
-    client.end_interaction_publisher(publisher, 1, &budget())?;
+    expect_live_conflict(
+        &live,
+        client.bind_overlay_save(delete_intent.clone(), &budget()),
+    )?;
+    expect_live_conflict(
+        &live,
+        client.complete_overlay_save(&delete_receipt, &budget()),
+    )?;
+    // After an explicit End the publisher is fenced by a protocol event.
+    live.end()?;
     expect_conflict(client.bind_overlay_save(delete_intent, &budget()))?;
     expect_conflict(client.complete_overlay_save(&delete_receipt, &budget()))?;
     expect_conflict(client.overlay(
@@ -1312,7 +1379,8 @@ fn overlay_save_keeps_unsaved_text_when_selected_view_has_no_text_member() -> Te
     else {
         return Err("workspace creation did not return a view".into());
     };
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(30))?;
+    let publisher = live.id();
     let session = NativeOverlaySession {
         workspace: workspace(),
         publisher,
@@ -1335,6 +1403,7 @@ fn overlay_save_keeps_unsaved_text_when_selected_view_has_no_text_member() -> Te
                 revision: 1,
                 text: Some("visible only in overlay".into()),
                 path: None,
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -1400,6 +1469,7 @@ fn overlay_save_keeps_unsaved_text_when_selected_view_has_no_text_member() -> Te
         "source save intent was not bound",
     )?;
     let selected = published(&client, key, &client.submit(request, &budget())?)?;
+    live.renew()?;
     expect_snapshot_unavailable(client.complete_overlay_save(
         &NativeOverlaySaveReceipt {
             operation: key,

@@ -10,11 +10,11 @@
 use proptest::collection::vec;
 use proptest::prelude::*;
 
-use quanta_index_contract::{LqExpr, LqLeaf, LqQuery};
 use quanta_index_lq_bridge::syntax::SgPatternKind;
 use quanta_index_lq_bridge::{
     BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, translate_query,
 };
+use quanta_index_lq_norm::{LqExpr, LqLeaf, LqNormalizedQuery as LqQuery};
 
 fn ver() -> SourcegraphVersionTag {
     match SourcegraphVersionTag::supported() {

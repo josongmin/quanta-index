@@ -33,6 +33,36 @@ def _write_lcov(path: Path, source: Path, hits: dict[int, int]) -> Path:
     return path
 
 
+def test_relative_lcov_source_is_resolved_from_repo_root(tmp_path: Path, monkeypatch):
+    module = _load_module()
+    root = tmp_path / "repo"
+    source = root / "crates/demo/src/lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn demo() {}\n", encoding="utf-8")
+    lcov = root / "coverage.lcov"
+    lcov.write_text("SF:crates/demo/src/lib.rs\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    result = module.audit_changed_coverage(root, lcov, {("crates/demo/src/lib.rs", 1)}, 90.0)
+
+    assert result.percent == 100.0
+    assert result.violations == []
+
+
+def test_external_lcov_sources_remain_excluded(tmp_path: Path):
+    module = _load_module()
+    root = tmp_path / "repo"
+    root.mkdir()
+    external = tmp_path / "outside.rs"
+    external.write_text("pub fn outside() {}\n", encoding="utf-8")
+    lcov = root / "coverage.lcov"
+    for source in (str(external), "../outside.rs"):
+        lcov.write_text(f"SF:{source}\nDA:1,1\nend_of_record\n", encoding="utf-8")
+        assert module.parse_lcov(root, lcov) == {}
+
+
 def test_changed_executable_lines_meeting_threshold_are_green(tmp_path: Path):
     module = _load_module()
     source = tmp_path / "crates" / "demo" / "src" / "lib.rs"
@@ -286,6 +316,7 @@ def test_new_test_scope_is_excluded_but_new_guard_on_existing_code_is_not():
     assert module._eligible_changed_rust_lines(source, {2}, path, {2}) == set()
 
 
+
 @pytest.mark.parametrize(
     "mutation", [None, "before-build", "hidden-edit", "during-build", "head-moved"]
 )
@@ -332,7 +363,7 @@ def test_coverage_recipe_binds_lcov_to_committed_source(tmp_path, mutation):
         "#!/bin/sh\n"
         "set -eu\n"
         'printf "%s\\n" built > "$BUILD_MARKER"\n'
-        "for report do :; done\n"
+        'for report do :; done\n'
         'printf "SF:%s/crates/demo/src/lib.rs\\nDA:1,1\\nend_of_record\\n" "$PWD" > "$report"\n'
         'if [ "$MUTATION" = during-build ] || [ "$MUTATION" = head-moved ]; then\n'
         '    printf "%s\\n" "pub fn demo() -> u32 { 3 }" > crates/demo/src/lib.rs\n'
@@ -340,21 +371,19 @@ def test_coverage_recipe_binds_lcov_to_committed_source(tmp_path, mutation):
         'if [ "$MUTATION" = head-moved ]; then git commit -qam "another candidate"; fi\n'
     )
     uv = bin_dir / "uv"
-    uv.write_text(f'#!/bin/sh\nset -eu\nshift 5\nexec {shlex.quote(sys.executable)} "$@"\n')
+    uv.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "shift 5\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+    )
     for tool in (cargo, uv):
         tool.chmod(0o755)
     result = subprocess.run(
         [
-            just,
-            "--justfile",
-            str(REPO_ROOT / "Justfile"),
-            "--working-directory",
-            str(checkout),
-            "--set",
-            "cargo",
-            str(cargo),
-            "rust-coverage-changed",
-            base,
+            just, "--justfile", str(REPO_ROOT / "Justfile"),
+            "--working-directory", str(checkout),
+            "--set", "cargo", str(cargo), "rust-coverage-changed", base,
         ],
         env={
             **os.environ,
@@ -362,9 +391,7 @@ def test_coverage_recipe_binds_lcov_to_committed_source(tmp_path, mutation):
             "BUILD_MARKER": str(build_marker),
             "MUTATION": mutation or "",
         },
-        check=False,
-        capture_output=True,
-        text=True,
+        check=False, capture_output=True, text=True,
     )
     if mutation is None:
         assert result.returncode == 0, result.stderr

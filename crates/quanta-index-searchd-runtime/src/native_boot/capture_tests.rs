@@ -82,7 +82,7 @@ fn change_profile(fixture: &PreparedNativeFixture, replace_instance: bool) -> Te
     let profile = fixture.client.stage_profile(
         input,
         IndexProfile {
-            instances: vec![instance],
+            instances: vec![literal_spec(), instance],
         },
         &request(),
     )?;
@@ -575,11 +575,13 @@ fn actual_stale_catalog_without_ast_refuses_missing_current_native_row() -> Test
         held.require_state_root_v1(&fixture.root)?;
         saved
     };
+    let authority = prepare_unselected_authority(&fixture.config, &request())?;
+    boot::refuse_plain_serve_on_selected_boot_v2(&authority, &fixture.config, &request())?;
     let service = bind(
         &fixture.config,
         fixture.config_digest,
         compose(&fixture.config)?,
-        None,
+        authority,
         &request(),
         false,
     )?;

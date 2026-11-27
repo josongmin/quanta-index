@@ -60,9 +60,9 @@ than an SDK retry, an inferred rollback or a new operator endpoint.
 - [Maintenance](../../crates/quanta-index-searchd/src/app/maintenance.rs),
   [ingest dispatch](../../crates/quanta-index-search-plane/src/ingest_dispatcher/dispatcher.rs),
   [operator dispatch](../../crates/quanta-index-search-plane/src/control_dispatcher.rs).
-- Retain actual OS-child [selection](../../crates/quanta-index-searchd-runtime/tests/active_selection_process_v1.rs),
-  [slow-disk](../../crates/quanta-index-searchd-runtime/src/process_slow_disk_tests.rs),
-  [default-timeout](../../crates/quanta-index-searchd-runtime/src/admitted_publish_timeout_tests.rs),
+- Retain actual OS-child [selection](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-runtime/tests/active_selection_process_v1.rs),
+  [slow-disk](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-runtime/src/process_slow_disk_tests.rs),
+  [default-timeout](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-runtime/src/admitted_publish_timeout_tests.rs),
   [restart/replay](../../crates/quanta-index-searchd-runtime/tests/e2e_ingest_idempotency.rs),
   [socket authorization](../../crates/quanta-index-searchd-runtime/tests/e2e_socket_access.rs)
   and [SDK roundtrip](../../benchmarks/retrieval/tests/sdk_roundtrip.rs) controls.

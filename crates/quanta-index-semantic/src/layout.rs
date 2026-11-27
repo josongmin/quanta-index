@@ -79,7 +79,7 @@ pub(crate) const COLUMN_VECTOR_DIGEST: &str = "vector_digest";
 pub(crate) const COLUMN_START_LINE: &str = "start_line";
 pub(crate) const COLUMN_END_LINE: &str = "end_line";
 pub(crate) const COLUMN_SNIPPET: &str = "snippet";
-pub(crate) const COLUMN_VECTOR: &str = "vector";
+pub(crate) use crate::COLUMN_VECTOR;
 
 /// Arrow schema of the lancedb `semantic` table at the given vector
 /// dimension: the one physical layout every served generation carries.
@@ -141,12 +141,6 @@ pub(crate) fn dimension_to_i32(dimension: usize) -> Result<i32, CoreError> {
             "semantic: dimension {dimension} does not fit in i32 (Arrow FixedSizeList list size): {err}"
         ))
     })
-}
-
-/// Filesystem path of the lancedb dataset, as the UTF-8 string lancedb's
-/// `connect` expects.
-pub(crate) fn dataset_uri(generation_dir: &Path) -> Result<String, CoreError> {
-    dataset_dir_to_uri(&dataset_dir(generation_dir))
 }
 
 /// Convert an already-resolved dataset directory into the UTF-8 URI lancedb's

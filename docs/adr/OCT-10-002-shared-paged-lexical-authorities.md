@@ -5,8 +5,18 @@ Status: `Legacy contract integrated; scoped regression/SDK and later XL lifecycl
 Decided: 2026-10-10
 
 Supersedes the storage and admission details of
-[OCT-10-001](OCT-10-001-seal-owned-lexical-serving-metadata.md) for the new format.
-Historical F16 measurements remain evidence for F16 only.
+the historical F16 decision for the new legacy format. The exact F16 decision
+is recoverable from the [decision preimages](../ARCHIVE-INDEX.md#superseded-decision-preimages).
+Historical F16 measurements remain evidence for F16 only. F16 coupled sealed
+manifest 16, flat 256-bucket File root 16 and Native manifest 2; older generations
+required a producer rebuild, with no fallback reader. Its seal inherited a bucket
+only from an authenticated non-quarantined base with exact root, source rows and
+same regular-object inode/committed length. That was provenance, not a fresh hash:
+same-length in-place corruption could be detected at selected read or bounded
+scrub rather than open. Missing/truncated control metadata still refused at open.
+The producer manifest digest was not an external signature. F16's 16 MiB root,
+source-corpus ceilings, metadata walks and pinned-reader retirement constraint
+did not prove worst-case O(delta) publication or qualify the later paged format.
 Current execution and exclusions are recorded in the
 [closeout validation](../plans/oct-22-finalizing/VALIDATION.md).
 
@@ -26,7 +36,7 @@ after the RFC's switch gates; no two writable engines may share one state root.
 
 Current resource/operational integration status and active ownership follow only
 the [Oct-22 SSOT](../plans/oct-22-finalizing/README.md).
-The [legacy discussion](../history/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md#1037-최종-잔여-작업과-native-분업-2026-10-12)
+The [legacy discussion](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages)
 remains historical context, not another assignment list.
 Prepared merge/local pool quotas are not complete production boot/writer/WAL/FD
 admission. Active native object/profile memory leases neither cancel that legacy

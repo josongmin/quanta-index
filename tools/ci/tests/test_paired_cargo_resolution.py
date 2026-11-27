@@ -1010,19 +1010,31 @@ def test_missing_source_is_not_assumed_to_be_local(resolution):
         validate(resolution)
 
 
-def test_kernel_feature_profile_is_admitted_independently(resolution):
-    quanta, paired, consumer, metadata = resolution
-    kernel = "quanta-runtime-retrieval-kernel"
-    manifest = paired / "packages/analysis/quanta-v2/crates" / kernel / "Cargo.toml"
+@pytest.mark.parametrize(
+    ("consumer", "feature"),
+    [
+        ("quanta-runtime-retrieval-kernel", "index-sdk-ingress-surface"),
+        ("quanta-sdk-runtime-executor", "ifx150-restart-recovery-test-support"),
+    ],
+)
+def test_selected_consumer_requires_its_own_feature(resolution, consumer, feature):
+    quanta, paired, _, metadata = resolution
+    manifest = paired / "packages/analysis/quanta-v2/crates" / consumer / "Cargo.toml"
     manifest.parent.mkdir()
-    manifest.write_text(f'[package]\nname = "{kernel}"\nversion = "0.1.0"\n')
-    metadata["packages"][-1].update(id=kernel, name=kernel, manifest_path=str(manifest))
-    metadata["resolve"]["nodes"][-1].update(id=kernel, features=["index-sdk-ingress-surface"])
+    manifest.write_text(f'[package]\nname = "{consumer}"\nversion = "0.1.0"\n')
+    metadata["packages"][-1].update(id=consumer, name=consumer, manifest_path=str(manifest))
+    node = metadata["resolve"]["nodes"][-1]
+    node.update(id=consumer, features=["index-sdk-ingress"])
+    with pytest.raises(ValueError, match="feature profile is not enabled"):
+        MODULE.validate_resolution(
+            metadata, quanta_root=quanta, paired_root=paired, consumer=consumer
+        )
+    node["features"] = [feature]
     result = MODULE.validate_resolution(
-        metadata, quanta_root=quanta, paired_root=paired, consumer=kernel
+        metadata, quanta_root=quanta, paired_root=paired, consumer=consumer
     )
-    assert result["consumer"] == kernel
-    assert result["consumer_features"] == ["index-sdk-ingress-surface"]
+    assert result["consumer"] == consumer
+    assert result["consumer_features"] == [feature]
 
 
 def test_required_package_not_reachable_is_refused(resolution):

@@ -200,8 +200,52 @@ struct Observed {
     aliases: u64,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CatalogAccounting {
+    AppLedger,
+    StockPhysical,
+}
+
+struct StockCatalogNames {
+    directory: PathBuf,
+    main: &'static [u8],
+    wal: String,
+    shm: String,
+    journal: String,
+}
+
+impl StockCatalogNames {
+    fn new(state_root: &Path) -> Self {
+        let main = quanta_index_catalog::CATALOG_FILE_NAME;
+        Self {
+            directory: quanta_index_catalog::catalog_dir(state_root),
+            main: main.as_bytes(),
+            wal: format!("{main}-wal"),
+            shm: format!("{main}-shm"),
+            journal: format!("{main}-journal"),
+        }
+    }
+
+    fn is_stock_file(&self, parent: &Path, name: &[u8]) -> bool {
+        parent == self.directory
+            && (name == self.main
+                || name == self.wal.as_bytes()
+                || name == self.shm.as_bytes()
+                || name == self.journal.as_bytes())
+    }
+}
+
 fn inventory_error(detail: impl std::fmt::Display) -> CoreError {
     CoreError::Storage(format!("publication boot inventory: {detail}"))
+}
+
+fn require_listed_inode(listed: Option<u64>, observed: u64) -> Result<(), CoreError> {
+    if listed.is_some_and(|inode| inode != observed) {
+        return Err(inventory_error(
+            "enumerated entry file ID changed before stat",
+        ));
+    }
+    Ok(())
 }
 
 fn inventory_capacity(detail: &'static str) -> CoreError {
@@ -281,6 +325,28 @@ pub fn seed_publication_capacity(
         limits,
         allowed_socket_entries,
         &mut admitted::Ordinary::new(budget),
+        CatalogAccounting::AppLedger,
+    )?
+    .0)
+}
+
+/// The stock Catalog's physical files remain under the XFS project quota.
+/// Inventory still authenticates their namespace and file identities, but
+/// does not seed them into the application's logical publication ledger.
+pub fn seed_publication_capacity_stock_catalog(
+    lease: &StateRootLease,
+    state_root: &Path,
+    limits: PublicationBootInventoryLimits,
+    allowed_socket_entries: &[PathBuf],
+    budget: &RequestBudgetV1,
+) -> Result<PublicationCapacity, CoreError> {
+    Ok(seed_with_control(
+        lease,
+        state_root,
+        limits,
+        allowed_socket_entries,
+        &mut admitted::Ordinary::new(budget),
+        CatalogAccounting::StockPhysical,
     )?
     .0)
 }
@@ -306,6 +372,39 @@ pub(crate) fn seed_publication_capacity_admitted_v1(
         limits,
         allowed_socket_entries,
         &mut control,
+        CatalogAccounting::AppLedger,
+    )?;
+    Ok(AdmittedBootInventoryV1 {
+        capacity,
+        observed_files,
+        observed_entries,
+        max_path_bytes,
+        memory: control.memory,
+    })
+}
+
+/// Recovery variant of stock Catalog inventory, charged to the caller's
+/// original Control budget instead of allocating a new independent scan.
+pub(crate) fn seed_publication_capacity_admitted_stock_catalog_v1(
+    registration: &crate::publication_file_capacity::RecoveryReadRootRegistrationV1,
+    limits: PublicationBootInventoryLimits,
+    allowed_socket_entries: &[PathBuf],
+    max_open_handles: usize,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<
+    AdmittedBootInventoryV1,
+    quanta_index_core::index::existing_file::ExistingFileReadFailureV1,
+> {
+    let lease = registration.lease()?;
+    let state_root = lease.state_root_identity_v1();
+    let mut control = admitted::Admitted::new(budget, max_open_handles, registration)?;
+    let (capacity, observed_files, observed_entries, max_path_bytes) = seed_with_control(
+        lease,
+        state_root,
+        limits,
+        allowed_socket_entries,
+        &mut control,
+        CatalogAccounting::StockPhysical,
     )?;
     Ok(AdmittedBootInventoryV1 {
         capacity,
@@ -321,6 +420,7 @@ fn seed_with_control<C: InventoryControl>(
     limits: PublicationBootInventoryLimits,
     allowed_socket_entries: &[PathBuf],
     control: &mut C,
+    catalog_accounting: CatalogAccounting,
 ) -> Result<(PublicationCapacity, u64, u64, usize), C::Error> {
     if limits.max_bytes == 0
         || limits.max_files == 0
@@ -364,6 +464,23 @@ fn seed_with_control<C: InventoryControl>(
         u64::try_from(state_root.as_os_str().len())
             .map_err(|_| inventory_error("root path width"))?,
     )?;
+    let stock_catalog = (catalog_accounting == CatalogAccounting::StockPhysical)
+        .then(|| StockCatalogNames::new(state_root));
+    let _stock_names_memory = stock_catalog
+        .as_ref()
+        .map(|names| {
+            let bytes = std::mem::size_of::<StockCatalogNames>()
+                .checked_add(names.directory.as_os_str().len())
+                .and_then(|bytes| bytes.checked_add(names.wal.len()))
+                .and_then(|bytes| bytes.checked_add(names.shm.len()))
+                .and_then(|bytes| bytes.checked_add(names.journal.len()))
+                .ok_or_else(|| inventory_error("stock Catalog names allocation overflow"))?;
+            control.temporary(
+                u64::try_from(bytes)
+                    .map_err(|_| inventory_error("stock Catalog names allocation width"))?,
+            )
+        })
+        .transpose()?;
     let mut stack = Vec::<Frame<C::Memory>>::new();
     admitted::vector_slot(&mut stack, control)?;
     stack.push(Frame {
@@ -379,7 +496,7 @@ fn seed_with_control<C: InventoryControl>(
     let mut used_files = 0_u64;
     while let Some(frame) = stack.pop() {
         control.checkpoint("publication boot inventory directory")?;
-        admitted::entries(&frame.directory, control, &mut |raw, control| {
+        admitted::entries(&frame.directory, control, &mut |raw, listed, control| {
             if raw == b"." || raw == b".." {
                 return Ok(());
             }
@@ -419,6 +536,16 @@ fn seed_with_control<C: InventoryControl>(
                 AtFlags::SYMLINK_NOFOLLOW,
             )
             .map_err(|error| inventory_error(format!("stat {}: {error}", path.display())))?;
+            require_listed_inode(listed, stat.st_ino)?;
+            if let Some(names) = &stock_catalog {
+                if path == names.directory
+                    && FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+                {
+                    return Err(
+                        (inventory_error("stock Catalog directory is not a directory")).into(),
+                    );
+                }
+            }
             match FileType::from_raw_mode(stat.st_mode) {
                 FileType::Directory => {
                     let depth = frame
@@ -442,6 +569,25 @@ fn seed_with_control<C: InventoryControl>(
                     })?;
                     control.charge(2, 0)?;
                     compare_entry(frame.directory.file()?, &name, directory.file()?)?;
+                    if stock_catalog
+                        .as_ref()
+                        .is_some_and(|names| path == names.directory)
+                    {
+                        let metadata = directory.file()?.metadata().map_err(|error| {
+                            inventory_error(format!(
+                                "stat stock Catalog directory {}: {error}",
+                                path.display()
+                            ))
+                        })?;
+                        if metadata.uid() != rustix::process::geteuid().as_raw()
+                            || metadata.mode() & 0o077 != 0
+                        {
+                            return Err((inventory_error(
+                                "stock Catalog directory must be private and owned",
+                            ))
+                            .into());
+                        }
+                    }
                     admitted::vector_slot(&mut stack, control)?;
                     stack.push(Frame {
                         directory,
@@ -459,6 +605,22 @@ fn seed_with_control<C: InventoryControl>(
                     let metadata = file.file()?.metadata().map_err(|error| {
                         inventory_error(format!("stat file {}: {error}", path.display()))
                     })?;
+                    if stock_catalog
+                        .as_ref()
+                        .is_some_and(|names| names.is_stock_file(&frame.path, raw))
+                    {
+                        if metadata.nlink() != 1
+                            || metadata.uid() != rustix::process::geteuid().as_raw()
+                            || metadata.mode() & 0o077 != 0
+                        {
+                            return Err((inventory_error(format!(
+                                "stock Catalog input must be a private, owned, single-link regular file: {}",
+                                path.display()
+                            )))
+                            .into());
+                        }
+                        return Ok(());
+                    }
                     let key = inode(&metadata);
                     if let Some(aliases) = regular.get_mut(&key) {
                         if aliases.bytes != metadata.len() || aliases.links != metadata.nlink() {
@@ -884,6 +1046,84 @@ mod tests {
             &authority.snapshot()?.used_files,
             &1,
             "declared socket file count",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn stock_catalog_inventory_excludes_only_its_physical_sqlite_files() -> TestResult {
+        let (_temporary, state_root, lease) = root()?;
+        let request = RequestBudgetV1::unbounded();
+        let baseline = seed(&lease, &state_root, limits(), &request)?.snapshot()?;
+        let catalog = quanta_index_catalog::catalog_dir(&state_root);
+        fs::create_dir(&catalog)?;
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700))?;
+        let main = quanta_index_catalog::CATALOG_FILE_NAME;
+        for name in [
+            main.to_owned(),
+            format!("{main}-wal"),
+            format!("{main}-shm"),
+            format!("{main}-journal"),
+        ] {
+            let path = catalog.join(name);
+            fs::write(&path, [7_u8; 64])?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        }
+        let other = state_root.join("other");
+        fs::create_dir(&other)?;
+        fs::write(other.join(main), b"other")?;
+        fs::write(catalog.join(format!("{main}-unknown")), b"extra")?;
+        let mut exact = limits();
+        exact.max_bytes = baseline.used_bytes + 10;
+        exact.max_files = baseline.used_files + 2;
+        require(
+            seed(&lease, &state_root, exact, &request).is_err(),
+            "legacy inventory unexpectedly excluded Catalog files",
+        )?;
+        let usage =
+            seed_publication_capacity_stock_catalog(&lease, &state_root, exact, &[], &request)?
+                .snapshot()?;
+        require_equal(&usage.used_bytes, &exact.max_bytes, "stock ledger bytes")?;
+        require_equal(&usage.used_files, &exact.max_files, "stock ledger files")?;
+        require_equal(
+            &usage.retained_inodes,
+            &exact.max_files,
+            "stock retained inodes",
+        )
+    }
+
+    #[test]
+    fn stock_catalog_inventory_admits_journal_but_refuses_hardlink() -> TestResult {
+        let (_temporary, state_root, lease) = root()?;
+        let request = RequestBudgetV1::unbounded();
+        let catalog = quanta_index_catalog::catalog_dir(&state_root);
+        fs::create_dir(&catalog)?;
+        fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700))?;
+        let main = catalog.join(quanta_index_catalog::CATALOG_FILE_NAME);
+        fs::write(&main, b"main")?;
+        fs::set_permissions(&main, fs::Permissions::from_mode(0o600))?;
+        let journal = catalog.join(format!(
+            "{}-journal",
+            quanta_index_catalog::CATALOG_FILE_NAME
+        ));
+        fs::write(&journal, b"rollback")?;
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o600))?;
+        let admitted =
+            seed_publication_capacity_stock_catalog(&lease, &state_root, limits(), &[], &request)?
+                .snapshot()?;
+        require_equal(&admitted.used_files, &1, "journal remains quota-owned")?;
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o644))?;
+        require(
+            seed_publication_capacity_stock_catalog(&lease, &state_root, limits(), &[], &request)
+                .is_err(),
+            "stock Catalog accepted a public rollback journal",
+        )?;
+        fs::remove_file(&journal)?;
+        fs::hard_link(&main, state_root.join("catalog-alias"))?;
+        require(
+            seed_publication_capacity_stock_catalog(&lease, &state_root, limits(), &[], &request)
+                .is_err(),
+            "stock Catalog excluded a multiply linked file",
         )?;
         Ok(())
     }

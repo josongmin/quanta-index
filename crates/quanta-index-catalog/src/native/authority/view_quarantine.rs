@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, btree_map::Entry};
 
-use quanta_index_contract::index::Digest;
+use quanta_index_contract::index::{Digest, MapRoot};
 use quanta_index_core::index::{MemoryLease, MemoryLifetime, WorkUsage};
 use rusqlite::{Connection, OptionalExtension as _, params, types::ValueRef};
 
@@ -882,6 +882,19 @@ fn quarantined_scrub_view(
 }
 
 impl SqliteCatalog {
+    /// Read only the authenticated profile, member map and Source owner map
+    /// needed to re-prove a member root. Regular tickets remain quarantined.
+    pub fn quarantined_member_roots_for_scrub(
+        &self,
+        view: ViewRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(ObjectRef, MapRoot, MapRoot), IndexError> {
+        let connection = self.lock_native_budget(budget)?;
+        let selected = quarantined_scrub_view(self, &connection, view, budget)?;
+        ensure_roots_with_budget(&connection, &selected, Some(budget))?;
+        Ok((selected.profile, selected.members, selected.source.owners))
+    }
+
     /// Read only the owner map needed to re-prove another body fault. This
     /// does not create a query ticket or relax the view's admission fence.
     pub fn quarantined_source_owners_for_scrub(
@@ -889,10 +902,8 @@ impl SqliteCatalog {
         view: ViewRef,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_contract::index::MapRoot, IndexError> {
-        let connection = self.lock_native_budget(budget)?;
-        let selected = quarantined_scrub_view(self, &connection, view, budget)?;
-        ensure_roots_with_budget(&connection, &selected, Some(budget))?;
-        Ok(selected.source.owners)
+        self.quarantined_member_roots_for_scrub(view, budget)
+            .map(|(_profile, _members, owners)| owners)
     }
 
     /// Recheck the immutable view after a maintenance read and return whether
@@ -961,7 +972,9 @@ impl SqliteCatalog {
             .keys()
             .find_map(|(affected, body)| (*affected == view).then_some(*body));
         let legacy_seed = receipt.as_ref().filter(|receipt| !receipt.fanout_complete);
-        let install_schema = legacy_seed.is_some() || transient.is_some();
+        // Staging below persists every root-local transient incident, including
+        // incidents for a different view left by a rolled-back schema install.
+        let install_schema = legacy_seed.is_some() || has_transient(self);
         if install_schema {
             ensure_or_verify_schema(self, &tx)?;
         }

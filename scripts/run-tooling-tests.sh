@@ -9,7 +9,7 @@ source scripts/quanta-index-env.sh
 
 # Dedicated counterexample gates own these scanners. Keep their focused tests
 # out of the broad tooling suite to avoid duplicate work.
-python3 -m pytest tools -q \
+exec uv run --frozen --extra dev python -m pytest tools -q \
   --ignore=tools/ci/tests/test_semgrep_policy.py \
   --ignore=tools/ci/tests/test_check_rust_fallbacks.py \
   -o cache_dir="${PYTEST_CACHE_DIR}" "$@"

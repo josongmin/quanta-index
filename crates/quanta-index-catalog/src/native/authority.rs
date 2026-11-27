@@ -23,15 +23,17 @@ mod read_settlement;
 pub use read_only::{
     LegacyActiveCatalogCensusV1, LegacyCatalogQuiescenceV1, LegacyHistoryCheckpointPageV1,
     LegacyHistoryProducerScopeV1, LegacyHistorySnapshotObservationV1, LegacyHistorySourceProofV1,
+    LegacyHistorySourceVerifier,
     NativeBootCatalogCandidate, NativeBootCatalogSnapshot, NativeBootPublicationReader,
     NativeBootPublishedOperation, NativeBootQuiescentCatalogV1, NativeProtectedSnapshotWitnessV1,
     TerminalBatchReadError, VerifiedLegacyTerminalBatch, lookup_native_protected_source_head_v1,
     observe_legacy_history_snapshot_v1, read_native_protected_snapshot_witness_v1,
     require_legacy_repomap_inapplicable_v1, resolve_native_protected_source_head_if_current_v1,
     verify_legacy_active_repomap_receipts_with_siblings_v1, verify_legacy_catalog_quiescence_v1,
-    verify_legacy_history_source_inventory_v1, verify_legacy_history_sources_v1,
+    verify_legacy_history_source_inventory_all_v2, verify_legacy_history_source_inventory_v1,
+    verify_legacy_history_sources_v1,
     verify_legacy_terminal_batch_receipt, verify_native_boot_candidate, verify_native_boot_catalog,
-    verify_native_boot_current_candidate, verify_native_boot_scope_selected_view_v1,
+    verify_native_boot_current_candidate, verify_native_boot_history_member_view_v1,
     verify_native_legacy_history_recovery_publications_v1,
     verify_native_legacy_history_recovery_publications_with_routes_v1,
     verify_native_protected_snapshot_install_v1,
@@ -43,10 +45,10 @@ pub use read_only::{
     verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
     verify_native_source_root_publications_with_routes_v1, verify_native_source_root_quiescence_v1,
     verify_native_source_root_quiescence_with_routes_v1, visit_legacy_active_catalog_heads_v1,
-    visit_legacy_history_checkpoint_pages_v1, visit_legacy_history_checkpoint_rows_v1,
+    visit_legacy_history_checkpoint_pages_all_v2, visit_legacy_history_checkpoint_pages_v1,
+    visit_legacy_history_checkpoint_rows_v1, visit_legacy_history_generation_keys_all_v2,
     visit_legacy_history_generation_keys_v1, visit_legacy_history_snapshot_rows_v1,
-    visit_native_boot_scope_current_view_v1, visit_native_protected_snapshot_rows_v1,
-    with_legacy_active_repomap_receipts_with_siblings_v1,
+    visit_native_protected_snapshot_rows_v1, with_legacy_active_repomap_receipts_with_siblings_v1,
 };
 mod bootstrap;
 mod capture_format;
@@ -54,6 +56,9 @@ mod fence_counter;
 mod lifetime;
 pub(crate) use lifetime::certify_open_pin_rows;
 mod body_incidents;
+mod maintenance_demand;
+pub use maintenance_demand::{MaintenanceDemand, ReleasedViewRange};
+pub(crate) use maintenance_demand::MaintenanceDemandState;
 mod managed_install;
 mod object_install;
 mod owned_work;
@@ -64,6 +69,7 @@ mod registration_codec;
 mod renewal_diagnostic;
 mod retention;
 mod source_authority;
+mod source_scrub_progress;
 mod source_stage_replay_receipt;
 mod terminal_custody;
 mod terminal_work;
@@ -77,15 +83,16 @@ use quanta_index_core::index::ports::{
 };
 use quanta_index_core::index::{
     AdmissionOutcome, AttemptId, AttemptRef, BootstrapRef, CatalogView, Digest, ImmutableOperation,
-    IndexError, IngressRef, MemoryLifetime, OWNED_WORK_PRODUCER, ObjectInstallScope,
+    IndexError, IndexInstanceId, IngressRef, MemoryLifetime, OWNED_WORK_PRODUCER, ObjectInstallScope,
     ObjectNamespaceBinding, ObjectRef, OperationKey, OperationStatus, OwnedWorkAssignment,
     OwnerMemberBinding, PreparedPublication, ProducerId, ReclaimCandidate, ReclaimDrainPage,
     ReclaimPermit, ReclaimTarget, ReclaimWorkPage, Refusal, RegisteredObject, RetiringRef,
-    SourceEvent, SourceOperationMode, StreamId, TicketId, UpdateKind, UpdateRequest, ViewRef,
+    SourceCut, SourceEvent, SourceOperationMode, StreamId, TicketId, UpdateKind, UpdateRequest, ViewRef,
     WorkAction, WorkActionDigest, WorkBudget, WorkClaim, WorkIntent, WorkScope, WorkStatus,
     WorkUsage, WorkspaceKey,
 };
 use quanta_index_core::{CoreError, DiagnosticOwnedRenewalRefusalReasonV1};
+use quanta_index_contract::index::native_update_request_object_ref_with_work_v1;
 use renewal_diagnostic::fence_lost;
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -457,13 +464,11 @@ const READY_PENDING_QUERY: &str = "SELECT work,length(payload),ready_since_ms FR
 const READY_EXPIRED_QUERY: &str = "SELECT work,length(payload),lease_until_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=1 AND status=1 AND lease_until_ms<=?3
     ORDER BY lease_until_ms,work LIMIT ?4";
-const READY_PENDING_AFTER_QUERY: &str =
-    "SELECT work,length(payload),ready_since_ms FROM native_work_v1
+const READY_PENDING_AFTER_QUERY: &str = "SELECT work,length(payload),ready_since_ms FROM native_work_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=0 AND status=0
       AND (ready_since_ms>?3 OR (ready_since_ms=?3 AND work>?4))
     ORDER BY ready_since_ms,work LIMIT ?5";
-const READY_EXPIRED_AFTER_QUERY: &str =
-    "SELECT work,length(payload),lease_until_ms FROM native_work_v1
+const READY_EXPIRED_AFTER_QUERY: &str = "SELECT work,length(payload),lease_until_ms FROM native_work_v1 INDEXED BY native_owned_claim_idx_v1
     WHERE workspace=?1 AND epoch=?2 AND owner_mode=1 AND status=1 AND lease_until_ms<=?3
       AND (lease_until_ms>?4 OR (lease_until_ms=?4 AND work>?5))
     ORDER BY lease_until_ms,work LIMIT ?6";
@@ -682,6 +687,15 @@ pub(crate) fn initialize(
         .map_err(|error| engine_error("create native catalog schema", path, &error))?;
     crate::connection::verify_installed_schema_objects(connection, path, SCHEMA, SCHEMA_OBJECTS)?;
     capture_format::seed_and_verify(connection, path, native_first_birth)?;
+    connection
+        .execute_batch(boot_manifest::PROTECTED_SOURCE_VIEW_SCHEMA)
+        .map_err(|error| engine_error("create protected Source view schema", path, &error))?;
+    crate::connection::verify_installed_schema_objects(
+        connection,
+        path,
+        boot_manifest::PROTECTED_SOURCE_VIEW_SCHEMA,
+        boot_manifest::PROTECTED_SOURCE_VIEW_OBJECTS,
+    )?;
     let name = "attempt_fence";
     let inserted = connection
         .execute(
@@ -1474,7 +1488,12 @@ fn write_view(connection: &Connection, view: &CatalogView) -> Result<(), IndexEr
 }
 
 const MAX_VIEW_PAYLOAD_BYTES: i64 = 4096;
-const MAX_VIEW_ROOTS: usize = 7;
+/// Distinct object roots one Catalog view can bind.
+///
+/// A view binds its profile plus the optional owners, paths, frontiers,
+/// projections, members and coverage roots. Retiring one view releases at
+/// most this many roots to the reclaim queue.
+pub const MAX_VIEW_ROOTS: usize = 7;
 const VIEW_ROOT_QUERY_LIMIT: i64 = MAX_VIEW_ROOTS as i64 + 1;
 
 fn view_blob<'a>(
@@ -1646,24 +1665,34 @@ struct OperationRow {
     status: OperationStatus,
     published_view: Option<CatalogView>,
     projection_replay: Option<ProjectionReplayStamp>,
+    // Legacy row compatibility only. This field was caller-forgeable and is
+    // never used as request admission or restart authority.
     retirement_policy_sha256_v2: Option<Digest>,
+    /// Exact request ref checked from a typed History request at admission.
+    /// Older rows omit this field and cannot use body-free History replay.
+    retained_history_request_v1: Option<RetainedHistoryRequestV1>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RetainedHistoryRequestV1 {
+    request: ObjectRef,
+    instance: IndexInstanceId,
+}
+quanta_index_contract::native_serde_struct!(RetainedHistoryRequestV1 {
+    request: ObjectRef,
+    instance: IndexInstanceId
+});
 
 impl Serialize for OperationRow {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct as _;
 
-        let has_replay =
-            self.projection_replay.is_some() || self.retirement_policy_sha256_v2.is_some();
+        let has_history = self.retained_history_request_v1.is_some();
+        let has_retirement = self.retirement_policy_sha256_v2.is_some() || has_history;
+        let has_replay = self.projection_replay.is_some() || has_retirement;
         let mut row = serializer.serialize_struct(
             "OperationRow",
-            if self.retirement_policy_sha256_v2.is_some() {
-                7
-            } else if has_replay {
-                6
-            } else {
-                5
-            },
+            5 + usize::from(has_replay) + usize::from(has_retirement) + usize::from(has_history),
         )?;
         row.serialize_field("immutable", &self.immutable)?;
         row.serialize_field("events", &self.events)?;
@@ -1673,11 +1702,11 @@ impl Serialize for OperationRow {
         if has_replay {
             row.serialize_field("projection_replay", &self.projection_replay)?;
         }
-        if self.retirement_policy_sha256_v2.is_some() {
-            row.serialize_field(
-                "retirement_policy_sha256_v2",
-                &self.retirement_policy_sha256_v2,
-            )?;
+        if has_retirement {
+            row.serialize_field("retirement_policy_sha256_v2", &self.retirement_policy_sha256_v2)?;
+        }
+        if has_history {
+            row.serialize_field("retained_history_request_v1", &self.retained_history_request_v1)?;
         }
         row.end()
     }
@@ -1695,6 +1724,7 @@ impl<'de> Deserialize<'de> for OperationRow {
             "published_view",
             "projection_replay",
             "retirement_policy_sha256_v2",
+            "retained_history_request_v1",
         ];
 
         enum Field {
@@ -1705,6 +1735,7 @@ impl<'de> Deserialize<'de> for OperationRow {
             PublishedView,
             ProjectionReplay,
             RetirementPolicySha256V2,
+            RetainedHistoryRequestV1,
         }
 
         impl<'de> Deserialize<'de> for Field {
@@ -1730,6 +1761,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                             "published_view" => Ok(Field::PublishedView),
                             "projection_replay" => Ok(Field::ProjectionReplay),
                             "retirement_policy_sha256_v2" => Ok(Field::RetirementPolicySha256V2),
+                            "retained_history_request_v1" => Ok(Field::RetainedHistoryRequestV1),
                             _ => Err(E::unknown_field(key, FIELDS)),
                         }
                     }
@@ -1745,7 +1777,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                             .ok_or_else(|| {
                                 E::invalid_value(
                                     Unexpected::Unsigned(key),
-                                    &"field index 0 <= i < 7",
+                                    &"field index 0 <= i < 8",
                                 )
                             })?;
                         self.visit_str(name)
@@ -1793,6 +1825,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                 let mut published_view = None;
                 let mut projection_replay = None;
                 let mut retirement_policy_sha256_v2 = None;
+                let mut retained_history_request_v1 = None;
 
                 while let Some(field) = map.next_key()? {
                     match field {
@@ -1807,11 +1840,10 @@ impl<'de> Deserialize<'de> for OperationRow {
                             read_field(&mut map, &mut projection_replay, "projection_replay")?;
                         }
                         Field::RetirementPolicySha256V2 => {
-                            read_field(
-                                &mut map,
-                                &mut retirement_policy_sha256_v2,
-                                "retirement_policy_sha256_v2",
-                            )?;
+                            read_field(&mut map, &mut retirement_policy_sha256_v2, "retirement_policy_sha256_v2")?;
+                        }
+                        Field::RetainedHistoryRequestV1 => {
+                            read_field(&mut map, &mut retained_history_request_v1, "retained_history_request_v1")?;
                         }
                     }
                 }
@@ -1825,6 +1857,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                         .ok_or_else(|| A::Error::missing_field("published_view"))?,
                     projection_replay: projection_replay.unwrap_or_default(),
                     retirement_policy_sha256_v2: retirement_policy_sha256_v2.unwrap_or_default(),
+                    retained_history_request_v1: retained_history_request_v1.unwrap_or_default(),
                 })
             }
 
@@ -1837,6 +1870,7 @@ impl<'de> Deserialize<'de> for OperationRow {
                     published_view: required_element(&mut seq, 4)?,
                     projection_replay: seq.next_element()?.unwrap_or_default(),
                     retirement_policy_sha256_v2: seq.next_element()?.unwrap_or_default(),
+                    retained_history_request_v1: seq.next_element()?.unwrap_or_default(),
                 })
             }
         }
@@ -2424,11 +2458,7 @@ fn ready_candidates_after_v2(
     budget: &mut WorkBudget,
 ) -> Result<Vec<(u64, Vec<u8>)>, IndexError> {
     budget.checkpoint()?;
-    let query = if claimed {
-        READY_EXPIRED_AFTER_QUERY
-    } else {
-        READY_PENDING_AFTER_QUERY
-    };
+    let query = if claimed { READY_EXPIRED_AFTER_QUERY } else { READY_PENDING_AFTER_QUERY };
     let after_due = match after {
         Some((due, _)) => int(*due)?,
         None => -1,
@@ -2436,30 +2466,16 @@ fn ready_candidates_after_v2(
     let after_work = after.map_or(&[][..], |(_, work)| work.as_slice());
     let mut statement = connection.prepare(query).map_err(|error| sql(&error))?;
     let mut rows = if claimed {
-        statement
-            .query(params![
-                workspace_key(workspace)?,
-                int(epoch)?,
-                int(now)?,
-                after_due,
-                after_work,
-                i64::from(RETIRED_READY_PAGE_V2)
-            ])
+        statement.query(params![workspace_key(workspace)?, int(epoch)?, int(now)?,
+            after_due, after_work, i64::from(RETIRED_READY_PAGE_V2)])
             .map_err(|error| sql(&error))?
     } else {
-        statement
-            .query(params![
-                workspace_key(workspace)?,
-                int(epoch)?,
-                after_due,
-                after_work,
-                i64::from(RETIRED_READY_PAGE_V2)
-            ])
+        statement.query(params![workspace_key(workspace)?, int(epoch)?,
+            after_due, after_work, i64::from(RETIRED_READY_PAGE_V2)])
             .map_err(|error| sql(&error))?
     };
     let mut result = Vec::new();
-    result
-        .try_reserve_exact(RETIRED_READY_PAGE_V2 as usize)
+    result.try_reserve_exact(RETIRED_READY_PAGE_V2 as usize)
         .map_err(|_| IndexError::ResourceLimited)?;
     while let Some(row) = rows.next().map_err(|error| sql(&error))? {
         let key = bounded_work_blob(row, 0, 32, true).map_err(|error| sql(&error))?;
@@ -2471,9 +2487,7 @@ fn ready_candidates_after_v2(
         }
         budget.charge(WorkUsage {
             reads: 1,
-            bytes: payload_bytes
-                .checked_add(64)
-                .ok_or(IndexError::ResourceLimited)?,
+            bytes: payload_bytes.checked_add(64).ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
         result.push((uint(due)?, key));
@@ -2494,32 +2508,16 @@ struct ReadyLaneV2 {
 
 impl ReadyLaneV2 {
     fn new(claimed: bool) -> Self {
-        Self {
-            claimed,
-            rows: Vec::new(),
-            position: 0,
-            after: None,
-            exhausted: false,
-        }
+        Self { claimed, rows: Vec::new(), position: 0, after: None, exhausted: false }
     }
 
     fn head(
-        &mut self,
-        connection: &Connection,
-        workspace: WorkspaceKey,
-        epoch: u64,
-        now: u64,
-        budget: &mut WorkBudget,
+        &mut self, connection: &Connection, workspace: WorkspaceKey, epoch: u64,
+        now: u64, budget: &mut WorkBudget,
     ) -> Result<Option<(u64, Vec<u8>)>, IndexError> {
         if self.position == self.rows.len() && !self.exhausted {
             let page = ready_candidates_after_v2(
-                connection,
-                workspace,
-                epoch,
-                now,
-                self.after.as_ref(),
-                self.claimed,
-                budget,
+                connection, workspace, epoch, now, self.after.as_ref(), self.claimed, budget,
             )?;
             self.exhausted = page.len() < RETIRED_READY_PAGE_V2 as usize;
             self.after = page.last().cloned();
@@ -2849,8 +2847,7 @@ fn claim_events(
     projection_replay: Option<ProjectionReplayStamp>,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let native_dsl_projection =
-        key.producer == NATIVE_DSL_PRODUCER_V1 && projection_replay.is_some();
+    let native_dsl_projection = key.producer == NATIVE_DSL_PRODUCER_V1 && projection_replay.is_some();
     let mut unique = std::collections::BTreeSet::new();
     for event in events {
         budget.checkpoint()?;
@@ -3660,11 +3657,19 @@ fn open_ingress_transaction(
     }
     // A sealed request already has immutable custody. Observe it without
     // changing its fence, even if a caller later presents different bytes.
-    if let (IngressOpen::Submit(budget), Some(row)) = (mode, prior)
+    if let Some(row) = prior
         && row.sealed.is_some()
     {
-        budget.checkpoint()?;
-        return Ok(Some(row));
+        match mode {
+            IngressOpen::Submit(budget) => {
+                budget.checkpoint()?;
+                return Ok(Some(row));
+            }
+            IngressOpen::Stage if operation.producer == NATIVE_DSL_PRODUCER_V1 => {
+                return Ok(Some(row));
+            }
+            _ => {}
+        }
     }
     let stage = IngressRef {
         operation,
@@ -3684,12 +3689,37 @@ fn open_ingress_transaction(
 }
 
 impl InputStagingPort for SqliteCatalog {
+    fn staged_source_submission_ingress_v1(
+        &self,
+        receipt: quanta_index_contract::native_protocol::SourceStageReplayReceiptV1,
+        expected_view: ViewRef,
+        expected_source: SourceCut,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        source_stage_replay_receipt::submission_ingress(
+            self, receipt, expected_view, expected_source, budget,
+        )
+    }
+
     fn open_ingress(&self, operation: OperationKey) -> Result<IngressRef, IndexError> {
         open_ingress_transaction(self, operation, IngressOpen::Stage)?
             .map(|row| row.stage)
             .ok_or_else(|| {
                 IndexError::BackendViolation("new ingress transaction returned no stage".into())
             })
+    }
+
+    fn require_confirmed_initial_history_input_v1(
+        &self,
+        ingress: IngressRef,
+        input: ObjectRef,
+        profile: ObjectRef,
+        expected_view: ViewRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        SqliteCatalog::require_confirmed_initial_history_input_v1(
+            self, ingress, input, profile, expected_view, budget,
+        )
     }
 
     fn open_submission_ingress(
@@ -3704,6 +3734,31 @@ impl InputStagingPort for SqliteCatalog {
                     "submission ingress transaction returned no stage".into(),
                 )
             })
+    }
+
+    fn read_submission_seal_v1(
+        &self,
+        ingress: IngressRef,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        budget.charge(WorkUsage { reads: 1, ..WorkUsage::default() })?;
+        let guard = self.lock_native_budget(budget)?;
+        let sealed = check_ingress(&guard, ingress)?.sealed;
+        budget.checkpoint()?;
+        Ok(sealed)
+    }
+
+    fn find_submission_seal_v1(
+        &self,
+        operation: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<(IngressRef, ObjectRef)>, IndexError> {
+        budget.charge(WorkUsage { reads: 1, ..WorkUsage::default() })?;
+        let guard = self.lock_native_budget(budget)?;
+        let seal = read_ingress(&guard, operation)?
+            .and_then(|row| row.sealed.map(|request_ref| (row.stage, request_ref)));
+        budget.checkpoint()?;
+        Ok(seal)
     }
 
     fn adopt_registered_inputs(
@@ -3853,22 +3908,113 @@ impl InputStagingPort for SqliteCatalog {
 }
 
 impl SqliteCatalog {
-    /// Durable classification written in the same transaction as admission.
-    /// A missing marker is never evidence that a GC'd request was retained.
-    pub fn retirement_policy_sha256_v2(
+    /// The preview permit is DATA: the later signed request and Catalog CAS
+    /// must recheck this identity. Stage-seal receipts do not seal the ingress.
+    pub fn require_confirmed_initial_history_input_v1(
         &self,
-        key: OperationKey,
+        ingress: IngressRef,
+        input: ObjectRef,
+        profile: ObjectRef,
+        expected_view: ViewRef,
         budget: &mut WorkBudget,
-    ) -> Result<Option<Digest>, IndexError> {
+    ) -> Result<(), IndexError> {
+        if expected_view.workspace != ingress.operation.workspace
+            || expected_view.epoch != ingress.operation.epoch
+            || input == profile
+        {
+            return Err(IndexError::InvalidInput("initial History preview scope differs".into()));
+        }
+        budget.checkpoint()?;
+        let mut guard = self.lock_native_budget(budget)?;
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| sql(&error))?;
+        let operation = operation_key(ingress.operation)?;
+        let workspace = workspace_key(ingress.operation.workspace)?;
+        budget.charge(WorkUsage { reads: 1, bytes: 256, ..WorkUsage::default() })?;
+        let ingress_lengths: Option<(Option<i64>, Option<i64>, Option<i64>)> = tx.query_row(
+            "SELECT CASE WHEN typeof(workspace)='blob' THEN length(workspace) END,
+                    CASE WHEN typeof(payload)='blob' THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
+             FROM native_ingress_v1 WHERE operation=?1",
+            params![&operation],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional().map_err(|error| sql(&error))?;
+        let Some((Some(workspace_bytes), Some(payload_bytes), Some(digest_bytes))) = ingress_lengths else {
+            return Err(IndexError::FenceLost);
+        };
+        if workspace_bytes != i64::try_from(workspace.len()).map_err(|_| IndexError::ResourceLimited)?
+            || !(1..=4096).contains(&payload_bytes)
+            || digest_bytes != 32
+        {
+            return Err(IndexError::Storage("initial History ingress metadata shape mismatch".into()));
+        }
         budget.charge(WorkUsage {
             reads: 1,
+            bytes: u64::try_from(payload_bytes).map_err(|_| IndexError::ResourceLimited)?
+                .checked_add(32 + 512).ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        let guard = self.lock_native_budget(budget)?;
-        let row = read_operation_with_budget(&guard, key, Some(budget))?
+        require_open_ingress(&tx, ingress)?;
+        let current = retention::charged_current_view(&tx, ingress.operation.workspace, budget)?
             .ok_or(IndexError::SnapshotUnavailable)?;
+        if current.identity != expected_view {
+            return Err(IndexError::Conflict);
+        }
+        for reference in [input, profile] {
+            budget.charge(WorkUsage { reads: 1, bytes: 64, ..WorkUsage::default() })?;
+            let digest_bytes: Option<Option<i64>> = tx.query_row(
+                "SELECT CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
+                 FROM native_ingress_object_v1 WHERE operation=?1 AND object=?2",
+                params![&operation, object_key(reference)],
+                |row| row.get(0),
+            ).optional().map_err(|error| sql(&error))?;
+            let Some(32) = digest_bytes.flatten() else {
+                return Err(IndexError::InvalidInput(
+                    "initial History input or profile is not confirmed by ingress".into(),
+                ));
+            };
+            budget.charge(WorkUsage { reads: 1, bytes: 32, ..WorkUsage::default() })?;
+            if !confirmed_ingress_membership(&tx, ingress.operation, reference)? {
+                return Err(IndexError::InvalidInput(
+                    "initial History input or profile is not confirmed by ingress".into(),
+                ));
+            }
+            require_object_with_budget(
+                &tx, reference, Some(ObjectReadBudget::WorkAndMemory(budget)),
+            )?;
+        }
         budget.checkpoint()?;
-        Ok(row.retirement_policy_sha256_v2)
+        tx.commit().map_err(|error| sql(&error))?;
+        drop(guard);
+        Ok(())
+    }
+
+    /// A terminal History claim is usable after request-body retirement only
+    /// when admission stored the exact typed request reference in this row.
+    pub fn authenticated_terminal_history_request_v1(
+        &self,
+        key: OperationKey,
+        status: &OperationStatus,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<IndexInstanceId>, IndexError> {
+        publication_result::with_operation_metadata(self, key, budget, |row| {
+            let row = row.ok_or(IndexError::SnapshotUnavailable)?;
+            if row.immutable.key != key || &row.status != status {
+                return Err(IndexError::DigestConflict);
+            }
+            let Some(request) = row.retained_history_request_v1 else {
+                return Ok(None);
+            };
+            if request.request != row.immutable.request
+                || row.immutable.source_mode != SourceOperationMode::Unchanged
+                || !row.events.is_empty()
+                || row.projection_replay.is_some()
+                || !matches!(status, OperationStatus::Published(_) | OperationStatus::Refused(_))
+            {
+                return Err(IndexError::DigestConflict);
+            }
+            Ok(Some(request.instance))
+        })
     }
 
     /// Re-fence only a staged Source operation that still owns its confirmed
@@ -3985,7 +4131,7 @@ impl SqliteCatalog {
         owned: Option<&UpdateRequest>,
         budget: &mut WorkBudget,
     ) -> Result<AdmissionOutcome, IndexError> {
-        self.admit_with_projection_replay(immutable, ingress, events, owned, None, budget)
+        self.admit_with_projection_replay(immutable, ingress, events, owned, None, None, budget)
     }
 
     fn admit_with_projection_replay(
@@ -3995,6 +4141,7 @@ impl SqliteCatalog {
         events: &[SourceEvent],
         owned: Option<&UpdateRequest>,
         projection_replay: Option<ProjectionReplayStamp>,
+        retained_history_request_v1: Option<RetainedHistoryRequestV1>,
         budget: &mut WorkBudget,
     ) -> Result<AdmissionOutcome, IndexError> {
         let mut guard = self.lock_native_budget(budget)?;
@@ -4007,6 +4154,15 @@ impl SqliteCatalog {
             return Err(IndexError::InvalidInput(
                 "projection replay stamp has a foreign base".into(),
             ));
+        }
+        if retained_history_request_v1.is_some()
+            && (owned.is_some()
+                || projection_replay.is_some()
+                || !events.is_empty()
+                || immutable.source_mode != SourceOperationMode::Unchanged
+                || retained_history_request_v1.is_some_and(|stamp| stamp.request != immutable.request))
+        {
+            return Err(IndexError::DigestConflict);
         }
         match owned {
             Some(request) => {
@@ -4029,25 +4185,14 @@ impl SqliteCatalog {
             }
             None => {}
         }
-        let retirement_policy_sha256_v2 = match budget.retirement_check_v2() {
-            Some(checked) if checked.operation == immutable.key => Some(checked.policy_sha256),
-            Some(_) => return Err(IndexError::DigestConflict),
-            None => None,
-        };
-        if let Some(mut existing) = read_operation(&tx, immutable.key)? {
+        if let Some(existing) = read_operation(&tx, immutable.key)? {
             if existing.immutable != immutable
                 || existing.events != events
                 || existing.projection_replay != projection_replay
+                || existing.retained_history_request_v1.is_some()
+                    && existing.retained_history_request_v1 != retained_history_request_v1
             {
                 return Err(IndexError::DigestConflict);
-            }
-            if let Some(policy_sha) = retirement_policy_sha256_v2
-                && existing.retirement_policy_sha256_v2 != Some(policy_sha)
-            {
-                existing.retirement_policy_sha256_v2 = Some(policy_sha);
-                write_operation(&tx, &existing, false)?;
-                budget.checkpoint()?;
-                tx.commit().map_err(|error| sql(&error))?;
             }
             return Ok(AdmissionOutcome::Existing(existing.status));
         }
@@ -4088,7 +4233,8 @@ impl SqliteCatalog {
                 status: OperationStatus::Pending(attempt),
                 published_view: None,
                 projection_replay,
-                retirement_policy_sha256_v2,
+                retirement_policy_sha256_v2: None,
+                retained_history_request_v1,
             },
             true,
         )?;
@@ -4113,6 +4259,43 @@ impl OperationJournalPort for SqliteCatalog {
         self.admit_common(immutable, ingress, events, None, budget)
     }
 
+    fn admit_history_v1(
+        &self,
+        immutable: ImmutableOperation,
+        ingress: IngressRef,
+        request: &UpdateRequest,
+        budget: &mut WorkBudget,
+    ) -> Result<AdmissionOutcome, IndexError> {
+        if request.operation != immutable.key
+            || !matches!(request.kind, UpdateKind::HistoryAdvance(_) | UpdateKind::HistoryAppend(_))
+            || immutable.source_mode != SourceOperationMode::Unchanged
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        let instance = match &request.kind {
+            UpdateKind::HistoryAdvance(transition) => transition.instance,
+            UpdateKind::HistoryAppend(append) => append.instance,
+            _ => return Err(IndexError::DigestConflict),
+        };
+        let expected = native_update_request_object_ref_with_work_v1(request, &mut || {
+            budget.checkpoint()
+        })
+        .map_err(|cause| cause.into_error(|message| IndexError::InvalidInput(message.into())))?
+        .ok_or(IndexError::ResourceLimited)?;
+        if expected != immutable.request {
+            return Err(IndexError::DigestConflict);
+        }
+        self.admit_with_projection_replay(
+            immutable,
+            ingress,
+            &[],
+            None,
+            None,
+            Some(RetainedHistoryRequestV1 { request: expected, instance }),
+            budget,
+        )
+    }
+
     fn admit_projection(
         &self,
         immutable: ImmutableOperation,
@@ -4121,7 +4304,7 @@ impl OperationJournalPort for SqliteCatalog {
         replay: ProjectionReplayStamp,
         budget: &mut WorkBudget,
     ) -> Result<AdmissionOutcome, IndexError> {
-        self.admit_with_projection_replay(immutable, ingress, events, None, Some(replay), budget)
+        self.admit_with_projection_replay(immutable, ingress, events, None, Some(replay), None, budget)
     }
 
     fn projection_replay(
@@ -4441,31 +4624,24 @@ impl WorkClaimPort for SqliteCatalog {
             return Err(IndexError::ResourceLimited);
         }
         let page_bytes = std::mem::size_of::<(u64, Vec<u8>)>()
-            .checked_add(32)
-            .ok_or(IndexError::ResourceLimited)?
+            .checked_add(32).ok_or(IndexError::ResourceLimited)?
             .checked_mul(6 * RETIRED_READY_PAGE_V2 as usize)
             .ok_or(IndexError::ResourceLimited)?;
         let result_bytes = std::mem::size_of::<WorkIntent>()
             .checked_mul(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
             .ok_or(IndexError::ResourceLimited)?;
-        let memory_bytes = page_bytes
-            .checked_add(
-                result_bytes
-                    .checked_mul(2)
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
+        let memory_bytes = page_bytes.checked_add(
+            result_bytes.checked_mul(2).ok_or(IndexError::ResourceLimited)?,
+        )
             .and_then(|bytes| bytes.checked_add(8192))
             .ok_or(IndexError::ResourceLimited)?;
-        let _memory = budget
-            .reserve_memory(
-                u64::try_from(memory_bytes).map_err(|_| IndexError::ResourceLimited)?,
-                MemoryLifetime::Temporary,
-            )?
-            .ok_or(IndexError::ResourceLimited)?;
+        let _memory = budget.reserve_memory(
+            u64::try_from(memory_bytes).map_err(|_| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?.ok_or(IndexError::ResourceLimited)?;
         budget.checkpoint()?;
         let mut guard = self.lock_native_budget(budget)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Deferred)
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(|error| sql(&error))?;
         let current = current_view(&tx, workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
         if current.identity.epoch != epoch {
@@ -4475,12 +4651,9 @@ impl WorkClaimPort for SqliteCatalog {
         let mut pending = ReadyLaneV2::new(false);
         let mut expired = ReadyLaneV2::new(true);
         let mut result = Vec::new();
-        result
-            .try_reserve_exact(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
+        result.try_reserve_exact(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
             .map_err(|_| IndexError::ResourceLimited)?;
-        if result.capacity()
-            > 2 * usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?
-        {
+        if result.capacity() > 2 * usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)? {
             return Err(IndexError::ResourceLimited);
         }
         let mut scanned = 0u32;
@@ -4490,39 +4663,23 @@ impl WorkClaimPort for SqliteCatalog {
             let second = expired.head(&tx, workspace, epoch, now, budget)?;
             let (due, key) = match (first, second) {
                 (None, None) => break,
-                (Some(left), None) => {
-                    pending.advance();
-                    left
-                }
-                (None, Some(right)) => {
-                    expired.advance();
-                    right
-                }
-                (Some(left), Some(right)) if left <= right => {
-                    pending.advance();
-                    left
-                }
-                (Some(_), Some(right)) => {
-                    expired.advance();
-                    right
-                }
+                (Some(left), None) => { pending.advance(); left }
+                (None, Some(right)) => { expired.advance(); right }
+                (Some(left), Some(right)) if left <= right => { pending.advance(); left }
+                (Some(_), Some(right)) => { expired.advance(); right }
             };
             scanned = scanned.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             if scanned > RETIRED_READY_SCAN_MAX_V2 {
                 return Err(IndexError::ResourceLimited);
             }
-            let (payload, checksum): (Vec<u8>, Vec<u8>) = tx
-                .query_row(
-                    "SELECT payload,row_digest FROM native_work_v1 WHERE work=?1",
-                    params![&key],
-                    |row| {
-                        Ok((
-                            bounded_work_blob(row, 0, owned_work::MAX_OWNED_WORK_ROW_BYTES, false)?,
-                            bounded_work_blob(row, 1, 32, true)?,
-                        ))
-                    },
-                )
-                .map_err(|error| sql(&error))?;
+            let (payload, checksum): (Vec<u8>, Vec<u8>) = tx.query_row(
+                "SELECT payload,row_digest FROM native_work_v1 WHERE work=?1",
+                params![&key],
+                |row| Ok((
+                    bounded_work_blob(row, 0, owned_work::MAX_OWNED_WORK_ROW_BYTES, false)?,
+                    bounded_work_blob(row, 1, 32, true)?,
+                )),
+            ).map_err(|error| sql(&error))?;
             check_digest(b"qidx.native.work.v2", &payload, &checksum)?;
             let decoded: WorkRow = decode(&payload)?;
             if work_key(&decoded.intent)? != key {
@@ -5531,8 +5688,10 @@ mod tests {
         }};
     }
 
+    mod abandoned_read_pins;
     mod checked_registration;
     mod confirmation_shadows;
+    mod maintenance_demand;
     mod offline_protected_native_snapshot;
     mod offline_protected_routes;
     mod offline_rollback;
@@ -5614,15 +5773,15 @@ mod tests {
     ) -> Result<(T, MaterializationReads), Box<dyn Error>> {
         OWNED_MATERIALIZATION_READS.with(|counter| counter.set((0, 0, 0)));
         OWNED_OPERATION_READS.with(|counter| counter.set(0));
-        let guard = catalog.lock()?;
+        let mut guard = catalog.lock()?;
         guard.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
             Some(observe_owned_materialization_reads),
-        );
+        )?;
         drop(guard);
         let result = action();
-        let guard = catalog.lock()?;
-        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        let mut guard = catalog.lock()?;
+        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         drop(guard);
         let reads = OWNED_MATERIALIZATION_READS.with(std::cell::Cell::get);
         Ok((result?, reads))
@@ -5698,6 +5857,7 @@ mod tests {
             published_view: None,
             projection_replay: None,
             retirement_policy_sha256_v2: None,
+            retained_history_request_v1: None,
         };
         let immutable = serde_json::to_string(&row.immutable)?;
         let status = serde_json::to_string(&row.status)?;
@@ -5757,6 +5917,102 @@ mod tests {
             r#"{prefix},"published_view":null,"projection_replay":null,"retirement_policy_sha256_v2":{policy},"retirement_policy_sha256_v2":{policy}}}"#
         );
         check!(decode::<OperationRow>(duplicate.as_bytes()).is_err());
+
+        row.retirement_policy_sha256_v2 = None;
+        row.retained_history_request_v1 = Some(RetainedHistoryRequestV1 {
+            request: row.immutable.request,
+            instance: IndexInstanceId(id(51)),
+        });
+        let stamp = serde_json::to_string(&row.retained_history_request_v1)?;
+        let retained = format!(
+            r#"{prefix},"published_view":null,"projection_replay":null,"retirement_policy_sha256_v2":null,"retained_history_request_v1":{stamp}}}"#
+        );
+        check_eq!(encode(&row)?, retained.as_bytes());
+        check_eq!(decode::<OperationRow>(retained.as_bytes())?, row);
+        let positional = format!("[{immutable},[],31,{status},null,null,null,{stamp}]");
+        check_eq!(decode::<OperationRow>(positional.as_bytes())?, row);
+        Ok(())
+    }
+
+    #[test]
+    fn history_admission_retains_exact_terminal_identity_and_old_row_fails_closed() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let cut: quanta_index_core::index::HistorySourceCutV1 = serde_json::from_value(
+            serde_json::json!({
+                "generation": {"repo_id": "repo-a", "revision_id": "rev-a", "generation": 1},
+                "durable_epoch": 2,
+                "snapshot_digest": vec![7_u8; 32],
+                "replay_start": vec![8_u8; 32]
+            }),
+        )?;
+        let mut immutable = operation(31, 0);
+        let instance = IndexInstanceId(id(52));
+        let input = ObjectRef(digest_id(53));
+        let profile = ObjectRef(digest_id(54));
+        let request = UpdateRequest {
+            operation: immutable.key,
+            expected_view: genesis.identity,
+            kind: UpdateKind::HistoryAppend(quanta_index_core::index::HistoryAppendV1 {
+                instance,
+                expected: cut,
+                input,
+                profile,
+            }),
+        };
+        immutable.request = native_update_request_object_ref_with_work_v1(
+            &request,
+            &mut || admission_budget().checkpoint(),
+        )?.ok_or("request ref unavailable")?;
+        let ingress = stage_inputs(
+            &catalog,
+            immutable,
+            &[
+                object(53, vec![]),
+                object(54, vec![]),
+                RegisteredObject::unscoped(immutable.request, 1, vec![input, profile]),
+            ],
+        )?;
+        let mut wrong_kind = request.clone();
+        wrong_kind.kind = UpdateKind::Reconfigure { profile };
+        check!(matches!(
+            catalog.admit_history_v1(immutable, ingress, &wrong_kind, &mut admission_budget()),
+            Err(IndexError::DigestConflict)
+        ));
+        let mut wrong_instance = request.clone();
+        if let UpdateKind::HistoryAppend(append) = &mut wrong_instance.kind {
+            append.instance = IndexInstanceId(id(55));
+        }
+        check!(matches!(
+            catalog.admit_history_v1(immutable, ingress, &wrong_instance, &mut admission_budget()),
+            Err(IndexError::DigestConflict)
+        ));
+        let AdmissionOutcome::New(attempt) = catalog.admit_history_v1(
+            immutable, ingress, &request, &mut admission_budget(),
+        )? else {
+            return Err("expected new History admission".into());
+        };
+        let status = catalog.refuse(attempt, Refusal::InvalidInput)?;
+        check_eq!(
+            catalog.authenticated_terminal_history_request_v1(
+                immutable.key, &status, &mut admission_budget(),
+            )?,
+            Some(instance)
+        );
+        {
+            let mut guard = catalog.lock()?;
+            let tx = begin(&mut guard)?;
+            let mut row = read_operation(&tx, immutable.key)?.ok_or("missing History row")?;
+            row.retained_history_request_v1 = None;
+            write_operation(&tx, &row, false)?;
+            tx.commit()?;
+        }
+        check_eq!(
+            catalog.authenticated_terminal_history_request_v1(
+                immutable.key, &status, &mut admission_budget(),
+            )?,
+            None
+        );
         Ok(())
     }
 
@@ -6055,11 +6311,11 @@ mod tests {
         catalog.lock()?.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
             Some(observe_ticket_seal),
-        );
+        )?;
         let outcome = action(&budget);
         catalog
             .lock()?
-            .trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            .trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         let (live, seals, held) = TICKET_SEAL_TRACE.with(std::cell::Cell::get);
         Ok((outcome, seals, held, live))
     }
@@ -6643,24 +6899,12 @@ mod tests {
             ]);
             let decoded: NativeBootManifest = serde_json::from_value(positional.clone())?;
             check_eq!(decoded.protected_source_routes, routes);
-            check_eq!(
-                decoded.retired_projection_policy,
-                retired.retired_projection_policy
-            );
-            let mut trailing = positional
-                .as_array()
-                .ok_or("positional BOOT array")?
-                .clone();
+            check_eq!(decoded.retired_projection_policy, retired.retired_projection_policy);
+            let mut trailing = positional.as_array().ok_or("positional BOOT array")?.clone();
             trailing.push(serde_json::json!(0));
-            check!(
-                serde_json::from_value::<NativeBootManifest>(serde_json::Value::Array(trailing))
-                    .is_err()
-            );
+            check!(serde_json::from_value::<NativeBootManifest>(serde_json::Value::Array(trailing)).is_err());
         }
-        check_eq!(
-            retired.all_protected_roots().last(),
-            Some(ObjectRef(Digest([252; 32])))
-        );
+        check_eq!(retired.all_protected_roots().last(), Some(ObjectRef(Digest([252; 32]))));
         let invalid = NativeBootManifest {
             retired_projection_policy: None,
             ..retired
@@ -6736,6 +6980,60 @@ mod tests {
         catalog.confirm_inputs(ingress, objects)?;
         catalog.seal_inputs(ingress, operation.request)?;
         Ok(ingress)
+    }
+
+    #[test]
+    fn initial_history_preview_requires_same_open_ingress_confirmed_roots_and_current_view()
+    -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let first_operation = operation(1, 90);
+        let ingress = catalog.open_ingress(first_operation.key)?;
+        let input = object(91, Vec::new());
+        let profile = object(92, Vec::new());
+        let roots = [input.clone(), profile.clone()];
+        catalog.reserve_inputs(ingress, &roots)?;
+        catalog.confirm_inputs(ingress, &roots)?;
+        let other_ingress = catalog.open_ingress(operation(2, 94).key)?;
+        let foreign_profile = object(93, Vec::new());
+        catalog.reserve_inputs(other_ingress, std::slice::from_ref(&foreign_profile))?;
+        catalog.confirm_inputs(other_ingress, std::slice::from_ref(&foreign_profile))?;
+        catalog.require_confirmed_initial_history_input_v1(
+            ingress, input.reference, profile.reference, genesis.identity,
+            &mut admission_budget(),
+        )?;
+        check!(matches!(
+            catalog.require_confirmed_initial_history_input_v1(
+                ingress, input.reference, foreign_profile.reference,
+                genesis.identity, &mut admission_budget(),
+            ),
+            Err(IndexError::InvalidInput(_))
+        ));
+        let stale = ViewRef { sequence: 1, ..genesis.identity };
+        check_eq!(
+            catalog.require_confirmed_initial_history_input_v1(
+                ingress, input.reference, profile.reference, stale,
+                &mut admission_budget(),
+            ),
+            Err(IndexError::Conflict)
+        );
+        let lost = IngressRef { fence: ingress.fence + 1, ..ingress };
+        check_eq!(
+            catalog.require_confirmed_initial_history_input_v1(
+                lost, input.reference, profile.reference, genesis.identity,
+                &mut admission_budget(),
+            ),
+            Err(IndexError::FenceLost)
+        );
+        catalog.seal_inputs(ingress, input.reference)?;
+        check_eq!(
+            catalog.require_confirmed_initial_history_input_v1(
+                ingress, input.reference, profile.reference, genesis.identity,
+                &mut admission_budget(),
+            ),
+            Err(IndexError::Conflict)
+        );
+        Ok(())
     }
     fn replay_ingress(operation: ImmutableOperation) -> IngressRef {
         IngressRef {
@@ -7790,15 +8088,15 @@ mod tests {
         let grant = require_owned_grant(catalog.begin_owned_work(&assignment)?, "missing grant")?;
         clock.set(1_850);
         OWNED_RENEW_READS.with(|counter| counter.set((0, 0)));
-        let guard = catalog.lock()?;
+        let mut guard = catalog.lock()?;
         guard.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
             Some(observe_owned_renew_reads),
-        );
+        )?;
         drop(guard);
         let result = catalog.renew_owned_work(&grant);
-        let guard = catalog.lock()?;
-        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        let mut guard = catalog.lock()?;
+        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         drop(guard);
         let renewed = result?;
         check_eq!(OWNED_RENEW_READS.with(std::cell::Cell::get), (1, 1));
@@ -8744,6 +9042,7 @@ mod tests {
                         published_view: None,
                         projection_replay: None,
                         retirement_policy_sha256_v2: None,
+                        retained_history_request_v1: None,
                     },
                     true,
                 )?;
@@ -9060,19 +9359,15 @@ mod tests {
 
     #[test]
     fn filtered_ready_work_fills_limit_after_retired_front_row() -> TestResult {
-        use quanta_index_core::index::{
-            MemoryLease, MemoryLeaseOwner, MemoryScope, MemoryScopePort,
-        };
+        use quanta_index_core::index::{MemoryLease, MemoryLeaseOwner, MemoryScope, MemoryScopePort};
         struct TestMemory;
         impl MemoryLeaseOwner for TestMemory {
             fn release(&self, _bytes: u64) {}
         }
         impl MemoryScopePort for TestMemory {
-            fn reserve(
-                &self,
-                bytes: u64,
-                _lifetime: MemoryLifetime,
-            ) -> Result<MemoryLease, IndexError> {
+            fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime)
+                -> Result<MemoryLease, IndexError>
+            {
                 Ok(MemoryLease::new(bytes, Arc::new(TestMemory)))
             }
         }
@@ -9082,6 +9377,11 @@ mod tests {
         let attempt = admit_new(&catalog, first)?;
         let left = owner_work(1);
         let right = owner_work(2);
+        let mut actions = [WorkAction::Create(left), WorkAction::Create(right)];
+        if actions[0].key()? > actions[1].key()? {
+            actions.swap(0, 1);
+        }
+        check_ne!(actions[0].key()?, actions[1].key()?);
         let queued = view(1, genesis.profile, None);
         check_eq!(
             commit_actions(
@@ -9097,7 +9397,7 @@ mod tests {
                     expected_source: None,
                     source_mode: SourceOperationMode::Unchanged,
                 },
-                &[WorkAction::Create(left), WorkAction::Create(right)],
+                &actions,
             )?,
             OperationStatus::Published(view(1, genesis.profile, None).identity)
         );
@@ -9105,16 +9405,14 @@ mod tests {
         budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(TestMemory))));
         let ordered = catalog.ready_work(workspace(), 7, 2, &mut budget)?;
         check_eq!(ordered.len(), 2);
-        let second = *ordered.get(1).ok_or("second ready work missing")?;
+        check!(ordered.contains(&left) && ordered.contains(&right));
+        let disallowed = *ordered.first().ok_or("first ready work missing")?;
+        let allowed = *ordered.get(1).ok_or("second ready work missing")?;
         check_eq!(
             catalog.ready_work_filtered_v2(
-                workspace(),
-                7,
-                1,
-                &|intent| *intent == second,
-                &mut budget,
+                workspace(), 7, 1, &|intent| *intent != disallowed, &mut budget,
             )?,
-            vec![second]
+            vec![allowed]
         );
         Ok(())
     }
@@ -10344,6 +10642,70 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len(),
             0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn healthy_view_resume_persists_incidents_after_first_schema_rollback() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, healthy) = setup(root.path())?;
+        let attempt = admit_new(&catalog, operation(2, 198))?;
+        let body = object(199, vec![]);
+        let body_ref = body.reference;
+        let parent = object(200, vec![body_ref]);
+        let damaged = view(1, healthy.profile, Some(parent.reference));
+        reserve_confirm(&catalog, attempt, &[body, parent])?;
+        check_eq!(
+            publish(&catalog, attempt, &healthy, damaged.clone())?,
+            OperationStatus::Published(damaged.identity)
+        );
+
+        let mut no_writes = WorkBudget::with_request(
+            WorkLimits {
+                reads: 100_000,
+                bytes: 32 * 1024 * 1024,
+                writes: 0,
+                mutations: 0,
+            },
+            quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(5)),
+        );
+        check!(matches!(
+            catalog.quarantine_source_body(damaged.identity, body_ref, &mut no_writes),
+            Err(IndexError::ResourceLimited)
+        ));
+        let connection = catalog.lock()?;
+        check_eq!(
+            capture_format::installed_extensions(&connection, catalog.path())?.0,
+            capture_format::QUARANTINE_SCHEMA_ABSENT
+        );
+        let workspace = workspace_key(damaged.identity.workspace)?;
+        check!(matches!(
+            view_quarantine::refuse_if_quarantined(
+                &catalog,
+                &connection,
+                &workspace,
+                int(damaged.identity.epoch)?,
+                int(damaged.identity.sequence)?,
+                None,
+            ),
+            Err(IndexError::CorruptObject(_))
+        ));
+        drop(connection);
+
+        check_eq!(
+            catalog.resume_source_body_quarantine(healthy.identity, &mut admission_budget())?,
+            None
+        );
+        drop(catalog);
+        let reopened = open(root.path())?;
+        check_eq!(
+            reopened.resume_source_body_quarantine(damaged.identity, &mut admission_budget())?,
+            Some(body_ref)
+        );
+        check_eq!(
+            reopened.resume_source_body_quarantine(healthy.identity, &mut admission_budget())?,
+            None
         );
         Ok(())
     }
@@ -11953,7 +12315,7 @@ mod tests {
         let session = catalog.open_read_session()?;
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             let hook_stop = Arc::clone(&stop);
             connection.commit_hook(Some(move || {
                 hook_stop.store(true, Ordering::Release);
@@ -11983,7 +12345,7 @@ mod tests {
         )?;
         check!(stop.load(Ordering::Acquire));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             connection.commit_hook(None::<fn() -> bool>)?;
         }
         check_eq!(fixture_pin_count(&catalog)?, 1);
@@ -12244,7 +12606,7 @@ mod tests {
         )?;
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             let hook_stop = Arc::clone(&stop);
             connection.commit_hook(Some(move || {
                 hook_stop.store(true, Ordering::Release);
@@ -12275,7 +12637,7 @@ mod tests {
         check!(stop.load(Ordering::Acquire));
         check_eq!(budget.checkpoint(), Err(IndexError::Cancelled));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             connection.commit_hook(None::<fn() -> bool>)?;
         }
         check_ne!(renewed.fence, ticket.lease.fence);
@@ -13199,39 +13561,6 @@ mod tests {
     }
 
     #[test]
-    fn retirement_classification_survives_terminal_custody_release() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let (catalog, genesis) = setup(root.path())?;
-        let operation = operation(995, 205);
-        let request = RegisteredObject::unscoped(operation.request, 1, vec![]);
-        let ingress = stage_inputs(&catalog, operation, &[request])?;
-        let mut budget = admission_budget();
-        let policy = digest_id(206);
-        budget.set_retirement_check_v2(quanta_index_core::index::RetirementCheckV2 {
-            operation: operation.key,
-            request_sha256: digest_id(207),
-            policy_sha256: policy,
-        })?;
-        let AdmissionOutcome::New(attempt) = catalog.admit(operation, ingress, &[], &mut budget)?
-        else {
-            return Err("expected new classified operation".into());
-        };
-        let next = view(1, genesis.profile, None);
-        check!(matches!(
-            publish(&catalog, attempt, &genesis, next)?,
-            OperationStatus::Published(_)
-        ));
-        let page = catalog.release_terminal_custody(operation.key, 256, &mut admission_budget())?;
-        check!(!page.has_more);
-        check_eq!(terminal_custody_counts(&catalog, operation.key)?, (0, 0, 0));
-        check_eq!(
-            catalog.retirement_policy_sha256_v2(operation.key, &mut admission_budget())?,
-            Some(policy)
-        );
-        Ok(())
-    }
-
-    #[test]
     fn terminal_custody_budget_failure_rolls_back_and_refusal_replays() -> TestResult {
         let root = tempfile::tempdir()?;
         let (catalog, _genesis) = setup(root.path())?;
@@ -13776,6 +14105,7 @@ mod tests {
                 published_view: None,
                 projection_replay: None,
                 retirement_policy_sha256_v2: None,
+                retained_history_request_v1: None,
             },
             true,
         )?;
@@ -14718,6 +15048,151 @@ mod tests {
         )?;
         check_eq!(latest.view, one);
         catalog.release_ticket(session.as_ref(), latest.lease)?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_scrub_pin_blocks_retirement_after_quarantine_until_page_returns() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let _one = publish_plain_next(&catalog, &genesis, 1, 131)?;
+        let session = catalog.open_read_session()?;
+        let mut budget = admission_budget();
+        catalog.with_source_body_scrub_pin(
+            &session,
+            Duration::from_secs(30),
+            genesis.identity,
+            &mut budget,
+            |owners, quarantined, budget| {
+                assert_eq!(owners, MapRoot(None));
+                assert!(!quarantined);
+                let fenced =
+                    catalog.quarantine_view_object(genesis.identity, genesis.profile, budget)?;
+                assert_eq!(fenced, genesis.profile);
+                assert!(matches!(
+                    acquire_ticket_with_test_budget(
+                        &catalog,
+                        session.as_ref(),
+                        ViewSelection::Exact(genesis.identity),
+                        Duration::from_secs(30),
+                    ),
+                    Err(IndexError::CorruptObject(_))
+                ));
+                assert_eq!(
+                    catalog.advance_exact_history_floor(
+                        workspace(),
+                        7,
+                        1,
+                        &mut admission_budget()
+                    )?,
+                    1
+                );
+                let blocked = catalog.retire_exact_history_page(
+                    workspace(),
+                    7,
+                    None,
+                    1,
+                    &mut admission_budget(),
+                )?;
+                assert_eq!(
+                    (blocked.examined, blocked.retired, blocked.blocked),
+                    (1, 0, 1)
+                );
+                Ok(())
+            },
+        )?;
+        assert_eq!(view_rows(&catalog, 0)?, 1);
+        let retired =
+            catalog.retire_exact_history_page(workspace(), 7, None, 1, &mut admission_budget())?;
+        assert_eq!(
+            (retired.examined, retired.retired, retired.blocked),
+            (1, 1, 0)
+        );
+        assert_eq!(view_rows(&catalog, 0)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn durable_source_scrub_progress_does_not_pin_or_reset_retired_view() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        catalog.start_source_body_scrub_progress(genesis.identity, &mut admission_budget())?;
+        let _one = publish_plain_next(&catalog, &genesis, 1, 132)?;
+        check_eq!(
+            catalog.advance_exact_history_floor(workspace(), 7, 1, &mut admission_budget())?,
+            1
+        );
+        let retired =
+            catalog.retire_exact_history_page(workspace(), 7, None, 1, &mut admission_budget())?;
+        check_eq!(
+            (retired.examined, retired.retired, retired.blocked),
+            (1, 1, 0)
+        );
+        let connection = Connection::open(catalog.path())?;
+        let rows: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM native_source_scrub_progress_v1 WHERE workspace=?1 AND epoch=7 AND sequence=0",
+            params![workspace_key(workspace())?],
+            |row| row.get(0),
+        )?;
+        check_eq!(rows, 0);
+        check_eq!(
+            catalog.with_source_body_scrub_progress_page(
+                genesis.identity,
+                &mut admission_budget(),
+                |_owners, _after, _budget| -> Result<((), Option<OwnerKey>), IndexError> {
+                    Ok(((), None))
+                }
+            ),
+            Err(IndexError::SnapshotUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn durable_source_scrub_failed_page_and_stale_completion_do_not_advance() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        catalog.start_source_body_scrub_progress(genesis.identity, &mut admission_budget())?;
+
+        let failed = catalog.with_source_body_scrub_progress_page(
+            genesis.identity,
+            &mut admission_budget(),
+            |owners, after, _budget| -> Result<((), Option<OwnerKey>), IndexError> {
+                assert_eq!(owners, MapRoot(None));
+                assert!(after.is_none());
+                Err(IndexError::ResourceLimited)
+            },
+        );
+        check_eq!(failed, Err(IndexError::ResourceLimited));
+
+        let stale = catalog.with_source_body_scrub_progress_page(
+            genesis.identity,
+            &mut admission_budget(),
+            |owners, after, _budget| -> Result<((), Option<OwnerKey>), IndexError> {
+                assert_eq!(owners, MapRoot(None));
+                assert!(after.is_none());
+                let winner = catalog.with_source_body_scrub_progress_page(
+                    genesis.identity,
+                    &mut admission_budget(),
+                    |inner_owners, inner_after, _budget| {
+                        assert_eq!(inner_owners, MapRoot(None));
+                        assert!(inner_after.is_none());
+                        Ok(((), None))
+                    },
+                )?;
+                assert_eq!(winner, Some(()));
+                Ok(((), None))
+            },
+        );
+        check_eq!(stale, Err(IndexError::Conflict));
+        let complete = catalog.with_source_body_scrub_progress_page(
+            genesis.identity,
+            &mut admission_budget(),
+            |_owners, _after, _budget| -> Result<((), Option<OwnerKey>), IndexError> {
+                Ok(((), None))
+            },
+        )?;
+        check_eq!(complete, None);
         Ok(())
     }
 
@@ -16282,6 +16757,8 @@ mod tests {
         let (_root, catalog, ingress) = managed_adoption_fixture()?;
         let mutation_root = object(221, vec![]);
         let history_profile = object(222, vec![]);
+        let selected = view(0, object(30, vec![]).reference, None);
+        check_ne!(selected.profile, history_profile.reference);
         let history_root = object(223, vec![]);
         let roots = [
             mutation_root.clone(),
@@ -16315,6 +16792,21 @@ mod tests {
             },
         };
         catalog.persist_source_stage_replay_receipt_v1(receipt, &mut admission_budget())?;
+        for _ in 0..2 {
+            check_eq!(catalog.staged_source_submission_ingress_v1(
+                receipt, selected.identity, selected.source, &mut admission_budget(),
+            )?, None);
+        }
+        let mut foreign = selected.identity;
+        foreign.sequence += 1;
+        check_eq!(catalog.staged_source_submission_ingress_v1(
+            receipt, foreign, selected.source, &mut admission_budget(),
+        ), Err(IndexError::Conflict));
+        let mut foreign_source = selected.source;
+        foreign_source.owners = MapRoot(Some(mutation_root.reference));
+        check_eq!(catalog.staged_source_submission_ingress_v1(
+            receipt, selected.identity, foreign_source, &mut admission_budget(),
+        ), Err(IndexError::Conflict));
         check_eq!(
             catalog.read_source_stage_replay_receipt_v1(
                 ingress.operation,
@@ -16334,6 +16826,9 @@ mod tests {
         );
         let mut conflicting = receipt;
         conflicting.owners.digest = Digest([227; 32]);
+        check_eq!(catalog.staged_source_submission_ingress_v1(
+            conflicting, selected.identity, selected.source, &mut admission_budget(),
+        ), Err(IndexError::FenceLost));
         check_eq!(
             catalog.persist_source_stage_replay_receipt_v1(conflicting, &mut admission_budget(),),
             Err(IndexError::DigestConflict)
@@ -16363,6 +16858,9 @@ mod tests {
             &mut admission_budget(),
         )?;
         check_ne!(rotated.fence, ingress.fence);
+        check_eq!(catalog.staged_source_submission_ingress_v1(
+            receipt, selected.identity, selected.source, &mut admission_budget(),
+        ), Err(IndexError::FenceLost));
         check_eq!(
             catalog.read_source_stage_replay_receipt_v1(
                 ingress.operation,
@@ -16375,7 +16873,12 @@ mod tests {
             catalog.persist_source_stage_replay_receipt_v1(receipt, &mut admission_budget()),
             Err(IndexError::FenceLost)
         );
+        let recreated = SourceStageReplayReceiptV1 { ingress: rotated, ..receipt };
+        catalog.persist_source_stage_replay_receipt_v1(recreated, &mut admission_budget())?;
         catalog.seal_inputs(rotated, mutation_root.reference)?;
+        check_eq!(catalog.staged_source_submission_ingress_v1(
+            recreated, selected.identity, selected.source, &mut admission_budget(),
+        )?, Some(mutation_root.reference));
         check_eq!(
             catalog.reopen_source_stage_ingress_v1(
                 ingress.operation,
@@ -16403,7 +16906,7 @@ mod tests {
         }
 
         let (_root, catalog, _ingress) = managed_adoption_fixture()?;
-        let guard = catalog.lock().map_err(|error| error.to_string())?;
+        let mut guard = catalog.lock().map_err(|error| error.to_string())?;
         let original: (Vec<u8>, Vec<u8>) = guard.query_row(
             "SELECT payload,row_digest FROM native_gc_namespace_v1 WHERE singleton=1",
             [],
@@ -16414,11 +16917,11 @@ mod tests {
         guard.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
             Some(count_namespace_reads),
-        );
+        )?;
         check!(reclaim::is_bound(&guard)?);
         check_eq!(NAMESPACE_READS.load(Ordering::SeqCst), 1);
         reclaim::require_bound(&guard)?;
-        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         check_eq!(NAMESPACE_READS.load(Ordering::SeqCst), 2);
         check_eq!(reclaim::bound_namespace(&guard)?, binding);
 
@@ -18024,7 +18527,7 @@ mod tests {
         let _published = publish_work_next(&catalog, &genesis, 1, &intent, 12013, 167)?;
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             let hook_stop = Arc::clone(&stop);
             connection.commit_hook(Some(move || {
                 hook_stop.store(true, Ordering::Release);
@@ -18049,7 +18552,7 @@ mod tests {
         let claim = catalog.claim_work(&intent, Duration::from_secs(5), &budget)?;
         check!(stop.load(Ordering::Acquire));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             connection.commit_hook(None::<fn() -> bool>)?;
         }
         check_eq!(
@@ -18246,7 +18749,7 @@ mod tests {
         };
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             let hook_stop = Arc::clone(&stop);
             connection.commit_hook(Some(move || {
                 hook_stop.store(true, Ordering::Release);
@@ -18274,7 +18777,7 @@ mod tests {
         );
         check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Cancelled));
         check!(stop.load(Ordering::Acquire));
-        let connection = catalog.lock()?;
+        let mut connection = catalog.lock()?;
         connection.commit_hook(None::<fn() -> bool>)?;
         let persisted = owned_work::read_owned(&connection, &intent)?
             .ok_or("postcommit cancellation lost durable assignment")?;

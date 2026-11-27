@@ -12,6 +12,7 @@ pub use go_test_trace_file::*;
 pub use hybrid_file::*;
 pub use quanta_index_contract_base::results::{
     DiffCandidate, DiffHunkSide, HighlightSpan, HistoryScoreError, HistoryScoreV1,
-    LexicalCandidate, StructuralBinding, StructuralCandidate,
+    LexicalCandidate, LexicalLineRange, LexicalMatchExcerpt, NativeSourceIdentity,
+    StructuralBinding, StructuralCandidate,
 };
 pub use query_responses::*;

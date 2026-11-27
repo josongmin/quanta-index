@@ -18,8 +18,11 @@ GOLD_RUNTIME_PACKAGES = (
     "regex",
     "tree-sitter",
     "tree-sitter-language-pack",
+    "tree-sitter-go",
+    "tree-sitter-javascript",
     "tree-sitter-python",
     "tree-sitter-rust",
+    "tree-sitter-typescript",
     "unicodedata2",
 )
 
@@ -112,10 +115,9 @@ def completed_output_sha256(row: dict) -> str:
         if not isinstance(candidate, dict):
             raise ValueError("completed output candidate must be an object")
         if "score" in candidate:
-            candidate = dict(
-                candidate,
-                score=_score_bits(candidate["score"], "completed output score must be finite f64"),
-            )
+            candidate = dict(candidate, score=_score_bits(
+                candidate["score"], "completed output score must be finite f64"
+            ))
         candidates.append(candidate)
     value["candidates"] = candidates
     if row.get("route") == "hybrid_file" and "hybrid_file_evidence" in value:
@@ -130,10 +132,7 @@ def completed_output_sha256(row: dict) -> str:
         def project_score(owner, key):
             if not isinstance(owner, dict) or key not in owner:
                 raise ValueError("completed hybrid file score is missing")
-            return {
-                **owner,
-                key: _score_bits(owner[key], "completed hybrid file score must be finite f64"),
-            }
+            return {**owner, key: _score_bits(owner[key], "completed hybrid file score must be finite f64")}
 
         hits = []
         for hit in response["results"]:
@@ -145,9 +144,7 @@ def completed_output_sha256(row: dict) -> str:
                 if witness is not None:
                     if not isinstance(witness, dict):
                         raise ValueError("completed hybrid file lane witness is malformed")
-                    projected[lane] = dict(
-                        witness, candidate=project_score(witness.get("candidate"), "score")
-                    )
+                    projected[lane] = dict(witness, candidate=project_score(witness.get("candidate"), "score"))
             hits.append(projected)
         response["results"] = hits
         value["hybrid_file_evidence"] = dict(evidence, response=response)

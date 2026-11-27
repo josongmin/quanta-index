@@ -5,7 +5,7 @@ use quanta_index_contract::RepoId;
 use quanta_index_core::index::{
     AttemptContext, BaseMember, DeltaInput, Digest, IndexError, InputBinding, MapRoot,
     MemberBinding, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey, PlanContext, PlanDecision,
-    SourceCut, SourceDelta, SourceInputCursor, SourcePathOwners, SourcePathRepositoryKey,
+    SchemaId, SourceCut, SourceDelta, SourceInputCursor, SourcePathOwners, SourcePathRepositoryKey,
     SourceRecord, SourceRecordOwner, StoredObject, TicketRecord, WorkBudget, WorkUsage,
     member_map_key as member_key, owner_map_key,
     ports::{ImmutableObjectPort, IndexBuildPort, IndexFuture, PersistentMapPort},
@@ -20,7 +20,13 @@ use std::{
 
 use super::scratch::InventoryScratch;
 
-const COMMIT_DOMAIN: &[u8] = b"quanta-index-native-filemap-v2\0";
+// The live commitment domain. Its bytes are part of every stored root's
+// commitment, so the `-v3` in the wire string stays even though the live type
+// carries no version.
+const COMMIT_DOMAIN: &[u8] = b"quanta-index-native-filemap-v3\0";
+// Retired wire formats keep their version: each name identifies one retired
+// commitment domain that readers only authenticate before refusing it.
+const LEGACY_V2_COMMIT_DOMAIN: &[u8] = b"quanta-index-native-filemap-v2\0";
 const LEGACY_COMMIT_DOMAIN: &[u8] = b"quanta-index-native-filemap-v1\0";
 const PATH_PREFIX: &[u8] = b"path\0";
 const MAX_PATH_BYTES: usize = quanta_index_core::index::MAX_SOURCE_PATH_BYTES;
@@ -68,26 +74,56 @@ fn observe_member_work<T>(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileMapCapability {
+    /// Retired wire format; authenticated, then refused as `RebuildRequired`.
     FilePathInventoryV1,
+    /// Retired wire format; authenticated, then refused as `RebuildRequired`.
     FilePathInventoryV2,
+    /// The live root format. Its wire code stays 2.
+    FilePathInventory,
 }
 quanta_index_contract::native_serde_enum!(FileMapCapability {
-    units { FilePathInventoryV1 = 0, FilePathInventoryV2 = 1 }
+    units { FilePathInventoryV1 = 0, FilePathInventoryV2 = 1, FilePathInventory = 2 }
     newtypes {}
     records {}
 });
 
+/// The file map root binds exactly what its inventory is a function of.
+///
+/// That is the member schema/policy and the Source owners and paths maps.
+/// Source frontiers are producer stream positions and the member input
+/// context fingerprints them, so neither is part of the root: a frontier-only
+/// Source advance keeps the exact root identity under a new input binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FileMapRoot {
     capability: FileMapCapability,
-    input: InputBinding,
-    source: SourceCut,
+    schema: SchemaId,
+    policy: Digest,
+    owners: MapRoot,
+    paths: MapRoot,
 }
 quanta_index_contract::native_serde_struct!(FileMapRoot {
     capability: FileMapCapability,
-    input: InputBinding,
-    source: SourceCut,
+    schema: SchemaId,
+    policy: Digest,
+    owners: MapRoot,
+    paths: MapRoot,
 });
+
+fn file_map_root(input: InputBinding, source: SourceCut) -> FileMapRoot {
+    FileMapRoot {
+        capability: FileMapCapability::FilePathInventory,
+        schema: input.schema,
+        policy: input.policy,
+        owners: source.owners,
+        paths: source.paths,
+    }
+}
+
+impl FileMapRoot {
+    fn binds(self, input: InputBinding, source: SourceCut) -> bool {
+        self == file_map_root(input, source)
+    }
+}
 
 struct RootHeader {
     capability: FileMapCapability,
@@ -351,6 +387,19 @@ impl IndexBuildPort for NativeFileMap {
                 {
                     return Err(IndexError::Conflict);
                 }
+                // The root binds only schema/policy and the owners and paths
+                // maps. A frontier-only advance (canonical empty mutation set,
+                // unchanged owners and paths) keeps the published root without
+                // invoking prepare or opening a file map object.
+                if quanta_index_core::index::is_canonical_empty_mutation_set(delta.changed)
+                    && delta.prior.owners == delta.next.owners
+                    && delta.prior.paths == delta.next.paths
+                {
+                    return Ok(PlanDecision::Reuse(Box::new(MemberBinding {
+                        input: context.input,
+                        ..*member
+                    })));
+                }
                 (Some(*member), DeltaInput::Patch(delta))
             }
             _ => return Ok(PlanDecision::RebuildRequired),
@@ -371,18 +420,17 @@ impl IndexBuildPort for NativeFileMap {
             observe_member_work(context, 41, |context| {
                 let base_root = match &plan.base {
                     Some(base) => load_root(base, context.objects, context.budget)?,
-                    None => FileMapRoot {
-                        capability: FileMapCapability::FilePathInventoryV2,
-                        input: plan.context.input,
-                        source: SourceCut {
+                    None => file_map_root(
+                        plan.context.input,
+                        SourceCut {
                             owners: MapRoot(None),
                             paths: MapRoot(None),
                             frontiers: MapRoot(None),
                         },
-                    },
+                    ),
                 };
                 if let DeltaInput::Patch(delta) = &plan.input
-                    && base_root.source != delta.prior
+                    && !base_root.binds(plan.context.input, delta.prior)
                 {
                     return Err(IndexError::Conflict);
                 }
@@ -408,18 +456,16 @@ impl IndexBuildPort for NativeFileMap {
                     ));
                 }
                 if let Some(base) = &plan.base
-                    && base_root.input == plan.context.input
-                    && base_root.source == plan.context.source
+                    && base_root.binds(plan.context.input, plan.context.source)
                 {
                     return Ok(FileMapCandidate {
-                        binding: base.clone(),
+                        binding: MemberBinding {
+                            input: plan.context.input,
+                            ..base.clone()
+                        },
                     });
                 }
-                let root = FileMapRoot {
-                    capability: FileMapCapability::FilePathInventoryV2,
-                    input: plan.context.input,
-                    source: plan.context.source,
-                };
+                let root = file_map_root(plan.context.input, plan.context.source);
                 // This fixed-field schema has no strings or variable collections.
                 let payload = encode_bounded(&root, 2048, context.budget)?;
                 let children = root_children(root);
@@ -445,12 +491,7 @@ impl IndexBuildPort for NativeFileMap {
         Box::pin(async move {
             observe_member_work(context, 43, |context| {
                 context.budget.checkpoint()?;
-                let root = load_root(&candidate.binding, context.objects, context.budget)?;
-                if root.input != candidate.binding.input {
-                    return Err(IndexError::BackendViolation(
-                        "file map input changed after prepare".into(),
-                    ));
-                }
+                let _root = load_root(&candidate.binding, context.objects, context.budget)?;
                 Ok(candidate.binding)
             })
         })
@@ -1149,9 +1190,13 @@ fn load_root(
     }
     // This header only distinguishes persisted formats; it never reads V1 data.
     let header: RootHeader = decode(&stored.payload)?;
-    if header.capability == FileMapCapability::FilePathInventoryV1 {
-        if commitment_in_domain(LEGACY_COMMIT_DOMAIN, &stored.payload) != binding.logical_commitment
-        {
+    let legacy_domain = match header.capability {
+        FileMapCapability::FilePathInventoryV1 => Some(LEGACY_COMMIT_DOMAIN),
+        FileMapCapability::FilePathInventoryV2 => Some(LEGACY_V2_COMMIT_DOMAIN),
+        FileMapCapability::FilePathInventory => None,
+    };
+    if let Some(domain) = legacy_domain {
+        if commitment_in_domain(domain, &stored.payload) != binding.logical_commitment {
             return Err(IndexError::CorruptObject(
                 "legacy file map commitment mismatch".into(),
             ));
@@ -1160,13 +1205,10 @@ fn load_root(
     }
     let root: FileMapRoot = decode(&stored.payload)?;
     if stored.registration.children.as_slice() != root_children(root).as_slice()
-        || root.input != binding.input
-        || root.capability != FileMapCapability::FilePathInventoryV2
-        || root.input.root != root.source.owners
-        || root.input.context
-            != root.source.input_context_digest().map_err(|error| {
-                IndexError::CorruptObject(format!("file map source context: {error}"))
-            })?
+        || root.capability != FileMapCapability::FilePathInventory
+        || root.schema != binding.input.schema
+        || root.policy != binding.input.policy
+        || root.owners != binding.input.root
         || commitment(&stored.payload) != binding.logical_commitment
     {
         return Err(IndexError::CorruptObject(
@@ -1180,7 +1222,6 @@ enum RootChildren {
     Empty,
     One([ObjectRef; 1]),
     Two([ObjectRef; 2]),
-    Three([ObjectRef; 3]),
 }
 
 impl RootChildren {
@@ -1189,26 +1230,16 @@ impl RootChildren {
             Self::Empty => &[],
             Self::One(values) => values.as_slice(),
             Self::Two(values) => values.as_slice(),
-            Self::Three(values) => values.as_slice(),
         }
     }
 }
 
 fn root_children(root: FileMapRoot) -> RootChildren {
-    // Preserve the existing edge order and aliases in immutable object identity.
-    match [
-        root.source.owners.0,
-        root.source.paths.0,
-        root.source.frontiers.0,
-    ] {
-        [None, None, None] => RootChildren::Empty,
-        [Some(a), None, None] | [None, Some(a), None] | [None, None, Some(a)] => {
-            RootChildren::One([a])
-        }
-        [Some(a), Some(b), None] | [Some(a), None, Some(b)] | [None, Some(a), Some(b)] => {
-            RootChildren::Two([a, b])
-        }
-        [Some(a), Some(b), Some(c)] => RootChildren::Three([a, b, c]),
+    // Owners then paths, preserving aliases in immutable object identity.
+    match [root.owners.0, root.paths.0] {
+        [None, None] => RootChildren::Empty,
+        [Some(a), None] | [None, Some(a)] => RootChildren::One([a]),
+        [Some(a), Some(b)] => RootChildren::Two([a, b]),
     }
 }
 
@@ -1395,18 +1426,16 @@ pub(super) fn selected_source_cut(
         ));
     }
     let root = load_root(member, context.objects, context.budget)?;
-    let source_context = root.source.input_context_digest().map_err(|error| {
+    let source = context.ticket.view.source;
+    let source_context = source.input_context_digest().map_err(|error| {
         IndexError::CorruptObject(format!("file source context digest: {error}"))
     })?;
-    if root.source != context.ticket.view.source
-        || root.input.root != root.source.owners
-        || root.input.context != source_context
-    {
+    if !root.binds(member.input, source) || member.input.context != source_context {
         return Err(IndexError::CorruptObject(
             "historical file source binding mismatch".into(),
         ));
     }
-    Ok(root.source)
+    Ok(source)
 }
 
 /// Reads the unscoped paths of a pinned historical file inventory.
@@ -1690,24 +1719,6 @@ mod tests {
             match (&$left, &$right) {
                 (left, right) if !(*left == *right) => {
                     return Err(format!("assertion `left == right` failed\n left: {left:?}\n right: {right:?}: {}", format_args!($($message)+)).into());
-                }
-                _ => {}
-            }
-        }};
-    }
-    macro_rules! check_ne {
-        ($left:expr, $right:expr $(,)?) => {{
-            match (&$left, &$right) {
-                (left, right) if !(*left != *right) => {
-                    return Err(format!("assertion `left != right` failed\n left: {left:?}\n right: {right:?}").into());
-                }
-                _ => {}
-            }
-        }};
-        ($left:expr, $right:expr, $($message:tt)+) => {{
-            match (&$left, &$right) {
-                (left, right) if !(*left != *right) => {
-                    return Err(format!("assertion `left != right` failed\n left: {left:?}\n right: {right:?}: {}", format_args!($($message)+)).into());
                 }
                 _ => {}
             }
@@ -2231,18 +2242,25 @@ mod tests {
             paths: MapRoot(Some(reference(1))),
             frontiers: MapRoot(Some(reference(2))),
         };
-        let root = FileMapRoot {
-            capability: FileMapCapability::FilePathInventoryV2,
-            input: InputBinding {
+        let root = file_map_root(
+            InputBinding {
                 root: source.owners,
                 context: source.input_context_digest()?,
                 ..binding.input
             },
             source,
-        };
+        );
         check_eq!(
             root_children(root).as_slice(),
-            &[reference(2), reference(1), reference(2)]
+            &[reference(2), reference(1)]
+        );
+        let aliased = FileMapRoot {
+            paths: source.owners,
+            ..root
+        };
+        check_eq!(
+            root_children(aliased).as_slice(),
+            &[reference(2), reference(2)]
         );
         let (work, memory) = build_budget(u64::MAX, false)?;
         let payload = encode_bounded(&root, 2048, &work)?;
@@ -2438,11 +2456,7 @@ mod tests {
             policy: Digest([6; 32]),
             context: source.input_context_digest()?,
         };
-        let root = FileMapRoot {
-            capability: FileMapCapability::FilePathInventoryV2,
-            input,
-            source,
-        };
+        let root = file_map_root(input, source);
         let payload = encode(&root)?;
         let artifact = objects.add(payload.clone(), root_children(root).as_slice().to_vec())?;
         let binding = MemberBinding {
@@ -2699,6 +2713,22 @@ mod tests {
             input: InputBinding,
             digest: Digest,
         ) -> Result<FileMapPlan, IndexError> {
+            match self.decide(next, input, digest)? {
+                PlanDecision::Incremental(plan) => Ok(plan),
+                PlanDecision::Reuse(_)
+                | PlanDecision::RebuildRequired
+                | PlanDecision::MaintenanceRequired => Err(IndexError::BackendViolation(
+                    "empty patch did not produce incremental file map plan".into(),
+                )),
+            }
+        }
+
+        fn decide(
+            &mut self,
+            next: SourceCut,
+            input: InputBinding,
+            digest: Digest,
+        ) -> Result<PlanDecision<FileMapPlan>, IndexError> {
             let context = PlanContext {
                 instance: InstanceSpec {
                     instance: self.member.instance,
@@ -2713,7 +2743,7 @@ mod tests {
                 source: next,
                 input,
             };
-            match NativeFileMap.plan(
+            NativeFileMap.plan(
                 BaseMember::Present(Box::new(self.member.clone())),
                 DeltaInput::Patch(SourceDelta {
                     prior: self.ticket.view.source,
@@ -2726,14 +2756,7 @@ mod tests {
                 }),
                 &context,
                 &mut self.work,
-            )? {
-                PlanDecision::Incremental(plan) => Ok(plan),
-                PlanDecision::Reuse(_)
-                | PlanDecision::RebuildRequired
-                | PlanDecision::MaintenanceRequired => Err(IndexError::BackendViolation(
-                    "empty patch did not produce incremental file map plan".into(),
-                )),
-            }
+            )
         }
 
         fn prepare(&mut self, plan: FileMapPlan) -> Result<FileMapCandidate, IndexError> {
@@ -2758,49 +2781,29 @@ mod tests {
             };
             ready(NativeFileMap.prepare(plan, &mut attempt))
         }
-
-        fn verify(&mut self, candidate: FileMapCandidate) -> Result<MemberBinding, IndexError> {
-            let mut attempt = AttemptContext {
-                attempt: AttemptRef {
-                    operation: OperationKey {
-                        workspace: self.ticket.view.identity.workspace,
-                        epoch: self.ticket.view.identity.epoch,
-                        producer: ProducerId([13; 16]),
-                        stream: StreamId([14; 16]),
-                        stream_epoch: 1,
-                        sequence: 1,
-                    },
-                    attempt: AttemptId([15; 16]),
-                    fence: 1,
-                },
-                objects: &self.objects,
-                maps: &self.maps,
-                custody: &self.custody,
-                scratch: &self.scratch,
-                budget: &mut self.work,
-            };
-            ready(NativeFileMap.verify_and_seal(candidate, &mut attempt))
-        }
     }
 
     #[test]
     fn empty_patch_reuses_file_map_artifact_without_scratch_or_writes()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut case = EmptyPatchFixture::new()?;
-        let plan = case.plan(
+        let PlanDecision::Reuse(reused) = case.decide(
             case.ticket.view.source,
             case.member.input,
             OwnerMutationDigest::default().finish(),
-        )?;
-        let candidate = case.prepare(plan)?;
-        check_eq!(case.verify(candidate)?, case.member);
+        )?
+        else {
+            return Err("canonical empty patch did not reuse the file map root".into());
+        };
+        check_eq!(*reused, case.member);
         check_eq!(case.scratch.allocations.load(Ordering::Relaxed), 0);
         check_eq!(case.objects.installs.load(Ordering::Relaxed), 0);
         Ok(())
     }
 
+    /// Planning has no object port: `Reuse` proves zero file map I/O.
     #[test]
-    fn frontier_only_empty_patch_rebinds_file_map_with_one_root_object()
+    fn frontier_only_empty_patch_reuses_file_map_root_without_io()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut case = EmptyPatchFixture::new()?;
         let mut next = case.ticket.view.source;
@@ -2809,19 +2812,19 @@ mod tests {
             context: next.input_context_digest()?,
             ..case.member.input
         };
-        let plan = case.plan(next, input, OwnerMutationDigest::default().finish())?;
-        let candidate = case.prepare(plan)?;
-        let binding = case.verify(candidate)?;
-        check_ne!(binding.artifact, case.member.artifact);
+        let PlanDecision::Reuse(binding) =
+            case.decide(next, input, OwnerMutationDigest::default().finish())?
+        else {
+            return Err("frontier-only patch did not reuse the file map root".into());
+        };
+        check_eq!(binding.artifact, case.member.artifact);
+        check_eq!(binding.logical_commitment, case.member.logical_commitment);
         check_eq!(binding.input, input);
-        let old = load_root(&case.member, &case.objects, &mut case.work)?;
-        let updated = load_root(&binding, &case.objects, &mut case.work)?;
-        check_eq!(updated.source.owners, old.source.owners);
-        check_eq!(updated.source.paths, old.source.paths);
-        check_eq!(updated.source.frontiers, next.frontiers);
-        check_eq!(updated.input, input);
         check_eq!(case.scratch.allocations.load(Ordering::Relaxed), 0);
-        check_eq!(case.objects.installs.load(Ordering::Relaxed), 1);
+        check_eq!(case.objects.installs.load(Ordering::Relaxed), 0);
+        // The retained root still authenticates under the new input binding.
+        let root = load_root(&binding, &case.objects, &mut case.work)?;
+        check!(root.binds(input, next));
         Ok(())
     }
 
@@ -3073,11 +3076,7 @@ mod tests {
             context: prior.input_context_digest()?,
             ..member.input
         };
-        let old_root = FileMapRoot {
-            capability: FileMapCapability::FilePathInventoryV2,
-            input: old_input,
-            source: prior,
-        };
+        let old_root = file_map_root(old_input, prior);
         let old_payload = encode(&old_root)?;
         let old_artifact = objects.base.add(old_payload.clone(), vec![])?;
         let old_member = MemberBinding {

@@ -897,6 +897,7 @@ mod tests {
             view,
             instance: IndexInstanceId([8; 16]),
             artifact: ObjectRef(Digest([9; 32])),
+            retained_initial: None,
             _manifest_memory: None,
         };
         for order in [HistoryOrderV1::Recency, HistoryOrderV1::Relevance] {

@@ -76,13 +76,7 @@ fn finish_and_seal_v1(
     }
     let required_seals_v1 = required_seals_v1();
     // SAFETY: F_ADD_SEALS applies only to the private MFD_ALLOW_SEALING fd.
-    if unsafe {
-        libc::fcntl(
-            descriptor_v1.as_raw_fd(),
-            libc::F_ADD_SEALS,
-            required_seals_v1,
-        )
-    } != 0
+    if unsafe { libc::fcntl(descriptor_v1.as_raw_fd(), libc::F_ADD_SEALS, required_seals_v1) } != 0
     {
         return Err(descriptor_error_v1("fcntl_add_seals_v1"));
     }
@@ -159,7 +153,7 @@ impl PinnedReadOnlyFilePlatformV1 {
         .expect("private descriptor path cannot contain NUL");
         // SAFETY: the live private sealed fd owns this kernel magic-link target.
         // Opening it creates a read-only OFD with an independent zero cursor.
-        let raw_v1 = unsafe { libc::open(path_v1.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        let raw_v1 = unsafe { libc::open64(path_v1.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         if raw_v1 < 0 {
             return Err(descriptor_error_v1("open_read_only_custody_for_spawn_v1"));
         }
@@ -187,9 +181,9 @@ fn copy_exact_bytes_v1(
     while offset_v1 < size_v1 {
         let remaining_v1 = usize::try_from((size_v1 - offset_v1).min(COPY_BUFFER_BYTES_U64_V1))
             .map_err(|_| ExplicitFdProcessErrorV1::InvalidExecutableDescriptor)?;
-        // SAFETY: pread is offset-independent and writes into the live buffer.
+        // SAFETY: pread64 is offset-independent and writes into the live buffer.
         let read_v1 = unsafe {
-            libc::pread(
+            libc::pread64(
                 source_v1.as_raw_fd(),
                 buffer_v1.as_mut_ptr().cast(),
                 remaining_v1,
@@ -223,7 +217,7 @@ fn verify_no_trailing_bytes_v1(
     let mut trailing_v1 = [0_u8; 1];
     // SAFETY: one-byte trailing probe is bounded and offset-independent.
     let trailing_read_v1 = unsafe {
-        libc::pread(
+        libc::pread64(
             source_v1.as_raw_fd(),
             trailing_v1.as_mut_ptr().cast(),
             1,
@@ -247,11 +241,7 @@ fn write_all_descriptor_v1(
     while !bytes_v1.is_empty() {
         // SAFETY: bytes points to initialized memory for the requested length.
         let written_v1 = unsafe {
-            libc::write(
-                descriptor_v1.as_raw_fd(),
-                bytes_v1.as_ptr().cast(),
-                bytes_v1.len(),
-            )
+            libc::write(descriptor_v1.as_raw_fd(), bytes_v1.as_ptr().cast(), bytes_v1.len())
         };
         if written_v1 < 0 {
             if super::errno_v1() == libc::EINTR {
@@ -283,9 +273,9 @@ fn verify_custody_sha256_v1(
     while offset_v1 < size_v1 {
         let remaining_v1 = usize::try_from((size_v1 - offset_v1).min(COPY_BUFFER_BYTES_U64_V1))
             .map_err(|_| ExplicitFdProcessErrorV1::InvalidExecutableDescriptor)?;
-        // SAFETY: pread writes into the bounded initialized stack buffer.
+        // SAFETY: pread64 writes into the bounded initialized stack buffer.
         let read_v1 = unsafe {
-            libc::pread(
+            libc::pread64(
                 descriptor_v1.as_raw_fd(),
                 buffer_v1.as_mut_ptr().cast(),
                 remaining_v1,
@@ -351,6 +341,24 @@ mod tests {
                 operation_v1: "pread_source_trailing_v1",
                 errno_v1: libc::ESPIPE,
             })
+        );
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn sparse_source_above_off_t_max_retains_identity_and_trailing_probe_v1() {
+        const LARGE_SIZE_V1: u64 = 2_147_483_649;
+        let source_v1 = tempfile::tempfile().expect("create sparse source fixture");
+        source_v1
+            .set_len(LARGE_SIZE_V1)
+            .expect("extend sparse source beyond off_t max");
+
+        let identity_v1 = descriptor_identity_v1(source_v1.as_fd()).expect("stat large source");
+        assert_eq!(identity_v1.size_v1, LARGE_SIZE_V1);
+        assert_eq!(verify_no_trailing_bytes_v1(source_v1.as_fd(), LARGE_SIZE_V1), Ok(()));
+        assert_eq!(
+            verify_no_trailing_bytes_v1(source_v1.as_fd(), LARGE_SIZE_V1 - 1),
+            Err(ExplicitFdProcessErrorV1::ExecutableIdentityDrift)
         );
     }
 }

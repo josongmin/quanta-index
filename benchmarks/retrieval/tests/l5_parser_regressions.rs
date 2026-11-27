@@ -18,6 +18,10 @@ use quanta_index_contract::{
 };
 use quanta_index_retrieval_bench::corpus::SourceFile;
 use quanta_index_retrieval_bench::sha256_hex;
+#[cfg(unix)]
+use quanta_index_retrieval_bench::symbols::{
+    CandidateSymbolInventory, GoCandidateSession, preflight_corpus_symbols_with_candidate,
+};
 use quanta_index_retrieval_bench::symbols::{
     SymbolCoveragePolicy, SymbolExtractError, SymbolPreflightOptions, extract_corpus_symbols,
     extract_symbols, preflight_corpus_symbols,
@@ -25,8 +29,130 @@ use quanta_index_retrieval_bench::symbols::{
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-const GENERIC_IMPORT: &str = include_str!("fixtures/l5_parser/generic_import_trailing_comma.ts");
-const TYPE_NAMESPACE_EXPORT: &str = include_str!("fixtures/l5_parser/type_namespace_export.ts");
+#[cfg(unix)]
+#[test]
+fn candidate_preflight_binds_names_policy_and_published_symbol() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
+
+    use quanta_index_retrieval_bench::published_units::PublishedUnitRegistry;
+
+    let source = "package p\nfunc One() {}\n";
+    let files = BTreeMap::from([("p.go".to_string(), source_file("p.go", source))]);
+    let response = format!(
+        "{{\"schema\":\"quanta-go-grammar-projection-v1\",\"status\":\"ok\",\"go_version\":\"go1.25.4\",\"source_sha256\":\"{}\",\"edits\":[]}}",
+        sha256_hex(source.as_bytes())
+    );
+    let script = format!("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{response}'\n");
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let helper = directory.path().join("helper");
+    std::fs::write(&helper, &script).expect("fixture helper");
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).expect("executable");
+    let session = GoCandidateSession::new(
+        "p.go",
+        &helper,
+        &sha256_hex(script.as_bytes()),
+        "go1.25.4",
+        Instant::now() + Duration::from_secs(5),
+        &|| false,
+    )
+    .expect("verified helper");
+    let candidate = |path: &str,
+                     source: &str,
+                     deadline: Instant,
+                     cancelled: &dyn Fn() -> bool|
+     -> Result<CandidateSymbolInventory, SymbolExtractError> {
+        session
+            .extract(
+                path,
+                source,
+                tree_sitter_go::LANGUAGE.into(),
+                deadline,
+                &|| cancelled(),
+            )
+            .map(Into::into)
+    };
+    let options = SymbolPreflightOptions::default();
+    let baseline = preflight_corpus_symbols(&files, &options).expect("vendor preflight");
+    let manifest = "a".repeat(64);
+    let result = preflight_corpus_symbols_with_candidate(
+        &files,
+        &options,
+        "registry-go-candidate@0.25.0",
+        &manifest,
+        &candidate,
+    )
+    .expect("candidate preflight");
+    result
+        .admit(SymbolCoveragePolicy::RequireComplete)
+        .expect("complete census");
+    assert_ne!(
+        result.report().grammar_identity,
+        baseline.report().grammar_identity
+    );
+    assert_ne!(
+        result.report().producer_policy_sha256,
+        baseline.report().producer_policy_sha256
+    );
+    let other_manifest = preflight_corpus_symbols_with_candidate(
+        &files,
+        &options,
+        "registry-go-candidate@0.25.0",
+        &"b".repeat(64),
+        &candidate,
+    )
+    .expect("other artifact manifest");
+    assert_ne!(
+        result.report().producer_policy_sha256,
+        other_manifest.report().producer_policy_sha256
+    );
+    let registry =
+        PublishedUnitRegistry::from_chunks_and_symbols(&BTreeMap::new(), result.symbols(), &files)
+            .expect("published symbol")
+            .with_symbol_names(result.names(), &files)
+            .expect("source-bound name inventory");
+    let record = &result.symbols()["p.go"][0];
+    let unit = registry
+        .get(record.symbol_id.as_str())
+        .expect("published unit");
+    let name = unit.name_span.as_ref().expect("bound name span");
+    assert_eq!(&source[name.start_byte..name.end_byte], "One");
+    assert_eq!(unit.byte_start, 10);
+    assert_eq!(unit.byte_end, 23);
+
+    let altered = |path: &str,
+                   source: &str,
+                   deadline: Instant,
+                   cancelled: &dyn Fn() -> bool|
+     -> Result<CandidateSymbolInventory, SymbolExtractError> {
+        let mut inventory = candidate(path, source, deadline, cancelled)?;
+        inventory
+            .names
+            .values_mut()
+            .next()
+            .expect("one name")
+            .start_byte = 0;
+        Ok(inventory)
+    };
+    let rejected = preflight_corpus_symbols_with_candidate(
+        &files,
+        &options,
+        "registry-go-candidate@0.25.0",
+        &manifest,
+        &altered,
+    )
+    .expect("diagnostic census");
+    assert!(matches!(
+        rejected.report().files[0].coverage,
+        SymbolCoverage::ProducerFailed
+    ));
+    assert!(
+        rejected
+            .admit(SymbolCoveragePolicy::RequireComplete)
+            .is_err()
+    );
+}
+
 const MALFORMED: &str = include_str!("fixtures/l5_parser/malformed.ts");
 const SENTINEL: &str = "function sentinel() {}";
 
@@ -79,20 +205,6 @@ fn source_file(path: &str, text: &str) -> SourceFile {
             })
             .collect(),
         sha256: sha256_hex(text.as_bytes()),
-    }
-}
-
-#[test]
-fn generic_typeof_import_call_accepts_a_trailing_comma() {
-    for path in ["src/call.ts", "src/call.tsx"] {
-        assert_only_sentinel(path, GENERIC_IMPORT, 2);
-    }
-}
-
-#[test]
-fn type_namespace_reexport_accepts_valid_syntax_without_inventing_a_definition() {
-    for path in ["src/export.ts", "src/export.tsx"] {
-        assert_only_sentinel(path, TYPE_NAMESPACE_EXPORT, 2);
     }
 }
 

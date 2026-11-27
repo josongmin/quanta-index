@@ -6,7 +6,7 @@ use std::{
     error::Error,
     fs::{self, OpenOptions},
     io::{Read as _, Write as _},
-    os::unix::fs::MetadataExt as _,
+    os::unix::fs::{MetadataExt as _, PermissionsExt as _},
     path::PathBuf,
     sync::{
         Mutex,
@@ -53,6 +53,8 @@ use quanta_index_kernel::{
     AdapterDescriptor, AdapterRegistry, Kernel, KernelServices, QueryAdapterRegistry,
 };
 use quanta_index_searchd::app::runtime::StateRootLease;
+#[cfg(target_os = "linux")]
+use quanta_index_searchd::app::state_root_quota::StateRootProjectQuotaV1;
 use quanta_index_semantic::native::{
     NativeSemantic, NativeSemanticReadConfig, NativeSemanticReader, SearchResult,
     SemanticReadRequest, TextEmbeddingBridge,
@@ -60,18 +62,29 @@ use quanta_index_semantic::native::{
 use quanta_index_storage::{
     FileObjectStore, FileScratchSpace, ManagedObjectIo, ObjectIoObservation,
 };
+#[cfg(target_os = "linux")]
+use quanta_state_root_quota::read_xfs_project_quota_via;
 
 use crate::{
     native_object_read_io::NativeObjectReadIo,
     native_object_reclaim_io::NativeObjectReclaimIo,
     native_scratch_io::NativeScratchIo,
-    publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity},
+    publication_inventory::{
+        PublicationBootInventoryLimits, seed_publication_capacity_stock_catalog,
+    },
 };
 
 #[path = "../../tests/common/native_object_files.rs"]
 mod native_object_files;
 #[path = "../../tests/common/physical_enospc.rs"]
 mod physical_enospc;
+
+#[cfg(target_os = "linux")]
+#[path = "../../tests/common/xfs_inode_pressure.rs"]
+mod xfs_inode_pressure;
+#[cfg(target_os = "linux")]
+#[path = "../../tests/common/xfs_project_pressure.rs"]
+mod xfs_project_pressure;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const INSTANCE: IndexInstanceId = IndexInstanceId([53; 16]);
@@ -93,6 +106,44 @@ const EXACT_CLOSE_TEST: &str = "native_object_write_io::ann_enospc::real_ann_sea
 #[cfg(target_os = "linux")]
 const EXACT_FSYNC_TEST: &str = "native_object_write_io::ann_enospc::real_ann_seal_file_fsync_eio_preserves_selected_views_and_recovers_same_operation";
 const EXACT_TEST: &str = "native_object_write_io::ann_enospc::real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operation";
+#[cfg(target_os = "linux")]
+const EXACT_XFS_TEST: &str = "native_object_write_io::ann_enospc::real_ann_seal_write_xfs_quota_preserves_selected_views_and_recovers_same_operation";
+#[cfg(target_os = "linux")]
+const EXACT_XFS_INODE_TEST: &str = "native_object_write_io::ann_enospc::real_ann_seal_create_xfs_inode_quota_preserves_selected_views_and_recovers_same_operation";
+#[cfg(target_os = "linux")]
+const INODE_TOP_OFF_RESERVE: u64 = 64;
+
+#[derive(Clone, Copy, Debug)]
+enum PressureKind {
+    BoundedVolume,
+    #[cfg(target_os = "linux")]
+    XfsProject {
+        hard_bytes: u64,
+        block_bytes: u64,
+    },
+    #[cfg(target_os = "linux")]
+    XfsInodes {
+        hard_bytes: u64,
+        hard_inodes: u64,
+    },
+}
+
+enum PressureCase {
+    BoundedVolume,
+    #[cfg(target_os = "linux")]
+    XfsProject {
+        quota: StateRootProjectQuotaV1,
+        verifier_socket: PathBuf,
+        hard_bytes: u64,
+    },
+    #[cfg(target_os = "linux")]
+    XfsInodes {
+        quota: StateRootProjectQuotaV1,
+        verifier_socket: PathBuf,
+        hard_bytes: u64,
+        hard_inodes: u64,
+    },
+}
 
 fn require(value: bool, message: &'static str) -> TestResult {
     if value { Ok(()) } else { Err(message.into()) }
@@ -251,6 +302,19 @@ struct Filler {
     path: PathBuf,
     device: u64,
     triggered: bool,
+    kind: PressureKind,
+    #[cfg(target_os = "linux")]
+    xfs_witness: Option<(File, PathBuf)>,
+    #[cfg(target_os = "linux")]
+    candidate_quota_refused: bool,
+    #[cfg(target_os = "linux")]
+    candidate_create_refused: bool,
+    #[cfg(target_os = "linux")]
+    prefilled_inodes: u64,
+    #[cfg(target_os = "linux")]
+    topped_inodes: u64,
+    #[cfg(target_os = "linux")]
+    released_prefill_inodes: u64,
 }
 
 struct AnnFixture {
@@ -268,6 +332,13 @@ struct AnnFixture {
 
 #[derive(Debug, Default)]
 struct CancelEvidence {
+    count: u64,
+    first: Option<Result<(), String>>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+struct UncreatedEvidence {
     count: u64,
     first: Option<Result<(), String>>,
 }
@@ -291,6 +362,13 @@ enum FaultMode {
         seal: Arc<SealEvents>,
         filler: Arc<Mutex<Filler>>,
         cancel: Arc<Mutex<CancelEvidence>>,
+    },
+    #[cfg(target_os = "linux")]
+    InodeQuota {
+        seal: Arc<SealEvents>,
+        filler: Arc<Mutex<Filler>>,
+        cancel: Arc<Mutex<CancelEvidence>>,
+        uncreated: Arc<Mutex<UncreatedEvidence>>,
     },
     #[cfg(target_os = "linux")]
     Fuse(Arc<FuseFault>),
@@ -317,24 +395,35 @@ fn open_fixture(
     // source/artifact inodes before the intended fault. Use this fixture's
     // inventoried entry bound for tracking rather than the scalar test cap.
     let max_tracked_entries = usize::try_from(inventory.max_entries)?;
-    let capacity =
-        seed_publication_capacity(&lease, &root, inventory, &[], &RequestBudgetV1::unbounded())?;
-    let physical = PublicationFileCapacity::new(lease, capacity, 32, max_tracked_entries, 256)?;
-    let io = NativeScratchIo::register(
-        Arc::clone(&physical),
-        std::ffi::CString::new("quanta-publication-capacity")?,
-        512,
-    )?;
-    let scratch = Arc::new(FileScratchSpace::open_managed_with_io(
-        root.join("scratch"),
-        16 * 1024 * 1024,
-        io.clone(),
-    )?);
-    let catalog = Arc::new(SqliteCatalog::open_with_io_admission(
+    let capacity = seed_publication_capacity_stock_catalog(
+        &lease,
         &root,
-        Duration::from_secs(2),
-        io.clone(),
-    )?);
+        inventory,
+        &[],
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let physical = PublicationFileCapacity::new_with_maintenance(
+        lease,
+        capacity,
+        32,
+        max_tracked_entries,
+        256,
+        512 * 1024,
+        8,
+    )?;
+    let io = NativeScratchIo::register_with_maintenance(Arc::clone(&physical), 512)?;
+    let scratch = Arc::new(
+        FileScratchSpace::open_managed_with_io(root.join("scratch"), 16 * 1024 * 1024, io.clone())?
+            .into_quota_managed_stock()?,
+    );
+    let catalog = {
+        let _funding = io.enter_maintenance_scope()?;
+        Arc::new(SqliteCatalog::open_with_stock_vfs_and_io_admission(
+            &root,
+            Duration::from_secs(2),
+            io.clone(),
+        )?)
+    };
     let object_root = root.join("object-store");
     let lock = object_root.join(".object-namespace.lease");
     io.prepare_lock(&lock)?;
@@ -448,7 +537,217 @@ impl Filler {
             path,
             device,
             triggered: false,
+            kind: PressureKind::BoundedVolume,
+            #[cfg(target_os = "linux")]
+            xfs_witness: None,
+            #[cfg(target_os = "linux")]
+            candidate_quota_refused: false,
+            #[cfg(target_os = "linux")]
+            candidate_create_refused: false,
+            #[cfg(target_os = "linux")]
+            prefilled_inodes: 0,
+            #[cfg(target_os = "linux")]
+            topped_inodes: 0,
+            #[cfg(target_os = "linux")]
+            released_prefill_inodes: 0,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn new_xfs(directory: &Path, verifier_socket: &Path, hard_bytes: u64) -> TestResult<Self> {
+        require(
+            hard_bytes <= 4_u64 << 30,
+            "the disposable XFS project pressure fixture is bounded to 4 GiB",
+        )?;
+        let path = directory.join("ann-project-pressure.bin");
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let device = file.metadata()?.dev();
+        let block_bytes = rustix::fs::fstatvfs(&file)?.f_frsize;
+        require(
+            block_bytes > 0 && block_bytes <= hard_bytes,
+            "XFS project has an invalid allocation unit",
+        )?;
+        Ok(Self {
+            file: Some(file),
+            random: File::open("/dev/urandom")?,
+            path,
+            device,
+            triggered: false,
+            kind: PressureKind::XfsProject {
+                hard_bytes,
+                block_bytes,
+            },
+            xfs_witness: Some((File::open(directory)?, verifier_socket.to_path_buf())),
+            candidate_quota_refused: false,
+            candidate_create_refused: false,
+            prefilled_inodes: 0,
+            topped_inodes: 0,
+            released_prefill_inodes: 0,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn new_xfs_inodes(
+        directory: &Path,
+        quota: &StateRootProjectQuotaV1,
+        verifier_socket: &Path,
+        hard_bytes: u64,
+        hard_inodes: u64,
+    ) -> TestResult<Self> {
+        require(
+            hard_inodes <= xfs_inode_pressure::MAX_INODE_PRESSURE_LIMIT,
+            "ANN XFS inode fixture exceeds its fixed 4096-inode ceiling",
+        )?;
+        let path = directory.join("ann-inode-pressure");
+        fs::create_dir(&path)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        let lease = StateRootLease::acquire(&path)?;
+        quota.require(&lease, verifier_socket, 16, &RequestBudgetV1::unbounded())?;
+        drop(lease);
+        let project = File::open(&path)?;
+        let device = project.metadata()?.dev();
+        Ok(Self {
+            file: None,
+            random: File::open("/dev/urandom")?,
+            path,
+            device,
+            triggered: false,
+            kind: PressureKind::XfsInodes {
+                hard_bytes,
+                hard_inodes,
+            },
+            xfs_witness: Some((project, verifier_socket.to_path_buf())),
+            candidate_quota_refused: false,
+            candidate_create_refused: false,
+            prefilled_inodes: 0,
+            topped_inodes: 0,
+            released_prefill_inodes: 0,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prefill_inodes(&mut self) -> TestResult {
+        let PressureKind::XfsInodes { hard_inodes, .. } = self.kind else {
+            return Err("ANN inode prefill requested for another pressure kind".into());
+        };
+        let (project, verifier) = self
+            .xfs_witness
+            .as_ref()
+            .ok_or("ANN inode witness absent")?;
+        let before = read_xfs_project_quota_via(verifier, project)?;
+        require(
+            before.inode_hard_limit == hard_inodes
+                && before
+                    .used_inodes
+                    .checked_add(INODE_TOP_OFF_RESERVE)
+                    .is_some_and(|reserved| reserved < hard_inodes),
+            "ANN inode baseline lacks the fixed prefill reserve",
+        )?;
+        let count = hard_inodes - INODE_TOP_OFF_RESERVE - before.used_inodes;
+        for index in 0..count {
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.path.join(format!("inode-prefill-{index:04}")))?;
+            drop(file);
+        }
+        let observed = read_xfs_project_quota_via(verifier, project)?;
+        require(
+            observed.used_inodes == hard_inodes - INODE_TOP_OFF_RESERVE,
+            "ANN inode prefill did not retain the exact claim-time reserve",
+        )?;
+        self.prefilled_inodes = count;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn topoff_inodes(&mut self) -> TestResult {
+        let PressureKind::XfsInodes {
+            hard_bytes,
+            hard_inodes,
+        } = self.kind
+        else {
+            return Err("ANN inode top-off requested for another pressure kind".into());
+        };
+        let (project, verifier) = self
+            .xfs_witness
+            .as_ref()
+            .ok_or("ANN inode witness absent")?;
+        let before = read_xfs_project_quota_via(verifier, project)?;
+        require(
+            before.used_inodes < hard_inodes
+                && hard_inodes - before.used_inodes <= INODE_TOP_OFF_RESERVE,
+            "ANN candidate create was not reached within the bounded inode reserve",
+        )?;
+        self.topped_inodes = xfs_inode_pressure::fill_inodes_until_quota(
+            &self.path,
+            project,
+            verifier,
+            hard_bytes,
+            hard_inodes,
+        )?;
+        self.triggered = true;
+        Ok(())
+    }
+
+    fn fill_for_fault(&mut self, _writer: &File) -> TestResult {
+        match self.kind {
+            PressureKind::BoundedVolume => self.fill_until_kernel_enospc(),
+            #[cfg(target_os = "linux")]
+            PressureKind::XfsProject {
+                hard_bytes,
+                block_bytes,
+            } => {
+                let file = self
+                    .file
+                    .as_ref()
+                    .ok_or("XFS pressure file already retired")?;
+                let (project, verifier) = self
+                    .xfs_witness
+                    .as_ref()
+                    .ok_or("XFS quota witness absent")?;
+                xfs_project_pressure::fill_until_quota(
+                    file,
+                    project,
+                    verifier,
+                    hard_bytes,
+                    block_bytes,
+                )?;
+                let before = _writer.metadata()?;
+                require(
+                    before.len() == 0 && before.blocks() == 0,
+                    "ANN candidate was not empty before its quota probe",
+                )?;
+                match rustix::fs::fallocate(
+                    _writer,
+                    rustix::fs::FallocateFlags::KEEP_SIZE,
+                    0,
+                    block_bytes,
+                ) {
+                    Err(errno) if xfs_project_pressure::is_space_exhaustion(errno) => {}
+                    other => {
+                        return Err(format!(
+                            "actual ANN candidate FD did not refuse one block under verified XFS quota: {other:?}"
+                        )
+                        .into());
+                    }
+                }
+                let after = _writer.metadata()?;
+                require(
+                    before.len() == after.len() && before.blocks() == after.blocks(),
+                    "failed XFS candidate allocation changed its inode",
+                )?;
+                self.candidate_quota_refused = true;
+                Ok(())
+            }
+            #[cfg(target_os = "linux")]
+            PressureKind::XfsInodes { .. } => {
+                Err("ANN inode quota must inject before the candidate create".into())
+            }
+        }
     }
 
     fn fill_until_kernel_enospc(&mut self) -> TestResult {
@@ -520,10 +819,67 @@ impl Filler {
     }
 
     fn remove(&mut self) -> TestResult {
+        #[cfg(target_os = "linux")]
+        if let PressureKind::XfsInodes { hard_inodes, .. } = self.kind {
+            let (project, verifier) = self
+                .xfs_witness
+                .as_ref()
+                .ok_or("ANN inode witness absent")?;
+            let release_prefill = self.prefilled_inodes.min(INODE_TOP_OFF_RESERVE);
+            for index in 0..release_prefill {
+                fs::remove_file(self.path.join(format!("inode-prefill-{index:04}")))?;
+            }
+            for index in 0..self.topped_inodes {
+                fs::remove_file(self.path.join(format!("inode-pressure-{index:04}")))?;
+            }
+            self.released_prefill_inodes = release_prefill;
+            project.sync_all()?;
+            let refunded = read_xfs_project_quota_via(verifier, project)?;
+            require(
+                refunded.used_inodes < hard_inodes,
+                "ANN synced inode release did not refund the project",
+            )?;
+            let probe = tempfile::NamedTempFile::new_in(&self.path)?;
+            probe.close()?;
+            project.sync_all()?;
+            eprintln!(
+                "ANN_XFS_INODE_REFUND used_inodes={} hard_inodes={} prefilled={} topped={} released_prefill={} probe=ok",
+                refunded.used_inodes,
+                hard_inodes,
+                self.prefilled_inodes,
+                self.topped_inodes,
+                self.released_prefill_inodes,
+            );
+            return Ok(());
+        }
         drop(self.file.take());
         fs::remove_file(&self.path)?;
         let parent = self.path.parent().ok_or("ANN pressure parent absent")?;
         File::open(parent)?.sync_all()?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cleanup_remaining_inodes(&mut self) -> TestResult {
+        if !matches!(self.kind, PressureKind::XfsInodes { .. }) {
+            return Err("ANN inode cleanup requested for another pressure kind".into());
+        }
+        let (project, verifier) = self
+            .xfs_witness
+            .as_ref()
+            .ok_or("ANN inode witness absent")?;
+        let before = read_xfs_project_quota_via(verifier, project)?;
+        let remaining = self.prefilled_inodes - self.released_prefill_inodes;
+        for index in self.released_prefill_inodes..self.prefilled_inodes {
+            fs::remove_file(self.path.join(format!("inode-prefill-{index:04}")))?;
+        }
+        project.sync_all()?;
+        let after = read_xfs_project_quota_via(verifier, project)?;
+        require(
+            before.used_inodes.checked_sub(remaining) == Some(after.used_inodes),
+            "ANN remaining inode filler did not refund after sync",
+        )?;
+        self.released_prefill_inodes = self.prefilled_inodes;
         Ok(())
     }
 }
@@ -576,6 +932,79 @@ impl ObjectWriteTicket for FaultTicket {
         self.inner.creation_started()
     }
     fn open_declared_temp(&mut self) -> Result<Option<File>, IndexError> {
+        #[cfg(target_os = "linux")]
+        if let FaultMode::InodeQuota { seal, filler, .. } = &self.mode
+            && seal.is_active()
+        {
+            {
+                let mut pressure = filler.lock().map_err(|_poison| {
+                    IndexError::Storage("ANN inode filler lock poisoned".into())
+                })?;
+                if !pressure.triggered {
+                    let parent = self
+                        .temporary
+                        .parent()
+                        .ok_or_else(|| IndexError::Storage("ANN candidate parent absent".into()))?;
+                    let device = fs::metadata(parent)
+                        .map_err(|error| {
+                            IndexError::Storage(format!("ANN candidate parent: {error}"))
+                        })?
+                        .dev();
+                    if device != pressure.device {
+                        return Err(IndexError::Storage(
+                            "ANN inode candidate escaped the XFS project device".into(),
+                        ));
+                    }
+                    let parent_fd = File::open(parent).map_err(|error| {
+                        IndexError::Storage(format!("ANN candidate parent open: {error}"))
+                    })?;
+                    let (project_fd, verifier) =
+                        pressure.xfs_witness.as_ref().ok_or_else(|| {
+                            IndexError::Storage("ANN inode quota witness absent".into())
+                        })?;
+                    let owner_quota =
+                        read_xfs_project_quota_via(verifier, project_fd).map_err(|error| {
+                            IndexError::Storage(format!("ANN filler quota read: {error}"))
+                        })?;
+                    let parent_quota =
+                        read_xfs_project_quota_via(verifier, &parent_fd).map_err(|error| {
+                            IndexError::Storage(format!("ANN candidate quota read: {error}"))
+                        })?;
+                    if parent_quota.project_id != owner_quota.project_id
+                        || !parent_quota.inherits_project
+                        || !parent_quota.enforcement_enabled
+                        || !parent_quota.accounting_enabled
+                    {
+                        return Err(IndexError::Storage(
+                            "ANN candidate parent is outside the enforced XFS project".into(),
+                        ));
+                    }
+                    pressure.topoff_inodes().map_err(|error| {
+                        IndexError::Storage(format!("ANN inode pressure setup: {error}"))
+                    })?;
+                }
+            }
+            // The managed create may invoke its own ticket/error path. Do not
+            // hold fixture state across that production call.
+            let opened = self.inner.open_declared_temp();
+            if let Err(error) = &opened {
+                let message = error.to_string();
+                if message.contains("create declared temporary")
+                    && [rustix::io::Errno::DQUOT, rustix::io::Errno::NOSPC]
+                        .iter()
+                        .any(|errno| {
+                            message.contains(&format!("os error {}", errno.raw_os_error()))
+                        })
+                {
+                    let mut pressure = filler.lock().map_err(|_poison| {
+                        IndexError::Storage("ANN inode filler lock poisoned".into())
+                    })?;
+                    pressure.candidate_create_refused = true;
+                    eprintln!("ANN_XFS_INODE_CANDIDATE_CREATE_REFUSED {message}");
+                }
+            }
+            return opened;
+        }
         self.inner.open_declared_temp()
     }
     fn publish_declared_temp(
@@ -603,7 +1032,7 @@ impl ObjectWriteTicket for FaultTicket {
                         ));
                     }
                     filler.triggered = true;
-                    filler.fill_until_kernel_enospc().map_err(|error| {
+                    filler.fill_for_fault(writer).map_err(|error| {
                         IndexError::Storage(format!("ANN physical pressure setup: {error}"))
                     })?;
                 }
@@ -617,7 +1046,21 @@ impl ObjectWriteTicket for FaultTicket {
         Ok(())
     }
     fn uncreated(&mut self) -> Result<(), IndexError> {
-        self.inner.uncreated()
+        let result = self.inner.uncreated();
+        #[cfg(target_os = "linux")]
+        if let FaultMode::InodeQuota { uncreated, .. } = &self.mode {
+            let mut observed = uncreated.lock().map_err(|_poison| {
+                IndexError::Storage("ANN uncreated witness lock poisoned".into())
+            })?;
+            observed.count = observed.count.saturating_add(1);
+            if observed.first.is_none() {
+                observed.first = Some(match &result {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(error.to_string()),
+                });
+            }
+        }
+        result
     }
     fn retire_writer(&mut self, writer: File) -> Result<(), IndexError> {
         #[cfg(target_os = "linux")]
@@ -642,6 +1085,8 @@ impl ObjectWriteTicket for FaultTicket {
         let result = self.inner.cancel(writer);
         let cancel = match &self.mode {
             FaultMode::Pressure { cancel, .. } => cancel.as_ref(),
+            #[cfg(target_os = "linux")]
+            FaultMode::InodeQuota { cancel, .. } => cancel.as_ref(),
             #[cfg(target_os = "linux")]
             FaultMode::Fuse(fault) => &fault.cancel,
         };
@@ -911,6 +1356,52 @@ fn semantic_hit_with(
     Ok((owner, cosine, coverage))
 }
 
+#[cfg(target_os = "linux")]
+fn semantic_top_two(
+    fixture: &AnnFixture,
+    view: ViewRef,
+    query: &str,
+) -> TestResult<(Vec<(OwnerKey, u64)>, CoverageBinding)> {
+    let mut budget = work();
+    let mut session = fixture
+        .kernel
+        .begin_query_session(ViewSelection::Exact(view), &mut budget)?;
+    let stage = session.prepare_stage(
+        &fixture.semantic,
+        INSTANCE,
+        SemanticQueryRequest {
+            query_text: query.into(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: None,
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 2,
+        }
+        .into(),
+    )?;
+    let need = stage.required_resources();
+    let guard = ReservationGuard::try_acquire(Arc::new(TestScheduler), need)
+        .ok_or("ANN Top-K scheduler refused reservation")?;
+    let outcome = stage.execute(&guard)?;
+    require(outcome.view() == view, "ANN Top-K selected the wrong view")?;
+    let hits = outcome
+        .result()
+        .hits
+        .iter()
+        .map(|hit| (hit.owner, hit.cosine.to_bits()))
+        .collect::<Vec<_>>();
+    require(
+        !hits.is_empty() && hits.len() <= 2,
+        "ANN Top-K returned no hits or exceeded K",
+    )?;
+    let coverage = match outcome.coverage() {
+        QueryCoverage::Async(binding) => **binding,
+        QueryCoverage::Core => return Err("ANN Top-K returned core coverage".into()),
+    };
+    session.close()?;
+    Ok((hits, coverage))
+}
+
 fn semantic_hit_observed_with(
     kernel: &Kernel<SqliteCatalog>,
     semantic: &QueryAdapterRegistry<SemanticReadRequest, SearchResult>,
@@ -957,7 +1448,7 @@ fn pin_count(catalog: &SqliteCatalog) -> TestResult<i64> {
     .query_row("SELECT COUNT(*) FROM native_pin_v1", [], |row| row.get(0))?)
 }
 
-fn cold_child(mount: &Path) -> TestResult {
+fn cold_child(mount: &Path, directory_prefix: &str, separate_device: bool) -> TestResult {
     let directory =
         PathBuf::from(std::env::var_os(COLD_DIRECTORY).ok_or("ANN cold child root absent")?);
     let name = directory
@@ -966,11 +1457,12 @@ fn cold_child(mount: &Path) -> TestResult {
         .ok_or("ANN cold child root name absent")?;
     require(
         directory.parent() == Some(mount)
-            && name.starts_with("qidx-ann-enospc-")
+            && name.starts_with(directory_prefix)
             && fs::symlink_metadata(&directory)?.file_type().is_dir()
             && fs::canonicalize(&directory)? == directory
             && fs::metadata(&directory)?.dev() == fs::metadata(mount)?.dev()
-            && fs::metadata(std::env::current_exe()?)?.dev() != fs::metadata(mount)?.dev(),
+            && (!separate_device
+                || fs::metadata(std::env::current_exe()?)?.dev() != fs::metadata(mount)?.dev()),
         "ANN cold child escaped its private bounded mount",
     )?;
     let expected_view: ViewRef = serde_json::from_str(&std::env::var(COLD_VIEW)?)?;
@@ -1377,28 +1869,211 @@ fn real_managed_ann_last_pin_reclaims_old_searchable_closure() -> TestResult {
 fn real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operation() -> TestResult {
     let mount = physical_enospc::bounded_volume_root()?;
     if std::env::var_os(COLD_CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
-        return cold_child(&mount);
+        return cold_child(&mount, "qidx-ann-enospc-", true);
     }
+    run_real_ann_seal_write_pressure(
+        &mount,
+        PressureCase::BoundedVolume,
+        "qidx-ann-enospc-",
+        EXACT_TEST,
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a disposable enforced XFS project and its privileged verifier socket"]
+fn real_ann_seal_write_xfs_quota_preserves_selected_views_and_recovers_same_operation() -> TestResult
+{
+    let project = PathBuf::from(
+        std::env::var_os("QIDX_NATIVE_XFS_TEST_PARENT").ok_or("ANN XFS project parent absent")?,
+    )
+    .canonicalize()?;
+    let verifier_socket = PathBuf::from(
+        std::env::var_os("QIDX_NATIVE_XFS_VERIFIER_SOCKET")
+            .ok_or("ANN XFS project verifier socket absent")?,
+    );
+    let hard_bytes = std::env::var("QIDX_NATIVE_XFS_HARD_BYTES")?.parse::<u64>()?;
+    let quota = StateRootProjectQuotaV1::new(
+        verifier_socket.clone(),
+        std::env::var("QIDX_NATIVE_XFS_PROJECT_ID")?.parse::<u32>()?,
+        hard_bytes,
+        std::env::var("QIDX_NATIVE_XFS_HARD_INODES")?.parse::<u64>()?,
+    )?;
+    if std::env::var_os(COLD_CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
+        let directory = PathBuf::from(
+            std::env::var_os(COLD_DIRECTORY).ok_or("ANN XFS cold child root absent")?,
+        );
+        let state = StateRootLease::acquire_existing(&directory.join("state"))?;
+        quota.require(
+            &state,
+            &verifier_socket,
+            16_384,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        drop(state);
+        return cold_child(&project, "qidx-ann-xfs-quota-", false);
+    }
+    run_real_ann_seal_write_pressure(
+        &project,
+        PressureCase::XfsProject {
+            quota,
+            verifier_socket,
+            hard_bytes,
+        },
+        "qidx-ann-xfs-quota-",
+        EXACT_XFS_TEST,
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a disposable enforced XFS project with at most 4096 inodes"]
+fn real_ann_seal_create_xfs_inode_quota_preserves_selected_views_and_recovers_same_operation()
+-> TestResult {
+    let project = PathBuf::from(
+        std::env::var_os("QIDX_NATIVE_XFS_TEST_PARENT").ok_or("ANN XFS project parent absent")?,
+    )
+    .canonicalize()?;
+    let verifier_socket = PathBuf::from(
+        std::env::var_os("QIDX_NATIVE_XFS_VERIFIER_SOCKET")
+            .ok_or("ANN XFS project verifier socket absent")?,
+    );
+    let hard_bytes = std::env::var("QIDX_NATIVE_XFS_HARD_BYTES")?.parse::<u64>()?;
+    let hard_inodes = std::env::var("QIDX_NATIVE_XFS_HARD_INODES")?.parse::<u64>()?;
+    require(
+        hard_inodes <= xfs_inode_pressure::MAX_INODE_PRESSURE_LIMIT,
+        "ANN inode selector requires a fixed at-most-4096-inode project",
+    )?;
+    let quota = StateRootProjectQuotaV1::new(
+        verifier_socket.clone(),
+        std::env::var("QIDX_NATIVE_XFS_PROJECT_ID")?.parse::<u32>()?,
+        hard_bytes,
+        hard_inodes,
+    )?;
+    if std::env::var_os(COLD_CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
+        let directory = PathBuf::from(
+            std::env::var_os(COLD_DIRECTORY).ok_or("ANN XFS cold child root absent")?,
+        );
+        let state = StateRootLease::acquire_existing(&directory.join("state"))?;
+        quota.require(
+            &state,
+            &verifier_socket,
+            16_384,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        drop(state);
+        return cold_child(&project, "qidx-ann-xfs-inode-", false);
+    }
+    run_real_ann_seal_write_pressure(
+        &project,
+        PressureCase::XfsInodes {
+            quota,
+            verifier_socket,
+            hard_bytes,
+            hard_inodes,
+        },
+        "qidx-ann-xfs-inode-",
+        EXACT_XFS_INODE_TEST,
+    )
+}
+
+fn run_real_ann_seal_write_pressure(
+    mount: &Path,
+    case: PressureCase,
+    directory_prefix: &str,
+    exact_test: &str,
+) -> TestResult {
     let directory = tempfile::Builder::new()
-        .prefix("qidx-ann-enospc-")
+        .prefix(directory_prefix)
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(mount)?;
-    let filler = Arc::new(Mutex::new(Filler::new(directory.path())?));
+    #[cfg(target_os = "linux")]
+    if let PressureCase::XfsProject {
+        quota,
+        verifier_socket,
+        ..
+    }
+    | PressureCase::XfsInodes {
+        quota,
+        verifier_socket,
+        ..
+    } = &case
+    {
+        let state = StateRootLease::acquire(&directory.path().join("state"))?;
+        quota.require(&state, verifier_socket, 16, &RequestBudgetV1::unbounded())?;
+        drop(state);
+    }
+    let filler = Arc::new(Mutex::new(match &case {
+        PressureCase::BoundedVolume => Filler::new(directory.path())?,
+        #[cfg(target_os = "linux")]
+        PressureCase::XfsProject {
+            verifier_socket,
+            hard_bytes,
+            ..
+        } => Filler::new_xfs(directory.path(), verifier_socket, *hard_bytes)?,
+        #[cfg(target_os = "linux")]
+        PressureCase::XfsInodes {
+            quota,
+            verifier_socket,
+            hard_bytes,
+            hard_inodes,
+        } => Filler::new_xfs_inodes(
+            directory.path(),
+            quota,
+            verifier_socket,
+            *hard_bytes,
+            *hard_inodes,
+        )?,
+    }));
+    #[cfg(target_os = "linux")]
+    if let PressureCase::XfsProject {
+        quota,
+        verifier_socket,
+        ..
+    }
+    | PressureCase::XfsInodes {
+        quota,
+        verifier_socket,
+        ..
+    } = &case
+    {
+        let owner = StateRootLease::acquire(directory.path())?;
+        quota.require(&owner, verifier_socket, 16, &RequestBudgetV1::unbounded())?;
+        drop(owner);
+    }
     let seal = Arc::new(SealEvents::default());
     let cancel = Arc::new(Mutex::new(CancelEvidence::default()));
+    #[cfg(target_os = "linux")]
+    let uncreated = Arc::new(Mutex::new(UncreatedEvidence::default()));
     let runtime = Arc::new(
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?,
     );
-    let fixture = open_fixture(
-        directory.path(),
-        Arc::clone(&runtime),
-        Some(FaultMode::Pressure {
+    let fault_mode = {
+        #[cfg(target_os = "linux")]
+        if matches!(&case, PressureCase::XfsInodes { .. }) {
+            FaultMode::InodeQuota {
+                seal: Arc::clone(&seal),
+                filler: Arc::clone(&filler),
+                cancel: Arc::clone(&cancel),
+                uncreated: Arc::clone(&uncreated),
+            }
+        } else {
+            FaultMode::Pressure {
+                seal: Arc::clone(&seal),
+                filler: Arc::clone(&filler),
+                cancel: Arc::clone(&cancel),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        FaultMode::Pressure {
             seal: Arc::clone(&seal),
             filler: Arc::clone(&filler),
             cancel: Arc::clone(&cancel),
-        }),
-    )?;
+        }
+    };
+    let fixture = open_fixture(directory.path(), Arc::clone(&runtime), Some(fault_mode))?;
     let configured = configure(&fixture)?;
     let mut current = stage_sources(&fixture, configured, 1, 64, 2, 1)?;
     let a_source = source(&fixture, current)?;
@@ -1468,12 +2143,28 @@ fn real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operati
         matches!(before_coverage.status, CoverageStatus::Partial { .. }),
         "pre-fault ANN coverage is not partial",
     )?;
+    #[cfg(target_os = "linux")]
+    let inode_top_two = if matches!(&case, PressureCase::XfsInodes { .. }) {
+        Some((
+            semantic_top_two(&fixture, old_view, "alpha")?,
+            semantic_top_two(&fixture, before_view, "alpha")?,
+        ))
+    } else {
+        None
+    };
     let remaining = fixture
         .kernel
         .ready_work(workspace(), 1, 128, &mut work())?;
     let [last] = remaining.as_slice() else {
         return Err("ANN fault boundary is not the last owner".into());
     };
+    #[cfg(target_os = "linux")]
+    if matches!(&case, PressureCase::XfsInodes { .. }) {
+        filler
+            .lock()
+            .map_err(|_poison| "ANN inode filler lock poisoned")?
+            .prefill_inodes()?;
+    }
     let recovery_started = std::time::Instant::now();
     let claim = fixture
         .kernel
@@ -1563,32 +2254,61 @@ fn real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operati
         "ANN fault lacks one closed SemanticSeal error span",
     )?;
     let delta = fixture.observer.snapshot()?.checked_since(&before_io)?;
+    let pressure = filler
+        .lock()
+        .map_err(|_poison| "ANN filler lock poisoned")?;
     require(
-        delta.enospc_writes == 1 && delta.failed_writes == 1,
-        "ANN file-set did not reach one actual observed kernel ENOSPC write",
+        pressure.triggered,
+        "ANN selected pressure was not triggered",
     )?;
-    require(
-        filler
-            .lock()
-            .map_err(|_poison| "ANN filler lock poisoned")?
-            .triggered,
-        "ANN pressure did not start after created()",
-    )?;
+    match &case {
+        PressureCase::BoundedVolume => require(
+            delta.enospc_writes == 1 && delta.failed_writes == 1,
+            "ANN file-set did not reach one actual observed kernel ENOSPC write",
+        )?,
+        #[cfg(target_os = "linux")]
+        PressureCase::XfsProject { .. } => require(
+            pressure.candidate_quota_refused && delta.failed_writes == 1,
+            "verified XFS quota refused the candidate probe but managed ANN write did not fail exactly once",
+        )?,
+        #[cfg(target_os = "linux")]
+        PressureCase::XfsInodes { .. } => require(
+            pressure.candidate_create_refused && delta.failed_writes == 0,
+            "verified XFS inode quota did not refuse the real managed ANN temporary create before any write",
+        )?,
+    }
+    drop(pressure);
     let cancelled = cancel
         .lock()
         .map_err(|_poison| "ANN cancel evidence lock poisoned")?;
-    if cancelled.count != 1 || !matches!(cancelled.first.as_ref(), Some(Ok(()))) {
+    let cancelled_as_expected = match &case {
+        #[cfg(target_os = "linux")]
+        PressureCase::XfsInodes { .. } => cancelled.count == 0,
+        _ => cancelled.count == 1 && matches!(cancelled.first.as_ref(), Some(Ok(()))),
+    };
+    if !cancelled_as_expected {
         return Err(format!(
-            "actual temporary writer cancellation was not witnessed: {cancelled:?}"
+            "ANN temporary writer cancellation differed from the selected fault phase: {cancelled:?}"
         )
         .into());
     }
     drop(cancelled);
 
-    // Free only the external pressure file after the original writer's real
-    // cancellation has been witnessed. New query tickets write Catalog rows,
-    // so acquire them only after space is available, before any resume. No
-    // claim or operation is regenerated by removing the external filler.
+    #[cfg(target_os = "linux")]
+    if matches!(&case, PressureCase::XfsInodes { .. }) {
+        let uncreated = uncreated
+            .lock()
+            .map_err(|_poison| "ANN uncreated witness lock poisoned")?;
+        require(
+            uncreated.count == 1 && matches!(uncreated.first.as_ref(), Some(Ok(()))),
+            "failed ANN inode create did not settle one original uncreated ticket",
+        )?;
+    }
+
+    // Restore enough external capacity after the real writer cancellation or
+    // uncreated settlement. Inode pressure releases only a bounded slice here;
+    // the rest is removed after same-key recovery passes its claim window.
+    // New query tickets write Catalog rows, so acquire them only after release.
     filler
         .lock()
         .map_err(|_poison| "ANN filler lock poisoned")?
@@ -1615,6 +2335,17 @@ fn real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operati
             == (old_winner, old_score.to_bits(), old_coverage),
         "failed ANN seal changed the held old-view query",
     )?;
+    #[cfg(target_os = "linux")]
+    if let Some((old_top_two, current_top_two)) = &inode_top_two {
+        require(
+            &semantic_top_two(&fixture, old_view, "alpha")? == old_top_two,
+            "failed inode create changed the pinned old-view Top-K",
+        )?;
+        require(
+            &semantic_top_two(&fixture, before_view, "alpha")? == current_top_two,
+            "failed inode create changed the current-view Top-K",
+        )?;
+    }
     let final_view = published(&block_on(
         fixture.runtime.as_ref(),
         fixture.kernel.resume(key, &mut work()),
@@ -1675,12 +2406,19 @@ fn real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operati
         pin_count(&fixture.catalog)? == 0,
         "old selected-view pin did not release",
     )?;
+    #[cfg(target_os = "linux")]
+    if matches!(&case, PressureCase::XfsInodes { .. }) {
+        filler
+            .lock()
+            .map_err(|_poison| "ANN inode filler lock poisoned")?
+            .cleanup_remaining_inodes()?;
+    }
     drop(fixture);
     drop(runtime);
     // A separate process proves restart behavior after all original managed
     // owners drop. The released old view may be reclaimed; verify final B.
     let output = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", EXACT_TEST, "--ignored", "--test-threads=1"])
+        .args(["--exact", exact_test, "--ignored", "--test-threads=1"])
         .env(COLD_CHILD, "1")
         .env(COLD_DIRECTORY, directory.path())
         .env(COLD_VIEW, serde_json::to_string(&final_view)?)
@@ -1823,12 +2561,13 @@ fn prepare_ann_fault_before(fixture: &AnnFixture) -> TestResult<AnnFaultBefore> 
 #[ignore = "requires bounded FUSE fault backend, exact control and isolated mount"]
 fn real_ann_seal_file_fsync_eio_preserves_selected_views_and_recovers_same_operation() -> TestResult
 {
+    const DIRECTORY_PREFIX: &str = "qidx-ann-fsync-";
     let (mount, control) = fuse_fault_mount_and_control()?;
     if std::env::var_os(COLD_CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
-        return cold_child(&mount);
+        return cold_child(&mount, DIRECTORY_PREFIX, true);
     }
     let directory = tempfile::Builder::new()
-        .prefix("qidx-ann-enospc-")
+        .prefix(DIRECTORY_PREFIX)
         .tempdir_in(&mount)?;
     let seal = Arc::new(SealEvents::default());
     let fault = Arc::new(FuseFault {

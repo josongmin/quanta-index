@@ -290,6 +290,30 @@ cadence = "release"
 review_by = "2026-12-31"
 
 [[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/native_object_write_io/ann_enospc.rs"
+test = "real_ann_seal_write_xfs_quota_preserves_selected_views_and_recovers_same_operation"
+reason = "requires a disposable enforced XFS project and its privileged verifier socket"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact Native ANN block quota selector on a disposable Linux XFS project"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/native_object_write_io/ann_enospc.rs"
+test = "real_ann_seal_create_xfs_inode_quota_preserves_selected_views_and_recovers_same_operation"
+reason = "requires a disposable enforced XFS project with at most 4096 inodes"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact Native ANN inode quota selector on a disposable Linux XFS project"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/native_boot/restore_forward_tests.rs"
+test = "stock_held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1"
+reason = "requires an enforced Linux XFS project and its privileged verifier socket"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the stock SQLite previous Native root recovery selector on dedicated Linux XFS"
+review_by = "2026-12-31"
+
+[[exceptions]]
 path = "crates/quanta-index-searchd-runtime/tests/offline_state_custody.rs"
 test = "actual_bounded_volume_enospc_preserves_source_and_unpublished_target"
 reason = "requires QUANTA_INDEX_PHYSICAL_ENOSPC_ROOT on an isolated bounded filesystem"
@@ -479,4 +503,198 @@ test = "native_dsl_twelve_retained_rows_match_pinned_cli_v1"
 reason = "requires a release searchctl executable and its SHA-256"
 owner = "quanta-index-searchd-runtime"
 cadence = "release"
+review_by = "2026-12-31"
+
+# The ordinary FD tests invoke these child entrypoints with --exact and --ignored.
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_hard_memory_limit_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_inherited_read_pipe_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_inherited_unix_datagram_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_unrelated_fd_is_closed_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_stdio_round_trip_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_original_image_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_regular_file_mapping_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_working_directory_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_sleep_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests.rs"
+test = "child_probe_pipe_holding_descendant_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests/retained_regular_file_v1.rs"
+test = "child_probe_read_only_regular_file_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "shared/quanta-explicit-fd-process/src/tests/retained_regular_file_v1.rs"
+test = "child_probe_retained_file_v1"
+reason = "subprocess-only test helper"
+owner = "quanta-explicit-fd-process"
+cadence = "release; parent tests via rust-test-explicit-fd"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "benchmarks/retrieval/src/symbols/go_candidate_process.rs"
+test = "pinned_go_helper_runs_before_rust_symbol_extraction"
+reason = "requires the pinned Go 1.25.4 toolchain"
+owner = "quanta-index-retrieval-bench"
+cadence = "release; run ignored bench test with pinned Go 1.25.4 and GOTOOLCHAIN=local"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "benchmarks/retrieval/src/symbols/syntax_candidate_process.rs"
+test = "installed_node_compiler_projects_original_js_ts_records"
+reason = "requires pinned Node and TypeScript compiler paths"
+owner = "quanta-index-retrieval-bench"
+cadence = "release; run ignored bench test with QUANTA_TS_NODE and QUANTA_TS_TYPESCRIPT_JS"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/literal_anchor.rs"
+test = "sdk_text_over_large_view_reads_only_literal_anchored_bodies"
+reason = "heavy: a sealed 4,097-file revision; run with `just rust-test-native-literal-anchor`"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; just rust-test-native-literal-anchor"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/literal_anchor.rs"
+test = "sdk_text_over_large_layered_view_reads_only_literal_anchored_bodies"
+reason = "heavy: a sealed 4,097-file LayeredV2 revision; run with `just rust-test-native-layered-literal-anchor`"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; just rust-test-native-layered-literal-anchor"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/page_cost.rs"
+test = "retained_text_pages_rescan_without_the_order_cache_and_reuse_it_with_it"
+reason = "heavy: 1,000 Sources paged to the end 220 times; run with `just rust-test-native-page-cost`"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; just rust-test-native-page-cost"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/literal_anchor.rs"
+test = "structural_bound_answers_rare_and_common_and_refuses_rare_or_common"
+reason = "heavy: a 4,097-file FULL publication; run with `just rust-test-native-literal-anchor`"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; just rust-test-native-literal-anchor"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/native_boot.rs"
+test = "xfs_product_writer_preflight_accepts_provisioned_stock_profile"
+reason = "requires a disposable enforced XFS project and its privileged verifier socket"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact Native writer preflight selector on a disposable Linux XFS project"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/native_boot.rs"
+test = "xfs_quota_root_serves_stock_publish_query_and_reopen"
+reason = "requires a disposable enforced XFS project and its privileged verifier socket"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact Native XFS product selector on a disposable Linux XFS project"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/native_boot/stock_xfs.rs"
+test = "xfs_writer_preflight_rejects_special_inode_then_recovers"
+reason = "requires a disposable enforced XFS project and its privileged verifier socket"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact Native writer preflight refusal selector on a disposable Linux XFS project"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/native_boot/stock_xfs.rs"
+test = "xfs_block_quota_before_admission_preserves_view_and_retries_same_request"
+reason = "requires a disposable enforced XFS project and its privileged verifier socket"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact Native block quota selector on a disposable Linux XFS project"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/native_boot/stock_xfs.rs"
+test = "xfs_inode_quota_before_admission_preserves_view_and_retries_same_request"
+reason = "requires a disposable enforced XFS project and its privileged verifier socket"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact Native inode quota selector on a disposable Linux XFS project with at most 4096 inodes"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/native_product_process/retired_repomap_wire.rs"
+test = "signed_product_peer_refuses_retired_projection_and_instance_before_admission"
+reason = "requires the disposable, signed retirement installation and its live Q peer"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the exact native_product_process selector with the signed retirement fixture and selected Q ELF"
 review_by = "2026-12-31"

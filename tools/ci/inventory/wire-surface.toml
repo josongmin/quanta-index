@@ -5,7 +5,8 @@
 #
 #   * every `SearchPlane{Query,Control,Ingest}Ipc{Request,Response}` and
 #     `NativeIndex{Request,Response}` variant in the contract's IPC/native
-#     sources must be listed under `[[ipc]]`, with no extra variants;
+#     sources must be listed under `[[ipc]]`, with no extra variants. Each
+#     tagged enum directly carried by a Native opcode has its own row;
 #   * every on-disk format-version constant in workspace `src/` trees
 #     (`*FORMAT_VERSION*`, `*_SCHEMA_V<n>`, `*CONTRACT_VERSION`,
 #     `RECEIPT_FORMAT`, plus the text normalizer stamp) must be named by
@@ -43,6 +44,17 @@ owner = "quanta-index-searchd-runtime"
 path = "state_root/{.native-index-v20,catalog/catalog-v1.sqlite,native-objects,native-scratch-v1}"
 reproduction = "producer-rebuild"
 notes = "Opt-in native service format v20. Bounded map values retain at most 32 inline data bytes and up to five explicit real children; Source path owners, eligible Text contributions and source-only pending coverage, plus singleton/tree posting metadata avoid separate wrapper objects. Bounded Text entry maps inline small inventories and posting memberships in their owning metadata; larger maps use the same COW port. QIMAP004 stores exact value kinds and direct child custody. The Native Text terms and Source path roots can use QIMAP005 to embed one level of terminal-only branching children under the same physical edge and payload bounds. The current object decoder reads both formats and refuses prior QIMAP001/002/003. The v20 root marker and Catalog stamp bind the closed operation row with atomically persisted Published CatalogView metadata. Historical metadata lookup retains no query pin or object custody; pre-v20 roots require rebuild. QIMAP005 nested terminal branches remain unchanged. Persisted operation source intent and producer-wide epoch authority are atomically bound to baseline publication. Source-event capture v2 binds canonical logical mutation count/digest separately from exact execution ViewRef/SourceCut and physical mutation layout. Catalog stores and verifies the shared state/capture version plus hash domain and once-issued 32-byte root nonce plus a bounded selected boot manifest/digest in the existing singleton before any initialization/recovery, including in-process consumers. Prior v1-v19 markers and an unstamped Native Catalog refuse and require explicit rebuild/new incarnation; no old-format relabel, startup backfill or compatibility reader. Existing legacy backup/restore and launcher do not qualify native restore or event-claim migration."
+
+[[artifact]]
+id = "native-source-only-cutover-evidence"
+owner = "quanta-index-searchd-runtime"
+path = "operator-supplied Source-only evidence CBOR file inherited on read-only FD 6"
+reproduction = "current-format-backup"
+notes = "Version 6 binds exact Source publication requests, installed writer acknowledgements, and physical root identities for restore-forward. Preserve the evidence of that attempt. The receiver independently authenticates held roots and Q publications before activation."
+[[artifact.version_constants]]
+file = "crates/quanta-index-contract/src/native_cutover_evidence_v1/source_only_v6.rs"
+name = "FORMAT_VERSION"
+value = 6
 
 [[tool_artifact]]
 id = "proof-manifest-v1"
@@ -266,18 +278,24 @@ variants = [
   "StageProfile",
   "StageProjectionOutput",
   "StageImmutableObject",
+  "PreviewInitialHistoryCutV1",
   "StageProjectionOwner",
   "StageProjectionCertificate",
   "SealCandidateWithSourceRoutes",
   "SealCandidateWithSourceRoutesAndRetiredPolicyV1",
   "SealCandidateWithRetiredPolicyOnlyV1",
   "Submit",
+  "SubmitStagedSourceV1",
+  "SealStagedDslRequestV1",
+  "SubmitSealedDslV1",
   "Resume",
   "ReadView",
   "ObserveRootView",
   "ObserveCandidateInstallationV1",
   "ResolveProtectedSourceHead",
+  "ResolveProtectedSourceViewV1",
   "PublishedViewMetadata",
+  "OperationRequestIdentityV1",
   "ReadSession",
   "Status",
   "ReadyWork",
@@ -293,8 +311,10 @@ variants = [
   "DiscardInput",
   "SearchLiteral",
   "ReplayDslV1",
+  "ReadSealedDslV1",
   "QueryPaths",
   "QueryRepositoryPaths",
+  "TextMatches",
   "StageSources",
   "StageRepositorySources",
   "SearchText",
@@ -330,11 +350,13 @@ variants = [
   "Submitted",
   "View",
   "PublishedViewMetadata",
+  "OperationRequestIdentityV1",
   "RootScopedView",
   "CandidateInstallationV1",
   "HistoryPage",
   "HistoryCut",
   "HistoryGeneration",
+  "InitialHistoryCutV1",
   "ReadSession",
   "ReadSessionProfile",
   "Status",
@@ -348,9 +370,12 @@ variants = [
   "MutationsStaged",
   "MutationsSealedForReplayV1",
   "SealedMutationsForReplayV1",
+  "SealedDslRequestV1",
   "InputDiscarded",
   "LiteralPage",
   "DslPageV1",
+  "DslRuntimeCatalogPageV1",
+  "DslStructuralChunksPageV1",
   "PathPage",
   "RepositoryPathPage",
   "StagedSources",
@@ -359,6 +384,7 @@ variants = [
   "TextRankedPage",
   "TextPathRankedV1",
   "TextPathPageV1",
+  "TextMatchPage",
   "HybridFileRanked",
   "SemanticRanked",
   "EffortDone",
@@ -376,6 +402,66 @@ variants = [
   "Stub",
   "Graph",
 ]
+
+[[ipc]]
+enum = "NativeReadSessionRequest"
+file = "crates/quanta-index-contract/src/native_protocol/read_session.rs"
+plane = "control"
+direction = "request"
+variants = [
+  "Open",
+  "Renew",
+  "Status",
+  "ReadProfile",
+  "ReadHistoryCut",
+  "ReadHistoryGeneration",
+  "SearchText",
+  "SearchTextPage",
+  "SearchTextMatches",
+  "SearchTextPathPageV1",
+  "SearchHybridFile",
+  "SearchHistory",
+  "SearchDslV1",
+  "ReadDslRuntimeCatalogV1",
+  "ReadDslStructuralChunksV1",
+  "Release",
+  "Settlement",
+]
+
+[[ipc]]
+enum = "NativeReadSessionReply"
+file = "crates/quanta-index-contract/src/native_protocol/read_session.rs"
+plane = "control"
+direction = "response"
+variants = ["Status", "Released", "Settlement"]
+
+[[ipc]]
+enum = "NativeOverlayRequest"
+file = "crates/quanta-index-contract/src/native_protocol/headless.rs"
+plane = "control"
+direction = "request"
+variants = ["Begin", "Update", "Snapshot", "Masks", "Close"]
+
+[[ipc]]
+enum = "NativeOverlayReply"
+file = "crates/quanta-index-contract/src/native_protocol/headless.rs"
+plane = "control"
+direction = "response"
+variants = ["Begun", "Updated", "Snapshot", "Masks", "SaveBound", "Saved", "Closed"]
+
+[[ipc]]
+enum = "NativeStubRequest"
+file = "crates/quanta-index-contract/src/native_protocol/stub.rs"
+plane = "control"
+direction = "request"
+variants = ["Certify", "Preflight"]
+
+[[ipc]]
+enum = "NativeStubReply"
+file = "crates/quanta-index-contract/src/native_protocol/stub.rs"
+plane = "control"
+direction = "response"
+variants = ["Certified", "Prepared"]
 
 # ---------------------------------------------------------------------------
 # On-disk artifacts, by owning crate
@@ -466,11 +552,7 @@ id = "lexical-file-authority"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/file-authority/root.cbor"
 reproduction = "producer-rebuild"
-notes = "Format 22 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Retained read-only verification also authenticates format 21 with its original policy and wire encoding. Raw source blocks remain authoritative for exact verification. Formats before 21 require producer rebuild."
-[[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/legacy/file_root.rs"
-name = "PRIOR_FILE_AUTHORITY_FORMAT"
-value = 21
+notes = "Format 22 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Raw source blocks remain authoritative for exact verification. Older authority formats require producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/legacy/file_root.rs"
 name = "FILE_AUTHORITY_FORMAT"
@@ -545,11 +627,11 @@ path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/{
 reproduction = "cache"
 notes = "Receipts the integrity scrub leaves beside a sealed generation (QI-BB-017): the completion epoch of the last full pass (staleness order for the maintenance scheduler and the boot scrape), and the durable quarantine written when a committed file no longer matches the seal (the boot inventory sets the generation aside as GENERATION_QUARANTINE_CONTENT_CORRUPT and every door refuses it as GENERATION_QUARANTINED). Neither is part of the sealed commitment; a scrub receipt is regenerable by the next pass, a quarantine receipt leaves only through the quarantine discard."
 [[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/integrity.rs"
+file = "crates/quanta-index-semantic/src/control_file/receipt.rs"
 name = "SCRUB_RECEIPT_FORMAT_VERSION"
 value = 1
 [[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/integrity.rs"
+file = "crates/quanta-index-semantic/src/control_file/receipt.rs"
 name = "QUARANTINE_RECEIPT_FORMAT_VERSION"
 value = 1
 

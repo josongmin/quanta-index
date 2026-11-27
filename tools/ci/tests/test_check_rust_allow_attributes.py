@@ -18,6 +18,18 @@ MODULE = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(MODULE)
 
 
+def _workspace(root: Path) -> None:
+    (root / "crates").mkdir(exist_ok=True)
+    (root / "benchmarks").mkdir(exist_ok=True)
+    member = root / "shared" / "quanta-installed-artifact-trust"
+    member.mkdir(parents=True)
+    (member / "Cargo.toml").write_text('[package]\nname = "fixture-trust"\nversion = "0.1.0"\n')
+    (root / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["shared/quanta-installed-artifact-trust"]\n'
+        'exclude = ["shared/quanta-explicit-fd-process"]\n'
+    )
+
+
 @pytest.mark.parametrize(
     "attribute",
     [
@@ -50,7 +62,7 @@ def test_invalid_attribute_is_a_scan_error() -> None:
 
 def test_cli_refuses_benchmark_allow_and_missing_roots(tmp_path: Path) -> None:
     assert MODULE.main(["--root", str(tmp_path)]) == 2
-    (tmp_path / "crates").mkdir()
+    _workspace(tmp_path)
     source = tmp_path / "benchmarks" / "fixture" / "src" / "lib.rs"
     source.parent.mkdir(parents=True)
     source.write_text("#[ cfg_attr(all(), allow(dead_code)) ]\nfn f() {}")
@@ -90,9 +102,7 @@ def test_macro_strings_and_unrelated_metadata_do_not_trigger_allow_ban() -> None
 def test_directory_traversal_failure_cannot_certify_clean_inventory(tmp_path, monkeypatch):
     import rust_attribute_policy as policy
 
-    roots = (tmp_path / "crates", tmp_path / "benchmarks")
-    for root in roots:
-        root.mkdir()
+    _workspace(tmp_path)
 
     def unreadable_walk(root, *, onerror):
         onerror(PermissionError("fixture Rust directory cannot be read"))
@@ -103,9 +113,8 @@ def test_directory_traversal_failure_cannot_certify_clean_inventory(tmp_path, mo
 
 
 def test_symlinked_source_directory_cannot_be_silently_omitted(tmp_path):
+    _workspace(tmp_path)
     roots = (tmp_path / "crates", tmp_path / "benchmarks")
-    for root in roots:
-        root.mkdir()
     outside = tmp_path / "external"
     outside.mkdir()
     (outside / "lib.rs").write_text("#[allow(dead_code)] fn f() {}")
@@ -117,7 +126,7 @@ def test_symlinked_source_directory_cannot_be_silently_omitted(tmp_path):
 def test_source_module_named_target_is_inventoried_and_guarded(tmp_path, area):
     from rust_attribute_policy import rust_source_files
 
-    (tmp_path / "benchmarks").mkdir()
+    _workspace(tmp_path)
     source = tmp_path / "crates" / "demo" / area / "target" / "mod.rs"
     source.parent.mkdir(parents=True)
     source.write_text("#[allow(dead_code)] fn f() {}")
@@ -128,10 +137,40 @@ def test_source_module_named_target_is_inventoried_and_guarded(tmp_path, area):
 def test_canonical_package_and_fuzz_build_outputs_are_excluded(tmp_path):
     from rust_attribute_policy import rust_source_files
 
-    (tmp_path / "benchmarks").mkdir()
+    _workspace(tmp_path)
     for location in ["target", "fuzz/target"]:
         output = tmp_path / "crates" / "demo" / location / "generated.rs"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text("#[allow(dead_code)] fn f() {}")
     assert rust_source_files((tmp_path / "crates", tmp_path / "benchmarks")) == []
     assert MODULE.main(["--root", str(tmp_path)]) == 0
+
+
+def test_shared_workspace_member_is_scanned_but_standalone_fd_is_excluded(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    generated = tmp_path / "shared" / "quanta-installed-artifact-trust" / "target" / "generated.rs"
+    generated.parent.mkdir()
+    generated.write_text("#[allow(dead_code)] fn generated() {}")
+    fd_source = tmp_path / "shared" / "quanta-explicit-fd-process" / "src" / "lib.rs"
+    fd_source.parent.mkdir(parents=True)
+    fd_source.write_text("#[allow(dead_code)] fn fd() {}")
+    assert MODULE.main(["--root", str(tmp_path)]) == 0
+
+    trust_source = tmp_path / "shared" / "quanta-installed-artifact-trust" / "src" / "lib.rs"
+    trust_source.parent.mkdir()
+    trust_source.write_text("#[allow(dead_code)] fn trust() {}")
+    assert MODULE.main(["--root", str(tmp_path)]) == 1
+
+
+def test_missing_shared_workspace_member_fails_closed(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    (tmp_path / "shared" / "quanta-installed-artifact-trust" / "Cargo.toml").unlink()
+    assert MODULE.main(["--root", str(tmp_path)]) == 2
+
+
+def test_symlinked_shared_workspace_member_fails_closed(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    member = tmp_path / "shared" / "quanta-installed-artifact-trust"
+    member.rename(tmp_path / "outside-trust")
+    member.symlink_to(tmp_path / "outside-trust", target_is_directory=True)
+    assert MODULE.main(["--root", str(tmp_path)]) == 2

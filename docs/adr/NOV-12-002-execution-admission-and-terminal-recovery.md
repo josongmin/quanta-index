@@ -4,9 +4,10 @@ Status: `Accepted`
 
 Decided: 2026-11-12
 
-Scope: implemented C0/P09 coordinator, QBC external claim and installed-runner
-contracts. Product-body acceptance remains in
-[B05](../plans/nov-12-bugbash-c0-p09/tickets/B05-final-verification.md).
+Scope: implemented C0/P09 coordinator, QBC external claim, installed-runner
+and paired release execution contracts. Product-body acceptance remains in
+[B05](../plans/nov-12-bugbash-c0-p09/tickets/B05-final-verification.md) and the
+[Native release ledger](../plans/nov-20-native-cutover-closeout/tickets/08-release-activation.md).
 
 ## Context
 
@@ -133,6 +134,48 @@ lease return remain available for the original cohort.
 [B05](../plans/nov-12-bugbash-c0-p09/tickets/B05-final-verification.md#current-resume-contract) ·
 [Native acceptance](../plans/nov-12-native-cutover/DOD.md) ·
 [F1/F2 evidence](../plans/nov-5-indexing-bugbash/WORKPLAN.md#final-remaining-audit-20261111)
+
+## Paired release execution custody
+
+The P11 paired launcher starts Bash in `-p` mode and clears inherited shell,
+Python and Git inputs before checking the exact clean Q/S worktrees. It
+checks the S resolver helper against the pinned Git blob and executes a private
+copy. Python starts in isolated mode with a fresh cache prefix and bytecode
+writes disabled. Resolver and metadata descendants receive neither the signer
+socket nor an SSH-agent alias for it. Signed proof publication checks the
+destination against the opened directory identity before and after publishing.
+On a mismatch it removes only the entries created by that publication.
+[Paired launcher](../../scripts/verify-repomap-cross-repo.sh) ·
+[Paired result verifier](../../tools/ci/paired_r5_result.py) ·
+[Operational proof](../../tools/ci/proof_operational_result.py)
+
+P12A control verification on Q `252ec2ec7` and its recorded runner changes
+passed 605/605. Earlier control runs and the source-bound Linux arm64
+qualification inputs retain their own recorded scope. Formal P11 needs the
+same approved P10 executable and actual paired caller/kernel runs. Deployment,
+activation and rollback additionally need the approved installed observation.
+[Release acceptance](../plans/nov-20-native-cutover-closeout/tickets/08-release-activation.md) ·
+[Runner and proof history](../ARCHIVE-INDEX.md#2026-11-23-native-closeout-history-compaction)
+
+## R25 source-bound supply
+
+The v34 review input preserves the existing Root locks, S and linked-source
+lease, then Q admission. Before import, the supplier checks its canonical SDK
+root and the 29 pinned paths in the dependency readset. The guest receives the checked
+manifest read-only. The original Linux terminal and queued `rustc` observation
+share compiler identity bytes read once under the Source lease. The supplier
+rechecks those bytes and the Source/spec before accepting the result. A failed
+final check withdraws the newly published terminal and result while preserving
+the previous and rejected terminal evidence. [R25 supplier ledger](../plans/nov-20-native-cutover-closeout/tickets/02-semantica-runtime-sdk.md)
+
+The recorded v34 control review passed 63/63 Python checks and 29/29 installed
+manifest checks. Formal supply still requires the same frozen S/Q/GQLang and
+Cargo inputs, effective Linux AArch64 guest settings, and the original Q build
+terminal and ELF. The running-size check then uses the Semantica AArch64
+libtest, with an 8,388,608-byte worker stack. Its measurement leaves
+`upper_bound_proven` false, so acceptance requires both Native bodies and the
+remaining TS/JS and Java bodies. An earlier ELF refused Native execution at a
+10,773,120-byte path floor. [Source-bound control history](../ARCHIVE-INDEX.md#2026-11-23-native-supplier-and-runtime-history)
 
 ## Validation and remaining acceptance
 

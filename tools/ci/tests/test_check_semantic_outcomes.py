@@ -40,6 +40,58 @@ def test_negative_variant_cannot_be_rewritten_to_positive():
     assert [finding.rule for finding in findings] == ["SO-01"]
 
 
+def test_failed_result_let_else_cannot_advertise_ready():
+    findings = scan(
+        """
+        use StructuralReadiness as Readiness;
+
+        fn observe() -> StructuralReadiness {
+            let std::result::Result::Ok(value) = prerequisite() else {
+                if retry_is_enabled() { return Readiness::Ready; }
+                return Readiness::GenerationNotReady;
+            };
+            finish(value)
+        }
+        """
+    )
+    assert [finding.rule for finding in findings] == ["SO-05"]
+
+
+def test_let_else_refusals_and_closure_returns_are_valid():
+    findings = scan(
+        """
+        const EXAMPLE: &str = r#"let Ok(v) = prerequisite() else {
+            return StructuralReadiness::Ready;
+        };"#;
+
+        #[cfg(test)]
+        fn test_only() -> StructuralReadiness {
+            let Ok(value) = prerequisite() else { return StructuralReadiness::Ready; };
+            finish(value)
+        }
+
+        fn unavailable() -> Option<u64> {
+            let Ok(value) = prerequisite() else { return None; };
+            Some(value)
+        }
+
+        fn refused() -> StructuralReadiness {
+            let Ok(value) = prerequisite() else {
+                record(|| { return StructuralReadiness::Ready; });
+                return StructuralReadiness::InvalidRequest(reason());
+            };
+            finish(value)
+        }
+
+        fn optional() -> StructuralReadiness {
+            let Some(value) = optional_policy() else { return StructuralReadiness::Ready; };
+            finish(value)
+        }
+        """
+    )
+    assert findings == []
+
+
 def test_cross_family_negative_cannot_claim_exact_exhaustion():
     findings = scan(
         """

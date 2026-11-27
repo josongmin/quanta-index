@@ -10,8 +10,9 @@ use super::{
     OwnedWorkPolicy, OwnedWorkReport, OwnerInputBinding, OwnerKey, OwnerMemberBinding,
     OwnerMutationSet, PlanContext, PlanDecision, PreparedPublication, ProjectionBinding,
     ReclaimCandidate, ReclaimDrainPage, ReclaimPermit, ReclaimTarget, ReclaimWork, ReclaimWorkPage,
-    Refusal, RegisteredObject, RetiringRef, SourceEvent, StoredObject, TicketRecord, ViewRef,
-    ViewSelection, WorkAction, WorkBudget, WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
+    Refusal, RegisteredObject, RetiringRef, SourceCut, SourceEvent, StoredObject,
+    TicketRecord, ViewRef, ViewSelection, WorkAction, WorkBudget, WorkClaim, WorkIntent, WorkStatus,
+    WorkspaceKey,
 };
 use quanta_index_contract::native_protocol::SourceStageReplayReceiptV1;
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
@@ -49,6 +50,18 @@ pub trait ObjectReadIoPort: std::fmt::Debug + Send + Sync {
         path: &std::path::Path,
         budget: &mut WorkBudget,
     ) -> Result<Box<dyn ObjectReadFile>, IndexError>;
+
+    /// The caller already inspected this pathname without following the leaf.
+    /// Metadata is an expected identity, not authority to use an opened FD.
+    /// Adapters that reuse it must still witness the FD, live path and custody.
+    fn open_after_path_metadata(
+        &self,
+        path: &std::path::Path,
+        _expected: &std::fs::Metadata,
+        budget: &mut WorkBudget,
+    ) -> Result<Box<dyn ObjectReadFile>, IndexError> {
+        self.open(path, budget)
+    }
 }
 
 /// Physical capacity for one file-store output; Catalog remains its logical
@@ -746,6 +759,16 @@ pub trait ObjectCustodyPort: Send + Sync {
 /// follows reservation; only confirmed inputs may seal an immutable request.
 pub trait InputStagingPort: Send + Sync {
     fn open_ingress(&self, operation: OperationKey) -> Result<IngressRef, IndexError>;
+    /// Observe an exact open ingress, both confirmed inputs, and the current
+    /// view in one read transaction before an initial History cut preview.
+    fn require_confirmed_initial_history_input_v1(
+        &self,
+        ingress: IngressRef,
+        input: ObjectRef,
+        profile: ObjectRef,
+        expected_view: ViewRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError>;
     /// Open a writable submission fence or return the existing sealed ingress.
     /// A sealed ingress only permits admission of its exact request, so the
     /// caller must verify it and skip input installation.
@@ -754,6 +777,18 @@ pub trait InputStagingPort: Send + Sync {
         operation: OperationKey,
         budget: &WorkBudget,
     ) -> Result<(IngressRef, Option<ObjectRef>), IndexError>;
+    /// Read the request seal of one exact existing ingress.
+    fn read_submission_seal_v1(
+        &self,
+        ingress: IngressRef,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError>;
+    /// Observe a previously sealed request and its current ingress without reopening staging.
+    fn find_submission_seal_v1(
+        &self,
+        operation: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<(IngressRef, ObjectRef)>, IndexError>;
     /// Adopts exact confirmed registrations under the original request budget.
     /// An empty batch still validates the open ingress fence.
     fn adopt_registered_inputs(
@@ -787,6 +822,15 @@ pub trait InputStagingPort: Send + Sync {
         correlation: Digest,
         budget: &mut WorkBudget,
     ) -> Result<Option<SourceStageReplayReceiptV1>, IndexError>;
+    /// Validate the exact staged Source receipt and current base without
+    /// rotating or recreating ingress. Return a previously sealed request, if any.
+    fn staged_source_submission_ingress_v1(
+        &self,
+        receipt: SourceStageReplayReceiptV1,
+        expected_view: ViewRef,
+        expected_source: SourceCut,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError>;
     /// Deletes stage metadata in bounded, budgeted groups. Interruption rolls
     /// back the whole discard, preserving its fence and custody for retry.
     fn discard_inputs(
@@ -869,6 +913,15 @@ pub trait OperationJournalPort: Send + Sync {
         events: &[SourceEvent],
         budget: &mut WorkBudget,
     ) -> Result<AdmissionOutcome, IndexError>;
+    /// The Catalog records terminal History classification only after the
+    /// typed request proves the exact sealed immutable request reference.
+    fn admit_history_v1(
+        &self,
+        operation: ImmutableOperation,
+        ingress: IngressRef,
+        request: &super::UpdateRequest,
+        budget: &mut WorkBudget,
+    ) -> Result<AdmissionOutcome, IndexError>;
     /// Reserved owned admission checks the exact frozen request, binds its
     /// confirmed physical root through the canonical pure identity capability,
     /// and seals the ingress in the same admission transaction. A previously
@@ -902,17 +955,8 @@ pub trait OperationJournalPort: Send + Sync {
         &self,
         key: OperationKey,
         budget: &mut WorkBudget,
-    ) -> Result<
-        (
-            OperationStatus,
-            Option<quanta_index_contract::index::ProjectionReplayStamp>,
-        ),
-        IndexError,
-    > {
-        Ok((
-            self.inspect(key, OperationInspectAccess::Request(budget))?,
-            None,
-        ))
+    ) -> Result<(OperationStatus, Option<quanta_index_contract::index::ProjectionReplayStamp>), IndexError> {
+        Ok((self.inspect(key, OperationInspectAccess::Request(budget))?, None))
     }
     /// Exact Published operation metadata. This is not a Catalog read pin and
     /// must not substitute the current head or read immutable object bodies.
@@ -1086,6 +1130,17 @@ pub trait CatalogExactHistoryPort: Send + Sync {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<ViewRetirementPage, IndexError>;
+    /// Examine only sequences at or below `through`, including the page's
+    /// lookahead. `after` remains the last examined sequence.
+    fn retire_exact_history_page_through(
+        &self,
+        workspace: WorkspaceKey,
+        epoch: u64,
+        after: Option<u64>,
+        through: u64,
+        limit: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<ViewRetirementPage, IndexError>;
 }
 
 /// Catalog-row retirement only. It neither unlinks immutable objects nor
@@ -1214,6 +1269,20 @@ pub trait CatalogReadPort: Send + Sync {
     fn release_ticket(
         &self,
         session: &dyn super::ReadSessionLease,
+        ticket: super::ReadTicketLease,
+    ) -> Result<(), IndexError>;
+    /// Take custody of a pin whose last owner is being dropped after its own
+    /// `release_ticket` attempts failed.
+    ///
+    /// The issuing Catalog becomes the pin's settlement owner. It retries the
+    /// exact `(ticket, fence)` release from `recover_read_sessions`, the
+    /// existing read-maintenance round, until that release commits or the pin
+    /// is proven absent, so the pin is settled exactly once without a restart.
+    /// This call performs no I/O. If it fails, or the process dies first, the
+    /// pin is settled by dead-session recovery after the session lock is gone.
+    fn abandon_ticket(
+        &self,
+        session: Arc<dyn super::ReadSessionLease>,
         ticket: super::ReadTicketLease,
     ) -> Result<(), IndexError>;
     fn recover_read_sessions(
@@ -1451,6 +1520,7 @@ pub trait IndexHistoryBuildPort: Send + Sync {
         instance: &InstanceSpec,
         prior: Option<&MemberBinding>,
         transition: &HistoryTransition,
+        next_view_sequence: u64,
         context: &mut AttemptContext<'_>,
     ) -> Result<MemberBinding, IndexError>;
     fn append_history(

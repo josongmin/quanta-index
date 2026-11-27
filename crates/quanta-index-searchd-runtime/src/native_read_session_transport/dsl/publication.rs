@@ -236,7 +236,7 @@ fn validate_event(
     Ok(())
 }
 
-fn chunk_key(id: &ChunkId) -> [u8; 33] {
+pub(super) fn chunk_key(id: &ChunkId) -> [u8; 33] {
     let mut key = [1; 33];
     key[1..].copy_from_slice(&Sha256::digest(id.as_str().as_bytes()));
     key

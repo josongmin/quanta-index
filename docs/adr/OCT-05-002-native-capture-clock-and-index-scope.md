@@ -182,288 +182,107 @@ not another actual product capture or repeated-cost/warmup qualification.
 
 ### Source-bound completed captures
 
-Rechecked 2026-10-07 against the original result files. External source
-`09103820` completed CS/SG/OG capture and independent replay for all nine roots:
-180 requests per product, 540 total. Selected-project OpenGrok reader evidence
-retains that scope; all-project/global loaded-reader flags remain false.
-Original replay roots are
-`/Users/songmin/.codex/task-evidence/ready9-native-recovery-20261006-01a10d0b-v3`
-and `/Users/songmin/.codex/task-evidence/ready9-sgog-recovery-20261006-01a10d0b-v5`.
-Replay retains the ten-role producer closure and Python3.13.9 executable;
-SG/OG Java reader argv/cwd bind the original `p11-operation-authority` path.
-The archived-source path was refused; replay at the original byte-matching
-producer/reader path passed. Native raw bytes were not changed.
+External `09103820` captured and independently replayed CS/SG/OG
+across all nine Ready9 roots, 540 requests. The selected-project OpenGrok
+reader scope and original byte-matching Java producer path were required.
+The archive-path replay was refused. Its all-project/global reader flags
+remain false.
 
-Quanta/Semble source `6a3f6afc` attempted every Ready9 repository and all 180
-original NL file tasks. Bat, lo, Mocha, Uvicorn and Zustand completed pair capture
-and independent `run.py verdict` replay, 40/40 product-task records per repository.
-Their five-product file score projections also completed. Common eligible counts
-are Bat20, lo5, Mocha0, Uvicorn1 and Zustand2; Mocha's common score is
-`NOT_APPLICABLE`. These diagnostic populations cannot be pooled into qualified
-whole-suite relevance or speed.
+Native/Semble `6a3f6afc` completed pair capture/replay for Bat, lo, Mocha,
+Uvicorn and Zustand (40/40 records each). CLI, Django, Nushell and TypeORM
+initially failed the fixed 32 MiB term directory. Each later passed 40/40
+on `b262925b` with the original inputs and budget. The two Native
+checkpoints and external response clocks remain distinct. The adapter's
+score-only replay preserves the no-answer/unjudged/excluded denominators and
+does not issue completed-boundary latency. [Paged directory](OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory)
 
-Main `49a02c15` repaired the common adapter's assumption that an NL file report
-had top-level `per_query`. Canonical file judgments now preserve no-answer,
-unjudged/null, excluded denominators and duplicate-observation comparisons.
-The selected adapter regression run passed 92 tests; actual five-repository
-payload conversion covered ten payloads and 200 rows. Bat's full canonical
-five-product replay and score-only projections agree; projection does not
-reissue completed-boundary latency or relabel external091 bytes as native6a3.
-
-The separately recorded source49 workflow/matrix/five-product/fresh-join/default
-decision fixture run passed 110 tests (6.70s):
-`PYTHONDONTWRITEBYTECODE=1 uv run --frozen --extra dev python -m pytest tools/ci/tests/test_code_search_workflow.py tools/ci/tests/test_code_search_matrix.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_retrieval_default_decision.py -q -p no:cacheprovider`.
-Missing/duplicate cells, source/query/profile drift and raw/report mismatch
-refusals are fixture coverage, not additional native samples or qualification.
-
-CLI, Django, Nushell and TypeORM capture failed at the fixed 32MiB term-directory
-policy. No native record or promoted root was issued for those failures. Final
-`completed-summary.json`, `capacity-failures.json` and
-`unjudged-native-union.json` retain five completed pairs, four actual failures
-and 72 tasks / 191 unique task-file pairs requiring independent judgments.
-Original native input/commands/raw/results remain at
-`/Users/songmin/.codex/task-evidence/ready9-native-pair-20261007-01a10d0b`.
-The capacity repair is implemented in `b262925b`; its paged term-directory
-contract and focused verification are retained in
-[OCT-05-004](OCT-05-004-cost-capacity-and-qualification-boundaries.md#paged-term-directory).
-Follow-up CLI, Django, Nushell and TypeORM capture and independent replay each
-passed 40/40 at that fixed source, with both exit codes zero. Original corpora,
-20-query packs and budgets were retained. Their five-product distinct-file projections reuse the original
-CS/SG/OG bytes, preserving external091 versus nativeb262 identities. Their
-result status is `diagnostic_unqualified`; no qualified latency or independent
-gold is issued. Native and join result files are under
-`/Users/songmin/.codex/task-evidence/ready9-native-paged-20261007-01a10d0b/{native-execution,reused-joins}/{cli,django,nushell,typeorm}/result.json`.
-
-The original five completed repositories plus these four follow-ups complete
-the nine-repository diagnostic inventory. `ready9-checkpoint-inventory.json`
-retains the two native source checkpoints, original failed attempts and original
-external response clocks; `uniform_native_source` is false. This is not
-latest-main/release, native rank-equivalence or speed qualification. Final
-source-closure verification passed for all 1,529 selected files, and both pinned
-binaries plus all four original suite/query-pack hashes still matched.
-
-Fresh common eligible counts are CLI0, Django0, Nushell0 and TypeORM1. The first
-three common scores are `NOT_APPLICABLE`; neither these cohorts nor the prior
-five-repository cohorts establish qualified whole-suite relevance.
-
-`ready9-unjudged-checkpoint-union.json` binds 151 tasks / 742 unique task-file
-pairs: the original 72-task/191-pair packet plus the new 79-task/551-pair packet.
-Its status is `BLOCKED` because independent relevance judgments are absent.
-The blind-review summary contains two blank source-bound forms for each of
-CLI/Django/Nushell/TypeORM, with zero assigned reviewer identities and zero label
-changes. Original 191-pair supplemental review inputs are retained separately;
-blank forms are not completed review or human provenance. Independent
-judgments, admission and remaining required inventory stay with
-[E2-04](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates) and E1.
+The five earlier common-eligible counts were 20/5/0/1/2 and the four follow-up
+counts were 0/0/0/1. The combined 151 tasks and 742 unique unjudged pairs remain
+`BLOCKED` on independent judgments. Blank review forms supply no labels.
+The current product gates remain with [E08](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates).
+[Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ## Selected Semble repetition and warmup diagnostic
 
-On 2026-10-07, four fresh Semble-only lexical-file captures used the original
-complete Bat (20 tasks, 79 files) and Zustand (20 tasks, 50 files) inputs,
-pinned Semble 0.6.0, Python 3.13.9, package lock and model assets. Seed 7,
-top-k 10 and three measured schedules per run were fixed. Bat's two runs with
-one warmup had 81 events each; Zustand's zero/one-warmup runs had 61/81 events
-with the same cold probe and measurement schedules. All 20 tasks per run
-succeeded. Independent native/normalized row,
-status, ordering, candidate float64-bit and per-task output hash comparisons
-agreed. Parent phase intervals, worker accounting and record/manifest hashes
-were independently checked. Parent/worker totals were 3,005.551/2,009.560 ms
-and 2,432.459/1,619.801 ms for Bat, and 1,295.933/573.024 ms and
-1,140.424/532.682 ms for Zustand's zero/one-warmup runs. These timings are
-shared-Mac diagnostics.
-
-Original commands, protocols and outputs remain outside the checkout at
-`/private/tmp/qi-e2-semble-20261007-xim9rl_i/{bat-a2,bat-b,zustand-warm0,zustand-warm1}`.
-The first `bat-a` controller used Python 3.9 and failed during parent validation;
-its partial worker output is preserved separately and not admitted. The retry
-used the pinned Python 3.13.9 interpreter.
-
-The wrapper's `source_head` is its preflight `5e15` checkpoint, not an observed
-per-run HEAD. Concurrent docs-only main advancement was not sampled per run.
-The five checked affected source files and all fixed corpus/query/lock/model
-inputs stayed unchanged; exact per-run global HEAD binding is `NOT_RUN`.
-Do not relabel these artifacts as clean `5e15` or current-main formal receipts.
-Bat is an A/A repetition control, not an alternative-implementation A/B or reuse
-adoption result. Zustand closes only the selected non-Bat warmup parity cell;
-default warmup remains one and other repositories need their own selected checks.
+The Semble 0.6.0/Python 3.13.9 repetition control ran Bat twice and
+Zustand at warmup zero/one with the original 20 tasks per run. All 20
+succeeded in each run with identical independent response/order/score-bit
+checks. The first Bat wrapper had refused under Python 3.9; the admitted
+retry used the pinned interpreter. Checked source/input files were unchanged
+and per-run HEAD was `NOT_RUN`. This was Bat A/A diagnostic evidence and
+the selected Zustand warmup cell. Default warmup remains one; adoption and
+other repositories retain their own acceptance. [Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ## Selected fresh release Bat pair diagnostic
 
-On 2026-10-08, a fresh exploratory Quanta/Semble lexical-file pair used the
-unchanged Bat commit `4608fc959aa8abf80d32198836511a570b7ae9ea`, 79-file
-manifest and original 20-task suite/query pack/AI-reviewed labels. Quanta used
-the three-binary-bound fresh SDK release build at clean source
-`b9c058e15d7349ed76adaa408abbd43f123aa65a`; runner SHA-256 is
-`f19e81f584e0b81f8aae36f595bd8a4353fd9c1ec43bae3bacf0c27241f3a6bd`, daemon
-SHA-256 is `c9ee82af6815481415b123102b4270186f3a1c035f0f00a4eb560c91e2b307aa`.
-Semble retained pinned 0.6.0/Python 3.13.9, lock and cached model assets.
+Frozen `b9c058e1` Quanta and pinned Semble 0.6.0 used the original
+79-file Bat corpus and 20-task pack. Quanta recorded 20 capped windows and
+Semble 20 successes. The canonical pair verdict independently replayed
+byte-for-byte with 20 common-eligible tasks. MRR@10 was 0.9375/0.8417 and the
+candidate-minus-baseline nDCG@10 interval was approximately [-0.0527, 0.0416].
+The preflight that rejected a 104-byte UDS path remains separate from the
+successful retry.
 
-The original natural-language-file UCD17 profile and Semble lexical-file profile
-were unchanged: seed7, top-k10, one fresh root, one warmup and one measured
-schedule per system. Quanta returned ten distinct files for each task with
-`capped` outcome20; Semble recorded `success`20. The verdict's accepted40/failed0
-counts include capped windows and do not assert Quanta exhaustion. All 20 tasks
-were common eligible. Diagnostic MRR@10 was 0.9375/0.8416666666666666;
-nDCG@10 was 0.606856383265772/0.6143293951848603, candidate-minus-baseline
-delta -0.007473011919088557 with bootstrap 95% interval
-[-0.05268058916227, 0.04162469927667926]. These retained-label observations
-do not establish a qualified quality improvement.
-
-`run.py pair --spec` completed and `run.py verdict` independently replayed the
-manifest/native records/scoring; original and replayed verdict bytes matched.
-Corpus, suite, query pack, lock, source closure and binary hashes stayed fixed
-before/after. Raw capture and replay remain at `/private/tmp/q9qa8kwhvg/`.
-The first preflight refused a 104-byte UDS path before capture; its original
-spec/failure remains at `/private/tmp/qib9-xyv4xf0n/`. The retry changed only
-the external output/profile paths to fit the 103-byte limit.
-
-The report remains `diagnostic_unqualified`, `PAIR_VALID=pass`; all qualification
-claims are false. The pair manifest contains no Contract/SDK qualification
-receipts, so its `CONTRACT_GREEN`/`SDK_PATH_GREEN` remain `not_run` despite the
-separate fresh SDK proof. T01–T09 inputs, operational portability, independent
-human review, quiet-host performance and other required lanes are not closed.
+The verdict remains `diagnostic_unqualified` with `PAIR_VALID=pass` and
+unissued Contract/SDK qualification in this pair. The original labels and this
+local pair do not close independent human review, operational portability or
+admitted performance. [Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ## Selected Gin declaration and robustness execution
 
-On 2026-10-08, the clean `f60609fe2d2882f1193d4ba68deb8704e8972138`
-driver used the frozen `b9c058e1` SDK release runner/daemon identified above.
-The intervening changes were documentation only. Gin remained at
-`d3ffc9985281dcf4d3bef604cce4e662b1a327a6`, with its original 99 source files
-and 1,196 query identities. The original `go_exact_local_name_v1` file suite
-was refused before capture because that oracle is unsupported. Its failed
-`g.staging` output and original suite bytes are preserved. A separate canonical
-`source_oracle_suite` preparation recomputed v3 file/symbol labels from the
-same source and queries; this does not relabel the old attempt as successful.
+Frozen `f60609fe` captured Gin `d3ffc998` (99 files, 1,196 query
+identities) with the separately bound `b9c058e1` SDK release. The unsupported
+file oracle refused before capture. Canonical v3 recomputed its independent
+source labels. Symbol execution recorded 1,192 success and four capped;
+the four declaration controls belong to that population. The default file
+pair recorded Quanta 1,109 success/87 capped and Semble 1,196 success. Its
+nDCG@10 delta interval included zero, and the verdict replay matched.
 
-- The four declaration/name-span controls passed with MRR@10 and recall@10
-  both 1.0. The full v3 symbol population recorded 1,192 success and four
-  capped outcomes. Both declaration and name-recovery MRR@10 were 1.0;
-  recall@10 was 0.9985493335876968. The four controls are included in the
-  1,196 population and are not additional unique tasks.
-- The default `code_search_file` pair executed 1,196 tasks per product:
-  Quanta 1,109 success/87 capped, Semble 1,196 success. File Hit@10 was
-  0.9924749163879598/0.9949832775919732; nDCG@10 was
-  0.9376536074540455/0.9355208052300636. The nDCG delta's 95% interval
-  [-0.005404081719473451, 0.009541906847290399] does not establish a
-  qualified improvement. Independent verdict replay reproduced identical bytes.
-- Canonical `identifier_robustness_suite` preparation selected all 1,196
-  original families. Prefix/infix/components/typo admitted
-  1,121/1,147/982/1,189 tasks, retaining 75/49/214/7 ineligible records.
-  Declaration absence admitted 100; content absence retained 99 and excluded
-  one; typo content absence retained 1,138 and excluded 51 from typo.
-  These new populations do not replace the historical four typo denominators.
+The seven default robustness members cover 5,776 scoring memberships and
+4,514 unique native queries per product. The union and all seven member
+views independently replayed. Quanta abstained on 99/99 content-absence
+queries, whereas Semble returned nonempty windows. Declaration absence can
+still match content, and literal content absence can still permit an OSA1
+match. Their denominators stay separate.
 
-`run.py quality-batch --spec` executed the seven default-file cohorts through
-one native index per product. Their 5,776 scoring memberships correspond to
-4,514 unique native queries per product. Quanta recorded 3,699 success,
-716 capped and 99 abstained; Semble recorded 3,891 success and 623 abstained.
-`quality-batch-verify` independently replayed all seven members and both
-original union records. Derived cohort views are not separate native captures.
-All 28 original/derived suite, pack and member-spec byte bindings still matched.
-
-| Source-derived cohort | Tasks | Quanta file Hit@10 | Semble file Hit@10 |
-| --- | ---: | ---: | ---: |
-| Prefix | 1,121 | 0.9928635147190009 | 0.8046387154326494 |
-| Infix | 1,147 | 0.994768962510898 | 0.5274629468177855 |
-| Components | 982 | 0.9928716904276986 | 0.9959266802443992 |
-| Typo under the default profile | 1,189 | 0.9941126997476871 | 0.8469301934398654 |
-
-Content-absence queries abstained 99/99 in Quanta; Semble returned nonempty
-windows 99/99. Declaration absence alone allowed one actual content match in
-Quanta, so its 100-task scope is distinct. Typo content absence produced nonempty
-windows 1,138/1,138 in Quanta and 1,035/1,138 in Semble: absence of a literal
-content match does not rule out a permitted OSA1 match. This cohort is not
-an OSA1-absence oracle or an explicit-typo acceptance result.
-
-A separate canonical `ascii_identifier_osa1_absent_casefold_v1` preparation
-proved 99 negative queries against the same admitted source. A second native
-batch selected `code_search_typo_file` for Quanta and retained Semble's declared
-lexical-file profile. The 1,189 positive typo tasks recorded Quanta 1,116
-success/73 capped and Semble 1,068 success/121 abstained. File Hit@10 was
-1.0/0.8469301934398654, nDCG@10 was 1.0/0.6856607398733592, and recall@10
-was 0.9982878769674397/0.8433137089991589. The independently proved OSA1
-absence cohort recorded Quanta 99 abstentions and Semble 99 nonempty results.
-No negative query was removed based on a product response. Original union
-records and both original member suites were independently replayed with
-`quality-batch-verify`: two members and two native records `VERIFIED`.
-The explicit typo profile and default profile are distinct configurations;
-these source-derived results do not qualify independent holdout quality.
-
-Commands used: `source_oracle_suite`, `identifier_robustness_suite`,
-`run.py quanta`, `evaluator.py evaluate-diagnostic`, `run.py pair`,
-`run.py verdict`, `run.py quality-batch` and `run.py quality-batch-verify`.
-Capture, new inputs, original refusal and replay remain outside the checkout
-at `/private/tmp/qna7vj2zq6/`. Results are `VERIFIED` for these executed
-diagnostic scopes, with all quality/speed/incremental qualification claims false.
+The explicit typo batch used its own positive 1,189 tasks and independently
+proved 99 OSA1-negative cases. Quanta recorded 1,116 successes and 73 capped
+positives, with Hit@10 of 1.0, plus 99/99 negative abstentions. Semble recorded
+1,068 successes and 121 abstained positives, Hit@10 of 0.8469, and 99/99
+nonempty negative windows. Both native records and both members replayed.
+These are source-derived diagnostics. Independent holdout, speed and release
+claims retain separate acceptance. [Original inputs and result details](../ARCHIVE-INDEX.md#benchmark-dispatch-and-diagnostic-preimages)
 
 ## Selected retained Gin20 hybrid pair
 
-On 2026-10-08, the original Gin20 spec's manifest path was absent. Its retained
-`raw/input-manifest` matched the original evidence's SHA-256
-`46dd79074244ce3d4082a46cf081e40ff12302fe52bed8b038f1be0b99c108b4`.
-All 99 current corpus files matched that manifest at Gin revision
-`d3ffc9985281dcf4d3bef604cce4e662b1a327a6`. The original 20-task suite and
-query pack also matched their recorded digests. An external copy recovered
-those exact bytes; original evidence and missing-path spec were preserved.
+The retained original manifest recovered the missing path with
+the same bytes. All 99 Gin `d3ffc998` files and the original 20-task
+suite/query pack matched. The frozen `f60609fe` pair reused the
+[closed scanner binaries](OCT-05-004-cost-capacity-and-qualification-boundaries.md#closed-scanner-build-and-capture-diagnostic)
+with its declared model/profile, seed42, top-k10, one warmup and one
+measured repetition. Quanta recorded 20 capped windows, Semble 20 successes,
+and diagnostic file recall@10 was 0.85/0.975.
 
-A new pair used the frozen f606 ASCII fresh release binaries identified in
-the [closed scanner diagnostic](OCT-05-004-cost-capacity-and-qualification-boundaries.md#closed-scanner-build-and-capture-diagnostic).
-It retained Quanta's native hybrid and Semble's native-default hybrid profiles,
-potion-code model inputs, seed42, top-k10, warmup1, one measured repetition and
-`require-complete` symbol coverage. Quanta recorded 20 capped windows; Semble
-recorded 20 success windows. Observed file recall@10 was 0.85/0.975; this is
-distinct from span/block recall and source-independent quality acceptance.
-
-`run.py pair --spec` and a fresh `run.py verdict --repo --suite --run-manifest
---out` both exited0. Independent verdict bytes matched SHA-256
-`8270d01f6251b9f951440f28bc1bbeb3929c05bd3ee20288fec3597da70e8619`.
-Original inputs, new specs/native records/report and replay remain at
-`/private/tmp/qgi0_rrtq2r/`. The first preflight refused a 108-byte UDS path
-before capture; `spec-overlong.json` preserves it. The retry shortened only
-the external output path. Status is `VERIFIED` for this diagnostic pair/replay,
-`PAIR_VALID=pass`, with all qualification claims false. Original AI-reviewed
-labels are retained; they are not new independent human judgments. Contract/
-SDK qualification receipts are absent from this pair and remain `not_run`.
-They do not issue independent holdout judgments, external five-product recapture,
-other-repository acceptance or current release qualification.
+The first preflight refused a 108-byte socket path. After shortening the
+output path the actual capture and independent verdict both exited 0 and
+replayed byte-for-byte. `PAIR_VALID=pass` applies to this diagnostic only.
+Original AI-reviewed labels and absent Contract/SDK receipts retain their
+original status. [Original inputs and result details](../ARCHIVE-INDEX.md#benchmark-dispatch-and-diagnostic-preimages)
 
 ## Retained B09 scope reconciliation
 
-The retained `d1a1b7097c5c915afd8fb24467c6d737acdb3b14` B09 ledger has 33
-actual successful native cells, totaling 11,272 selected rows across overlapping
-profiles. Original record, diagnostic, pack and manifest byte commitments were
-rechecked on 2026-10-08. Current `validate_retrieval_diagnostic` accepted all
-33 original returned-window/ingest diagnostics. Current phase validation refused
-all 33 with `invalid symbol producer evidence`; it requires producer evidence
-not supplied by those original phase artifacts. That replay scope is `FAILED`,
-not a new native execution or a rewrite of the original completion.
+Frozen `d1a1b709` holds 33 successful native cells, 11,272 rows
+across overlapping profiles. On the dated recheck, returned-window/ingest
+diagnostics passed 33/33. All 33 phase replays failed for missing symbol
+producer evidence. This replay failure retains the original native results
+and is distinct from the separate global12 4,363-task/21,815-response join.
 
-Original captures and frozen-decoder completion remain at
-`/Users/songmin/Documents/code-new/qi-b09-structural-fix-20261004-ji1PLR/`;
-the current decoder results remain at
-`/private/tmp/qna7vj2zq6/b09-retained-current-decoder-replay.json`.
-The separate retained 4,363-task/21,815-response global12 join is not the same
-population as these 33 profiles. None qualifies a later source or supplies
-missing current producer/phase bindings. Do not list the original B09 native
-inventory wholesale as `NOT_RUN` or promote its old phase bytes to a current
-closed capture.
-
-Frozen-driver recapture preparation independently matched the original bytes
-for CLARC original/neutral-renamed and six CodeSearchNet languages: eight cells,
-1,350 selected tasks and3,798 source files. The original explicit64-token NL
-policy is preserved. The eight-cell execution is recorded below. Original checkout
-directories for24 OSA cells are absent, so their new recapture is `BLOCKED`;
-retained top-k candidates cannot reconstruct those source universes. Preparation
-and the independent controller are under `/private/tmp/qb09-owmq5d8q/`.
-
-The fresh B09 available-source lane completed 8/8 cells at frozen f606 with
-exit 0 and independent phase/diagnostic/source plus external-snippet score replay:
-CLARC neutral-renamed/original and CSN Go/Java/JavaScript/PHP/Python/Ruby.
-The bound inputs retain 1,350 tasks and 3,798 files, including the original explicit
-64-token query policy. Raw records and replayed scores are under
-`/private/tmp/qb09-owmq5d8q/`. The 24 unavailable OSA source universes remain
-`BLOCKED`. These new eight cells do not restamp the historical 33-cell receipt,
-and their overlapping datasets are not a combined holdout/ranking claim.
+Fresh `f60609fe` recapture passed 8/8 available-source cells with
+independent phase/diagnostic/source and external-snippet replay. It covered
+CLARC original/neutral-renamed and six CodeSearchNet languages, 1,350 tasks
+and 3,798 files under the original explicit 64-token NL policy. Recapture
+for the 24 OSA cells was `BLOCKED` on original checkouts. Retained top-k
+responses supply no replacement source universe. [Original inputs and result details](../ARCHIVE-INDEX.md#benchmark-dispatch-and-diagnostic-preimages)
 
 ## Selected C3 AI review and issuance
 

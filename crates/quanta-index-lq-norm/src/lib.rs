@@ -35,3 +35,4 @@ pub use ast::{
     LqYesNoOnly,
 };
 pub use errors::{LqParseError, LqParseErrorCode, LqSpan};
+pub use quanta_index_lq_text_normalizer::TEXT_NORMALIZER_VERSION;

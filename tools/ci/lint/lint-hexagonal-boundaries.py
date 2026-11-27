@@ -29,7 +29,7 @@ LEGACY_CORE_MODULES = (
     "materialization",
     "query",
     "query_serving",
-    "ports.rs",
+    "ports",
     "services",
 )
 
@@ -105,8 +105,10 @@ DEV_INTEGRATION_DEPS = {
     # client dependency is test-only and forbidden in runtime production.
     # Physical scratch tests open the actual adapter under the Runtime IO
     # binding. Production remains on the Core scratch port and Storage owner.
+    # XFS pressure tests read the privileged verifier as an independent
+    # quota witness. Production reaches it through Searchd's quota admission.
     "quanta-index-searchd-runtime": frozenset(
-        {"quanta-index-searchctl", "quanta-index-scratch-sqlite"}
+        {"quanta-index-searchctl", "quanta-index-scratch-sqlite", "quanta-state-root-quota"}
     ),
     "quanta-index-search-plane": frozenset({"quanta-index-lexical"}),
     "quanta-index-kernel": frozenset(
@@ -120,11 +122,23 @@ DEV_INTEGRATION_DEPS = {
     ),
 }
 
+SHARED_CRATE_DEPS: dict[str, frozenset[str]] = {
+    "quanta-explicit-fd-process": frozenset(),
+    "quanta-installed-artifact-trust": frozenset({"quanta-explicit-fd-process"}),
+    "quanta-sqlite-retained-grant": frozenset(),
+    "quanta-state-root-quota": frozenset(),
+}
+
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
+    **SHARED_CRATE_DEPS,
     "quanta-index-cbor": frozenset(),
     "quanta-index-unicode": frozenset(),
     # Standalone under crates/ until the SQLite integration is qualified.
     "quanta-index-sqlite-fd-ledger": frozenset(),
+    # The standalone SQLite adapter shares only the FD ledger and retained grant.
+    "quanta-index-sqlite-unix-syscall": frozenset(
+        {"quanta-index-sqlite-fd-ledger", "quanta-sqlite-retained-grant"}
+    ),
     "quanta-index-contract-base": frozenset({"quanta-index-unicode"}),
     # The contract re-exports the base DTOs it is split from.
     "quanta-index-contract": frozenset(
@@ -151,7 +165,8 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-semantic": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-scratch-sqlite"}),
     # Embedding adapter: implements core outbound ports from contract DTOs.
     "quanta-index-embed": _ADAPTER_CRATE_DEPS,
-    "quanta-index-ipc": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-cbor"}),
+    "quanta-index-ipc": _ADAPTER_CRATE_DEPS
+    | frozenset({"quanta-index-cbor", "quanta-explicit-fd-process"}),
     # The search plane uses the transport crate for exactly its codec: the
     # CBOR payload encoding the authority snapshots persist in and the
     # canonical batch digest idempotency verifies (the wire encoding is the
@@ -209,10 +224,15 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # Corpus parser/runner smoke helpers. No production deps; tests in
     # other crates consume it via dev-dependencies only.
     "quanta-index-corpus-smoke": frozenset(),
-    # Durable catalog adapter (W2, G0-C: SQLite via rusqlite). Owns the storage
-    # engine; the search plane reaches it only through core ports.
+    # The Catalog owns the SQLite connection and its Linux protected FD reader.
+    # The search plane reaches this adapter only through core ports.
     "quanta-index-catalog": frozenset(
-        {"quanta-index-contract", "quanta-index-core", "quanta-index-ipc"}
+        {
+            "quanta-index-contract",
+            "quanta-index-core",
+            "quanta-index-ipc",
+            "quanta-index-sqlite-unix-syscall",
+        }
     ),
     # Shared SQLite scratch admission utility. Concrete adapters and the
     # kernel's existing spool use it; it depends inward only on core budget
@@ -225,6 +245,7 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # executor so their resource refusals match lexical and search-plane paths.
     "quanta-index-searchd": frozenset(
         {
+            "quanta-state-root-quota",
             "quanta-index-contract",
             "quanta-index-core",
             "quanta-index-embed",
@@ -241,6 +262,9 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # composition root. Core, Kernel and search-plane still cannot name embed.
     "quanta-index-searchd-runtime": frozenset(
         {
+            "quanta-explicit-fd-process",
+            "quanta-installed-artifact-trust",
+            "quanta-sqlite-retained-grant",
             "quanta-index-kernel",
             "quanta-index-storage",
             "quanta-index-catalog",
@@ -352,7 +376,8 @@ def dependency_packages(
 def check_crate_dependency_matrix() -> list[Violation]:
     violations: list[Violation] = []
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
-    for cargo_toml in sorted(CRATES.glob("*/Cargo.toml")):
+    manifests = (*CRATES.glob("*/Cargo.toml"), *(ROOT / "shared").glob("*/Cargo.toml"))
+    for cargo_toml in sorted(manifests):
         manifest = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))
         name = manifest.get("package", {}).get("name")
         if not isinstance(name, str):
@@ -383,7 +408,7 @@ def check_crate_dependency_matrix() -> list[Violation]:
             violations.append(Violation(cargo_toml, f"invalid dependency declaration: {error}"))
             continue
         for dep in sorted(production):
-            if dep.startswith("quanta-index-") and dep not in allowed:
+            if (dep.startswith("quanta-index-") or dep in SHARED_CRATE_DEPS) and dep not in allowed:
                 violations.append(
                     Violation(
                         cargo_toml,
@@ -392,7 +417,11 @@ def check_crate_dependency_matrix() -> list[Violation]:
                 )
         dev_allowed = allowed | TEST_SUPPORT_CRATES | DEV_INTEGRATION_DEPS.get(name, frozenset())
         for dep in sorted(development):
-            if dep.startswith("quanta-index-") and dep not in dev_allowed and dep != name:
+            if (
+                (dep.startswith("quanta-index-") or dep in SHARED_CRATE_DEPS)
+                and dep not in dev_allowed
+                and dep != name
+            ):
                 violations.append(
                     Violation(
                         cargo_toml,
@@ -428,24 +457,29 @@ def check_legacy_core_layout() -> list[Violation]:
     if not core_src.is_dir():
         return violations
     for legacy in LEGACY_CORE_MODULES:
-        path = core_src / legacy
-        if path.exists():
-            violations.append(
-                Violation(path, f"legacy module {legacy!r} must not exist in core/src/")
-            )
-        legacy_domain = core_src / "domains" / legacy
-        if legacy_domain.exists() and legacy not in DOMAINS:
-            violations.append(
-                Violation(
-                    legacy_domain,
-                    f"legacy domain {legacy!r} removed; new domains are {DOMAINS}",
+        for name in (legacy, f"{legacy}.rs"):
+            path = core_src / name
+            if path.exists():
+                violations.append(
+                    Violation(path, f"legacy module {legacy!r} must not exist in core/src/")
                 )
-            )
+            # The current generation port is a Core domain file. The retired
+            # generation service directory still cannot be restored here.
+            if name == "generation.rs":
+                continue
+            legacy_domain = core_src / "domains" / name
+            if legacy_domain.exists():
+                violations.append(
+                    Violation(
+                        legacy_domain,
+                        f"legacy domain {legacy!r} removed; new domains are {DOMAINS}",
+                    )
+                )
     return violations
 
 
 def owning_domain(rel_path: Path) -> str | None:
-    parts = rel_path.parts
+    parts = rel_path.with_suffix("").parts
     if "domains" not in parts:
         return None
     idx = parts.index("domains")
@@ -456,10 +490,16 @@ def owning_domain(rel_path: Path) -> str | None:
 
 
 @lru_cache(maxsize=1)
-def rust_code_mask():
+def rust_path_helpers():
     # The module-cycle gate already masks Rust comments and normal/raw string
-    # literals without adding a parser dependency to the standalone hook.
-    return run_path(str(Path(__file__).with_name("check-module-cycles.py")))["blank_non_code"]
+    # literals and expands grouped use paths for the standalone hook.
+    helpers = run_path(str(Path(__file__).with_name("check-module-cycles.py")))
+    return (
+        helpers["blank_non_code"],
+        helpers["referenced_paths_with_offsets"],
+        helpers["module_path_of"],
+        helpers["enclosing_inline_modules"],
+    )
 
 
 def check_domain_isolation() -> list[Violation]:
@@ -471,13 +511,35 @@ def check_domain_isolation() -> list[Violation]:
         )
         return violations
 
+    blank_non_code, referenced_paths_with_offsets, module_path_of, enclosing_inline_modules = (
+        rust_path_helpers()
+    )
     for rust_file in sorted(core_domains.rglob("*.rs")):
         owner = owning_domain(rust_file.relative_to(core_domains.parent))
         if owner is None:
             continue
-        text = rust_code_mask()(rust_file.read_text(encoding="utf-8"))
-        for match in DOMAIN_USE_RE.finditer(text):
-            target = match.group("target")
+        text = blank_non_code(rust_file.read_text(encoding="utf-8"))
+        module_path = module_path_of(core_domains.parent, rust_file)
+        module_parts = module_path.split("::") if module_path else []
+        targets = {match.group("target") for match in DOMAIN_USE_RE.finditer(text)}
+        paths = referenced_paths_with_offsets(text) if module_path is not None else ()
+        for offset, path in paths:
+            path = [part.strip() for part in path]
+            if path[0] == "crate":
+                resolved = path[1:]
+            elif path[0] == "self":
+                resolved = module_parts + path[1:]
+            else:
+                scoped_parts = module_parts + list(enclosing_inline_modules(text, offset))
+                parents = 0
+                while parents < len(path) and path[parents] == "super":
+                    parents += 1
+                if parents > len(scoped_parts):
+                    continue
+                resolved = scoped_parts[: len(scoped_parts) - parents] + path[parents:]
+            if len(resolved) >= 2 and resolved[0] == "domains":
+                targets.add(resolved[1])
+        for target in sorted(targets & set(DOMAINS)):
             if target == owner:
                 continue
             if owner == "hybrid" and target in ("lexical", "semantic"):
@@ -496,12 +558,14 @@ def check_contract_is_dto_only() -> list[Violation]:
     contract_src = CRATES / "quanta-index-contract" / "src"
     if not contract_src.is_dir():
         return violations
+    blank_non_code = rust_path_helpers()[0]
     for rust_file in sorted(contract_src.rglob("*.rs")):
         text = rust_file.read_text(encoding="utf-8")
+        code = blank_non_code(text)
         allowed = CONTRACT_CONSTRUCTION_TRAITS.get(rust_file.relative_to(contract_src), {})
         forbidden = {
             match.group("name")
-            for match in re.finditer(r"\bpub\s+trait\s+(?P<name>\w+)", text)
+            for match in re.finditer(r"\bpub\s+trait\s+(?P<name>\w+)", code)
             if match.group("name") not in allowed
             or not approved_construction_trait(text, match.start(), allowed[match.group("name")])
         }
@@ -562,7 +626,10 @@ def check_channel_backend_isolation() -> list[Violation]:
             continue
         test_only_sources = test_only_path_modules(scope)
         for rust_file in sorted(scope.rglob("*.rs")):
-            if "tests" in rust_file.parts or rust_file.resolve() in test_only_sources:
+            if (
+                "tests" in rust_file.relative_to(scope).parts
+                or rust_file.resolve() in test_only_sources
+            ):
                 continue
             text = rust_file.read_text(encoding="utf-8")
             # The lexical adapter binds Tantivy segment files at seal/open.

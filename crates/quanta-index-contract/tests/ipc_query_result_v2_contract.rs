@@ -733,14 +733,19 @@ fn lexical_candidate() -> LexicalCandidate {
             .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/search.rs"),
-        start_line: 10,
-        end_line: 18,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 10,
+            end_line: 18,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "fn search_plane() {}".to_owned(),
+            // J7Q-07: a concrete hit offset + span so the wire round-trip proves the
+            // new UI highlight-anchor fields survive serialize -> deserialize.
+            snippet_hit_offset: Some(3),
+            highlights: vec![HighlightSpan { start: 3, len: 4 }],
+        }),
         score: 0.875,
-        snippet: "fn search_plane() {}".to_owned(),
-        // J7Q-07: a concrete hit offset + span so the wire round-trip proves the
-        // new UI highlight-anchor fields survive serialize -> deserialize.
-        snippet_hit_offset: Some(3),
-        highlights: vec![HighlightSpan { start: 3, len: 4 }],
+        native_source: None,
     }
 }
 

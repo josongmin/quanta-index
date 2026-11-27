@@ -21,13 +21,14 @@ mod managed_install_trace_tests {
     struct Events {
         rows: Mutex<Vec<DiagnosticEmitV1>>,
         accept: bool,
+        event_limit: usize,
     }
     impl DiagnosticEventSinkV1 for Events {
         fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
             let Ok(mut rows) = self.rows.try_lock() else {
                 return false;
             };
-            if !self.accept || rows.len() == 128 {
+            if !self.accept || rows.len() == self.event_limit {
                 return false;
             }
             rows.push(event);
@@ -76,10 +77,19 @@ mod managed_install_trace_tests {
     }
 
     fn request(record: bool, accept: bool) -> Result<Observation, Box<dyn Error>> {
+        request_with_event_limit(record, accept, 128)
+    }
+
+    fn request_with_event_limit(
+        record: bool,
+        accept: bool,
+        event_limit: usize,
+    ) -> Result<Observation, Box<dyn Error>> {
         let clock = Arc::new(StepClock::default());
         let events = Arc::new(Events {
             rows: Mutex::new(Vec::new()),
             accept,
+            event_limit,
         });
         let context = DiagnosticContextV1::new(
             DiagnosticCaptureIdV1([93; 16]),
@@ -283,16 +293,16 @@ mod managed_install_trace_tests {
         for _replay in 0..2 {
             PROTECTION_STATEMENTS.store(0, Ordering::SeqCst);
             {
-                let guard = catalog.lock().map_err(|error| error.to_string())?;
+                let mut guard = catalog.lock().map_err(|error| error.to_string())?;
                 guard.trace_v2(
                     rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
                     Some(observe_protection),
-                );
+                )?;
             }
             let result = catalog.confirm_managed(scope, &objects, &mut budget);
             {
-                let guard = catalog.lock().map_err(|error| error.to_string())?;
-                guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+                let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+                guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
             }
             result?;
             check_eq!(PROTECTION_STATEMENTS.load(Ordering::SeqCst), 65);
@@ -374,16 +384,16 @@ mod managed_install_trace_tests {
         LIFECYCLE_UPDATES.store(0, Ordering::SeqCst);
         CONFIRM_QUEUE_WRITES.store(0, Ordering::SeqCst);
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
             guard.trace_v2(
                 rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
                 Some(observe_lifecycle_update),
-            );
+            )?;
         }
         let first_confirmation = catalog.confirm_managed(scope, &objects, &mut budget);
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
-            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         }
         first_confirmation?;
         check_eq!(LIFECYCLE_UPDATES.load(Ordering::SeqCst), 2);
@@ -395,16 +405,16 @@ mod managed_install_trace_tests {
         LIFECYCLE_UPDATES.store(0, Ordering::SeqCst);
         CONFIRM_QUEUE_WRITES.store(0, Ordering::SeqCst);
         {
-            let guard = reopened.lock().map_err(|error| error.to_string())?;
+            let mut guard = reopened.lock().map_err(|error| error.to_string())?;
             guard.trace_v2(
                 rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
                 Some(observe_lifecycle_update),
-            );
+            )?;
         }
         let replay_confirmation = reopened.confirm_managed(scope, &objects, &mut budget);
         {
-            let guard = reopened.lock().map_err(|error| error.to_string())?;
-            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            let mut guard = reopened.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         }
         replay_confirmation?;
         check_eq!(LIFECYCLE_UPDATES.load(Ordering::SeqCst), 0);
@@ -562,17 +572,17 @@ mod managed_install_trace_tests {
         let mut reserve_budget = admission_budget();
         NAMESPACE_SELECTS.store(0, Ordering::SeqCst);
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
             guard.trace_v2(
                 rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
                 Some(observe_namespace),
-            );
+            )?;
         }
         let reserve =
             catalog.reserve_managed(scope, std::slice::from_ref(&parent), &mut reserve_budget);
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
-            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         }
         reserve?;
         check_eq!(NAMESPACE_SELECTS.load(Ordering::SeqCst), 1);
@@ -584,17 +594,17 @@ mod managed_install_trace_tests {
         let mut confirm_budget = admission_budget();
         NAMESPACE_SELECTS.store(0, Ordering::SeqCst);
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
             guard.trace_v2(
                 rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
                 Some(observe_namespace),
-            );
+            )?;
         }
         let confirm =
             catalog.confirm_managed(scope, std::slice::from_ref(&parent), &mut confirm_budget);
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
-            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         }
         confirm?;
         check_eq!(NAMESPACE_SELECTS.load(Ordering::SeqCst), 1);
@@ -626,11 +636,11 @@ mod managed_install_trace_tests {
         let parent = object(246, leaves.iter().map(|leaf| leaf.reference).collect());
         NAMESPACE_SELECTS.store(0, Ordering::SeqCst);
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
             guard.trace_v2(
                 rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
                 Some(observe_namespace),
-            );
+            )?;
         }
         let result = catalog.reserve_managed(
             scope,
@@ -638,8 +648,8 @@ mod managed_install_trace_tests {
             &mut admission_budget(),
         );
         {
-            let guard = catalog.lock().map_err(|error| error.to_string())?;
-            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
         }
         check!(
             matches!(result, Err(IndexError::Storage(message)) if message == "native catalog row digest mismatch")
@@ -738,9 +748,11 @@ mod managed_install_trace_tests {
                 events,
                 root,
                 ..
-            } = request(true, true)?;
+            } = request_with_event_limit(true, true, 16_384)?;
             // Replay of the existing reservation is intentional: it makes
             // the measured scope the full reserve/advance/confirm contract.
+            // Keep the per-object census events from filling the sink before
+            // the last transaction's commit observation.
             catalog.reserve_managed(scope, &first, &mut budget)?;
             catalog.advance_attempt_managed(attempt, &first, &next, &mut budget)?;
             {
@@ -758,6 +770,7 @@ mod managed_install_trace_tests {
                 root.finish(DiagnosticTerminalV1::Ok)?;
             }
             let rows = events.rows.lock().map_err(|error| error.to_string())?;
+            check!(rows.len() < events.event_limit);
             let commits = rows
                 .iter()
                 .filter(|event| {

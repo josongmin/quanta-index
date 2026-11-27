@@ -1070,27 +1070,29 @@ pub(in crate::native::text) fn build(
         diagnostic.as_ref(),
         quanta_index_core::DiagnosticStageV1::NativeTextRoot,
         |_child, context| {
+            let cut = wire::TextCut::of(source);
             let root_bytes = 8usize
-                .checked_add(32 + 3 * 33 + 2)
+                .checked_add(32 + 2 * 33 + 2)
                 .and_then(|n| n.checked_add(edges.len() * wire::ROOT_ROW_BYTES))
                 .ok_or(IndexError::ResourceLimited)?;
             let (mut root, _root_memory) = funded_vec(root_bytes, context.budget)?;
-            wire::write_root(&mut root, policy, source, &edges)?;
-            if root.len() != root_bytes - (3 - wire::source_edges(source).count()) * 32 {
+            wire::write_root(&mut root, policy, cut, &edges)?;
+            if root.len() != root_bytes - (2 - cut.edges().count()) * 32 {
                 return Err(IndexError::ResourceLimited);
             }
-            let child_count = wire::source_edges(source)
+            let child_count = cut
+                .edges()
                 .count()
                 .checked_add(edges.len())
                 .ok_or(IndexError::ResourceLimited)?;
             let (mut children, _children_memory) = funded_vec(child_count, context.budget)?;
-            children.extend(wire::source_edges(source));
+            children.extend(cut.edges());
             children.extend(edges.iter().map(|edge| edge.reference));
             copy_work(context.budget, root.len())?;
             let artifact = context.put(&root, &children)?;
             Ok((
                 artifact,
-                wire::logical_commitment(policy, source, docs, tokens),
+                wire::logical_commitment(policy, cut, docs, tokens),
             ))
         },
     )

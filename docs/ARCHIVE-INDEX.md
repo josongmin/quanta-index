@@ -12,6 +12,290 @@ Dated sections describe their then-current paths. The Oct-22 epics own full-prod
 
 ## Historical record recovery
 
+### 2026-11-24 NC-H checks and source custody
+
+[NC-H](plans/nov-12-native-cutover/tickets/NC-H-history.md) owns the next
+paired S/Q run, [03.7](plans/nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md#history-03-7)
+owns the signed installation acceptance, and the
+[History ADR](adr/NOV-12-001-native-query-and-semantic-engine.md#native-history-publication-and-read-contract)
+records the published contract. The historical results below apply to their
+recorded inputs.
+
+| Check | Recorded result |
+| --- | --- |
+| Q History Runtime and SDK UDS retry | Runtime **4/4** in `6a988b77-fcb1-4851-99be-e7fed604315e`. UDS **1/1** on Q `65ef552d702d` in `9a2a521c-a90e-4e21-8308-68654fd083d8`. The 1,374-file Runtime closure and 1,354-file UDS inputs plus old-Q ELF were checked for their respective runs. |
+| Q expanded macOS process roster | **5/5** in `be242edb-e31d-4287-ac88-2702db9db3a0` covered retained History/reopen, Original append, cross-root restore, atomic Source/History and DSL warm/cold. The 2,449-file input matched at start and finish. |
+| Q Catalog and exporter | Catalog **9/9** in `61d2f67d-6a74-4215-b711-c76aad391735` on the 382-file closure, including the six 03.7 selectors, two earlier orphan/BOOT cases and single-workspace orphan refusal. The later Catalog **7/7** and Kernel **3/3** owner result used another roster. Source exporter **1/1** in `4bd33309-ca38-4ad2-874b-1f416722f51e` and a budget/cancellation case **1/1** in `f541bfcd-f10a-4ba0-8af3-7a8b6018fa44` on its later input. |
+| Original S owner receipts | Production compile exit 0 in `20261122T160639.418133Z-f4c56d306c5e` and CLI compile exit 0 in `20261122T182431.287276Z-c4208e5f9d37`. Original replay **2/2** in `20261122T231637.103774Z-42eab1cab035` and Required DATA **2/2** in `20261122T121408.682064Z-b5d727533865`. Each receipt binds its own input. |
+| Focused regressions | Q History selection **43/43**, Q Contract **485/485**, S Legacy V2 codec **7/7** on macOS, isolated checkpoint **1/1**, Watch **4/4**, S registry and completion **74/74**. The preimages identify each run and its input. |
+
+The earlier Required DATA run `20261122T114342.990945Z-9e514429e4ab` selected
+two bodies and overflowed the libtest stack. The successful `b5d727533865`
+run used the existing dedicated stack worker from S `d75e8d6b987`.
+
+Exact worktree preimages, including prior dirty edits, are indexed by
+repository-relative path and SHA-256 in the [preimage manifest](/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov24-nc-h-closeout-db9_yk97/SHA256SUMS).
+[Full NC-H history](/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov24-nc-h-closeout-db9_yk97/docs/plans/nov-12-native-cutover/tickets/NC-H-history.md) ·
+[Previous 03.7 detail](/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov24-nc-h-closeout-db9_yk97/docs/plans/nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md).
+
+### 2026-11-23 Benchmark and validation history preimages
+
+The exact worktree preimages and SHA-256 manifest are under
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-benchmark-and-rfc-history-czu_m_jc`.
+The archive uses the original repository-relative paths and includes prior
+worktree edits.
+
+#### Late October run preimages
+
+The [validation ledger](plans/oct-22-finalizing/VALIDATION.md) retains scoped
+outcomes under their original headings. The preimage preserves the complete
+dated E02 and E07 commands, retry chains and terminal details.
+
+#### Benchmark dispatch and diagnostic preimages
+
+Original dispatch notes and diagnostic transcripts are in the preimages of
+the [Nov-5 packet](plans/nov-5-indexing-bugbash/README.md) and
+[product qualification](plans/nov-20-native-cutover-closeout/tickets/07-product-qualification.md).
+The [capture ADR](adr/OCT-05-002-native-capture-clock-and-index-scope.md)
+retains the scoped Gin and B09 outcomes. The archive records the full source,
+request, label and result identities for those diagnostics.
+
+### 2026-11-23 Additional execution cohort preimages
+
+The exact worktree preimages, including earlier edits, and their SHA-256
+manifest are under
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-archived-validation-and-cutover-cohorts-eaatq4a1`.
+Each original repository-relative path and heading is recoverable there.
+
+#### Additional October validation cohorts
+
+The [validation ledger](plans/oct-22-finalizing/VALIDATION.md) summarizes older
+execution cohorts in their original sections. The corresponding preimage
+retains their commands, result bodies, inputs and source identities. The
+current ledger and individual epics own acceptance.
+
+#### Older Native cutover cohorts
+
+The cutover ticket preimages retain the original dated attempts, including
+qualified results, refusals and abandoned candidates. The [Native cutover plan](plans/nov-12-native-cutover/README.md)
+and [closeout queue](plans/nov-20-native-cutover-closeout/tickets/LANES.md)
+own the current input and execution order.
+
+#### Earlier benchmark diagnostics
+
+The ADR preimages retain proof identities, raw counts and detailed outcomes
+of earlier scoped benchmark runs. The [capture ADR](adr/OCT-05-002-native-capture-clock-and-index-scope.md)
+and [cost ADR](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md)
+retain the measurement and qualification contracts.
+
+### 2026-11-23 Old execution and decision preimages
+
+Exact worktree preimages and their SHA-256 manifest are under
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-old-rca-and-validation-8flre433`.
+The archive keeps the original repository-relative paths. Deleted tracked files
+are also recoverable from Git revision `28784da2692e3bd1c2bdf49fe7c50b99fa4f9471`.
+Use the worktree preimages for edits that were present outside that revision.
+
+#### Oct-22 execution ledger preimage
+
+The full `docs/plans/oct-22-finalizing/VALIDATION.md` preimage retains original
+heading fragments, test identities, attempts, commands and terminal evidence.
+The [active validation ledger](plans/oct-22-finalizing/VALIDATION.md) keeps its
+current execution evidence and links to the original record for compacted runs.
+
+#### Nov-5 indexing RCA preimage
+
+`docs/plans/nov-5-indexing-bugbash/RCA.md` contains the Nov-5–12 source-bound
+diagnostics, including unsuccessful alternatives and the F2 XL and Mixed runs.
+The [current RCA disposition](plans/nov-5-indexing-bugbash/README.md) and
+[execution plan](plans/nov-5-indexing-bugbash/WORKPLAN.md) own the remaining gates.
+
+#### Tantivy retirement plan preimage
+
+`docs/plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md` preserves the original
+Nov-12–19 retirement plan and pre-removal results. The
+[engine ADR](adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement)
+records the implemented removal. The [closeout tickets](plans/nov-20-native-cutover-closeout/tickets/README.md)
+own release evidence, maintained callers, comparisons and signed recovery.
+
+#### Superseded decision preimages
+
+The original F16 `docs/adr/OCT-10-001-seal-owned-lexical-serving-metadata.md`
+records the older seal and identity decision. The
+[later lexical ADR](adr/OCT-10-002-shared-paged-lexical-authorities.md) covers
+the paged Legacy contract. The exact decision IDs of the former
+`docs/adr/MAY-JUN-2026-DECISION-REGISTRY.md` remain in its preimage. The
+[ADR index](adr/README.md) continues to link their owning decisions.
+
+#### Nov-20 ANN audit preimage
+
+`docs/bugbash/nov-20/findings.md` records the original LanceDB and 4K diagnostic
+inputs and outcomes. [Native ANN acceptance](plans/nov-12-native-cutover/tickets/NC-B-semantic.md#current-remaining-acceptance)
+and the [4K SourceAdvance packet](plans/nov-21-bugbash-source-advance-4k/README.md)
+own the later verification and remaining product work.
+
+### 2026-11-23 October and E07 snapshot retirement
+
+The 52 Markdown snapshots formerly under `docs/history/` are retained at
+Git revision `28784da2692e3bd1c2bdf49fe7c50b99fa4f9471`. All removed
+worktree files matched the recorded Git blobs exactly. List the original paths
+or retrieve an individual file from that revision:
+
+```sh
+git ls-tree -r --name-only 28784da2692e3bd1c2bdf49fe7c50b99fa4f9471 -- docs/history/
+git show 28784da2692e3bd1c2bdf49fe7c50b99fa4f9471:docs/history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md
+git archive -o /tmp/quanta-index-history-28784da.tar 28784da2692e3bd1c2bdf49fe7c50b99fa4f9471 docs/history/
+```
+
+#### Oct-10 RFC and lexical preimages
+
+`oct-10-index-closeout/` contains ten files. `RFC-CHECKPOINTS-2026-10-21.md`
+contains the original §23 checkpoints. `RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md`
+contains §17.2.3–17.2.4 and §22. The delivery register, lexical design and
+integration records, trace plans and packets, audit, and validation through
+October 21 have their original filenames. Use the [fixed RFC requirements](rfc/oct-10-native-incremental-vnext.md#23-fixed-full-product-implementation-and-acceptance-ledger),
+[legacy lexical ADR](adr/OCT-10-002-shared-paged-lexical-authorities.md), and
+[Native index ADR](adr/NOV-07-001-native-index-execution-and-custody.md) for the
+active lexical boundaries.
+
+#### Oct-13 Wave 2 preimages
+
+`oct-13-native-incremental-wave2/` contains the residual ledger, 19 W2 ticket
+specifications and the writer map. The [Oct-22 DoD](plans/oct-22-finalizing/DOD.md)
+maps the original W2 requirements to current epics. The [single-writer rules](plans/oct-22-finalizing/OWNERSHIP.md)
+own current file boundaries and handoff.
+
+#### Oct-17 dispatch preimages
+
+`oct-17-index-closeout/tickets/` contains nine files with the earlier dispatch
+index, ownership history and seven execution histories. Current assignments and
+acceptance are in the [Oct-22 epics](plans/oct-22-finalizing/README.md).
+
+#### Oct-22 validation and W2 preimages
+
+`oct-22-finalizing/oct-10-index-closeout/VALIDATION.md` records the
+pre-migration test/platform, semantic compatibility, performance and release
+results. `oct-22-finalizing/oct-17-index-closeout/tickets/` contains the nine
+pre-migration W2 contract and ownership bodies. Use [current validation](plans/oct-22-finalizing/VALIDATION.md)
+for scoped results and the [current epics](plans/oct-22-finalizing/README.md)
+for pending acceptance.
+
+#### Nov-5 E07 preimages
+
+`nov-5-indexing-bugbash/` contains `E07-performance-operations.md` and
+`E07-WAVES.md`. Current acceptance and measurement rules are in [E07](plans/oct-22-finalizing/E07-performance-operations.md).
+The [Nov-5 bugbash plan](plans/nov-5-indexing-bugbash/README.md) owns current
+Native indexing RCA and execution.
+
+### 2026-11-23 Native cohort and proof history
+
+The [NC-F cohort summary](plans/nov-12-native-cutover/tickets/NC-F-integration.md#고정-입력별-진행-기록--현재-판정으로-재사용하지-않음)
+records historical Runtime291, Java7 and Native2 outcomes. The
+[compact-cursor summary](plans/nov-12-native-cutover/tickets/NC-TEXT-build-final.md#historical-compact-cursor-closeout-verification-2026-11-16)
+and [Text ADR](adr/NOV-07-001-native-index-execution-and-custody.md#native-lexical-replay-and-cold-build-evidence)
+record historical Lexical410, Runtime15, F integration and SDK results. The
+[retirement ledger](plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)
+owns the 128-case execution and signed-release evidence. The
+[retirement ADR](adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement)
+records the source cutover. Old checker results retain their original source
+scope before or after the removal.
+
+The three exact worktree preimages and their SHA-256 manifest are preserved at
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-native-cohort-and-proof-history-y02g2l4t`.
+
+### 2026-11-23 Native supplier and Runtime history
+
+Earlier Root queue and terminated capacity attempts remain recoverable from
+the preimages below. [Q regression results](plans/nov-20-native-cutover-closeout/tickets/01-q-regressions.md#runtime-sixty-results)
+retain the original 58 Runtime passes and the two repaired bodies. The
+[current queue](plans/nov-20-native-cutover-closeout/tickets/LANES.md#root-단일-실행-큐)
+owns new execution and exact-input reuse.
+
+The [supplier ADR](adr/NOV-12-002-execution-admission-and-terminal-recovery.md#r25-source-bound-supply)
+records the R25 control contract. The [Text ADR](adr/NOV-07-001-native-index-execution-and-custody.md#native-lexical-replay-and-cold-build-evidence)
+records Dense recovery and its scoped evidence. The
+[R25 owner](plans/nov-20-native-cutover-closeout/tickets/02-semantica-runtime-sdk.md),
+[CURRENT signed-install owner](plans/nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md)
+and [NC-TEXT owner](plans/nov-12-native-cutover/tickets/NC-TEXT-build-final.md)
+retain their own pending acceptance.
+
+The exact worktree preimages for the five compacted documents and two inbound
+link updates, with their SHA-256 manifest, are preserved at
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-native-supplier-and-runtime-history-73rrap4c`.
+
+### 2026-11-23 Lexical and RepoMap evidence history
+
+The [maintained-test ledger](plans/nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md#044-id별-유지퇴역-판정)
+retains the final roster, original-to-replacement assertions and pending Linux
+execution. The early 92-ID count and temporary retirement classifications were
+superseded by the committed 93-ID inventory. The original queue and retry
+chronology remains recoverable below.
+
+The [Native ADR](adr/NOV-12-001-native-query-and-semantic-engine.md#historical-repomap-kernel-and-cleanup-evidence)
+retains the scoped RepoMap Kernel and cleanup evidence. The [current RepoMap plan](plans/nov-23-repomap-retirement/README.md)
+owns the release removal and existing `Required` recovery. The preserved
+[DELTA design](plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md#현행-코드-작업-순서)
+retains the prior producer, cost and correctness conditions.
+
+The two exact worktree preimages and their SHA-256 manifest are under
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-lexical-and-repomap-history-wqc834qk`.
+
+### 2026-11-24 RepoMap retirement plan compaction
+
+The [RepoMap ADR](adr/NOV-23-001-repomap-retirement-and-source-custody.md)
+owns the accepted decision and completed source contracts. The [active plan](plans/nov-23-repomap-retirement/README.md)
+keeps the current implementation, execution gates and existing owners.
+
+The exact five plan preimages and their SHA-256 manifest are preserved at
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov24-repomap-retirement-r5g4_dz9`. Verify the directory with
+`shasum -a 256 -c SHA256SUMS`. The archived files include the full historical
+tables, original selectors, proof attempts and prior link inventory.
+
+### 2026-11-23 Native closeout history compaction
+
+The [Tantivy removal ADR](adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement)
+owns the completed cutover boundary. The [release execution ADR](adr/NOV-12-002-execution-admission-and-terminal-recovery.md#paired-release-execution-custody)
+owns the existing P11 launch and proof-publication controls. The audit and
+retry chronology is recoverable from the preimages below. Older temporary
+rosters and successful control checks retain their original scope.
+
+The existing [closeout index](plans/nov-20-native-cutover-closeout/tickets/README.md)
+continues to own the pending maintained-test, product and release gates.
+The [local lexical retry summary](plans/nov-20-native-cutover-closeout/tickets/07-product-qualification.md#로컬-게이트-실행-이력)
+preserves the Contract dependency referenced by History and the observed
+Kernel and Catalog results. The formal P10/P11 and signed-install conditions
+remain in the live [06](plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)
+and [08](plans/nov-20-native-cutover-closeout/tickets/08-release-activation.md) ledgers.
+
+Seven exact worktree preimages and their SHA-256 manifest are preserved at
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-native-followup-compaction-vm7ocd3j`.
+
+### 2026-11-23 Completed Native tickets
+
+INC-02 closed its changed-directory publication and seal work. Its contract,
+cost and correctness oracles, and focused run identities are in
+[NOV-07-001](adr/NOV-07-001-native-index-execution-and-custody.md#native-literal-changed-directory-publication).
+The original ticket was removed from the live tree. Installed SDK and Watch
+acceptance remains in [INC-03](bugbash/nov-20-native-delta-cost/tickets/INC-03-product-acceptance.md).
+
+Completed Runtime migration items 04.1 and 04.2 and Tantivy source removal
+items 06.2 and 06.3 are recorded in [NOV-12-001](adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement).
+The open migration roster, Linux release, signed installation and recovery gates
+remain in [04](plans/nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md)
+and [06](plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md).
+
+Recover the deleted ticket and the pre-compaction 04 body from Q revision
+`28784da2692e3bd1c2bdf49fe7c50b99fa4f9471`.
+
+```sh
+git show 28784da2692e3bd1c2bdf49fe7c50b99fa4f9471:docs/bugbash/nov-20-native-delta-cost/tickets/INC-02-literal-directory.md
+git show 28784da2692e3bd1c2bdf49fe7c50b99fa4f9471:docs/plans/nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md
+```
+
+The original INC-02 SHA-256 is `df7c985bd0d8467183687caa66e22315a91442997c0b085ec545f907a6314fc7`.
+The 06 worktree preimage and its SHA-256 manifest are preserved at
+`/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov23-completed-native-tickets-buh12sy0`.
+
 ### 2026-11-17 RFC source and current SDK reconciliation
 
 The RFC's stale Lexical-default statement now follows the actual empty
@@ -221,7 +505,7 @@ keeps the ANN, fusion and publication design rationale. The
 [evidence ADR](adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md#experiment-and-holdout-custody)
 keeps the blind holdout and isolated lexical comparison rules.
 [Native plan](plans/nov-12-native-cutover/README.md#현재-종료-판정) and its
-[retirement gate](plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md#삭제-범위와-최종-확인)
+[retirement gate](plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md#검증)
 keep the original acceptance routes. F owns current execution inventories.
 B05 keeps its current source guard refusal above the preserved scoped PASS and
 admission history.
@@ -342,13 +626,10 @@ benchmark, SDK, installed recovery or product qualification is run.
 
 The Nov-5 WORKPLAN's 510-line historical quote dump is retired from the current
 execution plan. Its Q0-Q6/source/binary/oracle/Original/product/overhead gates and
-all later packet recovery anchors remain unchanged. The README keeps every
-frozen Large/XL/Mixed verdict and the current remaining-work sequence; its103
-otherwise-unique raw execution rows are indexed below with original statuses.
-This moves historical lookup, not evidence promotion or a reduced product DoD.
-A malformed prose fragment in Recorded local artifact locations is removed;
-it was not an artifact locator. No historical artifact is declared currently
-available merely because its original path is preserved.
+all packet recovery anchors remain in the [workplan](plans/nov-5-indexing-bugbash/WORKPLAN.md).
+The [current packet](plans/nov-5-indexing-bugbash/README.md) keeps source-bound
+Large/XL/Mixed verdicts and execution order. The README preimage below retains
+all 103 raw result rows and their original status, selector and source.
 
 Exact dirty preimages and SHA-256 manifest for all four edited documents:
 `/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov16-bugbash-evidence-index-compaction-k1ek1whc`.
@@ -368,60 +649,9 @@ SDK default constructor from daemon/installed/dependency retirement. Current
 Native QITXOC01 constants remain8192 bytes/512 terms; the README's contract
 paragraph is unchanged. No format, policy, limit, parser or decoder is edited.
 
-Historical execution IDs grouped by their original status (full rows in README
-preimage; no fresh execution or aggregate GREEN implied):
-
-**FAILED**
-
-- `B03-B5 f28 Native compile`; `B03-B5 f30 Native 회귀`; `B03-B5 f33 변경 회귀 compile`.
-- `B03-B5 mr10 Medium 진단`; `B03-B6 f40 strict`; `B03-B7 f44 strict`.
-- `B03-B8 f46 집중 컴파일`; `B03-B8 f47 집중 회귀`; `B03-B9 f49 Rust`.
-- `B03-B9 f50 Rust`; `B03-B12 lo17 Large Off`; `B03-B12 lr16 Large Record`.
-- `B03-B13 f56 집중 컴파일`; `B03-B13 lo18 Large Off`; `B03-B14 f58 집중 컴파일`.
-- `B03-B14 f59 집중 컴파일`; `B03-B18 f66 Lexical·Kernel 집중 회귀`; `B03-B18 f67 Lexical·Kernel 집중 회귀`.
-- `B03-B21 f72 cold inventory와 Map 귀속`; `B03-B21/B23/B24 f74 통합 집중`; `B03-B22 f77 통합 집중`.
-- `Mixed 960초 Rust f81`; `Mixed·Lexical Rust f82`; `B03-B28 후속·B03-B29 staging·Mixed 진단 f86`.
-- `B03-B28 후속·B03-B29 staging·Mixed 진단 f87`; `B03-B33/B34 packed alias 슬롯·Interactive 예약 f91`; `B03-B37/B38 Control 승인·retained 세션 공유 검색 f94`.
-- `B03-B37/B38 fixture 교정·Release 대기 보호 f95`; `B03-B39 만료 tick 갱신 순서 f97`; `B03-B40/B41/B42 Catalog SQL·Mixed view·Posting scratch f99`.
-- `B03-B44 batch와 Lexical 확장 f102`; `B03-B43 변경 전 occurrence 대조 f103`; `B03-B44/B45 첫 합류 f104`.
-- `B03-B48/B50 첫 집중 f108`; `B03-B48/B50 후속 f109`; `B03-B51–B53 집중 f111`.
-- `B03-B57–B61 집중 f115`; `B03-B57–B61 집중 f116`; `B03-B57–B61 집중 f117`.
-- `B03-B68–B71 집중 f122`; `B03-B68–B71 집중 f123`.
-
-**VERIFIED / FAILED**
-
-- `B03-B6 f37 Storage / Native compile`.
-
-**VERIFIED**
-
-- `B03-B6 f39 Native / lifecycle`; `B03-B6 f41 변경 회귀`; `B03-B8 f48 schema oracle`.
-- `B03-B9 f49 trace 소비자`; `B03-B9 f51 Rust 집중 회귀`; `B03-B9 r15 정상 cached pair build`.
-- `B03-B10 f52 trace 소비자`; `B03-B10 f52 Rust 집중 회귀`; `B03-B11 f53 Runtime writer 집중`.
-- `B03-B12 f55 Runtime·Storage 집중`; `B03-B13 f57 Runtime·Storage 집중`; `B03-B14 r24 최종 pair build`.
-- `B03-B14 mb15 Medium 기능`; `B03-B15 f62 Scratch·Storage 집중 회귀`; `B03-B16 f63 Storage·Catalog 집중 회귀`.
-- `B03-B21/B23/B24 f75 통합 집중`; `B03-B22 f78 통합 집중`; `r33 공유 전체 소스 최적화 빌드`.
-- `B03-B25 v19 상태 경계 f80`; `Mixed·Lexical Rust f83`; `Mixed r35 최적화 pair`.
-- `B03-B27 Source path packing f84`; `B03-B27 r36 Large 설치 실측`; `B03-B28 최초 occurrence 후보`.
-- `B03-B28 후속·B03-B29 staging·Mixed 진단 f88`; `B03-B30 요청 예산 기반 pin 검증 f89`; `B03-B30 r39 Large Off lo32`.
-- `B03-B31/B32 source record·pin 갱신·Mixed 진단 f90`; `B03-B33/B34 packet lease 교정 f92`; `B03-B33/B34 r40 Large Off lo33`.
-- `B03-B36 일반 Text 실패 귀속·ReadView 예산 f93`; `B03-B37/B38 집중 회귀 f96`; `B03-B39 만료 tick 갱신 순서 f98`.
-- `B03-B40/B41/B42 Posting readback fixture 교정 f100`; `B03-B40/B41/B42 r43 최적화 pair·Large Off lo43`; `B03-B43 namespace FD 신원 재사용 f101`.
-- `B03-B44/B45 합류 f105`; `B03-B44/B45 r44 Large Off lo44`; `B03-B46/B47 f107`.
-- `B03-B48–B50 통합 f110`; `B03-B48–B50 r45 Large Off lo45`; `B03-B51–B53 r46 Large Off lo46`.
-- `B03-B54–B56 집중 f113`; `B03-B57–B61 집중 f117·f118 영향 검증`; `B03-B57–B61 r48 Large Off lo48`.
-- `B03-B62 집중 f119`; `B03-B63 집중 f120`; `B03-B64–B67 집중 f121`.
-- `B03-B64–B67 r50 Large Off lo50`; `B03-B68–B71 집중 f124`; `B03-B75 집중 f127`.
-- `B03-B76 집중 f130`; `B03-B76/B78–B79 최종 집중 f132`; `B03-B76/B78–B79 Kernel f133`.
-- `B81 Catalog 검증 계측 f135`.
-
-**NOT_RUN**
-
-- `B03-B6 lr11 Large Record`; `B03-B21/B23/B24 f73 통합 집중`; `r33 공유 전체 소스 Large120`.
-
-**BLOCKED**
-
-- `B03-B14 r20 build admission`; `B03-B14 r22 build custody`; `B03-B14 r23 build artifact`.
-
+The complete status-grouped lookup remains in the
+[archive index preimage](#benchmark-dispatch-and-diagnostic-preimages). Use the
+older README preimage above for original result cells and source bindings.
 
 ### 2026-11-16 Integration ticket history compaction
 
@@ -757,7 +987,7 @@ carrier identity: `14eea9d228fbdad03a10f3681aef5c8d58dbf2285990b5b36f67b2e34f79a
 | `crates/quanta-index-searchd-runtime/tests/e2e_auxiliary_catalog/history_source_readback.rs` | `3ee123b508ef45bd536ad9a60a4a26884cc3f8ee418a66f754ab6bd72c572db4` |
 | `crates/quanta-index-searchd-runtime/tests/e2e_auxiliary_catalog/history_native.rs` | `99d00718c65a1d1868ee16bef714dcb640d652d4fea3185de76f5164a0e1a4a5` |
 
-Retired Text design reference routes: [reference](plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md#기능-우선-최종-감사와-갭), [reference](../crates/quanta-index-catalog/src/native/authority/managed_install.rs#L472), [reference](../crates/quanta-index-catalog/src/native/authority/managed_install.rs#L773), [reference](../crates/quanta-index-core/src/index/budget.rs#L143), [reference](../crates/quanta-index-core/src/index/staging_payload.rs#L48), [reference](../crates/quanta-index-lexical/src/native/text.rs#L10206), [reference](../crates/quanta-index-lexical/src/native/text/cold_tokens.rs#L350), [reference](../crates/quanta-index-lexical/src/native/text/dense_posting/write.rs#L469), [reference](../crates/quanta-index-lexical/src/native/text/occurrence_pack.rs#L420), [reference](../crates/quanta-index-lexical/src/native/text/tests/inventory_trace_tests.rs#L170), [reference](../crates/quanta-index-storage/src/object.rs#L1726), [reference](https://arxiv.org/abs/2104.08663), [reference](https://arxiv.org/abs/2210.11934), [reference](https://cormack.uwaterloo.ca/cormack/cormacksigir09-rrf.pdf), [reference](https://github.com/apache/lucene/blob/main/lucene/core/src/java/org/apache/lucene/index/IndexWriter.java), [reference](https://github.com/apache/lucene/blob/releases/lucene/10.3.0/lucene/core/src/java/org/apache/lucene/index/TermsHashPerField.java), [reference](https://github.com/meta/rocksdb/wiki/MANIFEST), [reference](https://lucene.apache.org/core/10_3_0/core/org/apache/lucene/util/BytesRefHash.html), [reference](https://nlp.stanford.edu/IR-book/html/htmledition/single-pass-in-memory-indexing-1.html), [reference](https://trec.nist.gov/data/reljudge_eng.html), [reference](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion), [reference](https://www.sqlite.org/wal.html).
+Retired Text design reference routes: [reference](#tantivy-retirement-plan-preimage), [reference](../crates/quanta-index-catalog/src/native/authority/managed_install.rs#L472), [reference](../crates/quanta-index-catalog/src/native/authority/managed_install.rs#L773), [reference](../crates/quanta-index-core/src/index/budget.rs#L143), [reference](../crates/quanta-index-core/src/index/staging_payload.rs#L48), [reference](../crates/quanta-index-lexical/src/native/text.rs#L10206), [reference](../crates/quanta-index-lexical/src/native/text/cold_tokens.rs#L350), [reference](../crates/quanta-index-lexical/src/native/text/dense_posting/write.rs#L469), [reference](../crates/quanta-index-lexical/src/native/text/occurrence_pack.rs#L420), [reference](../crates/quanta-index-lexical/src/native/text/tests/inventory_trace_tests.rs#L170), [reference](../crates/quanta-index-storage/src/object.rs#L1726), [reference](https://arxiv.org/abs/2104.08663), [reference](https://arxiv.org/abs/2210.11934), [reference](https://cormack.uwaterloo.ca/cormack/cormacksigir09-rrf.pdf), [reference](https://github.com/apache/lucene/blob/main/lucene/core/src/java/org/apache/lucene/index/IndexWriter.java), [reference](https://github.com/apache/lucene/blob/releases/lucene/10.3.0/lucene/core/src/java/org/apache/lucene/index/TermsHashPerField.java), [reference](https://github.com/meta/rocksdb/wiki/MANIFEST), [reference](https://lucene.apache.org/core/10_3_0/core/org/apache/lucene/util/BytesRefHash.html), [reference](https://nlp.stanford.edu/IR-book/html/htmledition/single-pass-in-memory-indexing-1.html), [reference](https://trec.nist.gov/data/reljudge_eng.html), [reference](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion), [reference](https://www.sqlite.org/wal.html).
 
 
 ### 2026-11-15 SDK producer contract cleanup
@@ -1138,8 +1368,8 @@ acceptance in E07. The older October failure summaries are recoverable with
 
 Current RCA, unresolved decisions and implementation/test packets live in
 [Nov-5 bugbash](plans/nov-5-indexing-bugbash/README.md).
-The prior [E07 body](history/nov-5-indexing-bugbash/E07-performance-operations.md)
-and [E07 wave section](history/nov-5-indexing-bugbash/E07-WAVES.md) retain their
+The prior [E07 body](#nov-5-e07-preimages)
+and [E07 wave section](#nov-5-e07-preimages) retain their
 dated content with relative links rebased to the archive location.
 The E07 contract entry retains Fixed profiles and DoD. Existing wave anchors
 resolve to their historical bodies. Source-bound VALIDATION results remain
@@ -1183,7 +1413,7 @@ git ls-tree -r --name-only 4f07c3c5 docs/plans tickets
 | Sep21 residual plan, S21-11/12/13, prompts/handoff usage | [Proof/backup/custody](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md), [installed/pair/actions](adr/OCT-05-004-cost-capacity-and-qualification-boundaries.md#installed-paired-and-operational-acceptance), operator runbooks and executable registry; I0 |
 | Jul15 QIT, Sep27 MISC and root ticket index | [Selected regression/platform](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#selected-regression-and-platform-acceptance), [CI provider](adr/SEP-28-001-circleci-provider-and-credit-boundary.md); test/platform/E1/E2/E4 |
 | Jun7 J7Q quality and May25 semantic | [Consumer preview/operator](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md#consumer-preview-and-operator-acceptance), [semantic generation](adr/MAY-31-001-lancedb-semantic-generation-authority.md), cost/review ADRs; semantic/E1/E4/I0 |
-| Oct4 owner map / Semantica pointer | [Current ownership](plans/oct-22-finalizing/OWNERSHIP.md#exclusive-boundaries), [consumer acceptance](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#release-and-consumer); external producer fact resolution stays producer-owned |
+| Oct4 owner map / Semantica pointer | [Current ownership](plans/oct-22-finalizing/OWNERSHIP.md#exclusive-boundaries), [consumer acceptance](#oct-22-validation-and-w2-preimages); external producer fact resolution stays producer-owned |
 
 Retired IDs and their original task bodies are recoverable from the revisions
 below. They are not additional active tasks; current validation is in the
@@ -1258,9 +1488,9 @@ deep links remain usable. Only the Oct-17 SSOT owns actionable status.
 
 | Original entry | Preserved body |
 | --- | --- |
-| Oct-10 audit | [Historical audit](history/oct-10-index-closeout/AUDIT.md) |
-| Lexical plan sections 7 and 10 | [Execution order and checkpoints](history/oct-10-index-closeout/LEXICAL-CHECKPOINTS.md) |
-| RFC initial section 23.55 register and sections 23.75–23.77 | [Delivery/progress/assignment history](history/oct-10-index-closeout/RFC-DELIVERY-CHECKPOINTS.md) |
+| Oct-10 audit | [Historical audit](#oct-10-rfc-and-lexical-preimages) |
+| Lexical plan sections 7 and 10 | [Execution order and checkpoints](#oct-10-rfc-and-lexical-preimages) |
+| RFC initial section 23.55 register and sections 23.75–23.77 | [Delivery/progress/assignment history](#oct-10-rfc-and-lexical-preimages) |
 
 These moves preserve technical rationale and source-scoped observations. They
 do not retire unresolved acceptance or qualify current behavior. Do not append
@@ -1270,7 +1500,7 @@ fresh tasks, percentages, owner assignments or results to the historical bodies.
 
 Current tasks/owners/order live only in [Oct-17 tickets](plans/oct-22-finalizing/README.md). The former19 W2 entries map to7 active residual tickets; the mapping preserves every old ID without reopening completed subfeatures. Existing validation-only gates are consolidated into W2-19, producer outputs into W2-05, and conditional upkeep into W2-09.
 
-The pre-migration dirty/untracked Oct-13 ledger is preserved in [RESIDUAL-LEDGER](history/oct-13-native-incremental-wave2/RESIDUAL-LEDGER.md). At that checkpoint, previous W2 specification and handoff bodies remained at their original paths with historical-reference banners. The Oct-18 retirement below moves those bodies into history and keeps anchor-preserving entrypoints. Their TODO/status statements do not create work. Existing source-bound failures/results remain in VALIDATION; migration is not acceptance.
+The pre-migration dirty/untracked Oct-13 ledger is preserved in [RESIDUAL-LEDGER](#oct-13-wave-2-preimages). At that checkpoint, previous W2 specification and handoff bodies remained at their original paths with historical-reference banners. The Oct-18 retirement below moves those bodies into history and keeps anchor-preserving entrypoints. Their TODO/status statements do not create work. Existing source-bound failures/results remain in VALIDATION; migration is not acceptance.
 
 
 ## Oct-18 final ticket audit and history retirement
@@ -1279,9 +1509,9 @@ Current tasks/status/owners/next gates remain in the seven-row [Oct-22 SSOT](pla
 
 | Retired text | Preserved history | Original path |
 | --- | --- | --- |
-| Oct-17 ticket pre-cleanup bodies | [Ticket history](history/oct-17-index-closeout/tickets/W2-09-cost-observability.md) and sibling seven-ticket bodies | Current tickets retain current contracts; previous heading anchors remain |
-| Oct-13 nineteen ticket specifications and write ownership | [Wave2 history](history/oct-13-native-incremental-wave2/tickets/W2-01-outer-artifact-admission.md) and sibling files | Anchor-preserving link entrypoints only |
-| Legacy lexical/query/store and trace plan/packets | [Lexical history](history/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md), [store contract](history/oct-10-index-closeout/LEXICAL-STORE-CONTRACT.md), [trace plan](history/oct-10-index-closeout/TRACE-WATERFALL-PLAN.md), [trace packets](history/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md) | Anchor-preserving link entrypoints only |
+| Oct-17 ticket pre-cleanup bodies | [Ticket history](#oct-17-dispatch-preimages) and sibling seven-ticket bodies | Current tickets retain current contracts; previous heading anchors remain |
+| Oct-13 nineteen ticket specifications and write ownership | [Wave2 history](#oct-13-wave-2-preimages) and sibling files | Anchor-preserving link entrypoints only |
+| Legacy lexical/query/store and trace plan/packets | [Lexical history](#oct-10-rfc-and-lexical-preimages), [store contract](#oct-10-rfc-and-lexical-preimages), [trace plan](#oct-10-rfc-and-lexical-preimages), [trace packets](#oct-10-rfc-and-lexical-preimages) | Anchor-preserving link entrypoints only |
 
 Bodies were preserved from the shared dirty/untracked documents, with relative links relocated to their original targets. This is document maintenance, not a new runtime receipt, source qualification, code change or closure of Native18/4K/producer/operations/release. Prior Native15–17 cost floors and debug/optimized failures remain historical; original4K per-request caps remain the current product condition. Current external S compiler/caller acceptance was not rerun, so its prior accessor failure is not asserted as a fresh failure. Do not update historical TODOs or revive rejected micro-cache/prefix-reuse proposals as new assignments.
 
@@ -1292,14 +1522,14 @@ Current state/owners/next gates remain only in the seven-row [Oct-22 SSOT](plans
 
 | Preserved body | Source path | Recovery |
 | --- | --- | --- |
-| [Full validation through 2026-10-21](history/oct-10-index-closeout/VALIDATION-2026-10-21.md) | `docs/plans/oct-10-index-closeout/VALIDATION.md` | All existing failure/timeout/repair/pass records and heading anchors preserved; relative links rebased to their original targets |
-| [Previous SSOT and dispatch chronology](history/oct-17-index-closeout/tickets/README-2026-10-21.md) | `docs/plans/oct-17-index-closeout/tickets/README.md` | Candidate versions,dated status additions and duplicate dispatch tables are historical,not a second current queue |
+| [Full validation through 2026-10-21](#oct-10-rfc-and-lexical-preimages) | `docs/plans/oct-10-index-closeout/VALIDATION.md` | All existing failure/timeout/repair/pass records and heading anchors preserved; relative links rebased to their original targets |
+| [Previous SSOT and dispatch chronology](#oct-17-dispatch-preimages) | `docs/plans/oct-17-index-closeout/tickets/README.md` | Candidate versions,dated status additions and duplicate dispatch tables are historical,not a second current queue |
 
 ### Ownership and caller-summary follow-up
 
-Historical child assignments, old active W/M/I roles and the dated dependency join moved to [ownership history](history/oct-17-index-closeout/tickets/WRITE-OWNERSHIP.md). The active ownership page retains only current packet boundaries and handoff/verification contracts. Its old heading aliases remain valid.
+Historical child assignments, old active W/M/I roles and the dated dependency join moved to [ownership history](#oct-17-dispatch-preimages). The active ownership page retains only current packet boundaries and handoff/verification contracts. Its old heading aliases remain valid.
 
-Thirty-three caller/source/run observation blocks not already present in the validation history were preserved in [producer observations](history/oct-10-index-closeout/VALIDATION-2026-10-21.md#producer-caller-observations-2026-10-21). The active producer summary now distinguishes source-connected support from actual producer/publisher and Runtime/product qualification. The former SDK funded-accessor rewrite instructions moved to [SDK handoff history](history/oct-17-index-closeout/tickets/W2-19-integration-acceptance.md#funded-sdk-handoff-before-scope-closure); the current ticket reuses the actual scoped client/RPC loan.
+Thirty-three caller/source/run observation blocks not already present in the validation history were preserved in [producer observations](#oct-10-rfc-and-lexical-preimages). The active producer summary now distinguishes source-connected support from actual producer/publisher and Runtime/product qualification. The former SDK funded-accessor rewrite instructions moved to [SDK handoff history](#oct-17-dispatch-preimages); the current ticket reuses the actual scoped client/RPC loan.
 
 Old Oct-13 tickets and lexical/trace pages remain retired link entrypoints. Accepted ADR requirements and RFC constraints are unchanged; only execution/history routing links were corrected. No new ticket/status ledger, runtime result or qualification was created.
 
@@ -1311,7 +1541,7 @@ Pre-compaction document SHA256: VALIDATION `25ec65ab6b0210c9c6ca396f7643df92c475
 ### Oct-21 Native RFC checkpoint retirement
 
 The Native RFC section 23 implementation/progress table and dated sections
-23.1–23.90 now live in [checkpoint history](history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md).
+23.1–23.90 now live in [checkpoint history](#oct-10-rfc-and-lexical-preimages).
 The active RFC retains the original forty R01–R40 requirement/exit-condition rows,
 without historical code-state or verification columns, and all previous fragment
 IDs. At that pass sections 1–22 were retained; the follow-up relocation below
@@ -1328,7 +1558,7 @@ Pre-move RFC SHA256: `b2e14773326c90d7cd73e86c42d05d9d1d3840a572bdd78176a437c4b4
 ### Oct-21 follow-up implementation-history cleanup
 
 The dated section 17.2.3–17.2.4 rechecks and section 22 executable checkpoints
-were moved to [implementation history](history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md).
+were moved to [implementation history](#oct-10-rfc-and-lexical-preimages).
 The active RFC retains their headings and fragment IDs as navigation entries.
 The full bodies preserve technical contracts, original test results, failures,
 commands and old source observations. Current work/status stays in the existing
@@ -1347,8 +1577,8 @@ Current work/status/owners/next conditions live only in [eight epics](plans/oct-
 
 | Preserved record | Archive | Live destination |
 | --- | --- | --- |
-| Oct-17 seven tickets, prior SSOT and source/hunk rules | [Original ticket bodies](history/oct-22-finalizing/oct-17-index-closeout/tickets/README.md) and siblings | [Epics](plans/oct-22-finalizing/README.md), [single-writer map](plans/oct-22-finalizing/OWNERSHIP.md) |
-| Full validation immediately before migration | [Source/run history](history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md) | [Compact current validation](plans/oct-22-finalizing/VALIDATION.md) |
+| Oct-17 seven tickets, prior SSOT and source/hunk rules | [Original ticket bodies](#oct-22-validation-and-w2-preimages) and siblings | [Epics](plans/oct-22-finalizing/README.md), [single-writer map](plans/oct-22-finalizing/OWNERSHIP.md) |
+| Full validation immediately before migration | [Source/run history](#oct-22-validation-and-w2-preimages) | [Compact current validation](plans/oct-22-finalizing/VALIDATION.md) |
 
 At this checkpoint ten former live documents became forwarding pages with
 867 fragment aliases. The forwarding pages were later removed as recorded

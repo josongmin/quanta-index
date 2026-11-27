@@ -92,6 +92,64 @@ with Path({str(events)!r}).open('a') as stream:
             finish(process)
 
 
+@pytest.mark.parametrize("abandon_head", [False, True])
+def test_waiters_keep_registration_order_and_recover_abandoned_head(tmp_path, abandon_head):
+    lock, events = tmp_path / "slot", tmp_path / "events"
+
+    def start_waiter(name):
+        row = f"{name}\n"
+        script = f"with open({str(events)!r}, 'a') as stream: stream.write({row!r})"
+        return subprocess.Popen(
+            command(lock, script, wait=30), stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+
+    first = second = None
+    try:
+        with lock.open("w") as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX)
+            first = start_waiter("first")
+            assert b"waiting" in first.stderr.readline()
+            second = start_waiter("second")
+            assert b"waiting" in second.stderr.readline()
+            if abandon_head:
+                first.kill()
+                assert first.wait(timeout=5) == -signal.SIGKILL
+            else:
+                order = lock.with_name(f"{lock.name}.queue") / "order.lock"
+                with order.open("r+b") as queue_guard:
+                    # Freeze the older waiter outside the queue critical section.
+                    fcntl.flock(queue_guard, fcntl.LOCK_EX)
+                    os.kill(first.pid, signal.SIGSTOP)
+                    deadline = time.monotonic() + 5
+                    while True:
+                        _, status = os.waitpid(first.pid, os.WNOHANG | os.WUNTRACED)
+                        if os.WIFSTOPPED(status):
+                            break
+                        assert time.monotonic() < deadline, "first waiter never stopped"
+                        time.sleep(0.01)
+            fcntl.flock(lease, fcntl.LOCK_UN)
+
+        if not abandon_head:
+            with pytest.raises(subprocess.TimeoutExpired):
+                second.wait(timeout=2)
+            assert not events.exists()
+            os.kill(first.pid, signal.SIGCONT)
+            _, stderr = first.communicate(timeout=10)
+            assert first.returncode == 0, stderr.decode()
+        _, stderr = second.communicate(timeout=10)
+        assert second.returncode == 0, stderr.decode()
+        expected = ["second"] if abandon_head else ["first", "second"]
+        assert events.read_text().splitlines() == expected
+        assert not list(lock.with_name(f"{lock.name}.queue").glob("*.waiter"))
+    finally:
+        if first is not None:
+            if first.poll() is None:
+                os.kill(first.pid, signal.SIGCONT)
+            finish(first)
+        if second is not None:
+            finish(second)
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 def test_wait_timeout_or_cancellation_never_launches_command(tmp_path, cancel):
     lock, marker = tmp_path / "slot", tmp_path / "launched"
@@ -110,6 +168,7 @@ def test_wait_timeout_or_cancellation_never_launches_command(tmp_path, cancel):
             _, stderr = process.communicate(timeout=5)
             assert process.returncode == (143 if cancel else 124), stderr.decode()
             assert not marker.exists()
+            assert not list(lock.with_name(f"{lock.name}.queue").glob("*.waiter"))
             assert re.search(rb"not-admitted lock=.* wait_ns=[0-9]+", stderr)
             assert b"held_ns=" not in stderr
         finally:

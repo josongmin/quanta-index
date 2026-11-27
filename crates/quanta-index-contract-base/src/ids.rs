@@ -677,10 +677,15 @@ macro_rules! validated_identity {
             /// The same raw UTF-8 limit used by the identity predicate.
             pub const MAX_UTF8_BYTES_V1: usize = IDENTITY_MAX_UTF8_BYTES;
 
+            /// Validate a borrowed identity without creating owned backing.
+            pub fn validate(value: &str) -> Result<(), IdentityValidationErrorV1> {
+                validate_identity(value)
+            }
+
             /// Construct only from an already-canonical identity. This never normalizes input.
             pub fn new(value: impl Into<String>) -> Result<Self, IdentityValidationErrorV1> {
                 let value = value.into();
-                validate_identity(value.as_str())?;
+                Self::validate(value.as_str())?;
                 Ok(Self(value))
             }
 
@@ -1114,11 +1119,6 @@ macro_rules! validated_identity {
 
 validated_identity!(RepoId, repo_id_from_owned_v1, repo_id_from_borrowed_v1);
 impl RepoId {
-    /// Validate a borrowed repository ID without creating owned backing.
-    pub fn validate(value: &str) -> Result<(), IdentityValidationErrorV1> {
-        validate_identity(value)
-    }
-
     /// Number of heap bytes held by this owned repository identity.
     #[must_use]
     pub fn backing_capacity(&self) -> usize {
@@ -1339,7 +1339,21 @@ mod tests {
                 RepoId::new(accepted).map(super::RepoId::into_inner),
                 Ok(accepted.to_owned())
             );
+            assert_eq!(RevisionId::validate(accepted), Ok(()));
         }
+        for (rejected, expected) in [
+            ("", IdentityValidationErrorV1::Empty),
+            ("a\u{0085}b", IdentityValidationErrorV1::ControlCharacter),
+            ("e\u{301}", IdentityValidationErrorV1::NonCanonical),
+        ] {
+            assert_eq!(RevisionId::validate(rejected), Err(expected));
+            assert_eq!(RevisionId::new(rejected), Err(expected));
+        }
+        assert_eq!(RevisionId::validate(&"é".repeat(256)), Ok(()));
+        assert_eq!(
+            RevisionId::validate(&format!("{}x", "é".repeat(256))),
+            Err(IdentityValidationErrorV1::TooLong),
+        );
     }
 
     #[test]

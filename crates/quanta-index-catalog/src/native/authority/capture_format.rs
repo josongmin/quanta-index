@@ -17,8 +17,9 @@ use rusqlite::{Connection, params, types::ValueRef};
 
 use super::{
     SCHEMA, SCHEMA_OBJECTS, SOURCE_BODY_INCIDENT_OBJECTS, SOURCE_BODY_INCIDENT_SCHEMA,
-    VIEW_QUARANTINE_OBJECTS, VIEW_QUARANTINE_SCHEMA, fields_digest, registration_codec,
-    source_stage_replay_receipt,
+    VIEW_QUARANTINE_OBJECTS, VIEW_QUARANTINE_SCHEMA, boot_manifest, fields_digest,
+    registration_codec,
+    source_scrub_progress, source_stage_replay_receipt,
 };
 use crate::connection::engine_error;
 
@@ -103,6 +104,8 @@ pub(crate) fn preflight_capture_format(
     let mut installed_quarantine = false;
     let mut installed_incidents = false;
     let mut installed_source_stage = 0usize;
+    let mut installed_source_scrub = 0usize;
+    let mut installed_source_views = false;
     while let Some(row) = rows
         .next()
         .map_err(|error| engine_error("inspect native namespace", path, &error))?
@@ -137,7 +140,17 @@ pub(crate) fn preflight_capture_format(
                     *expected_kind == kind && *expected_name == name
                 });
         let is_source_stage = source_stage_replay_receipt::is_schema_object(kind, name);
-        if !is_base && !is_quarantine && !is_incident && !is_source_stage {
+        let is_source_scrub = source_scrub_progress::is_schema_object(kind, name);
+        let is_source_view = boot_manifest::PROTECTED_SOURCE_VIEW_OBJECTS
+            .iter()
+            .any(|(expected_kind, expected_name, _)| *expected_kind == kind && *expected_name == name);
+        if !is_base
+            && !is_quarantine
+            && !is_incident
+            && !is_source_stage
+            && !is_source_scrub
+            && !is_source_view
+        {
             return Err(unsupported(path, "unknown native namespace object"));
         }
         // The shared canonical-schema verifier reads sqlite_master.sql into
@@ -158,7 +171,9 @@ pub(crate) fn preflight_capture_format(
                 .len()
                 .max(VIEW_QUARANTINE_SCHEMA.len())
                 .max(SOURCE_BODY_INCIDENT_SCHEMA.len())
-                .max(source_stage_replay_receipt::SCHEMA.len()),
+                .max(source_stage_replay_receipt::SCHEMA.len())
+                .max(source_scrub_progress::SCHEMA.len())
+                .max(boot_manifest::PROTECTED_SOURCE_VIEW_SCHEMA.len()),
         )
         .map_err(|error| {
             CoreError::Storage(format!("native schema byte envelope overflow: {error}"))
@@ -178,8 +193,14 @@ pub(crate) fn preflight_capture_format(
         }
         installed_quarantine |= is_quarantine;
         installed_incidents |= is_incident;
+        installed_source_views |= is_source_view;
         if is_source_stage {
             installed_source_stage = installed_source_stage
+                .checked_add(1)
+                .ok_or_else(|| CoreError::Storage("native schema count overflow".into()))?;
+        }
+        if is_source_scrub {
+            installed_source_scrub = installed_source_scrub
                 .checked_add(1)
                 .ok_or_else(|| CoreError::Storage("native schema count overflow".into()))?;
         }
@@ -190,6 +211,8 @@ pub(crate) fn preflight_capture_format(
         && !installed_quarantine
         && !installed_incidents
         && installed_source_stage == 0
+        && installed_source_scrub == 0
+        && !installed_source_views
     {
         return Ok(true);
     }
@@ -211,6 +234,13 @@ pub(crate) fn preflight_capture_format(
         return Err(unsupported(
             path,
             "partial native Source stage replay schema",
+        ));
+    }
+    if installed_source_scrub != 0 && installed_source_scrub != source_scrub_progress::OBJECTS.len()
+    {
+        return Err(unsupported(
+            path,
+            "partial native Source scrub progress schema",
         ));
     }
     // The installed DDL must be checked before even idempotent CREATEs run.
@@ -243,6 +273,23 @@ pub(crate) fn preflight_capture_format(
         source_stage_replay_receipt::verify_schema_with_refusal(connection, path, |_label| {
             unsupported(path, "native Source stage replay schema definition differs")
         })?;
+    }
+    if installed_source_scrub != 0 {
+        source_scrub_progress::verify_schema_with_refusal(connection, path, |_label| {
+            unsupported(
+                path,
+                "native Source scrub progress schema definition differs",
+            )
+        })?;
+    }
+    if installed_source_views {
+        crate::connection::verify_installed_schema_objects_with_refusal(
+            connection,
+            path,
+            boot_manifest::PROTECTED_SOURCE_VIEW_SCHEMA,
+            boot_manifest::PROTECTED_SOURCE_VIEW_OBJECTS,
+            |_| unsupported(path, "native protected Source view schema definition differs"),
+        )?;
     }
     let _stamp =
         verify_stamp_for_schema(connection, path, installed_quarantine, installed_incidents)?;
@@ -838,6 +885,31 @@ mod tests {
             })
         ));
         Ok(())
+    }
+
+    #[test]
+    fn protected_source_view_schema_upgrades_and_refuses_changed_ddl() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        drop(open(root.path())?);
+        let file = path(root.path());
+        let db = Connection::open(&file)?;
+        db.execute_batch("DROP TABLE native_protected_source_view_v1")?;
+        drop(db);
+
+        drop(open(root.path())?);
+        let db = Connection::open(&file)?;
+        let ddl: String = db.query_row(
+            "SELECT sql FROM sqlite_master WHERE name='native_protected_source_view_v1'",
+            [],
+            |row| row.get(0),
+        )?;
+        check!(ddl.contains("ON DELETE CASCADE"));
+        db.execute_batch(
+            "DROP TABLE native_protected_source_view_v1;
+             CREATE TABLE native_protected_source_view_v1 (row_digest BLOB NOT NULL)",
+        )?;
+        drop(db);
+        require_format_refusal(root.path())
     }
 
     fn claim(

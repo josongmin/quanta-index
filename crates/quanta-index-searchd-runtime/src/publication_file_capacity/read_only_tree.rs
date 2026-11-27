@@ -1,14 +1,12 @@
 //! Existing-directory metadata under the actual Common root and Original work.
 use super::*;
 use quanta_index_core::index::{IndexError, WorkBudget, existing_file::ExistingFileReadFailureV1};
-#[cfg(target_os = "linux")]
 use quanta_index_core::index::{MemoryLifetime, WorkUsage};
 use quanta_index_core::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};
 use std::{ffi::OsStr, fmt};
 
 #[derive(Clone)]
 pub(crate) struct ExistingTreeReadIoV1 {
-    #[cfg(target_os = "linux")]
     common: PublicationFileCapacity,
 }
 impl fmt::Debug for ExistingTreeReadIoV1 {
@@ -22,17 +20,14 @@ impl PublicationFileCapacity {
     /// A StateRootLease alone cannot construct this Common authority.
     pub(crate) fn existing_tree_read_io_v1(&self) -> ExistingTreeReadIoV1 {
         ExistingTreeReadIoV1 {
-            #[cfg(target_os = "linux")]
             common: self.clone(),
         }
     }
 }
-#[cfg(target_os = "linux")]
 struct MetadataHandle {
     common: PublicationFileCapacity,
     retired: bool,
 }
-#[cfg(target_os = "linux")]
 impl MetadataHandle {
     fn acquire(common: &PublicationFileCapacity) -> Result<Self, CoreError> {
         let mut state = lock(&common.shared.state)?;
@@ -67,7 +62,6 @@ impl MetadataHandle {
         Ok(())
     }
 }
-#[cfg(target_os = "linux")]
 impl Drop for MetadataHandle {
     fn drop(&mut self) {
         if !self.retired {
@@ -76,7 +70,56 @@ impl Drop for MetadataHandle {
     }
 }
 
-#[cfg(target_os = "linux")]
+fn visit_existing_entry(
+    file: &File,
+    raw: &[u8],
+    inode: u64,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(
+        &OsStr,
+        ExistingTreeEntryKindV1,
+        u64,
+        &mut WorkBudget,
+    ) -> Result<(), ExistingFileReadFailureV1>,
+) -> Result<(), ExistingFileReadFailureV1> {
+    if raw == b"." || raw == b".." {
+        return Ok(());
+    }
+    let name = OsStr::from_bytes(raw);
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes: u64::try_from(std::mem::size_of::<rustix::fs::Stat>())
+            .map_err(|_| IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let stat =
+        statat(file, Path::new(name), AtFlags::SYMLINK_NOFOLLOW).map_err(std::io::Error::from)?;
+    let file_type = FileType::from_raw_mode(stat.st_mode);
+    // Symlink permission bits do not control access. Report the unfollowed
+    // kind so callers can classify the refusal.
+    if stat.st_ino != inode
+        || stat.st_uid != rustix::process::geteuid().as_raw()
+        || (file_type != FileType::Symlink && stat.st_mode & 0o022 != 0)
+    {
+        return Err(IndexError::DigestConflict.into());
+    }
+    let (kind, bytes) = match file_type {
+        FileType::Directory => (ExistingTreeEntryKindV1::Directory, 0),
+        FileType::RegularFile => (
+            ExistingTreeEntryKindV1::File,
+            u64::try_from(stat.st_size).map_err(|_| IndexError::DigestConflict)?,
+        ),
+        FileType::Symlink => (ExistingTreeEntryKindV1::Symlink, 0),
+        FileType::Socket => (ExistingTreeEntryKindV1::Socket, 0),
+        _ => return Err(IndexError::DigestConflict.into()),
+    };
+    visit(name, kind, bytes, budget)?;
+    if file_type == FileType::Symlink {
+        return Err(IndexError::DigestConflict.into());
+    }
+    Ok(())
+}
+
 impl ExistingTreeMetadataIoPortV1 for ExistingTreeReadIoV1 {
     fn visit_directory_v1(
         &self,
@@ -89,11 +132,11 @@ impl ExistingTreeMetadataIoPortV1 for ExistingTreeReadIoV1 {
             &mut WorkBudget,
         ) -> Result<(), ExistingFileReadFailureV1>,
     ) -> Result<(), ExistingFileReadFailureV1> {
-        use rustix::fs::{AtFlags, FileType, RawDir, statat};
-        use std::os::unix::ffi::OsStrExt as _;
+        #[cfg(target_os = "linux")]
+        use rustix::fs::RawDir;
         const BUFFER_BYTES: usize = 65_536;
         budget.checkpoint()?;
-        // Account the fixed getdents buffer and path/anchor copies BEFORE the
+        // Account the fixed directory buffer and path/anchor copies BEFORE the
         // common namespace traversal opens any directory. This is logical
         // allocation custody, not an RSS or process-wide FD measurement.
         let paths = path
@@ -125,66 +168,69 @@ impl ExistingTreeMetadataIoPortV1 for ExistingTreeReadIoV1 {
             buffer
                 .try_reserve_exact(BUFFER_BYTES)
                 .map_err(|_| IndexError::ResourceLimited)?;
-            let batch = buffer
-                .spare_capacity_mut()
-                .get_mut(..BUFFER_BYTES)
-                .ok_or(IndexError::ResourceLimited)?;
-            let mut entries = RawDir::new(file, batch);
-            loop {
-                budget.checkpoint()?;
-                if entries.is_buffer_empty() {
-                    // RawDir exposes its refill boundary. Charge the complete
-                    // possible batch before getdents, rather than charging one
-                    // 64KiB batch for every borrowed entry.
+            #[cfg(target_os = "linux")]
+            {
+                let batch = buffer
+                    .spare_capacity_mut()
+                    .get_mut(..BUFFER_BYTES)
+                    .ok_or(IndexError::ResourceLimited)?;
+                let mut entries = RawDir::new(file, batch);
+                loop {
+                    budget.checkpoint()?;
+                    if entries.is_buffer_empty() {
+                        // RawDir exposes its refill boundary. Charge the complete
+                        // possible batch before getdents, rather than charging one
+                        // 64KiB batch for every borrowed entry.
+                        budget.charge(WorkUsage {
+                            reads: 1,
+                            bytes: u64::try_from(BUFFER_BYTES)
+                                .map_err(|_| IndexError::ResourceLimited)?,
+                            ..WorkUsage::default()
+                        })?;
+                    }
+                    let Some(entry) = entries.next() else {
+                        break;
+                    };
+                    let entry = entry.map_err(std::io::Error::from)?;
+                    visit_existing_entry(
+                        file,
+                        entry.file_name().to_bytes(),
+                        entry.ino(),
+                        budget,
+                        visit,
+                    )?;
+                }
+                drop(entries);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                buffer.resize(BUFFER_BYTES, 0);
+                loop {
+                    budget.checkpoint()?;
                     budget.charge(WorkUsage {
                         reads: 1,
                         bytes: u64::try_from(BUFFER_BYTES)
                             .map_err(|_| IndexError::ResourceLimited)?,
                         ..WorkUsage::default()
                     })?;
-                }
-                let Some(entry) = entries.next() else {
-                    break;
-                };
-                let entry = entry.map_err(std::io::Error::from)?;
-                let raw = entry.file_name().to_bytes();
-                if raw == b"." || raw == b".." {
-                    continue;
-                }
-                let name = OsStr::from_bytes(raw);
-                budget.charge(WorkUsage {
-                    reads: 1,
-                    bytes: u64::try_from(std::mem::size_of::<rustix::fs::Stat>())
-                        .map_err(|_| IndexError::ResourceLimited)?,
-                    ..WorkUsage::default()
-                })?;
-                let stat = statat(file, Path::new(name), AtFlags::SYMLINK_NOFOLLOW)
-                    .map_err(std::io::Error::from)?;
-                let file_type = FileType::from_raw_mode(stat.st_mode);
-                // Linux symlink permission bits do not control access. Report
-                // the unfollowed kind so callers can classify the refusal.
-                if stat.st_ino != entry.ino()
-                    || stat.st_uid != rustix::process::geteuid().as_raw()
-                    || (file_type != FileType::Symlink && stat.st_mode & 0o022 != 0)
-                {
-                    return Err(IndexError::DigestConflict.into());
-                }
-                let (kind, bytes) = match file_type {
-                    FileType::Directory => (ExistingTreeEntryKindV1::Directory, 0),
-                    FileType::RegularFile => (
-                        ExistingTreeEntryKindV1::File,
-                        u64::try_from(stat.st_size).map_err(|_| IndexError::DigestConflict)?,
-                    ),
-                    FileType::Symlink => (ExistingTreeEntryKindV1::Symlink, 0),
-                    FileType::Socket => (ExistingTreeEntryKindV1::Socket, 0),
-                    _ => return Err(IndexError::DigestConflict.into()),
-                };
-                visit(name, kind, bytes, budget)?;
-                if file_type == FileType::Symlink {
-                    return Err(IndexError::DigestConflict.into());
+                    let count = quanta_explicit_fd_process::visit_darwin_directory_batch_v1(
+                        file.as_fd(),
+                        &mut buffer,
+                        |raw, inode| visit_existing_entry(file, raw, inode, budget, visit),
+                    )
+                    .map_err(|error| match error {
+                        quanta_explicit_fd_process::DarwinDirectoryVisitErrorV1::Io(error) => {
+                            ExistingFileReadFailureV1::from(error)
+                        }
+                        quanta_explicit_fd_process::DarwinDirectoryVisitErrorV1::Visit(error) => {
+                            error
+                        }
+                    })?;
+                    if count == 0 {
+                        break;
+                    }
                 }
             }
-            drop(entries);
             budget.charge(WorkUsage {
                 reads: 2,
                 ..WorkUsage::default()
@@ -223,25 +269,8 @@ impl ExistingTreeMetadataIoPortV1 for ExistingTreeReadIoV1 {
         }
     }
 }
-#[cfg(not(target_os = "linux"))]
-impl ExistingTreeMetadataIoPortV1 for ExistingTreeReadIoV1 {
-    fn visit_directory_v1(
-        &self,
-        _: &Path,
-        budget: &mut WorkBudget,
-        _: &mut dyn FnMut(
-            &OsStr,
-            ExistingTreeEntryKindV1,
-            u64,
-            &mut WorkBudget,
-        ) -> Result<(), ExistingFileReadFailureV1>,
-    ) -> Result<(), ExistingFileReadFailureV1> {
-        budget.checkpoint()?;
-        Err(IndexError::RebuildRequired.into())
-    }
-}
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use crate::native_resources::{NativeResourceClass, NativeResourceLedger, NativeResourcePlan};
@@ -505,6 +534,31 @@ mod tests {
                 )?;
             }
             Ok(())
+        })
+    }
+    #[test]
+    fn admitted_existing_tree_rejects_replaced_listed_inode_before_visiting() -> TestResult {
+        with_fixture(|root, _common, _ledger, budget| {
+            let path = root.join("dataset/a");
+            let listed_inode = std::fs::symlink_metadata(&path)?.ino();
+            std::fs::rename(&path, root.join("dataset/a-old"))?;
+            std::fs::write(&path, b"replacement")?;
+            let held = File::open(root.join("dataset"))?;
+            let mut visited = false;
+            let result = visit_existing_entry(
+                &held,
+                b"a",
+                listed_inode,
+                budget,
+                &mut |_name, _kind, _bytes, _budget| {
+                    visited = true;
+                    Ok(())
+                },
+            );
+            require(
+                result.is_err() && !visited,
+                "changed FILEID reached visitor",
+            )
         })
     }
 }

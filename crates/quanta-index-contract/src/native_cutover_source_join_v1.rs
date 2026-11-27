@@ -14,12 +14,14 @@ use crate::native_cutover_evidence_v1::{
     NativeCutoverEvidenceSourceFactV1 as Fact, NativeCutoverEvidenceSourcePublicationBindingV1,
     NativeCutoverEvidenceTargetV1, NativeCutoverEvidenceV1, NativeCutoverEvidenceV5ArtifactV1,
     NativeCutoverReplayPhaseV1, NativeCutoverReservationEvidenceV1,
+    NativeCutoverSourceOnlyEvidenceV6, NativeCutoverPreviousPublicationV6,
 };
 use crate::native_protocol::{
     NATIVE_STUB_AST_PRODUCER, NATIVE_STUB_AST_PROJECTION, NATIVE_STUB_AST_SCHEMA,
     native_stub_certificate_policy,
 };
 use std::cmp::Ordering;
+use std::io::Write;
 use std::ops::Range;
 
 #[derive(Debug)]
@@ -839,10 +841,14 @@ fn fold_native_source_lineage_v1<'e, 's, E>(
             )
             || request.expected_view != target.expected_view
             || request.kind.source_mode() != target.source_mode
+            || request
+                .kind
+                .source_history_bootstrap_v1()
+                .is_some_and(|history| history.expected.is_some())
             || !matches!(
                 (&request.kind, target.source_mode),
                 (
-                    UpdateKind::SourceAdvance(_) | UpdateKind::SourceHistoryAdvance(_),
+                    UpdateKind::SourceAdvance(_) | UpdateKind::SourceHistoryAdvance(_) | UpdateKind::SourceHistoryBootstrap(_),
                     crate::index::SourceOperationMode::Advance
                 ) | (
                     UpdateKind::SourceResync { .. } | UpdateKind::SourceHistoryResync { .. },
@@ -4040,6 +4046,9 @@ fn checkpoint_ack_text_bytes(ack: &NativeCutoverEvidenceCheckpointAckV1) -> usiz
 }
 
 #[cfg(test)]
+pub(crate) use tests::{imported_native_sibling_fixture_v1, maximum_width_native_import_facts_v1};
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::SourcePublicationEvent;
@@ -4662,32 +4671,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn imported_native_sibling_requires_distinct_completed_binding() {
+    pub(crate) fn imported_native_sibling_fixture_v1() -> (
+        NativeCutoverEvidenceV1,
+        crate::index::NativeImportedNativeSourceHeadV1,
+    ) {
         use crate::index::{
             NativeImportedNativeSourceCompactV1, NativeImportedNativeSourceHeadV1,
-            NativeProtectedSourceHeadV1, NativeSourceOriginV1,
-            imported_native_source_completed_digest_v1, imported_native_source_manifest_digest_v1,
-            native_source_target_manifest_digest_v1,
+            NativeProtectedSourceHeadV1,
+            NativeSourceOriginV1, imported_native_source_completed_digest_v1,
+            imported_native_source_manifest_digest_v1, native_source_target_manifest_digest_v1,
         };
 
         let (mut evidence, repo, revision) = initial_with_imported_sibling_v1();
-        let position = evidence
-            .source_facts
-            .iter()
-            .position(|fact| matches!(fact, Fact::ImportedLegacySource { .. }))
-            .expect("legacy import fixture");
-        let Fact::ImportedLegacySource {
-            head: legacy,
-            target,
-            request,
-        } = evidence.source_facts.remove(position)
-        else {
-            unreachable!()
-        };
+        let position = evidence.source_facts.iter().position(|fact|
+            matches!(fact, Fact::ImportedLegacySource { .. })).expect("legacy import fixture");
+        let Fact::ImportedLegacySource { head: legacy, target, request } =
+            evidence.source_facts.remove(position) else { unreachable!() };
         let old_head = NativeProtectedSourceHeadV1 {
-            repo_id: repo.clone(),
-            revision_id: revision.clone(),
+            repo_id: repo.clone(), revision_id: revision.clone(),
             source_operation: legacy.source_operation.clone(),
             source_publication: legacy.source_publication.clone(),
             operation: legacy.source_operation.clone(),
@@ -4696,30 +4697,19 @@ mod tests {
         let origin = NativeSourceOriginV1 {
             old_root_nonce: Digest([71; 32]),
             old_routes_ref: ObjectRef(Digest([72; 32])),
-            repo_id: repo.clone(),
-            revision_id: revision.clone(),
-            old_source_head: old_head,
-            file_count: 1,
-            file_census_sha256: Digest([73; 32]),
+            repo_id: repo.clone(), revision_id: revision.clone(), old_source_head: old_head,
+            file_count: 1, file_census_sha256: Digest([73; 32]),
             accepted_transcript_sha256: Digest([74; 32]),
         };
         let new_source_manifest_sha256 =
             native_source_target_manifest_digest_v1(origin.file_census_sha256);
         let manifest = imported_native_source_manifest_digest_v1(
-            &origin,
-            legacy.candidate_root_nonce,
-            legacy.original_snapshot_id,
-            new_source_manifest_sha256,
-            &target,
-            &request,
-        )
-        .expect("native import manifest");
+            &origin, legacy.candidate_root_nonce, legacy.original_snapshot_id,
+            new_source_manifest_sha256, &target, &request,
+        ).expect("native import manifest");
         let completed = imported_native_source_completed_digest_v1(
-            manifest,
-            &legacy.source_operation,
-            &legacy.source_publication,
-        )
-        .expect("native import completion");
+            manifest, &legacy.source_operation, &legacy.source_publication,
+        ).expect("native import completion");
         let full = NativeImportedNativeSourceHeadV1 {
             origin,
             candidate_root_nonce: legacy.candidate_root_nonce,
@@ -4728,98 +4718,51 @@ mod tests {
             source_binding: NativeCutoverEvidenceSourcePublicationBindingV1 {
                 transition_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&manifest)),
                 completion_pointer_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&completed)),
-                physical_target_source_digest: NativeCutoverDigest64V1(sa_payload_to_hex(
-                    &new_source_manifest_sha256,
-                )),
+                physical_target_source_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&new_source_manifest_sha256)),
                 target_snapshot_id: legacy.original_snapshot_id,
             },
             original_snapshot_id: legacy.original_snapshot_id,
-            original_request_sha256: Digest(
-                sha2::Sha256::digest(serde_json::to_vec(&request).expect("request JSON")).into(),
-            ),
+            original_request_sha256: Digest(sha2::Sha256::digest(serde_json::to_vec(&request).expect("request JSON")).into()),
             new_source_manifest_sha256,
             completed_journal_digest: completed,
         };
         assert!(full.matches_completed_binding_v1(&target, &request));
         let head = NativeImportedNativeSourceCompactV1::from_completed_v1(&full, &target, &request)
             .expect("compact Native import");
-        evidence.source_facts.push(Fact::ImportedNativeSource {
-            head,
-            target,
-            request,
-        });
-        evidence
-            .source_facts
-            .sort_by(|left, right| mixed_rank(left).cmp(&mixed_rank(right)));
+        evidence.source_facts.push(Fact::ImportedNativeSource { head, target, request });
+        evidence.source_facts.sort_by(|left, right| mixed_rank(left).cmp(&mixed_rank(right)));
+        (evidence, full)
+    }
+
+    #[test]
+    fn imported_native_sibling_requires_distinct_completed_binding() {
+        let (evidence, full) = imported_native_sibling_fixture_v1();
+        let repo = &full.origin.repo_id;
+        let revision = &full.origin.revision_id;
         let joined = join_test(&evidence, &mut |_| Ok::<_, ()>(())).expect("native sibling join");
         assert_eq!(joined.imported_native_source_count_v1(), 1);
-        assert!(
-            joined
-                .imported_native_source_inputs_for_pair_v1(&repo, &revision)
-                .is_some()
-        );
-        let compact = evidence
-            .source_facts
-            .iter()
-            .find(|fact| matches!(fact, Fact::ImportedNativeSource { .. }))
-            .expect("native import")
-            .clone();
+        assert!(joined.imported_native_source_inputs_for_pair_v1(repo, revision).is_some());
+        let compact = evidence.source_facts.iter().find(|fact|
+            matches!(fact, Fact::ImportedNativeSource { .. })).expect("native import").clone();
         let mut duplicate = evidence.clone();
         duplicate.source_facts.push(compact.clone());
         assert!(join_test(&duplicate, &mut |_| Ok::<_, ()>(())).is_err());
         let mut missing = evidence.clone();
-        missing
-            .source_facts
-            .retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
-        assert!(join_test(&missing, &mut |_| Ok::<_, ()>(())).is_err());
-        // Wire-size probe only: these rows intentionally share a journal key.
-        // SourceJoin above independently rejects that duplicate; the physical
-        // verifier still decides whether a real 368-head installation fits.
-        let mut capacity = evidence.clone();
-        capacity
-            .source_facts
-            .retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
-        for index in 0..368 {
-            let mut row = compact.clone();
-            let suffix = format!("{index:03}");
-            if let Fact::ImportedNativeSource { head, .. } = &mut row {
-                head.origin.repo_id = RepoId::new(format!(
-                    "{}{}",
-                    "r".repeat(RepoId::MAX_UTF8_BYTES_V1 - suffix.len()),
-                    suffix
-                ))
-                .expect("maximum canonical repo");
-                head.origin.revision_id = RevisionId::new(format!(
-                    "{}{}",
-                    "v".repeat(RevisionId::MAX_UTF8_BYTES_V1 - suffix.len()),
-                    suffix
-                ))
-                .expect("maximum canonical revision");
-            }
-            capacity.source_facts.push(row);
-        }
-        let mut encoded = Vec::new();
-        ciborium::ser::into_writer(&capacity, &mut encoded).expect("FD6 CBOR encode");
+        missing.source_facts.retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
+        // Restore-forward owns completeness against the predecessor's routes.
+        let no_imports = join_test(&missing, &mut |_| Ok::<_, ()>(()))
+            .expect("Source join has no predecessor route inventory");
+        assert_eq!(no_imports.imported_native_source_count_v1(), 0);
         assert!(
-            encoded.len()
-                <= crate::native_cutover_evidence_v1::MAX_NATIVE_CUTOVER_EVIDENCE_BYTES_V1,
-            "368 maximum-width compact Native import facts must fit FD6 physical bound in this fixed control fixture"
+            no_imports
+                .imported_native_source_inputs_for_pair_v1(repo, revision)
+                .is_none()
         );
         for mutate in 0..5 {
             let mut forged = evidence.clone();
-            let fact = forged
-                .source_facts
-                .iter_mut()
-                .find(|fact| matches!(fact, Fact::ImportedNativeSource { .. }))
-                .expect("native import");
-            let Fact::ImportedNativeSource {
-                head,
-                target,
-                request,
-            } = fact
-            else {
-                unreachable!()
-            };
+            let fact = forged.source_facts.iter_mut().find(|fact|
+                matches!(fact, Fact::ImportedNativeSource { .. })).expect("native import");
+            let Fact::ImportedNativeSource { head, target, request } = fact else { unreachable!() };
             match mutate {
                 0 => head.origin.old_root_nonce = Digest([91; 32]),
                 1 => head.origin.accepted_transcript_sha256 = Digest([92; 32]),
@@ -4832,6 +4775,140 @@ mod tests {
                 assert!(join_test(&forged, &mut |_| Ok::<_, ()>(())).is_err());
             }
         }
+    }
+
+    #[test]
+    fn imported_native_shared_validator_requires_exact_predecessor_scope_and_unique_owner() {
+        let (evidence, full) = imported_native_sibling_fixture_v1();
+        let ranges = mixed_ranges(&evidence.source_facts, &mut |_| Ok::<_, ()>(()))
+            .expect("canonical source fact groups");
+        let imports =
+            mixed_slice::<()>(&evidence.source_facts, &ranges, 16).expect("native import slice");
+        let validate = |old_nonce, conflicts: bool| {
+            validate_imported_native_source_groups_shared_v1(
+                &evidence.source_facts,
+                evidence.header.selected_source.workspace,
+                imports,
+                Some(full.candidate_root_nonce),
+                Some(old_nonce),
+                |_| conflicts,
+                &mut |_| Ok::<_, ()>(()),
+            )
+        };
+        assert!(validate(full.origin.old_root_nonce, false).is_ok());
+        assert!(validate(Digest([91; 32]), false).is_err());
+        assert!(validate(full.origin.old_root_nonce, true).is_err());
+        let mut calls = 0;
+        assert!(matches!(
+            validate_imported_native_source_groups_shared_v1(
+                &evidence.source_facts,
+                evidence.header.selected_source.workspace,
+                imports,
+                Some(full.candidate_root_nonce),
+                Some(full.origin.old_root_nonce),
+                |_| false,
+                &mut |_units| {
+                    calls += 1;
+                    if calls > 1 {
+                        Err("request work refused")
+                    } else {
+                        Ok(())
+                    }
+                },
+            ),
+            Err(NativeCutoverSourceJoinErrorV1::Work("request work refused"))
+        ));
+        assert!(calls > 0);
+
+        let mut competing = evidence.clone();
+        competing.source_facts.push(Fact::NativeSdkSourceBinding {
+            operation: full.source_operation.key,
+            aggregate_identity_digest: "a".repeat(64),
+            source: full.source_binding,
+        });
+        assert!(
+            validate_imported_native_source_groups_shared_v1(
+                &competing.source_facts,
+                competing.header.selected_source.workspace,
+                imports,
+                Some(full.candidate_root_nonce),
+                Some(full.origin.old_root_nonce),
+                |_| false,
+                &mut |_| Ok::<_, ()>(()),
+            )
+            .is_err()
+        );
+    }
+
+    pub(crate) fn maximum_width_native_import_facts_v1() -> Vec<Fact> {
+        use crate::index::{
+            SlotId, imported_native_source_completed_digest_v1, imported_native_source_manifest_digest_v1,
+            native_immutable_object_ref_v1,
+        };
+
+        let (evidence, full) = imported_native_sibling_fixture_v1();
+        let Fact::ImportedNativeSource { target, request, .. } = evidence.source_facts.into_iter()
+            .find(|fact| matches!(fact, Fact::ImportedNativeSource { .. }))
+            .expect("native import fixture") else { unreachable!() };
+        (0_u16..368).map(|index| {
+            let mut full = full.clone();
+            let mut target = target;
+            let mut request = request.clone();
+            let suffix = format!("{index:03}");
+            full.origin.repo_id = RepoId::new(format!(
+                "{}{suffix}", "r".repeat(RepoId::MAX_UTF8_BYTES_V1 - suffix.len())
+            )).expect("maximum canonical repo");
+            full.origin.revision_id = RevisionId::new(format!(
+                "{}{suffix}", "v".repeat(RevisionId::MAX_UTF8_BYTES_V1 - suffix.len())
+            )).expect("maximum canonical revision");
+            full.origin.old_source_head.repo_id = full.origin.repo_id.clone();
+            full.origin.old_source_head.revision_id = full.origin.revision_id.clone();
+            let mut slot = [0x83; 16];
+            slot[..2].copy_from_slice(&index.to_be_bytes());
+            target.operation.workspace.slot = SlotId(slot);
+            target.expected_view.workspace = target.operation.workspace;
+            request.operation = target.operation;
+            request.expected_view = target.expected_view;
+            full.source_operation.key = target.operation;
+            full.source_publication.identity.workspace = target.operation.workspace;
+            full.source_publication.identity.digest = full.source_publication.identity_digest()
+                .expect("distinct published view digest");
+            let UpdateKind::SourceAdvance(transition) = &request.kind else { unreachable!() };
+            let request_json = serde_json::to_vec(&request).expect("original JSON");
+            let children = transition.owners.root.0.into_iter().collect::<Vec<_>>();
+            full.source_operation.request = native_immutable_object_ref_v1(&request_json, &children)
+                .expect("original request object");
+            full.original_request_sha256 = Digest(sha2::Sha256::digest(&request_json).into());
+            let manifest = imported_native_source_manifest_digest_v1(
+                &full.origin, full.candidate_root_nonce, full.original_snapshot_id,
+                full.new_source_manifest_sha256, &target, &request,
+            ).expect("Native import manifest");
+            let completion = imported_native_source_completed_digest_v1(
+                manifest, &full.source_operation, &full.source_publication,
+            ).expect("Native import completion");
+            full.completed_journal_digest = completion;
+            full.source_binding.transition_digest = NativeCutoverDigest64V1(sa_payload_to_hex(&manifest));
+            full.source_binding.completion_pointer_digest = NativeCutoverDigest64V1(sa_payload_to_hex(&completion));
+            let head = NativeImportedNativeSourceCompactV1::from_completed_v1(&full, &target, &request)
+                .expect("completed Native import");
+            Fact::ImportedNativeSource { head, target, request }
+        }).collect()
+    }
+
+    #[test]
+    fn maximum_width_native_import_facts_fit_fd6() {
+        use crate::native_cutover_evidence_v1::MAX_NATIVE_CUTOVER_EVIDENCE_BYTES_V1;
+
+        let (mut evidence, _) = imported_native_sibling_fixture_v1();
+        evidence.source_facts.retain(|fact| !matches!(fact, Fact::ImportedNativeSource { .. }));
+        evidence.source_facts.extend(maximum_width_native_import_facts_v1());
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&evidence, &mut encoded).expect("FD6 CBOR encode");
+        println!("HistoricalV5 FD6 with 368 maximal Native imports: {} bytes", encoded.len());
+        assert!(encoded.len() <= MAX_NATIVE_CUTOVER_EVIDENCE_BYTES_V1);
+        let decoded: NativeCutoverEvidenceV1 = ciborium::de::from_reader(encoded.as_slice())
+            .expect("historical envelope compact import round trip");
+        assert_eq!(decoded, evidence);
     }
 
     #[test]
@@ -5127,6 +5204,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_association_requires_bootstrap_full_and_exact_source_axes() {
+        let mut evidence = native_lineage_evidence(1);
+        let history_cut: crate::index::HistorySourceCutV1 =
+            serde_json::from_value(serde_json::json!({
+                "generation": {"repo_id": "repo", "revision_id": "revision", "generation": 1},
+                "durable_epoch": 1,
+                "snapshot_digest": vec![7_u8; 32],
+                "replay_start": vec![8_u8; 32]
+            }))
+            .expect("fixed History cut");
+        for fact in &mut evidence.source_facts {
+            if let Fact::Replay {
+                native_update_request: Some(request),
+                ..
+            } = fact
+                && request.operation.sequence == 7
+            {
+                let UpdateKind::SourceAdvance(source) = &request.kind else {
+                    panic!("initial Source advance absent");
+                };
+                request.kind = UpdateKind::SourceHistoryBootstrap(Box::new(
+                    crate::index::SourceHistoryBootstrapV1 {
+                        source: source.clone(),
+                        history: crate::index::HistoryTransition {
+                            instance: crate::index::IndexInstanceId([41; 16]),
+                            expected: None,
+                            next: history_cut.clone(),
+                            input: ObjectRef(Digest([43; 32])),
+                            profile: ObjectRef(Digest([44; 32])),
+                        },
+                    },
+                ));
+            }
+        }
+        assert_eq!(associate_lineage(&evidence).unwrap(), vec![(7, 7), (11, 11)]);
+
+        let mut prior_cut = evidence.clone();
+        let mut foreign_source = evidence.clone();
+        let mut foreign_view = evidence.clone();
+        let mut foreign_expected_source = evidence.clone();
+        for (candidate, field) in [
+            (&mut prior_cut, 0),
+            (&mut foreign_source, 1),
+            (&mut foreign_view, 2),
+            (&mut foreign_expected_source, 3),
+        ] {
+            for fact in &mut candidate.source_facts {
+                if let Fact::Replay {
+                    native_update_request: Some(request),
+                    ..
+                } = fact
+                    && request.operation.sequence == 7
+                {
+                    let UpdateKind::SourceHistoryBootstrap(pair) = &mut request.kind else {
+                        panic!("bootstrap request absent");
+                    };
+                    match field {
+                        0 => pair.history.expected = Some(history_cut.clone()),
+                        1 => pair.source.events[0].sequence += 1,
+                        2 => request.expected_view.sequence += 1,
+                        _ => pair.source.expected_source.owners =
+                            MapRoot(Some(ObjectRef(Digest([99; 32])))),
+                    }
+                }
+            }
+            assert!(associate_lineage(candidate).is_err());
+        }
+    }
+
     fn native_resync_lineage_evidence() -> NativeCutoverEvidenceV1 {
         let mut evidence = native_lineage_evidence(1);
         let baseline_epoch = evidence.baseline.operation.stream_epoch;
@@ -5196,7 +5343,10 @@ mod tests {
         assert_eq!(associate_lineage(&baseline).unwrap(), vec![(7, 7), (1, 1)]);
 
         let mut missing_lease = baseline.clone();
-        let _removed_source_fact = missing_lease.source_facts.remove(1);
+        assert!(matches!(
+            missing_lease.source_facts.remove(1),
+            Fact::AllocatorLease { .. }
+        ));
         assert!(associate_lineage(&missing_lease).is_err());
 
         let mut stale_lease = baseline.clone();
@@ -6446,6 +6596,11 @@ mod tests {
                 *attempt_id = format!("change-event:{plan}:attempt-1");
                 request.operation = target.operation;
                 request.expected_view = target.expected_view;
+                let UpdateKind::SourceAdvance(transition) = &mut request.kind else {
+                    panic!("initial Source request fixture changed kind");
+                };
+                transition.events[0].predecessor = target.event_predecessor;
+                transition.events[0].sequence = target.event_sequence;
                 *published_snapshot_id = Some(snapshot);
             }
             evidence.source_facts.push(replay);
@@ -9064,6 +9219,105 @@ fn validate_imported_native_source_groups_v1<E>(
     baseline_nonce: Option<crate::index::Digest>,
     charge: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
+    validate_imported_native_source_groups_shared_v1(
+        &evidence.source_facts,
+        evidence.header.selected_source.workspace,
+        imports,
+        baseline_nonce,
+        None,
+        |operation| {
+            evidence
+                .v5_artifacts
+                .iter()
+                .any(|artifact| artifact.operation == operation)
+        },
+        charge,
+    )
+}
+
+/// Validate signed FD6 Native sibling imports before the receiver compares
+/// their compact claims with both held physical protected-route inventories.
+/// A missing import is decided by the physical route count, not by this DATA.
+pub fn validate_source_only_native_imports_v7<E>(
+    evidence: &NativeCutoverSourceOnlyEvidenceV6,
+    candidate_root_nonce: crate::index::Digest,
+    charge: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<usize, NativeCutoverSourceJoinErrorV1<E>> {
+    let previous = evidence
+        .previous_native
+        .as_ref()
+        .ok_or_else(|| refuse("Native predecessor import has no predecessor selection"))?;
+    // FD6's writer appends Native imports after its signed Source facts. Only
+    // this tail has a canonical pair order; the V5 mixed-table layout is a
+    // separate contract and must not gate unrelated FD6 fact categories.
+    let mut first_import = evidence.source_facts.len();
+    let mut previous_pair = None;
+    for (index, fact) in evidence.source_facts.iter().enumerate() {
+        work(charge, 1)?;
+        match fact {
+            Fact::ImportedLegacySource { .. } => {
+                return Err(refuse("Native predecessor has a Legacy Source import"));
+            }
+            Fact::ImportedNativeSource { head, .. } => {
+                let pair = (&head.origin.repo_id, &head.origin.revision_id);
+                work(
+                    charge,
+                    pair.0.as_str().len().saturating_add(pair.1.as_str().len()),
+                )?;
+                if previous_pair.is_some_and(|prior| prior >= pair) {
+                    return Err(refuse("imported Native Source pair duplicated or unsorted"));
+                }
+                if first_import == evidence.source_facts.len() {
+                    first_import = index;
+                }
+                previous_pair = Some(pair);
+            }
+            _ if first_import != evidence.source_facts.len() => {
+                return Err(refuse("imported Native Source is not a canonical tail"));
+            }
+            _ => {}
+        }
+    }
+    let imports = &evidence.source_facts[first_import..];
+    validate_imported_native_source_groups_shared_v1(
+        &evidence.source_facts,
+        evidence.header.selected_source.workspace,
+        imports,
+        Some(candidate_root_nonce),
+        Some(previous.coverage.previous_root_nonce),
+        |operation| {
+            operation == evidence.initial_full.target.operation
+                || evidence
+                    .successors
+                    .iter()
+                    .any(|row| row.target.operation == operation)
+                || match &previous.publication {
+                    NativeCutoverPreviousPublicationV6::HistoricalV5(artifact) => {
+                        artifact.identity.operation == operation
+                    }
+                    NativeCutoverPreviousPublicationV6::SourceOnlyV7(lineage) => {
+                        lineage.initial_full.target.operation == operation
+                            || lineage
+                                .successors
+                                .iter()
+                                .any(|row| row.target.operation == operation)
+                    }
+                }
+        },
+        charge,
+    )?;
+    Ok(imports.len())
+}
+
+fn validate_imported_native_source_groups_shared_v1<E>(
+    facts: &[Fact],
+    selected_workspace: crate::index::WorkspaceKey,
+    imports: &[Fact],
+    baseline_nonce: Option<crate::index::Digest>,
+    expected_old_nonce: Option<crate::index::Digest>,
+    conflicts_with_current: impl Fn(crate::index::OperationKey) -> bool,
+    charge: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
     if imports.is_empty() {
         return Ok(());
     }
@@ -9085,9 +9339,11 @@ fn validate_imported_native_source_groups_v1<E>(
         )?;
         let operation = head.source_operation.key;
         let origin = &head.origin;
+        charge_native_import_request_json_v1(request, charge)?;
         if !head.matches_request_v1(target, request)
             || head.candidate_root_nonce != baseline_nonce
-            || operation.workspace == evidence.header.selected_source.workspace
+            || expected_old_nonce.is_some_and(|expected| origin.old_root_nonce != expected)
+            || operation.workspace == selected_workspace
         {
             return Err(refuse("imported Native Source scope differs"));
         }
@@ -9111,7 +9367,7 @@ fn validate_imported_native_source_groups_v1<E>(
                 return Err(refuse("imported Native Source operation duplicated"));
             }
         }
-        for row in &evidence.source_facts {
+        for row in facts {
             work(
                 charge,
                 1 + std::mem::size_of::<crate::index::OperationKey>(),
@@ -9128,17 +9384,22 @@ fn validate_imported_native_source_groups_v1<E>(
                 }
                 Fact::NativeInitialSourceBinding {
                     operation: actual, ..
+                }
+                | Fact::NativeSdkSourceBinding {
+                    operation: actual, ..
+                } if *actual == operation => {
+                    return Err(refuse("historical Native import has ordinary completion"));
+                }
+                Fact::CompletedSourceRequest {
+                    native_operation: Some(actual),
+                    ..
                 } if *actual == operation => {
                     return Err(refuse("historical Native import has ordinary completion"));
                 }
                 _ => {}
             }
         }
-        if evidence
-            .v5_artifacts
-            .iter()
-            .any(|artifact| artifact.operation == operation)
-        {
+        if conflicts_with_current(operation) {
             return Err(refuse("historical Native import has current RepoState V5"));
         }
         work(
@@ -9146,6 +9407,7 @@ fn validate_imported_native_source_groups_v1<E>(
             std::mem::size_of::<crate::index::SourceTransition>(),
         )?;
         if target.operation != operation
+            || request.operation != operation
             || target.source_mode != crate::index::SourceOperationMode::Advance
             || target.event_predecessor != 0
             || target.event_sequence != 1
@@ -9163,6 +9425,60 @@ fn validate_imported_native_source_groups_v1<E>(
         {
             return Err(refuse("historical Native import completion differs"));
         }
+    }
+    Ok(())
+}
+
+struct NativeImportJsonChargeV1<'a, E> {
+    charge: &'a mut dyn FnMut(u64) -> Result<(), E>,
+    pending: u64,
+    refusal: Option<E>,
+}
+
+impl<E> Write for NativeImportJsonChargeV1<'_, E> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let work = u64::try_from(bytes.len())
+            .ok()
+            .and_then(|size| size.checked_mul(2))
+            .ok_or_else(|| std::io::Error::other("Native import request JSON size overflow"))?;
+        self.pending = self
+            .pending
+            .checked_add(work)
+            .ok_or_else(|| std::io::Error::other("Native import request JSON size overflow"))?;
+        if self.pending >= 4096 {
+            self.flush()?;
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.pending != 0
+            && let Err(error) = (self.charge)(std::mem::take(&mut self.pending))
+        {
+            self.refusal = Some(error);
+            return Err(std::io::Error::other(
+                "Native import request JSON work refused",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn charge_native_import_request_json_v1<E>(
+    request: &UpdateRequest,
+    charge: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
+    let mut writer = NativeImportJsonChargeV1 {
+        charge,
+        pending: 0,
+        refusal: None,
+    };
+    let encoded = serde_json::to_writer(&mut writer, request).is_ok() && writer.flush().is_ok();
+    if let Some(error) = writer.refusal {
+        return Err(NativeCutoverSourceJoinErrorV1::Work(error));
+    }
+    if !encoded {
+        return Err(refuse("Native import request JSON is invalid"));
     }
     Ok(())
 }

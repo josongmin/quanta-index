@@ -91,6 +91,15 @@ See [ticket acquisition](../../crates/quanta-index-catalog/src/native/authority/
 [Kernel pinning](../../crates/quanta-index-kernel/src/update.rs) and
 [session registry](../../crates/quanta-index-searchd-runtime/src/native_read_sessions.rs).
 
+Exact, Latest and materialization use the same Catalog scratch grant
+through root and edge validation and pin sealing. The caller checks the
+budget before committing the transaction. A refusal rolls back the pin.
+Issue encodes the workspace key once. Open
+certifies persisted pin encodings and digests. Retirement and settlement
+check that certification under their own transaction, revalidating after
+an external SQLite data-version change before relying on pin absence.
+[Catalog ticket and pin validation](../../crates/quanta-index-catalog/src/native/authority/lifetime.rs).
+
 ## Retained profile and terminal reply details
 
 `ReadProfile` consumes the existing UID/session ticket without reopening or
@@ -283,7 +292,11 @@ candidate or retain a verified serving route for each head.
 
 Replacing an installed Native root holds the previous root lease while exporting
 the selected History members and the exact protected Source/RepoMap Catalog
-rows. The logical protected snapshot remains bounded at 32 MiB. A payload up
+rows. An empty target still requires a complete zero-member inventory for
+the selected repository and reserves one inventory slot. BOOT, Source-root
+readout and rollback check registered rows and orphan roots even with a single
+workspace and no protected route. The logical protected snapshot remains
+bounded at 32 MiB. A payload up
 to 16 MiB keeps its original single-object identity. A larger payload has two
 ordered immutable pages and a manifest that binds their references and total
 length. The first page holds the original closure roots and the second page is
@@ -397,6 +410,14 @@ an ingress. It reissues the exact Submit so Q compares the immutable request
 reference. A pending request can Resume after that comparison. A Published
 request must return the same terminal view. The request comparison survives
 retirement of the intermediate Exact view.
+
+An uncertain Submit checks the same operation key and immutable request before
+reading Status. An uncertain Resume reads Status for the same operation.
+A definite Submit refusal attempts cleanup with the original ingress fence
+and preserves the primary failure if cleanup also fails. S returns the reply
+and History cut reservations before follow-up requests.
+[S submission and resume](/Users/songmin/Documents/code-new/semantica-codegraph-v2/crates/quanta-cli-server/src/native_candidate_prepare_v1/history_v1.rs#L166).
+
 H-ACCEPT-01 requires original Legacy publications, complete generation coverage
 after FULL, a real successor DELTA and a query after restart. The Native
 `HistoryAppend` update keeps one History generation. A new S manifest uses
@@ -448,17 +469,83 @@ S CLI callback and signed Native V5 terminal recovery have separate acceptance.
 
 Ordinary [SDK queries](../../crates/quanta-index-sdk/src/client.rs) and
 [searchctl dispatch](../../crates/quanta-index-searchctl/src/lib.rs) select
-Native. The workspace removed the `legacy-tantivy` and `legacy-bench` features,
-the Tantivy-family dependencies and the vendored engine. Read-only Legacy
-state verification and Source export retain the physical DATA commitments.
-Compatibility cases that need the historical engine use a pinned external
-old-Q daemon. The retirement ledger tracks the corresponding Native and DATA
-assertions. Final qualification binds the release build, signed installation
-and operational proofs to one Q/S candidate. The signed installed recovery
-suite covers both pre-publication rollback and restore-forward.
+Native. Completed item 06.2 removed Legacy `serve` assembly, the offline state
+engine, Lexical and History writer/reader paths and the shared FST matcher.
+The recovery path retains read-only Legacy DATA codecs, seal verification and
+export with the physical DATA commitments. Native BOOT and restore-forward use
+those commitments. Compatibility cases that require the historical engine use
+a pinned external old-Q daemon. [Daemon entrypoint](../../crates/quanta-index-searchd-runtime/src/bin/quanta-index-searchd.rs) ·
+[Legacy DATA](../../crates/quanta-index-lexical/src/legacy/mod.rs) ·
+[Source export](../../crates/quanta-index-searchd-runtime/src/history_checkpoint_export/source_v1.rs)
+
+Completed item 06.3 removed `legacy-tantivy`, `legacy-bench`, obsolete targets,
+Tantivy-family workspace dependencies, manifest patches, lockfile packages and
+vendored engine. Just, Cargo deny and test, ignored-test and proof inventories
+were updated. The workspace dependency and source inventory passed at the
+removal checkpoint and was rechecked on `28784da26`. [Workspace manifest](../../Cargo.toml) ·
+[Test authority](../../tools/ci/test-authority.toml) ·
+[Retirement checker](../../tools/ci/check-tantivy-retirement.py)
+
+The new Native public entrypoints refuse retired Legacy requests. Historical
+comparison and approved rollback use the pinned previous signed Q/S pair and
+its state root. New Native calls use a single publication path. The historical
+Linux x86-64 Native `885152ca2b4d…` compiler inventory had zero Tantivy
+packages while its then-current workspace still had Legacy consumers. Use
+that executable only within its preserved input scope. [Baseline identity](../plans/nov-20-native-cutover-closeout/tickets/07-product-qualification.md#native-text와-literal-검증-순서) ·
+[Pre-removal audit](../ARCHIVE-INDEX.md#2026-11-23-native-closeout-history-compaction)
+
+Items 06.1, 06.4 and 06.5 bind the approved Linux release, migration evidence,
+signed installation and operational proofs to one Q/S candidate. The signed
+installed recovery suite covers pre-publication rollback and restore-forward.
 [Retirement and qualification](../plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) ·
 [Maintained test migration](../plans/nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md) ·
 [Signed installed recovery](../plans/nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md)
+
+### Completed Runtime migration
+
+Item 04.1 moved the public backup/restore body to NoFeatures
+`process_readiness_owner_v1` with pinned old-Q. Nextest
+`2b5d3cf6-4d8e-4d1b-a8ff-51217824b213` passed the two pooled Object kinds,
+incarnation rotation, recovered G1 queries and ownership, G2 FULL and typed
+refusal of G3 DELTA under the old incarnation. The lower-level fault scope has
+its own disposition. [Backup/restore body](../../crates/quanta-index-searchd-runtime/tests/legacy_offline_refusal.rs#L1486) ·
+[Source-scoped result](../plans/nov-20-native-cutover-closeout/tickets/01-q-regressions.md#runtime-sixty-results)
+
+Item 04.2 closed the Runtime product and runner work. The migration inventory
+binds 43 Risk/Extended Perf IDs and four exact internal oracles to original
+source identities and current replacements. Existing-tree validation exposes
+symlink kind to the DATA visitor before fail-closed refusal. Filesystem pressure
+regressions use real `EFBIG` and a separately bounded `ENOSPC` device. Resumed
+runs validate canonical argv, source/cache/target and event order before taking
+credit for bodies. The Root 8→11→12 chain verified 104 bodies on the original v5
+cohort plus one Linux metadata body on the single-line derived `c7ff61be…`
+source. Runner controls passed 51/51. The closing ENOSPC test passed in Nextest
+`268edcdc-3af9-445a-a57c-6ad8b7fa9bf1`. [Runtime migration inventory](../../tools/ci/inventory/runtime-legacy-migration.toml) ·
+[Existing-tree admission](../../crates/quanta-index-searchd-runtime/src/publication_file_capacity/read_only_tree.rs) ·
+[ENOSPC oracle](../../crates/quanta-index-searchd-runtime/tests/offline_state_custody.rs#L225)
+
+04.3–04.5 retain their open FileBody, final-candidate and hosted acceptance.
+The final Linux roster still needs 126 replacement and two pinned old-Q bodies
+with exact source, binaries and raw events. [Open migration work](../plans/nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md#044-id별-유지퇴역-판정) ·
+[Detailed historical recovery](../ARCHIVE-INDEX.md#2026-11-23-completed-native-tickets)
+
+### Historical RepoMap Kernel and cleanup evidence
+
+The frozen Source-roots successor `c8291faf810c…` passed two FNL410 Kernel
+bodies. `native_repomap_terminal_rejects_changed_request_metadata_or_owner_v1`
+and `repomap_affected_owners_require_consistent_prior_identity_v2` verify
+terminal identity and exact predecessor owner agreement. They used the same
+source and compile scope. The product Required body stopped at compilation
+in the earlier recorded candidate.
+
+S `27c03ffe38e` retained the exact authenticated unlink-receipt digest in
+the existing Original validation scope. Cleanup fence readback borrows the
+artifact and completion from the same revalidated Required DATA. That handoff
+is source evidence. Installed cleanup and recovery use the current
+[RepoMap acceptance ledger](../plans/nov-23-repomap-retirement/04-integration-acceptance.md).
+The previous [DELTA design](../plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md#현행-코드-작업-순서)
+and [exact historical records](../ARCHIVE-INDEX.md#2026-11-23-lexical-and-repomap-evidence-history)
+remain recoverable.
 
 ## Scope of prior decisions
 

@@ -5,6 +5,7 @@ use std::{
     cmp::Ordering as SortOrder,
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
+    io::{Seek, SeekFrom},
     os::unix::fs::OpenOptionsExt as _,
     path::PathBuf,
 };
@@ -25,11 +26,103 @@ use executable::NativeExecutable;
 
 #[path = "large_restart/global_page.rs"]
 mod global_page;
+#[path = "large_restart/local_delta.rs"]
+mod local_delta;
 
 const LARGE_SOURCE_COUNT: usize = 4_096;
 const LARGE_SEED: u64 = 5_864_059_738_136_528_177;
 const REPO_PAGE_SIZE: u32 = 256;
 const PATH_PAGE_SIZE: u32 = 128;
+
+#[derive(Clone)]
+struct RestartFixture {
+    name: &'static str,
+    files: Vec<ScopedFile>,
+    repo_count: u32,
+    repo_page_size: u32,
+    path_page_size: u32,
+    rank_page_size: u32,
+    global_matches: usize,
+    request_timeout: Duration,
+}
+
+impl RestartFixture {
+    fn local() -> Self {
+        const REPOS: u32 = 2;
+        const FILES_PER_REPO: u32 = 5;
+        let mut files = Vec::new();
+        for repo in 0..REPOS {
+            for file in 0..FILES_PER_REPO {
+                let common = if file >= 2 { "scale_needle_token " } else { "" };
+                let extra = if repo == 0 && file == 4 {
+                    "longer body "
+                } else {
+                    ""
+                };
+                files.push(ScopedFile {
+                    source_repo_id: format!("repo{repo}"),
+                    repo_relative_path: format!("src/file_{file}.rs"),
+                    content: format!(
+                        "{} scale_needle_token {common}{extra}marker\n",
+                        repo_query_token(repo)
+                    ),
+                });
+            }
+        }
+        Self {
+            global_matches: files.len(),
+            name: "local",
+            files,
+            repo_count: REPOS,
+            repo_page_size: FILES_PER_REPO,
+            path_page_size: 4,
+            rank_page_size: 4,
+            request_timeout: Duration::from_secs(15),
+        }
+    }
+
+    fn large() -> TestResult<Self> {
+        let files = generate_scoped_corpus(ScaleTier::Large, LARGE_SEED)?;
+        require_equal(&files.len(), &LARGE_SOURCE_COUNT, "large fixture count")?;
+        Ok(Self {
+            name: "large",
+            files,
+            repo_count: params_for(ScaleTier::Large).repo_count,
+            repo_page_size: REPO_PAGE_SIZE,
+            path_page_size: PATH_PAGE_SIZE,
+            rank_page_size: 256,
+            global_matches: LARGE_SOURCE_COUNT,
+            request_timeout: Duration::from_secs(300),
+        })
+    }
+
+    fn budget(&self) -> RequestBudgetV1 {
+        RequestBudgetV1::for_duration(self.request_timeout)
+    }
+}
+
+fn fixture_phase<T>(stage: &str, action: impl FnOnce() -> TestResult<T>) -> TestResult<T> {
+    eprintln!("native lexical {stage}: start");
+    let started = Instant::now();
+    let result = action();
+    eprintln!(
+        "native lexical {stage}: {:?} ({})",
+        started.elapsed(),
+        if result.is_ok() { "ok" } else { "failed" }
+    );
+    result.map_err(|error| format!("{stage}: {error}").into())
+}
+
+fn daemon_stderr_tail(daemon: &Daemon) -> TestResult<String> {
+    const LIMIT: u64 = 64 * 1024;
+    let mut stderr = daemon.stderr_reader()?;
+    let _offset = stderr.seek(SeekFrom::Start(
+        stderr.metadata()?.len().saturating_sub(LIMIT),
+    ))?;
+    let mut buffer = Vec::new();
+    let _read = stderr.take(LIMIT).read_to_end(&mut buffer)?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
 
 struct LargeDaemonBinary(NativeExecutable);
 
@@ -88,7 +181,7 @@ fn file_spec() -> InstanceSpec {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum LargeTextLayout {
     TreeV1,
     SegmentedFullV1,
@@ -122,14 +215,11 @@ fn large_text_spec(layout: LargeTextLayout) -> InstanceSpec {
     spec
 }
 
-fn large_budget() -> RequestBudgetV1 {
-    RequestBudgetV1::for_duration(Duration::from_secs(300))
-}
-
-fn large_config(
+fn restart_config(
     root: &Path,
     socket: &Path,
     layout: LargeTextLayout,
+    large: bool,
 ) -> TestResult<serde_json::Value> {
     let mut value = config_with_reclaim(root, socket)?;
     match layout {
@@ -147,6 +237,15 @@ fn large_config(
         "global_limit": 2, "per_uid_limit": 2,
         "terminal_ttl_millis": 300_000_u64, "sweep_limit": 2,
     });
+    if !large {
+        return Ok(value);
+    }
+    // Keep the pin alive through one admitted request and its finalization.
+    set_fixture_json(
+        &mut value,
+        "/resources/read_ticket_lease_ms",
+        serde_json::json!(300_000_u64),
+    )?;
     for axis in ["reads", "writes", "mutations"] {
         set_fixture_json(
             &mut value,
@@ -171,32 +270,32 @@ fn publish_sources(
     client: &NativeUdsClient,
     daemon: &Daemon,
     request: UpdateRequest,
+    budget: &RequestBudgetV1,
 ) -> TestResult<(quanta_index_contract::index::ViewRef, Duration)> {
     let operation = request.operation;
+    eprintln!("native lexical SourceAdvance: start");
     let started = Instant::now();
-    let submitted: TestResult<_> = client.submit(request, &large_budget()).map_err(Into::into);
+    let submitted: TestResult<_> = client.submit(request, budget).map_err(Into::into);
     match submitted.and_then(|outcome| published(&outcome)) {
         Ok(view) => Ok((view, started.elapsed())),
         Err(error) => {
+            let failed_after = started.elapsed();
             let status = client.status(
                 operation,
                 &RequestBudgetV1::for_duration(Duration::from_secs(10)),
             );
-            let mut diagnostics = String::new();
-            let read = daemon
-                .stderr_reader()?
-                .take(64 * 1024)
-                .read_to_string(&mut diagnostics);
+            let stderr =
+                daemon_stderr_tail(daemon).unwrap_or_else(|read| format!("unavailable: {read}"));
             Err(format!(
-                "Native Large SourceAdvance failed after {:?}: {error:?}; \
-                 original operation status {status:?}; server diagnostics ({read:?}): {diagnostics}",
-                started.elapsed(),
+                "SourceAdvance failed after {failed_after:?}: {error:?}; \
+                 operation {operation:?} status {status:?}; server stderr tail: {stderr}",
             )
             .into())
         }
     }
 }
 
+#[derive(Debug, PartialEq)]
 struct Observation {
     paths: BTreeMap<String, quanta_index_contract::native_protocol::NativeFilePathEntry>,
     ranked: Vec<(String, OwnerKey, ObjectRef, u64)>,
@@ -209,22 +308,30 @@ fn observe(
     expected: &BTreeMap<String, [u8; 32]>,
     expected_owners: &BTreeMap<String, OwnerKey>,
     source_refs: &BTreeMap<String, ObjectRef>,
-    files: &[ScopedFile],
+    fixture: &RestartFixture,
     open_key: [u8; 32],
 ) -> TestResult<Observation> {
     let mut paths = BTreeMap::new();
     let mut after = None;
-    for _ in 0..=LARGE_SOURCE_COUNT / usize::try_from(PATH_PAGE_SIZE)? {
-        let page = client.query_paths(
-            ViewSelection::Exact(view),
-            file_spec().instance,
-            "",
-            after.as_deref(),
-            PATH_PAGE_SIZE,
-            &large_budget(),
+    let source_count = fixture.files.len();
+    // A FileMap continuation may return a short page. Every advancing page
+    // must yield a new path, so source_count bounds the traversal.
+    for page_index in 0..source_count {
+        let page = client
+            .query_paths(
+                ViewSelection::Exact(view),
+                file_spec().instance,
+                "",
+                after.as_deref(),
+                fixture.path_page_size,
+                &fixture.budget(),
+            )
+            .map_err(|error| format!("FileMap page {page_index}: {error}"))?;
+        require_equal(&page.view, &view, "FileMap selected view")?;
+        require(
+            !page.entries.is_empty(),
+            format!("FileMap page {page_index} is empty"),
         )?;
-        require_equal(&page.view, &view, "large path view")?;
-        require(!page.entries.is_empty(), "large path page is empty")?;
         let has_more = page.has_more;
         for entry in page.entries {
             require(expected.contains_key(&entry.path), "foreign large path")?;
@@ -250,37 +357,43 @@ fn observe(
         if !has_more {
             break;
         }
-    }
-    require_equal(&paths.len(), &LARGE_SOURCE_COUNT, "large path inventory")?;
-
-    let mut ranked = Vec::with_capacity(LARGE_SOURCE_COUNT);
-    let mut seen = BTreeSet::new();
-    for repo_index in 0..params_for(ScaleTier::Large).repo_count {
-        let repo = format!("repo{repo_index}");
-        let result = client.search_text(
-            ViewSelection::Exact(view),
-            text_spec().instance,
-            TextQueryRequest {
-                syntax: TextQuerySyntax::Native,
-                query_text: repo_query_token(repo_index),
-                constraints: QueryConstraintSetV1::unconstrained(),
-                generation: None,
-                generation_selector: None,
-                top_k: REPO_PAGE_SIZE,
-                cursor: None,
-            },
-            &large_budget(),
+        require(
+            paths.len() < source_count,
+            format!("FileMap page {page_index} continued past the source inventory"),
         )?;
+    }
+    require_equal(&paths.len(), &source_count, "source path inventory")?;
+
+    let mut ranked = Vec::with_capacity(source_count);
+    let mut seen = BTreeSet::new();
+    for repo_index in 0..fixture.repo_count {
+        let repo = format!("repo{repo_index}");
+        let result = client
+            .search_text(
+                ViewSelection::Exact(view),
+                text_spec().instance,
+                TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: repo_query_token(repo_index),
+                    constraints: QueryConstraintSetV1::unconstrained(),
+                    generation: None,
+                    generation_selector: None,
+                    top_k: fixture.repo_page_size,
+                    cursor: None,
+                },
+                &fixture.budget(),
+            )
+            .map_err(|error| format!("repository {repo} text query: {error}"))?;
         require_equal(&result.view, &view, "large text view")?;
         require_equal(
             &result.matched,
-            &u64::from(REPO_PAGE_SIZE),
+            &u64::from(fixture.repo_page_size),
             "repo match count",
         )?;
         require(result.exhaustive, "repo text search was partial")?;
         require_equal(
             &result.hits.len(),
-            &usize::try_from(REPO_PAGE_SIZE)?,
+            &usize::try_from(fixture.repo_page_size)?,
             "repo ranked page size",
         )?;
         let mut previous: Option<&quanta_index_contract::native_protocol::NativeTextHit> = None;
@@ -311,9 +424,15 @@ fn observe(
             ));
         }
     }
-    require_equal(&seen.len(), &LARGE_SOURCE_COUNT, "all sources ranked once")?;
-    let global_ranked =
-        global_page::observe(client, view, files, expected_owners, source_refs, open_key)?;
+    require_equal(&seen.len(), &source_count, "all sources ranked once")?;
+    let global_ranked = global_page::observe(
+        client,
+        view,
+        fixture,
+        expected_owners,
+        source_refs,
+        open_key,
+    )?;
     Ok(Observation {
         paths,
         ranked,
@@ -442,15 +561,22 @@ fn native_large_release_digest_verifies_bytes_and_detects_replacement() -> TestR
     )
 }
 
-#[test]
-fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ranks() -> TestResult {
-    let release = LargeDaemonBinary::from_environment()?;
-    let text_layout = large_text_layout()?;
+enum RestartMode {
+    Local,
+    DeltaCrash,
+    Large,
+}
+
+fn run_restart_fixture(
+    fixture: &RestartFixture,
+    text_layout: LargeTextLayout,
+    release: Option<LargeDaemonBinary>,
+    mode: RestartMode,
+) -> TestResult<Duration> {
     if let Some(binary) = &release {
         binary.verify()?;
     }
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let state_root: PathBuf = temp.path().join("state");
     fs::create_dir(&state_root)?;
     fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
@@ -458,19 +584,27 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
     let config_path = temp.path().join("native-config.json");
     fs::write(
         &config_path,
-        serde_json::to_vec(&large_config(&state_root, &socket, text_layout)?)?,
+        serde_json::to_vec(&restart_config(
+            &state_root,
+            &socket,
+            text_layout,
+            matches!(mode, RestartMode::Large),
+        )?)?,
     )?;
     let start = || match &release {
         Some(binary) => binary.start(&config_path, &socket),
         None => Daemon::start(&config_path, &socket),
     };
 
-    let files = generate_scoped_corpus(ScaleTier::Large, LARGE_SEED)?;
-    require_equal(&files.len(), &LARGE_SOURCE_COUNT, "large fixture count")?;
+    let source_count = fixture.files.len();
+    eprintln!(
+        "native lexical fixture={} layout={text_layout:?} sources={source_count} repositories={} ranking_page={} request_budget={:?}",
+        fixture.name, fixture.repo_count, fixture.rank_page_size, fixture.request_timeout,
+    );
     let mut expected = BTreeMap::new();
     let mut expected_owners = BTreeMap::new();
-    let mut paths = Vec::with_capacity(LARGE_SOURCE_COUNT);
-    for (index, file) in files.iter().enumerate() {
+    let mut paths = Vec::with_capacity(source_count);
+    for (index, file) in fixture.files.iter().enumerate() {
         let path = format!("{}/{}", file.source_repo_id, file.repo_relative_path);
         let digest: [u8; 32] = Sha256::digest(file.content.as_bytes()).into();
         require(
@@ -488,25 +622,25 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
         paths.push(path);
     }
 
-    let preparation = start()?;
+    let preparation = fixture_phase("initial daemon start", start)?;
     let client = NativeUdsClient::new(socket.clone());
     let NativeIndexResponse::Created(genesis) = client.request(
         NativeIndexRequest::CreateWorkspace {
             workspace: workspace(),
             epoch: 1,
         },
-        &large_budget(),
+        &fixture.budget(),
     )?
     else {
         return Err("large workspace creation failed".into());
     };
-    let profile_ingress = client.begin_input(operation(1), &large_budget())?;
+    let profile_ingress = client.begin_input(operation(1), &fixture.budget())?;
     let profile = client.stage_profile(
         profile_ingress,
         IndexProfile {
-            instances: vec![file_spec(), large_text_spec(text_layout)],
+            instances: vec![literal_spec(), file_spec(), large_text_spec(text_layout)],
         },
-        &large_budget(),
+        &fixture.budget(),
     )?;
     let configured = published(&client.submit(
         UpdateRequest {
@@ -514,12 +648,16 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
             expected_view: genesis,
             kind: UpdateKind::Reconfigure { profile },
         },
-        &large_budget(),
+        &fixture.budget(),
     )?)?;
 
-    let ingress = client.begin_input(operation(2), &large_budget())?;
+    let ingress = client.begin_input(operation(2), &fixture.budget())?;
     let mut source_refs = BTreeMap::new();
-    for (file_page, path_page) in files.chunks(64).zip(paths.chunks(64)) {
+    eprintln!("native lexical stage {source_count} sources: start");
+    let stage_started = Instant::now();
+    for (batch, (file_page, path_page)) in
+        fixture.files.chunks(64).zip(paths.chunks(64)).enumerate()
+    {
         let inputs = file_page
             .iter()
             .zip(path_page)
@@ -532,7 +670,9 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
                 language: None,
             })
             .collect::<Vec<_>>();
-        let references = client.stage_sources_borrowed(ingress, &inputs, &large_budget())?;
+        let references = client
+            .stage_sources_borrowed(ingress, &inputs, &fixture.budget())
+            .map_err(|error| format!("stage Source batch {batch}: {error}"))?;
         require_equal(&references.len(), &inputs.len(), "large source batch count")?;
         for (path, reference) in path_page.iter().zip(references) {
             require(
@@ -541,13 +681,13 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
             )?;
         }
     }
-    require_equal(
-        &source_refs.len(),
-        &LARGE_SOURCE_COUNT,
-        "staged source count",
-    )?;
-    let before = client.read_view(ViewSelection::Exact(configured), &large_budget())?;
-    let mut mutations = Vec::with_capacity(LARGE_SOURCE_COUNT);
+    require_equal(&source_refs.len(), &source_count, "staged source count")?;
+    eprintln!(
+        "native lexical stage {source_count} sources: {:?}",
+        stage_started.elapsed()
+    );
+    let before = client.read_view(ViewSelection::Exact(configured), &fixture.budget())?;
+    let mut mutations = Vec::with_capacity(source_count);
     for path in &paths {
         mutations.push(OwnerMutation {
             owner: *expected_owners.get(path).ok_or("fixture owner missing")?,
@@ -559,12 +699,8 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
             ),
         });
     }
-    let owners = client.stage_mutations(ingress, mutations, &large_budget())?;
-    require_equal(
-        &owners.count,
-        &u64::try_from(LARGE_SOURCE_COUNT)?,
-        "owner count",
-    )?;
+    let owners = client.stage_mutations(ingress, mutations, &fixture.budget())?;
+    require_equal(&owners.count, &u64::try_from(source_count)?, "owner count")?;
     let mut transition = SourceTransition {
         expected_source: before.source,
         owners,
@@ -586,41 +722,114 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
             expected_view: configured,
             kind: UpdateKind::SourceAdvance(transition),
         },
+        &fixture.budget(),
     )?;
-    preparation.stop()?;
+    eprintln!("native lexical SourceAdvance published in {submit_to_published:?}");
+    let successor = if matches!(mode, RestartMode::DeltaCrash) {
+        Some(fixture_phase("live DELTA between pinned pages", || {
+            local_delta::interleave(
+                &client,
+                &preparation,
+                view,
+                fixture,
+                &expected_owners,
+                &source_refs,
+            )
+        })?)
+    } else {
+        None
+    };
+    let killed_pid = if successor.is_some() {
+        Some(fixture_phase("SIGKILL after DELTA ACK", || {
+            super::text_shard_contract::kill_fixture_daemon(preparation)
+        })?)
+    } else {
+        fixture_phase("stop initial daemon", || preparation.stop())?;
+        None
+    };
 
-    let first = start()?;
-    let first_observed = observe(
-        &NativeUdsClient::new(socket.clone()),
-        view,
-        &expected,
-        &expected_owners,
-        &source_refs,
-        &files,
-        [0x47; 32],
-    );
-    let first_stopped = first.stop();
-    let first_observed = first_observed?;
-    first_stopped?;
-    verify_source_bodies(&state_root, &first_observed, &expected)?;
+    let observe_reopened = |mut daemon: Daemon, open_key, stage: &str| {
+        let observed = fixture_phase(stage, || {
+            let client = NativeUdsClient::new(socket.clone());
+            let old = observe(
+                &client,
+                view,
+                &expected,
+                &expected_owners,
+                &source_refs,
+                fixture,
+                open_key,
+            )?;
+            let updated = successor
+                .as_ref()
+                .map(|next| -> TestResult<Observation> {
+                    let latest = ViewSelection::Latest {
+                        workspace: next.operation.workspace,
+                        epoch: next.operation.epoch,
+                    };
+                    require_equal(
+                        &client.read_view(latest, &next.fixture.budget())?.identity,
+                        &next.view,
+                        "recovered DELTA head",
+                    )?;
+                    require_equal(
+                        &client.status(next.operation, &next.fixture.budget())?,
+                        &OperationStatus::Published(next.view),
+                        "recovered DELTA operation terminal",
+                    )?;
+                    observe(
+                        &client,
+                        next.view,
+                        &next.hashes,
+                        &next.owners,
+                        &next.refs,
+                        &next.fixture,
+                        [0x49; 32],
+                    )
+                    .map_err(|error| format!("reopened DELTA view: {error}").into())
+                })
+                .transpose()?;
+            Ok((old, updated))
+        });
+        let stopped = daemon.stop_in_place();
+        let observed = observed.map_err(|error| {
+            let stderr =
+                daemon_stderr_tail(&daemon).unwrap_or_else(|read| format!("unavailable: {read}"));
+            format!("{error}; daemon stop {stopped:?}; server stderr tail: {stderr}")
+        })?;
+        stopped.map_err(|error| format!("{stage} daemon shutdown: {error}"))?;
+        Ok::<_, Box<dyn std::error::Error>>(observed)
+    };
+    let first = fixture_phase("first reopen start", start)?;
+    require(
+        killed_pid.is_none_or(|pid| pid != first.0.id()),
+        "hard reopen reused the killed daemon PID",
+    )?;
+    let (first_observed, first_delta) =
+        observe_reopened(first, [0x47; 32], "first reopen queries")?;
 
-    let second = start()?;
-    let second_observed = observe(
-        &NativeUdsClient::new(socket.clone()),
-        view,
-        &expected,
-        &expected_owners,
-        &source_refs,
-        &files,
-        [0x48; 32],
-    );
-    let second_stopped = second.stop();
-    let second_observed = second_observed?;
-    second_stopped?;
+    fixture_phase("first reopen Source digests", || {
+        verify_source_bodies(&state_root, &first_observed, &expected)?;
+        if let (Some(next), Some(observed)) = (&successor, &first_delta) {
+            verify_source_bodies(&state_root, observed, &next.hashes)?;
+        }
+        Ok(())
+    })?;
+
+    let second = fixture_phase("second reopen start", start)?;
+    let (second_observed, second_delta) =
+        observe_reopened(second, [0x48; 32], "second reopen queries")?;
+
     if let Some(binary) = &release {
         binary.verify()?;
     }
-    verify_source_bodies(&state_root, &second_observed, &expected)?;
+    fixture_phase("second reopen Source digests", || {
+        verify_source_bodies(&state_root, &second_observed, &expected)?;
+        if let (Some(next), Some(observed)) = (&successor, &second_delta) {
+            verify_source_bodies(&state_root, observed, &next.hashes)?;
+        }
+        Ok(())
+    })?;
     for (path, first_entry) in &first_observed.paths {
         require_equal(
             &second_observed.paths.get(path),
@@ -649,6 +858,46 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
         &second_observed.global_ranked,
         &first_observed.global_ranked,
         "global ranked pages across two restarts",
+    )?;
+    require_equal(
+        &second_delta,
+        &first_delta,
+        "DELTA observations across restarts",
+    )?;
+    Ok(submit_to_published)
+}
+
+#[test]
+fn native_local_lexical_publish_rank_and_reopen() -> TestResult {
+    let fixture = RestartFixture::local();
+    let _submit_to_published = run_restart_fixture(
+        &fixture,
+        LargeTextLayout::SegmentedLayeredV2,
+        None,
+        RestartMode::Local,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn native_local_lexical_delta_interleaves_ties_and_survives_sigkill() -> TestResult {
+    let fixture = RestartFixture::local();
+    let _submit_to_published = run_restart_fixture(
+        &fixture,
+        LargeTextLayout::SegmentedLayeredV2,
+        None,
+        RestartMode::DeltaCrash,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ranks() -> TestResult {
+    let submit_to_published = run_restart_fixture(
+        &RestartFixture::large()?,
+        large_text_layout()?,
+        LargeDaemonBinary::from_environment()?,
+        RestartMode::Large,
     )?;
     if let Some(receipt_path) = std::env::var_os("QIDX_NATIVE_LARGE_ACK_RECEIPT") {
         let receipt_path = PathBuf::from(receipt_path);

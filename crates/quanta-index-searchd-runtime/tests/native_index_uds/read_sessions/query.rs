@@ -2,22 +2,42 @@
 
 use super::*;
 
+#[path = "query/code_search_contract.rs"]
+mod code_search_contract;
+#[path = "query/code_search_frontdoor.rs"]
+mod code_search_frontdoor;
 // History fixtures publish through a pinned external Legacy daemon; the
 // current test binary and Native service do not embed that engine.
 #[path = "query/history.rs"]
 mod history;
 #[path = "query/hybrid.rs"]
 mod hybrid;
+#[path = "query/legacy_rank_order.rs"]
+mod legacy_rank_order;
+#[path = "query/literal_anchor.rs"]
+mod literal_anchor;
+#[path = "query/page_cost.rs"]
+mod page_cost;
+#[path = "query/page_reuse.rs"]
+mod page_reuse;
 #[path = "query/preview.rs"]
 mod preview;
 #[path = "query/profile.rs"]
 mod profile;
+#[path = "query/protected_revision.rs"]
+mod protected_revision;
+#[path = "query/query_completeness.rs"]
+mod query_completeness;
 #[path = "query/regex_alternation.rs"]
 mod regex_alternation;
 #[path = "query/repo_predicates.rs"]
 mod repo_predicates;
 #[path = "query/repository_query_contract.rs"]
 mod repository_query_contract;
+#[path = "query/symbol_refusal.rs"]
+mod symbol_refusal;
+#[path = "query/text_matches.rs"]
+mod text_matches;
 #[path = "query/text_query_contract.rs"]
 mod text_query_contract;
 use quanta_index_contract::native_protocol::NativeReadSessionRequest;

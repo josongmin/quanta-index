@@ -260,7 +260,7 @@
     "WEIGHTS_HASH_MISMATCH",
     "WINDOW_OUT_OF_RANGE"
   ],
-  "enum_source_digest": "sha256:e7eb173f608168b9b486b28c5ce3106d752bfd99955221b296f9d55e6b5b40b3",
+  "enum_source_digest": "sha256:a49da24a3f062b93379c975f710de4ec37400f6f27613350f94598835cb2d8f0",
   "enum_source_path": "crates/quanta-index-contract/src/ipc/error.rs",
   "enum_type": "SearchPlaneErrorCodeV2",
   "schema_version": 2

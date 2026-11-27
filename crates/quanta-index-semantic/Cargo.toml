@@ -23,7 +23,9 @@ path = "src/bin/quanta-index-ann-proof.rs"
 required-features = ["proof"]
 
 [features]
-proof = []
+legacy-semantic-adapter = []
+proof = ["legacy-semantic-adapter"]
+qualified-memory-uri-candidate = ["legacy-semantic-adapter"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -36,8 +38,8 @@ arrow-schema = { workspace = true }
 ciborium = { workspace = true }
 futures = { workspace = true }
 lance = { workspace = true }
+lance-index.workspace = true
 lance-linalg = { workspace = true }
-lancedb = { workspace = true }
 object_store = { workspace = true }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }

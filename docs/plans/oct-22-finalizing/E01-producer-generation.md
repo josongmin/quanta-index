@@ -93,7 +93,7 @@ Python은 기존 SDK 유료 evidence ref → Source B의 generic paid parts/hand
 
 ### 검증 인계
 
-Facts의 변경 경로 본문은 이전 세대 Original까지 exact path로 빌린다. Facts·disk target 발급은 V1이며, Runtime publisher가 전체 identity를 검증하고 V1 digest를 계산한다. 실제 V2 target 발급과 두 SDK 호출부의 변경 상태, 소유 회귀는 [INC-01 코드 단위 현황](../../bugbash/nov-20-native-delta-cost/tickets/INC-01-source-closure.md#코드-단위-현황과-검증)에서 관리한다.
+Facts의 변경 경로 본문은 이전 세대 Original까지 exact path로 빌린다. Facts·disk는 준비된 C1에서 V2 target을 발급해 Source manifest·durable pointer와 복구에 결속한다. V1 호환 pin의 전체 투영과 Store 준비·HEAD 전 전체 검증은 계속 실행된다. [현재 구현 경계](../../bugbash/nov-20-native-delta-cost/tickets/INC-01-source-closure.md#현재-남은-제품-코드--2026-11-25) · [설치 본문 판정](../../bugbash/nov-20-native-delta-cost/tickets/INC-03-product-acceptance.md#현행-판정--2026-11-25)
 
 I는 QBC의 `owner resolve`로 **통합 source의 실제 feature/compile policy**를 먼저 확인한다. 그 뒤 동일 통합 source/feature cohort의 정식 snapshot·lease에서 **selector마다 별도 owning 요청/receipt**로 실행하고 본문 분모도 따로 기록한다. host의 heavy build/제품 부하는 직렬화한다. raw Cargo 결과나 class8304의 고정1079 cohort는 새 producer 경로의 자격 증명이 아니다.
 
@@ -148,6 +148,8 @@ Vector 삭제의 ordinary producer는 empty payload를 stage한 뒤 structured �
 
 실제 complete affected-domain generation·durable outbox·required side output을 공개 FULL/delta caller로 전달한다. Facts 후반 recompute/seed 부착/seed 누락에서도 원 terminal/입력/부분 결과·first/secondary cause·keeper를 유지한다. lower에서 버린 입력을 wrapper·문자열·재수집으로 복구하지 않는다.
 
+최초 FULL에는 change-event pending plan이 없을 수 있다. 이 경우 실제 finalized inventory와 Q2/module의 인증된 대여를 기존 corpus writer에 전달하고, terminal이 발급한 Product epoch를 RepoState·collector·두 ingress view까지 같은 대여로 보존한다. pending 부재를 빈 corpus binding으로 바꾸거나 inventory·권위를 재발급하지 않는다. Source-index completion은 prepare/commit의 일부이며, Java joined pin/build floor·Python normalized parser/type-world/projector 입력과 fresh Native journal/registry를 확인한 뒤에만 generation을 공개한다. 이 생산자 인수는 E02의 게시·복구 수용과 구분한다.
+
 ## DoD
 
 - [ ] 실제 SDK producer→모든 writer 수락→E02 게시→public query의 FULL/delta 결과가 independent cold-target gold와 일치.
@@ -157,4 +159,4 @@ Vector 삭제의 ordinary producer는 empty payload를 stage한 뒤 structured �
 - [ ] [P2I01–08](../../rfc/oct-10-native-incremental-vnext.md#214-gates-attached-to-existing-work-not-a-second-execution-plan)의 실제 producer/consumer·required side output·partial refusal·old-view/recovery oracle를 한 번 실행/소비.
 - [ ] 실패/cancel/unwind의 whole owner와 Source 종료/마지막 drop 환급. 생성한 실제 artifact를 E02/E05/E06에 한 번 인계.
 
-고정 세부 계약은 [이전 producer 사양](../../history/oct-22-finalizing/oct-17-index-closeout/tickets/W2-05-producer-full-delta.md)에 보존한다. 과거 TODO/상태는 재작업 지시가 아니다.
+고정 producer·prepared publication의 결정은 [Native custody ADR](../../adr/NOV-07-001-native-index-execution-and-custody.md#prepared-searchable-installation)을 따르고, 이전 W2 실행·배정 원문은 [복구 색인](../../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages)에 보존한다. 과거 TODO/상태는 재작업 지시가 아니다.

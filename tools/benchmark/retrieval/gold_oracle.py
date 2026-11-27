@@ -34,7 +34,6 @@ except ModuleNotFoundError:  # benchmark script path without the repository root
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import declaration_census_audit, source_oracle
 
-from tools.benchmark.retrieval.declaration_parsers import get_parser
 
 try:
     from evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
@@ -266,7 +265,14 @@ def _name_contract(language: object, intent: str) -> str:
     return contracts[0]
 
 
-def _census_audits(recipe: dict, sources: dict, view: Path) -> dict[str, dict]:
+def _census_audits(
+    recipe: dict,
+    sources: dict,
+    view: Path,
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+) -> dict[str, dict]:
     """Audit every supported source language for unscoped declaration tasks."""
     has_declaration_task = any(task["intent"] in DECLARATION_INTENTS for task in recipe["tasks"])
     languages = (
@@ -284,7 +290,13 @@ def _census_audits(recipe: dict, sources: dict, view: Path) -> dict[str, dict]:
     audits = {}
     for language in languages:
         try:
-            result = declaration_census_audit.audit_files(language, view, sorted(sources))
+            result = declaration_census_audit.audit_files(
+                language,
+                view,
+                sorted(sources),
+                candidate_manifest_path=candidate_manifest_path,
+                candidate_manifest_sha256=candidate_manifest_sha256,
+            )
         except declaration_census_audit.CensusAuditError as error:
             raise EvidenceError(f"declaration census audit failed: {error}") from error
         if result["file_set_sha256"] != declaration_census_audit.file_set_sha256(
@@ -342,35 +354,56 @@ def _literal_spans(raw: bytes, query: bytes) -> list[tuple[int, int, str]]:
 
 
 def _definition_spans(
-    raw: bytes, query: bytes, language: str, *, path: str
+    raw: bytes,
+    query: bytes,
+    language: str,
+    *,
+    path: str,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+    census_rows: list[tuple[int, int, int, int, str]] | ValueError | None = None,
 ) -> tuple[list, str | None]:
     try:
-        suffix = "." + path.rsplit(".", 1)[-1]
-        grammar = source_oracle.DECLARATION_GRAMMARS[language][suffix]
-        root = get_parser(grammar).parse(raw).root_node
+        if isinstance(census_rows, ValueError):
+            raise census_rows
+        rows = (
+            census_rows
+            if census_rows is not None
+            else source_oracle.declaration_census(
+                language,
+                path,
+                raw,
+                candidate_manifest_path=candidate_manifest_path,
+                candidate_manifest_sha256=candidate_manifest_sha256,
+            )
+        )
     except (LookupError, ValueError) as error:
-        return [], type(error).__name__
-    if root.has_error:
-        return [], "parser_error"
+        return [], "parser_error" if "parse error" in str(error) else "producer_error"
     spans = []
-    nodes = [root]
-    while nodes:
-        node = nodes.pop()
-        if node.type in FUNCTION_NODES[language]:
-            name = node.child_by_field_name("name")
-            if name is None:
-                return [], "missing_declaration_name"
-            if raw[name.start_byte : name.end_byte] == query:
-                spans.append((name.start_byte, name.end_byte, node.type))
-                if len(spans) > MAX_LABELS_PER_TASK:
-                    raise EvidenceError("gold definition task exceeds label limit")
-        nodes.extend(reversed(node.children))
+    for start, end, _definition_start, _definition_end, kind in rows:
+        if kind in FUNCTION_NODES[language] and raw[start:end] == query:
+            spans.append((start, end, kind))
+            if len(spans) > MAX_LABELS_PER_TASK:
+                raise EvidenceError("gold definition task exceeds label limit")
     return sorted(spans), None
 
 
-def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
+def derive(
+    recipe: dict,
+    manifest: dict,
+    view: Path,
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+) -> tuple[dict, dict]:
     from tools.benchmark import corpus_binding
 
+    if (candidate_manifest_path is None) != (candidate_manifest_sha256 is None):
+        raise EvidenceError("gold oracle candidate manifest requires path and digest")
+    if candidate_manifest_path is not None:
+        source_oracle.validate_candidate_manifest(
+            candidate_manifest_path, candidate_manifest_sha256
+        )
     corpus_binding.require_gold_runtime()
     validate_recipe(recipe)
     if (
@@ -399,12 +432,39 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
         sources[row["path"]] = (raw, file_sha)
     if list(sources) != sorted(sources):
         raise EvidenceError("gold release manifest files are not sorted")
-    audits = _census_audits(recipe, sources, view)
+    audits = _census_audits(
+        recipe,
+        sources,
+        view,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    )
     if "checker_identity" in recipe and recipe["checker_identity"] != {
         language: audit["checker"] for language, audit in audits.items()
     }:
         raise EvidenceError("gold checker identity differs from frozen recipe")
     censuses: dict[str, dict] = {language: {} for language in audits}
+    function_censuses: dict[str, list[tuple[int, int, int, int, str]] | ValueError] = {}
+    if candidate_manifest_path is not None:
+        for language in sorted(
+            {
+                task["language"]
+                for task in recipe["tasks"]
+                if task["intent"] == "named_function_declaration"
+            }
+        ):
+            with source_oracle.declaration_census_session(
+                language,
+                candidate_manifest_path=candidate_manifest_path,
+                candidate_manifest_sha256=candidate_manifest_sha256,
+            ) as census:
+                for path, (raw, _digest) in sources.items():
+                    if source_oracle.declaration_language(path) != language:
+                        continue
+                    try:
+                        function_censuses[path] = census(path, raw)
+                    except source_oracle.SourceOracleError as error:
+                        function_censuses[path] = error
     gold_tasks, blind_tasks = [], []
     label_count = 0
     paths_by_split: dict[str, set[str]] = {"development": set(), "holdout": set()}
@@ -466,7 +526,15 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                     )
                 )
             else:
-                spans, reason = _definition_spans(raw, query, task["language"], path=path)
+                spans, reason = _definition_spans(
+                    raw,
+                    query,
+                    task["language"],
+                    path=path,
+                    candidate_manifest_path=candidate_manifest_path,
+                    candidate_manifest_sha256=candidate_manifest_sha256,
+                    census_rows=function_censuses.get(path),
+                )
             if reason is not None:
                 unsupported.append({"path": path, "reason": reason})
                 continue
@@ -572,6 +640,8 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
         "census_audits": audits,
         "tasks": gold_tasks,
     }
+    if candidate_manifest_sha256 is not None:
+        gold["candidate_manifest_sha256"] = candidate_manifest_sha256
     if recipe["schema_version"] == 2:
         gold.update(split=recipe_split, split_manifest_sha256=recipe["split_manifest_sha256"])
     return gold, {"schema_version": 1, "tasks": blind_tasks}

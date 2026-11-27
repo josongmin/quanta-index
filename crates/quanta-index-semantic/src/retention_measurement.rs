@@ -80,19 +80,20 @@ impl<'a> SemanticRetentionSession<'a> {
                 ),
             });
         }
-        let digest = control_file::read_string_bounded_with_admission(
+        let lifetime = self.adapter.generation_control_lifetime();
+        let digest = control_file::read_string_for_generation(
             &marker,
             control_file::MAX_SEALED_MARKER_BYTES,
-            self.adapter.lance_read_admission.as_deref(),
+            lifetime,
         )
         .map_err(|error| crate::errors::fs_err("retention read seal", &marker, &error))?;
         if !self.membership.contains_generation(generation)? {
             let manifest_path = layout::manifest_path(&directory);
             let manifest = SemanticManifest::decode(
-                &control_file::read_bounded_with_admission(
+                &control_file::read_bounded_for_generation(
                     &manifest_path,
                     control_file::MAX_SCOPE_MANIFEST_BYTES,
-                    self.adapter.lance_read_admission.as_deref(),
+                    lifetime,
                 )
                 .map_err(|error| {
                     crate::errors::fs_err("retention read manifest", &manifest_path, &error)
@@ -174,7 +175,7 @@ impl SealedGenerationByteSession for SemanticRetentionSession<'_> {
         generations: &BTreeSet<ManifestGeneration>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
         let diagnostic = self.diagnostic.clone();
-        crate::observe_result(
+        super::observe_result(
             diagnostic.as_ref(),
             DiagnosticStageV1::RetentionMeasure,
             |_| {

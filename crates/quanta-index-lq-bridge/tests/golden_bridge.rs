@@ -6,11 +6,11 @@
 //! filter lowering (translator-only proof;
 //! executable SG/native parity lives in `e2e_dual_syntax_lowering_parity`).
 
-use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqPredicateArg, LqType, LqYesNoOnly};
 use quanta_index_lq_bridge::{
     BridgeCandidate, BridgeErrorCode, SourcegraphVersionTag, TRANSLATOR_VERSION, parse_sourcegraph,
     translate_query,
 };
+use quanta_index_lq_norm::{LqExpr, LqFilter, LqLeaf, LqPredicateArg, LqType, LqYesNoOnly};
 
 fn filters_for(raw: &str) -> Vec<LqFilter> {
     let q = match parse_sourcegraph(raw) {
@@ -103,7 +103,7 @@ fn row2_adopted_fork_no_filter() {
     assert_eq!(
         lq.filters,
         vec![LqFilter::Fork {
-            mode: quanta_index_contract::LqYesNoOnly::No,
+            mode: quanta_index_lq_norm::LqYesNoOnly::No,
         }]
     );
 }

@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Setup uv for Python lock validation
+        uses: astral-sh/setup-uv@v6
+
       - name: Install pre-commit
         run: python -m pip install 'pre-commit>=4.0.0'
 
@@ -45,7 +48,7 @@ jobs:
           components: rustfmt
 
       - name: rust fmt
-        run: ./scripts/run-rustfmt-owned.sh -- --check
+        run: bash scripts/run-rustfmt.sh check
 
   rust-clippy:
     runs-on: ubuntu-latest
@@ -129,6 +132,9 @@ jobs:
       - name: cargo +1.92.0 test --all-targets --no-run
         run: RUSTUP_TOOLCHAIN=1.92.0 ./scripts/cargow --lane msrv-lane test --workspace --all-targets --all-features --locked --no-run
 
+      - name: Check standalone SQLite FD ledger at MSRV
+        run: RUSTUP_TOOLCHAIN=1.92.0 ./scripts/cargow --lane sqlite-oracle-lane check --manifest-path crates/quanta-index-sqlite-fd-ledger/Cargo.toml --all-targets --all-features --locked --offline
+
   rust-docs:
     runs-on: ubuntu-latest
     steps:
@@ -156,7 +162,7 @@ jobs:
         uses: taiki-e/install-action@cargo-deny
 
       - name: cargo deny
-        run: bash scripts/run-cargo-deny.sh
+        run: bash scripts/run-cargo-deny.sh --all-workspaces
 
   rust-machete:
     name: rust-machete (unused deps)
@@ -450,14 +456,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install prompt-manager deps
-        run: python -m pip install 'jinja2>=3.1.4' 'jsonschema>=4.23.0' 'pyyaml>=6.0.2' 'pytest>=8.3.0' 'ruff==0.16.8' 'tree-sitter==0.25.2' 'tree-sitter-language-pack==0.10.0'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
 
       - name: prompt-manager lint
-        run: python tools/prompt-manager/pm.py lint
+        run: uv run --frozen --extra dev python tools/prompt-manager/pm.py lint
 
       - name: prompt-manager ruff
-        run: bash -lc 'source scripts/quanta-index-env.sh && python -m ruff check . && python -m ruff format --check .'
+        run: uv run --frozen --extra dev bash -c 'source scripts/quanta-index-env.sh && python -m ruff check . && python -m ruff format --check .'
 
       - name: tooling tests
         run: bash scripts/run-tooling-tests.sh

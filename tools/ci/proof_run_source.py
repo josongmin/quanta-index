@@ -27,15 +27,18 @@ from tools.ci.lint.handoff_validation import (
 from tools.ci.proof_json import parse_proof_json
 
 P12A_PROOF = "p12a-proof-infrastructure"
-BOUND_RUN_PROOFS = frozenset((*NATIVE_RELEASE_SCOPES.values(), P12A_PROOF))
+BOUND_OWNER_SCOPES = {
+    "p02b-operation-journal": "p02b-operation-journal",
+    "p02b-native-journal-lib": "p02b-operation-journal",
+    "candidate-activation-owner": "p03-candidate-activation-owner",
+    "read-view-lifetime-owner": "p04-read-view-lifetime-owner",
+}
+BOUND_RUN_PROOFS = frozenset(
+    (*NATIVE_RELEASE_SCOPES.values(), *BOUND_OWNER_SCOPES.values(), P12A_PROOF)
+)
 GIT_REPOSITORY_OVERRIDES = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_NAMESPACE",
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
 )
 
 
@@ -45,15 +48,12 @@ class ProofRunSource:
     head: str
     dirty_digest: str
     cargo_lock_sha256: str | None
+    feature_mode: str | None = None
 
     def record(
-        self,
-        *,
-        format: str,
-        digests: dict[str, str],
-        daemon_sha256: str | None = None,
+        self, *, format: str, digests: dict[str, str], daemon_sha256: str | None = None,
     ) -> dict[str, Any]:
-        return {
+        record = {
             "schema_version": 1,
             "proof_id": self.proof_id,
             "source": {"head": self.head, "dirty_digest": self.dirty_digest},
@@ -62,6 +62,9 @@ class ProofRunSource:
             "format": format,
             "artifacts": digests,
         }
+        if self.feature_mode is not None:
+            record["feature_mode"] = self.feature_mode
+        return record
 
 
 @cache
@@ -77,17 +80,11 @@ def _source_checker() -> ModuleType:
 
 
 def capture_run_source(
-    root: Path,
-    proof: dict[str, Any],
-    *,
-    outputs: Iterable[Path] = (),
+    root: Path, proof: dict[str, Any], *, outputs: Iterable[Path] = (),
 ) -> ProofRunSource:
     try:
         snapshot = _source_checker().proof_source_snapshot(
-            root,
-            manifest_path=root / proof["artifact"],
-            proof=proof,
-            excluded_paths=outputs,
+            root, manifest_path=root / proof["artifact"], proof=proof, excluded_paths=outputs,
         )
         cargo_lock = (
             _sha256_repo_regular_file(root, "Cargo.lock", label="proof Cargo.lock")
@@ -96,16 +93,15 @@ def capture_run_source(
         )
     except (OSError, RuntimeError, ValueError) as error:
         raise ValueError(f"cannot capture proof source: {error}") from error
-    return ProofRunSource(proof["id"], snapshot["head"], snapshot["dirty_digest"], cargo_lock)
+    feature_mode = "all-features" if proof["id"] in BOUND_OWNER_SCOPES.values() else None
+    return ProofRunSource(
+        proof["id"], snapshot["head"], snapshot["dirty_digest"], cargo_lock, feature_mode
+    )
 
 
 def require_run_source(
-    root: Path,
-    proof: dict[str, Any],
-    captured: ProofRunSource,
-    *,
-    phase: str,
-    outputs: Iterable[Path] = (),
+    root: Path, proof: dict[str, Any], captured: ProofRunSource, *,
+    phase: str, outputs: Iterable[Path] = (),
 ) -> None:
     if capture_run_source(root, proof, outputs=outputs) != captured:
         raise ValueError(f"proof source changed during {phase}")
@@ -113,10 +109,7 @@ def require_run_source(
 
 def _git(root: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     result = subprocess.run(
-        ["git", "-C", str(root), *args],
-        input=input_bytes,
-        capture_output=True,
-        check=False,
+        ["git", "-C", str(root), *args], input=input_bytes, capture_output=True, check=False,
     )
     if result.returncode != 0:
         raise ValueError(f"cannot freeze proof source: {os.fsdecode(result.stderr).strip()}")
@@ -137,12 +130,7 @@ def _file_versions(root: Path, paths: Iterable[str]) -> dict[str, tuple[int, ...
             versions[path] = None  # A tracked deletion is part of the working tree.
         else:
             versions[path] = (
-                info.st_dev,
-                info.st_ino,
-                info.st_mode,
-                info.st_size,
-                info.st_mtime_ns,
-                info.st_ctime_ns,
+                info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
             )
     return versions
 
@@ -156,9 +144,7 @@ def _checkout_state(root: Path) -> tuple[bytes, bytes, dict[str, tuple[int, ...]
 
 
 def _copy_working_tree(
-    root: Path,
-    checkout: Path,
-    versions: dict[str, tuple[int, ...] | None],
+    root: Path, checkout: Path, versions: dict[str, tuple[int, ...] | None],
 ) -> None:
     for relative, version in versions.items():
         if version is None:
@@ -171,9 +157,7 @@ def _copy_working_tree(
         else:
             with destination.open("xb") as output:
                 _consume_repo_regular_file(
-                    root,
-                    relative,
-                    label="proof execution source",
+                    root, relative, label="proof execution source",
                     consume=lambda source: shutil.copyfileobj(source, output),
                 )
             destination.chmod(stat.S_IMODE(mode))
@@ -223,10 +207,7 @@ class FrozenRunCheckout:
 
 @contextmanager
 def frozen_run_checkout(
-    root: Path,
-    proof: dict[str, Any],
-    captured: ProofRunSource,
-    *,
+    root: Path, proof: dict[str, Any], captured: ProofRunSource, *,
     outputs: Iterable[Path] = (),
 ) -> Iterator[FrozenRunCheckout]:
     """Keep collection and execution on the same working-tree bytes and index."""
@@ -259,22 +240,14 @@ def frozen_run_checkout(
             checkout / path.relative_to(root) for path in outputs if path.is_relative_to(root)
         )
         require_run_source(
-            checkout,
-            proof,
-            captured,
-            phase="checkout materialization",
-            outputs=cloned_outputs,
+            checkout, proof, captured, phase="checkout materialization", outputs=cloned_outputs,
         )
         _seal_working_tree(checkout)
         yield FrozenRunCheckout(checkout, *_checkout_state(checkout))
 
 
 def write_run_binding(
-    path: Path,
-    source: ProofRunSource,
-    *,
-    format: str,
-    digests: dict[str, str],
+    path: Path, source: ProofRunSource, *, format: str, digests: dict[str, str],
     daemon_sha256: str | None = None,
 ) -> None:
     record = source.record(format=format, digests=digests, daemon_sha256=daemon_sha256)
@@ -282,11 +255,7 @@ def write_run_binding(
 
 
 def verify_run_binding(
-    content: bytes,
-    source: ProofRunSource,
-    *,
-    format: str,
-    digests: dict[str, str],
+    content: bytes, source: ProofRunSource, *, format: str, digests: dict[str, str],
     daemon_sha256: str | None,
 ) -> None:
     record = parse_proof_json(content)

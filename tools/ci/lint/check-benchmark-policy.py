@@ -144,9 +144,17 @@ def workflow_bypasses(repo_root: Path, registry: dict) -> list[str]:
     }
     bypasses: list[str] = []
     workflows = repo_root / ".github" / "workflows"
-    if not workflows.is_dir():
-        return bypasses
-    for path in sorted(workflows.glob("*.yml")):
+    paths = sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml")))
+    paths.extend(
+        path
+        for path in (
+            repo_root / ".circleci" / "config.yml",
+            repo_root / ".circleci" / "config.yaml",
+        )
+        if path.is_file()
+    )
+    for path in paths:
+        circleci = path.parent.name == ".circleci"
         try:
             workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as exc:
@@ -159,9 +167,13 @@ def workflow_bypasses(repo_root: Path, registry: dict) -> list[str]:
             if not isinstance(job, dict):
                 continue
             for step in job.get("steps", []):
-                if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                if not isinstance(step, dict):
                     continue
-                script = re.sub(r"\\\r?\n[ \t]*", " ", step["run"])
+                run = step.get("run")
+                command = run.get("command") if circleci and isinstance(run, dict) else run
+                if not isinstance(command, str):
+                    continue
+                script = re.sub(r"\\\r?\n[ \t]*", " ", command)
                 for line in script.splitlines():
                     executable = line.split("#", 1)[0].strip()
                     if not executable:
@@ -171,12 +183,12 @@ def workflow_bypasses(repo_root: Path, registry: dict) -> list[str]:
                             bypasses.append(f"{path.name}:{job_id}: {executable}")
                     for match in PYTHON_INVOCATION.finditer(executable):
                         entry = match["entry"]
-                        script = (
+                        producer_path = (
                             f"{entry.replace('.', '/')}.py"
                             if match["module"]
                             else entry.removeprefix("./")
                         )
-                        if script in protected_modules:
+                        if producer_path in protected_modules:
                             bypasses.append(f"{path.name}:{job_id}: {executable}")
                     if SCORER_INVOCATION.search(executable):
                         bypasses.append(f"{path.name}:{job_id}: {executable}")

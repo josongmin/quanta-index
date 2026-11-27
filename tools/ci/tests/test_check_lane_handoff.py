@@ -81,6 +81,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
         owner = root / proof["owner"]
         owner.parent.mkdir(parents=True, exist_ok=True)
         owner.touch(exist_ok=True)
+    native_owner = Path("crates/quanta-index-catalog/src/native/authority.rs")
+    shutil.copyfile(REPO_ROOT / native_owner, root / native_owner)
     (root / ".gitignore").write_text("/artifacts/\n__pycache__/\n*.py[cod]\n", encoding="utf-8")
 
     _run(root, "git", "init", "-q")
@@ -271,8 +273,7 @@ def test_explicit_retired_proof_archive_replays_issuing_registry(tmp_path, capsy
         artifact=f"artifacts/proof-authority/{retired_id}.json",
     )
     registry.write_text(
-        current_registry
-        + "\n[[proofs]]\n"
+        current_registry + "\n[[proofs]]\n"
         + "".join(f"{key} = {json.dumps(value)}\n" for key, value in issuer.items())
     )
     catalog.write_text(

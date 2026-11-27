@@ -25,9 +25,19 @@ pub struct FdToken {
     generation: NonZeroU64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SharedOwnerToken {
+    fd_generation: NonZeroU64,
+    owner_generation: NonZeroU64,
+}
+
 impl FdToken {
     pub fn fd(self) -> RawFd {
         self.fd
+    }
+
+    pub fn generation(self) -> NonZeroU64 {
+        self.generation
     }
 }
 
@@ -56,7 +66,16 @@ pub enum LedgerError {
     Full,
     UnknownToken,
     NotCurrent,
+    OwnerGenerationExhausted,
 }
+
+impl std::fmt::Display for LedgerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, formatter)
+    }
+}
+
+impl std::error::Error for LedgerError {}
 
 #[derive(Debug)]
 pub enum OpenError<E> {
@@ -86,15 +105,18 @@ struct Entry {
     charge: NonZeroU64,
     identity: Option<FileIdentity>,
     physical: Physical,
-    owner_released: bool,
+    initial_owner_released: bool,
+    shared_owners: usize,
     quarantined: bool,
 }
 
 struct State {
     next_generation: u64,
+    next_owner_generation: u64,
     // Fully allocated before the first syscall. Quarantined entries keep
     // their slot until process-level reconciliation, never grow the vector.
     entries: Vec<Option<Entry>>,
+    owners: Vec<Option<SharedOwnerToken>>,
 }
 
 pub struct FdLedger {
@@ -111,17 +133,48 @@ impl FdLedger {
         u64::try_from(bytes).map_err(|_| LedgerError::MemoryUnavailable)
     }
 
+    /// Lower bound for both fixed tables. Allocator rounding and metadata are
+    /// excluded; callers must not use this as a hard memory admission grant.
+    pub fn minimum_backing_bytes(
+        max_entries: NonZeroUsize,
+        max_shared_owners: NonZeroUsize,
+    ) -> Result<u64, LedgerError> {
+        let entries = Self::minimum_slot_backing_bytes(max_entries)?;
+        let owners = std::mem::size_of::<Option<SharedOwnerToken>>()
+            .checked_mul(max_shared_owners.get())
+            .ok_or(LedgerError::MemoryUnavailable)?;
+        entries
+            .checked_add(u64::try_from(owners).map_err(|_| LedgerError::MemoryUnavailable)?)
+            .ok_or(LedgerError::MemoryUnavailable)
+    }
+
     pub fn with_capacity(max_entries: NonZeroUsize) -> Result<Self, LedgerError> {
-        let _minimum_size = Self::minimum_slot_backing_bytes(max_entries)?;
+        Self::with_limits(max_entries, max_entries)
+    }
+
+    /// Both tables are allocated before the first SQLite syscall. The owner
+    /// table bounds concurrent SHM references independently of physical FDs.
+    pub fn with_limits(
+        max_entries: NonZeroUsize,
+        max_shared_owners: NonZeroUsize,
+    ) -> Result<Self, LedgerError> {
+        let _minimum_size = Self::minimum_backing_bytes(max_entries, max_shared_owners)?;
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(max_entries.get())
             .map_err(|_| LedgerError::MemoryUnavailable)?;
         entries.resize_with(max_entries.get(), || None);
+        let mut owners = Vec::new();
+        owners
+            .try_reserve_exact(max_shared_owners.get())
+            .map_err(|_| LedgerError::MemoryUnavailable)?;
+        owners.resize_with(max_shared_owners.get(), || None);
         Ok(Self {
             state: Mutex::new(State {
                 next_generation: 0,
+                next_owner_generation: 0,
                 entries,
+                owners,
             }),
         })
     }
@@ -187,7 +240,8 @@ impl FdLedger {
             charge,
             identity,
             physical: Physical::Live,
-            owner_released: false,
+            initial_owner_released: false,
+            shared_owners: 0,
             quarantined,
         });
         let token = FdToken { fd, generation };
@@ -212,16 +266,92 @@ impl FdLedger {
             }))
     }
 
-    /// This is the only path that issues a refund receipt. A logical xClose
-    /// may precede physical close by an arbitrary number of other operations.
+    /// Return the rooted inode witness for a live generation. This binds a
+    /// shared SHM node to the database FD that SQLite opened through this
+    /// ledger, without reopening a path or trusting a recycled numeric FD.
+    pub fn live_witness(
+        &self,
+        token: FdToken,
+    ) -> Result<Option<(NonZeroU64, FileIdentity)>, LedgerError> {
+        let state = self.lock()?;
+        Ok(state.entries.iter().flatten().find_map(|entry| {
+            (entry.fd == token.fd
+                && entry.generation == token.generation
+                && matches!(entry.physical, Physical::Live))
+            .then(|| entry.identity.map(|identity| (entry.root, identity)))
+            .flatten()
+        }))
+    }
+
+    /// A shared SQLite SHM descriptor may have multiple logical owners while
+    /// retaining a single physical FD and one file charge. Retaining a new
+    /// owner after physical close is forbidden, even when the last owner has
+    /// not yet released its reference.
+    pub fn retain_owner(&self, token: FdToken) -> Result<SharedOwnerToken, LedgerError> {
+        let mut state = self.lock()?;
+        if !state.entries.iter().flatten().any(|entry| {
+            entry.generation == token.generation
+                && entry.fd == token.fd
+                && matches!(entry.physical, Physical::Live)
+                && (!entry.initial_owner_released || entry.shared_owners != 0)
+        }) {
+            return Err(LedgerError::NotCurrent);
+        }
+        let slot = state
+            .owners
+            .iter()
+            .position(Option::is_none)
+            .ok_or(LedgerError::Full)?;
+        let owner_generation = NonZeroU64::new(
+            state
+                .next_owner_generation
+                .checked_add(1)
+                .ok_or(LedgerError::OwnerGenerationExhausted)?,
+        )
+        .ok_or(LedgerError::OwnerGenerationExhausted)?;
+        let owner = SharedOwnerToken {
+            fd_generation: token.generation,
+            owner_generation,
+        };
+        let entry =
+            find_entry_mut(&mut state, token.generation).ok_or(LedgerError::UnknownToken)?;
+        entry.shared_owners = entry
+            .shared_owners
+            .checked_add(1)
+            .ok_or(LedgerError::OwnerGenerationExhausted)?;
+        state.next_owner_generation = owner_generation.get();
+        state.owners[slot] = Some(owner);
+        Ok(owner)
+    }
+
+    pub fn release_shared_owner(
+        &self,
+        owner: SharedOwnerToken,
+    ) -> Result<Option<RetirementReceipt>, LedgerError> {
+        let mut state = self.lock()?;
+        let slot = state
+            .owners
+            .iter()
+            .position(|entry| *entry == Some(owner))
+            .ok_or(LedgerError::UnknownToken)?;
+        state.owners[slot] = None;
+        let entry =
+            find_entry_mut(&mut state, owner.fd_generation).ok_or(LedgerError::UnknownToken)?;
+        entry.shared_owners -= 1;
+        Ok(retire_if_proven(&mut state, owner.fd_generation))
+    }
+
+    /// Release the initial owner returned by open_with. A logical xClose may
+    /// precede physical close by an arbitrary number of other operations.
+    /// Shared owners use their distinct one-shot tokens.
     pub fn release_owner(&self, token: FdToken) -> Result<Option<RetirementReceipt>, LedgerError> {
         let mut state = self.lock()?;
         let entry =
             find_entry_mut(&mut state, token.generation).ok_or(LedgerError::UnknownToken)?;
-        if entry.fd != token.fd || entry.owner_released {
+        if entry.fd != token.fd || entry.initial_owner_released {
             return Err(LedgerError::UnknownToken);
         }
-        entry.owner_released = true;
+        entry.initial_owner_released = true;
         Ok(retire_if_proven(&mut state, token.generation))
     }
 
@@ -271,7 +401,11 @@ fn retire_if_proven(state: &mut State, generation: NonZeroU64) -> Option<Retirem
             .is_some_and(|entry| entry.generation == generation)
     })?;
     let entry = state.entries[slot].as_ref()?;
-    if !entry.owner_released || !matches!(entry.physical, Physical::Retired) || entry.quarantined {
+    if !entry.initial_owner_released
+        || entry.shared_owners != 0
+        || !matches!(entry.physical, Physical::Retired)
+        || entry.quarantined
+    {
         return None;
     }
     let identity = entry.identity?;
@@ -347,6 +481,7 @@ mod tests {
         else {
             panic!("expected witnessed open");
         };
+        assert_eq!(ledger.live_witness(old), Ok(Some((id(1), identity(19)))));
         assert_eq!(ledger.release_owner(old), Ok(None));
         let mut attempts = 0;
         assert!(matches!(
@@ -365,6 +500,7 @@ mod tests {
             Err(LedgerError::NotCurrent)
         ));
         assert_eq!(attempts, 1);
+        assert_eq!(ledger.live_witness(old), Ok(None));
         let OpenDisposition::Ready(new) = ledger
             .open_with(id(2), id(12), || Ok::<_, ()>(5), |_| Some(identity(20)))
             .unwrap()
@@ -372,6 +508,8 @@ mod tests {
             panic!("FD reuse must be a new generation");
         };
         assert_ne!(old.generation, new.generation);
+        assert_eq!(ledger.live_witness(old), Ok(None));
+        assert_eq!(ledger.live_witness(new), Ok(Some((id(2), identity(20)))));
         assert_eq!(ledger.current(5), Ok(Some(new)));
         assert!(matches!(
             ledger.close_with(old, |_| Ok::<_, ()>(())),
@@ -447,6 +585,109 @@ mod tests {
         let receipt = ledger.release_owner(token).unwrap().unwrap();
         assert_eq!(receipt.charge, id(11));
         assert_eq!(ledger.release_owner(token), Err(LedgerError::UnknownToken));
+    }
+
+    #[test]
+    fn shared_shm_fd_refunds_only_after_last_owner_and_physical_close() {
+        let ledger =
+            FdLedger::with_limits(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(2).unwrap())
+                .unwrap();
+        let OpenDisposition::Ready(token) = ledger
+            .open_with(id(1), id(11), || Ok::<_, ()>(5), |_| Some(identity(19)))
+            .unwrap()
+        else {
+            panic!("expected witnessed open");
+        };
+        let first = ledger.retain_owner(token).unwrap();
+        let second = ledger.retain_owner(token).unwrap();
+        assert_eq!(ledger.release_owner(token), Ok(None));
+        assert_eq!(ledger.release_shared_owner(first), Ok(None));
+        assert_eq!(
+            ledger.release_shared_owner(first),
+            Err(LedgerError::UnknownToken)
+        );
+        assert!(matches!(
+            ledger.close_with(token, |_| Ok::<_, ()>(())),
+            Ok(CloseReport::Closed(None))
+        ));
+        assert_eq!(ledger.retain_owner(token), Err(LedgerError::NotCurrent));
+        let receipt = ledger.release_shared_owner(second).unwrap().unwrap();
+        assert_eq!((receipt.charge, receipt.identity), (id(11), identity(19)));
+        assert_eq!(ledger.release_owner(token), Err(LedgerError::UnknownToken));
+    }
+
+    #[test]
+    fn shared_shm_fd_uncertain_close_never_refunds() {
+        let ledger =
+            FdLedger::with_limits(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(1).unwrap())
+                .unwrap();
+        let OpenDisposition::Ready(token) = ledger
+            .open_with(id(1), id(11), || Ok::<_, ()>(5), |_| Some(identity(19)))
+            .unwrap()
+        else {
+            panic!("expected witnessed open");
+        };
+        let owner = ledger.retain_owner(token).unwrap();
+        assert!(matches!(
+            ledger.close_with(token, |_| Err::<(), _>("EINTR")),
+            Ok(CloseReport::Uncertain("EINTR"))
+        ));
+        assert_eq!(ledger.retain_owner(token), Err(LedgerError::NotCurrent));
+        assert_eq!(ledger.release_owner(token), Ok(None));
+        assert_eq!(ledger.release_shared_owner(owner), Ok(None));
+        assert_eq!(
+            ledger.release_shared_owner(owner),
+            Err(LedgerError::UnknownToken)
+        );
+        assert_eq!(ledger.release_owner(token), Err(LedgerError::UnknownToken));
+    }
+
+    #[test]
+    fn shared_owner_pool_refuses_before_refcount_change_and_reuse_is_one_shot() {
+        let ledger =
+            FdLedger::with_limits(NonZeroUsize::new(1).unwrap(), NonZeroUsize::new(1).unwrap())
+                .unwrap();
+        let OpenDisposition::Ready(token) = ledger
+            .open_with(id(1), id(11), || Ok::<_, ()>(5), |_| Some(identity(19)))
+            .unwrap()
+        else {
+            panic!("expected witnessed open");
+        };
+        let first = ledger.retain_owner(token).unwrap();
+        assert_eq!(ledger.retain_owner(token), Err(LedgerError::Full));
+        assert_eq!(ledger.release_shared_owner(first), Ok(None));
+        let second = ledger.retain_owner(token).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            ledger.release_shared_owner(first),
+            Err(LedgerError::UnknownToken)
+        );
+        assert_eq!(ledger.release_owner(token), Ok(None));
+        assert!(matches!(
+            ledger.close_with(token, |_| Ok::<_, ()>(())),
+            Ok(CloseReport::Closed(None))
+        ));
+        assert!(matches!(
+            ledger.release_shared_owner(second),
+            Ok(Some(RetirementReceipt { charge, .. })) if charge == id(11)
+        ));
+    }
+
+    #[test]
+    fn released_last_owner_cannot_resurrect_deferred_close() {
+        let ledger = FdLedger::with_capacity(NonZeroUsize::new(1).unwrap()).unwrap();
+        let OpenDisposition::Ready(token) = ledger
+            .open_with(id(1), id(11), || Ok::<_, ()>(5), |_| Some(identity(19)))
+            .unwrap()
+        else {
+            panic!("expected witnessed open");
+        };
+        assert_eq!(ledger.release_owner(token), Ok(None));
+        assert_eq!(ledger.retain_owner(token), Err(LedgerError::NotCurrent));
+        assert!(matches!(
+            ledger.close_with(token, |_| Ok::<_, ()>(())),
+            Ok(CloseReport::Closed(Some(_)))
+        ));
     }
 
     #[test]

@@ -9,23 +9,36 @@ use std::{
     io::Read as _,
     ops::Bound::{Excluded, Unbounded},
     sync::{
-        Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
 
 use quanta_index_contract::{
-    index::ViewSelection,
+    index::{Digest, IndexInstanceId, ViewRef, ViewSelection},
     native_protocol::{NativeReadSessionId, NativeReadSessionState, NativeReadSessionStatus},
 };
-use quanta_index_core::index::{IndexError, MemoryLease, WorkBudget, WorkBudgetDenial};
+use quanta_index_core::index::{
+    IndexError, MemoryLease, MemoryLeaseOwner, WorkBudget, WorkBudgetDenial,
+};
 use quanta_index_kernel::ReadTicket;
+use quanta_index_lexical::native::{MAX_TEXT_RANK_ORDER_BYTES, TextRankMemoryPort, TextRankOrder};
 
 const SLOT_ALLOWANCE_BYTES: u64 = 4096;
 const TABLE_ALLOWANCE_BYTES: u64 = 4096;
 const MAX_GLOBAL_LIMIT: usize = 1024;
+const DEFAULT_GLOBAL_LIMIT: usize = 64;
+// Bound the replay window separately from concurrent live custody. At the
+// defaults, one UID can retain 128 sequential opens and the daemon 512.
+// Saturation applies backpressure until TTL rather than breaking replay.
+const RETAINED_SLOTS_PER_LIVE_SLOT: usize = 8;
+#[expect(
+    clippy::as_conversions,
+    reason = "a bounded session count widens to u64; u64::try_from is not const"
+)]
+const DEFAULT_TEXT_ORDER_MEMORY: u64 = DEFAULT_GLOBAL_LIMIT as u64 * MAX_TEXT_RANK_ORDER_BYTES;
 const MAX_TERMINAL_TTL: Duration = Duration::from_secs(3600);
 const LOCK_POLL: Duration = Duration::from_millis(1);
 const CLOSING_BIT: usize = 1;
@@ -33,24 +46,143 @@ const RELEASE_WAITER: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeReadSessionConfig {
+    /// Concurrent live or opening sessions, including uncertain releases.
     pub global_limit: usize,
+    /// Concurrent live or opening sessions for one authenticated UID.
     pub per_uid_limit: usize,
+    /// Minimum replay lifetime for a released record. After this TTL, a sweep
+    /// or capacity admission may remove the record.
     pub terminal_ttl: Duration,
     pub sweep_limit: usize,
+    /// The declared share of the registry's Interactive grant that cached
+    /// text rank orders may hold across all sessions; `0` disables the cache.
+    ///
+    /// A session keeps at most one text page's full rank order so later
+    /// pages of the same view, instance and query skip the full re-scan. The
+    /// share is reserved with the registry at configuration, so it is checked
+    /// against the Interactive plan once and never competes with responses
+    /// afterwards. An order the share cannot fund is not kept; its later
+    /// pages re-rank, with identical results. A share above
+    /// [`Self::full_text_order_memory`] could never be used and is refused.
+    pub text_order_memory: u64,
 }
 
 impl Default for NativeReadSessionConfig {
     fn default() -> Self {
         Self {
-            global_limit: 64,
+            global_limit: DEFAULT_GLOBAL_LIMIT,
             per_uid_limit: 16,
             terminal_ttl: Duration::from_secs(300),
             sweep_limit: 8,
+            text_order_memory: DEFAULT_TEXT_ORDER_MEMORY,
         }
     }
 }
 
+/// The identity a cached text order answers: one view, member instance,
+/// canonical query digest and projection (owner or `select:path` pages).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TextOrderKey {
+    pub(super) view: ViewRef,
+    pub(super) instance: IndexInstanceId,
+    pub(super) query: Digest,
+    pub(super) path: bool,
+}
+
+/// At most one cached text order per session. Its rows hold a charge on the
+/// registry's text order share, returned when the last holder of the order
+/// drops it after the session is released or removed.
+type CachedTextOrder = Option<(TextOrderKey, Arc<TextRankOrder>)>;
+
+/// The sub-ledger cached text orders are charged to.
+///
+/// It is the declared `text_order_memory` share of the registry's
+/// Interactive grant. It only counts bytes the registry already reserved, so
+/// funding an order never reserves service memory and never competes with
+/// responses.
+#[derive(Debug)]
+struct TextOrderShare {
+    capacity: u64,
+    used: AtomicU64,
+    // A release below zero is corrupted accounting: no later charge trusts it.
+    invalid: AtomicBool,
+}
+
+impl TextOrderShare {
+    fn new(capacity: u64) -> Arc<Self> {
+        Arc::new(Self {
+            capacity,
+            used: AtomicU64::new(0),
+            invalid: AtomicBool::new(false),
+        })
+    }
+
+    /// A charge of `bytes`, or `None` when the share cannot fund them.
+    fn charge(self: &Arc<Self>, bytes: u64) -> Option<MemoryLease> {
+        if self.invalid.load(Ordering::Acquire) {
+            return None;
+        }
+        if self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes)
+                    .filter(|charged| *charged <= self.capacity)
+            })
+            .is_err()
+        {
+            return None;
+        }
+        let owner: Arc<dyn MemoryLeaseOwner> = Arc::<Self>::clone(self);
+        Some(MemoryLease::new(bytes, owner))
+    }
+
+    #[cfg(test)]
+    fn used(&self) -> u64 {
+        self.used.load(Ordering::Acquire)
+    }
+}
+
+impl MemoryLeaseOwner for TextOrderShare {
+    fn release(&self, bytes: u64) {
+        if self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_sub(bytes)
+            })
+            .is_err()
+        {
+            self.invalid.store(true, Ordering::Release);
+        }
+    }
+}
+
+impl TextRankMemoryPort for TextOrderShare {
+    fn try_reserve(self: Arc<Self>, bytes: u64) -> Result<Option<MemoryLease>, IndexError> {
+        if self.invalid.load(Ordering::Acquire) {
+            return Err(IndexError::BackendViolation(
+                "text order share ledger is invalid".into(),
+            ));
+        }
+        let charge = self.charge(bytes);
+        if charge.is_none() && self.invalid.load(Ordering::Acquire) {
+            return Err(IndexError::BackendViolation(
+                "text order share ledger is invalid".into(),
+            ));
+        }
+        Ok(charge)
+    }
+}
+
 impl NativeReadSessionConfig {
+    /// The share that lets every one of `global_limit` sessions keep the
+    /// largest order a capture produces.
+    pub fn full_text_order_memory(global_limit: usize) -> Result<u64, IndexError> {
+        u64::try_from(global_limit)
+            .map_err(|_width| IndexError::ResourceLimited)?
+            .checked_mul(MAX_TEXT_RANK_ORDER_BYTES)
+            .ok_or(IndexError::ResourceLimited)
+    }
+
     pub fn validate(self) -> Result<Self, IndexError> {
         if self.global_limit == 0
             || self.global_limit > MAX_GLOBAL_LIMIT
@@ -63,6 +195,11 @@ impl NativeReadSessionConfig {
         {
             return Err(IndexError::InvalidInput(
                 "invalid bounded native read-session config".into(),
+            ));
+        }
+        if self.text_order_memory > Self::full_text_order_memory(self.global_limit)? {
+            return Err(IndexError::InvalidInput(
+                "native read-session text order share exceeds every session's largest order".into(),
             ));
         }
         Ok(self)
@@ -92,7 +229,11 @@ struct Entry {
     // Validation uncertainty must become visible before a shared query guard
     // is released; an expired caller cannot wait for a write lock to mark it.
     uncertain: AtomicBool,
+    // Published only after a confirmed release and its replay data are set.
+    // Open can classify entries without taking their locks under the table lock.
+    terminal_since: OnceLock<Instant>,
     inner: RwLock<EntryState>,
+    text_order: Mutex<CachedTextOrder>,
 }
 
 struct RenewWaiter<'a>(&'a AtomicUsize);
@@ -138,6 +279,19 @@ impl Drop for PublicReleaseAttempt<'_> {
 }
 
 impl Entry {
+    fn mark_released(&self) {
+        let _since = self.terminal_since.get_or_init(Instant::now);
+    }
+
+    /// Drop the cached order with its memory grant.
+    fn clear_text_order(&self) {
+        let cached = match self.text_order.lock() {
+            Ok(mut cached) => cached.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        drop(cached);
+    }
+
     fn is_closing(&self) -> bool {
         self.lifecycle.load(Ordering::Acquire) & CLOSING_BIT != 0
     }
@@ -188,7 +342,6 @@ struct EntryState {
     last_renew: Option<(u64, NativeReadSessionStatus)>,
     has_remaining_target_pins: Option<bool>,
     public_release_ack: bool,
-    terminal_since: Option<Instant>,
 }
 
 impl EntryState {
@@ -225,7 +378,6 @@ impl EntryState {
         self.set_state(NativeReadSessionState::Released)?;
         self.has_remaining_target_pins = Some(remaining);
         self.public_release_ack = false;
-        self.terminal_since = Some(Instant::now());
         Ok(())
     }
 }
@@ -237,23 +389,79 @@ struct Table {
     sweep_cursor: Option<NativeReadSessionId>,
 }
 
-/// Retained entries, including uncertain releases and terminal tombstones,
-/// consume both the slot cap and the caller-supplied memory grant.
+impl Table {
+    fn make_room_for_open(
+        &mut self,
+        uid: u32,
+        config: &NativeReadSessionConfig,
+    ) -> Result<(), IndexError> {
+        let mut live = 0;
+        let mut live_for_uid = 0;
+        let mut retained_for_uid = 0;
+        for entry in self.by_id.values() {
+            let is_live = entry.terminal_since.get().is_none();
+            live += usize::from(is_live);
+            if entry.uid == uid {
+                live_for_uid += usize::from(is_live);
+                retained_for_uid += 1;
+            }
+        }
+        if live >= config.global_limit || live_for_uid >= config.per_uid_limit {
+            return Err(IndexError::ResourceLimited);
+        }
+
+        let uid_full = retained_for_uid >= config.per_uid_limit * RETAINED_SLOTS_PER_LIVE_SLOT;
+        let table_full = self.by_id.len() >= config.global_limit * RETAINED_SLOTS_PER_LIVE_SLOT;
+        if uid_full || table_full {
+            // Do not evict before the replay TTL or while a concurrent
+            // Release, settlement observation or sweep holds the record. A
+            // new lookup needs this same table lock.
+            let (_, oldest) = self
+                .by_id
+                .values()
+                .filter(|entry| !uid_full || entry.uid == uid)
+                .filter(|entry| Arc::strong_count(entry) == 1)
+                .filter_map(|entry| entry.terminal_since.get().map(|since| (*since, entry.id)))
+                .filter(|(since, _id)| since.elapsed() >= config.terminal_ttl)
+                .min()
+                .ok_or(IndexError::ResourceLimited)?;
+            let _removed = self.remove(oldest);
+        }
+        Ok(())
+    }
+
+    fn remove(&mut self, id: NativeReadSessionId) -> bool {
+        let Some(entry) = self.by_id.remove(&id) else {
+            return false;
+        };
+        let key = (entry.uid, entry.open_key);
+        if self.by_open.get(&key) == Some(&id) {
+            let _removed_open = self.by_open.remove(&key);
+        }
+        true
+    }
+}
+
+/// Live custody and terminal replay share a funded registry. Confirmed
+/// releases return live capacity without dropping recent idempotency records.
 pub(super) struct NativeReadSessions {
     config: NativeReadSessionConfig,
     table: Mutex<Table>,
+    orders: Arc<TextOrderShare>,
     _memory: Option<MemoryLease>,
 }
 
 impl NativeReadSessions {
-    /// Pessimistic logical backing for a full table and its retained entries.
-    /// This is an admission charge, not an RSS measurement.
+    /// Pessimistic logical backing for a full table and its retained entries,
+    /// plus the declared text order share. This is an admission charge, not
+    /// an RSS measurement.
     pub(super) fn required_memory(config: &NativeReadSessionConfig) -> Result<u64, IndexError> {
         let _validated = config.validate()?;
-        u64::try_from(config.global_limit)
+        u64::try_from(config.global_limit * RETAINED_SLOTS_PER_LIVE_SLOT)
             .map_err(|_error| IndexError::ResourceLimited)?
             .checked_mul(SLOT_ALLOWANCE_BYTES)
             .and_then(|slots| slots.checked_add(TABLE_ALLOWANCE_BYTES))
+            .and_then(|table| table.checked_add(config.text_order_memory))
             .ok_or(IndexError::ResourceLimited)
     }
 
@@ -268,6 +476,7 @@ impl NativeReadSessions {
         Ok(Self {
             config,
             table: Mutex::new(Table::default()),
+            orders: TextOrderShare::new(config.text_order_memory),
             _memory: Some(memory),
         })
     }
@@ -278,6 +487,7 @@ impl NativeReadSessions {
         Ok(Self {
             config,
             table: Mutex::new(Table::default()),
+            orders: TextOrderShare::new(config.text_order_memory),
             _memory: None,
         })
     }
@@ -311,7 +521,9 @@ impl NativeReadSessions {
                 lifecycle: AtomicUsize::new(0),
                 renew_waiters: AtomicUsize::new(0),
                 uncertain: AtomicBool::new(false),
+                terminal_since: OnceLock::new(),
                 inner: RwLock::new(EntryState::default()),
+                text_order: Mutex::new(None),
             });
             // Lock before publication: a concurrent replay cannot see an
             // unowned Opening slot or create a second Catalog ticket.
@@ -332,16 +544,7 @@ impl NativeReadSessions {
             if table.by_id.contains_key(&id) {
                 continue;
             }
-            if table.by_id.len() >= self.config.global_limit
-                || table
-                    .by_id
-                    .values()
-                    .filter(|entry| entry.uid == uid)
-                    .count()
-                    >= self.config.per_uid_limit
-            {
-                return Err(IndexError::ResourceLimited);
-            }
+            table.make_room_for_open(uid, &self.config)?;
             let _prior_open = table.by_open.insert((uid, open_key), id);
             let _prior_entry = table.by_id.insert(id, Arc::clone(&candidate));
             drop(table);
@@ -360,7 +563,7 @@ impl NativeReadSessions {
                     drop(owned);
                     // A lost or cancelled reply retains the idempotent Open
                     // result, including the sole Catalog pin.
-                    budget.checkpoint()?;
+                    checkpoint_open_reply(budget)?;
                     return Ok(status);
                 }
                 Err(error) => {
@@ -433,6 +636,77 @@ impl NativeReadSessions {
         let entry = self.lookup(uid, id, budget)?;
         let guard = lock_entry_read(&entry, budget)?;
         entry.status(&guard)
+    }
+
+    /// The session's cached text order for `key`, if it holds one. A first
+    /// page for another key releases the old order before capture can reserve
+    /// its share; a continuation miss leaves the old order intact.
+    pub(super) fn cached_text_order(
+        &self,
+        uid: u32,
+        id: NativeReadSessionId,
+        key: TextOrderKey,
+        evict_on_miss: bool,
+        budget: &WorkBudget,
+    ) -> Result<Option<Arc<TextRankOrder>>, IndexError> {
+        if self.config.text_order_memory == 0 {
+            return Ok(None);
+        }
+        let entry = self.lookup(uid, id, budget)?;
+        let (hit, evicted) = {
+            let mut cached = entry.text_order.lock().map_err(|_poison| {
+                IndexError::BackendViolation("text order cache poisoned".into())
+            })?;
+            if let Some((cached_key, order)) = cached.as_ref()
+                && *cached_key == key
+            {
+                (Some(Arc::clone(order)), None)
+            } else {
+                (None, if evict_on_miss { cached.take() } else { None })
+            }
+        };
+        drop(evicted);
+        Ok(hit)
+    }
+
+    /// Whether pages may capture an order for this session table.
+    pub(super) const fn text_order_cache_enabled(&self) -> bool {
+        self.config.text_order_memory != 0
+    }
+
+    pub(super) fn text_order_capture_port(&self) -> Arc<dyn TextRankMemoryPort> {
+        Arc::clone(&self.orders) as Arc<dyn TextRankMemoryPort>
+    }
+
+    /// Keep `order` as the session's only cached text order, replacing any
+    /// other, charged to the text order share. A session that is no longer
+    /// active keeps none, and an order the share cannot fund is dropped: its
+    /// later pages re-rank, with identical results.
+    pub(super) fn retain_text_order(
+        &self,
+        uid: u32,
+        id: NativeReadSessionId,
+        key: TextOrderKey,
+        order: TextRankOrder,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        if self.config.text_order_memory == 0 {
+            return Ok(());
+        }
+        let entry = self.lookup(uid, id, budget)?;
+        if entry.is_closing() || entry.uncertain.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut cached = entry
+            .text_order
+            .lock()
+            .map_err(|_poison| IndexError::BackendViolation("text order cache poisoned".into()))?;
+        // The session's previous order leaves the share before the next one
+        // is funded.
+        drop(cached.take());
+        *cached = Some((key, Arc::new(order)));
+        drop(cached);
+        Ok(())
     }
 
     /// Preparation takes no entry lock. Shared query custody excludes renewal
@@ -533,10 +807,11 @@ impl NativeReadSessions {
         })?;
         let outcome = match release(ticket) {
             Ok(has_remaining) => {
+                entry.clear_text_order();
                 guard.set_state(NativeReadSessionState::Released)?;
                 guard.has_remaining_target_pins = Some(has_remaining);
                 guard.public_release_ack = true;
-                guard.terminal_since = Some(Instant::now());
+                entry.mark_released();
                 Ok((guard.status()?, has_remaining))
             }
             Err(error) => {
@@ -619,8 +894,9 @@ impl NativeReadSessions {
             }
             let status = keep_first(&report, entry.status(&guard))?;
             if status.state == NativeReadSessionState::Released {
-                let expired = guard
+                let expired = entry
                     .terminal_since
+                    .get()
                     .is_some_and(|since| since.elapsed() >= self.config.terminal_ttl);
                 drop(guard);
                 if expired && self.remove_if_same(&entry) {
@@ -664,7 +940,9 @@ impl NativeReadSessions {
             )?;
             match release(ticket) {
                 Ok(remaining) => {
+                    entry.clear_text_order();
                     keep_first(&report, guard.record_maintenance_release(remaining))?;
+                    entry.mark_released();
                     report.released = report.released.saturating_add(1);
                 }
                 Err(error) => {
@@ -710,7 +988,9 @@ impl NativeReadSessions {
             )?;
             match release(ticket) {
                 Ok(remaining) => {
+                    entry.clear_text_order();
                     keep_first(&report, guard.record_maintenance_release(remaining))?;
+                    entry.mark_released();
                     report.released = report.released.saturating_add(1);
                 }
                 Err(error) => {
@@ -766,11 +1046,7 @@ impl NativeReadSessions {
                     .get(&entry.id)
                     .is_some_and(|current| Arc::ptr_eq(current, entry))
                 {
-                    let _removed_entry = table.by_id.remove(&entry.id);
-                    if table.by_open.get(&(entry.uid, entry.open_key)) == Some(&entry.id) {
-                        let _removed_open = table.by_open.remove(&(entry.uid, entry.open_key));
-                    }
-                    true
+                    table.remove(entry.id)
                 } else {
                     false
                 }
@@ -779,6 +1055,15 @@ impl NativeReadSessions {
         }
         // A contended or poisoned table retains the charged entry. Contention
         // is revisited by the existing pump without extending this request.
+    }
+}
+
+/// The pin may already be committed when the response deadline expires.
+/// Use the cancellation outcome so clients preserve the Open key for replay.
+pub(super) fn checkpoint_open_reply(budget: &WorkBudget) -> Result<(), IndexError> {
+    match budget.checkpoint() {
+        Err(IndexError::ResourceLimited) => Err(IndexError::Cancelled),
+        other => other,
     }
 }
 

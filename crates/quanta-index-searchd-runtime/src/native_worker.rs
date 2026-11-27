@@ -13,6 +13,7 @@ use std::{
 };
 
 use quanta_index_catalog::SqliteCatalog;
+use quanta_index_contract::native_protocol::{NativeSealedDslSubmitV1, SourceStageReplayReceiptV1};
 use quanta_index_core::index::{
     IndexError, OperationKey, OperationStatus, OwnedWorkAssignment, OwnedWorkBegin, OwnedWorkDefer,
     OwnedWorkGrant, OwnedWorkReport, OwnedWorkTerminal, SubmitOutcome, UpdateKind, UpdateRequest,
@@ -841,17 +842,25 @@ async fn run_command_inner(
     match command {
         WorkerCommand::Submit {
             kernel,
-            request,
+            input,
             mut budget,
             reply,
             ..
         } => {
-            let key = request.operation;
+            let key = input.operation();
             let result = match budget.checkpoint() {
                 Ok(()) => match ReservationGuard::try_acquire(Arc::clone(&resources), need) {
                     Some(reservation) => match execution_custody(reservation, &provider_owner) {
                         Ok(custody) => match custody.bind(&mut budget) {
-                            Ok(()) => kernel.submit(*request, &mut budget).await,
+                            Ok(()) => match input {
+                                DirectSubmit::Request(request, Some(receipt)) => kernel.submit_staged_source_v1(
+                                    *request, receipt, &mut budget,
+                                ).await,
+                                DirectSubmit::Request(request, None) =>
+                                    kernel.submit(*request, &mut budget).await,
+                                DirectSubmit::SealedDsl(input) =>
+                                    kernel.submit_sealed_dsl_request_v1(input, &mut budget).await,
+                            },
                             Err(error) => Err(error),
                         },
                         Err(error) => Err(error),
@@ -1138,7 +1147,7 @@ async fn run_lane(
                         "native operation task failed: {error}"
                     )));
                     receiver.close();
-                    while let Ok(_queued) = receiver.try_recv() {}
+                    while receiver.try_recv().is_ok() {}
                     accepting = false;
                 }
             }
@@ -1161,10 +1170,24 @@ fn settle_abandoned_owned(kernel: &NativeKernel, grant: &OwnedWorkGrant) -> Resu
     }
 }
 
+enum DirectSubmit {
+    Request(Box<UpdateRequest>, Option<SourceStageReplayReceiptV1>),
+    SealedDsl(NativeSealedDslSubmitV1),
+}
+
+impl DirectSubmit {
+    fn operation(&self) -> OperationKey {
+        match self {
+            Self::Request(request, _) => request.operation,
+            Self::SealedDsl(input) => input.replay.operation,
+        }
+    }
+}
+
 enum WorkerCommand {
     Submit {
         kernel: Arc<NativeKernel>,
-        request: Box<UpdateRequest>,
+        input: DirectSubmit,
         budget: WorkBudget,
         reply: WorkerReply,
         #[cfg(test)]
@@ -1562,9 +1585,46 @@ impl NativeOperationWorker {
         request: UpdateRequest,
         budget: WorkBudget,
     ) -> Result<SubmitOutcome, IndexError> {
+        self.submit_request(
+            kernel, OperationExecutionClass::for_request(&request), request.operation, budget,
+            || DirectSubmit::Request(Box::new(request), None),
+        )
+    }
+
+    pub(super) fn submit_staged_source_v1(
+        &self,
+        kernel: Arc<NativeKernel>,
+        request: UpdateRequest,
+        receipt: SourceStageReplayReceiptV1,
+        budget: WorkBudget,
+    ) -> Result<SubmitOutcome, IndexError> {
+        self.submit_request(
+            kernel, OperationExecutionClass::for_request(&request), request.operation, budget,
+            || DirectSubmit::Request(Box::new(request), Some(receipt)),
+        )
+    }
+
+    pub(super) fn submit_sealed_dsl_v1(
+        &self,
+        kernel: Arc<NativeKernel>,
+        input: NativeSealedDslSubmitV1,
+        budget: WorkBudget,
+    ) -> Result<SubmitOutcome, IndexError> {
+        self.submit_request(
+            kernel, OperationExecutionClass::Core, input.replay.operation, budget,
+            || DirectSubmit::SealedDsl(input),
+        )
+    }
+
+    fn submit_request(
+        &self,
+        kernel: Arc<NativeKernel>,
+        class: OperationExecutionClass,
+        key: OperationKey,
+        budget: WorkBudget,
+        input: impl FnOnce() -> DirectSubmit,
+    ) -> Result<SubmitOutcome, IndexError> {
         budget.checkpoint()?;
-        let class = OperationExecutionClass::for_request(&request);
-        let key = request.operation;
         #[cfg(test)]
         let after_reply = self
             .direct_after_reply
@@ -1575,7 +1635,7 @@ impl NativeOperationWorker {
             .take();
         self.execute(class, key, |reply| WorkerCommand::Submit {
             kernel,
-            request: Box::new(request),
+            input: input(),
             budget,
             reply,
             #[cfg(test)]
@@ -1836,6 +1896,7 @@ mod tests {
             UpdateKind::Materialize { .. } | UpdateKind::CompactSourceLocal { .. } => Vec::new(),
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceHistoryAdvance(_)
+            | UpdateKind::SourceHistoryBootstrap(_)
             | UpdateKind::SourceResync { .. }
             | UpdateKind::SourceHistoryResync { .. }
             | UpdateKind::ProjectionAdvance(_)
@@ -3208,7 +3269,7 @@ mod tests {
                 OperationExecutionClass::Core,
                 WorkerCommand::Submit {
                     kernel: Arc::clone(&fixture.kernel),
-                    request: Box::new(fixture.request),
+                    input: DirectSubmit::Request(Box::new(fixture.request), None),
                     budget: WorkBudget::with_request(limits(), request_budget.clone()),
                     reply: reply_tx,
                     after_reply: None,

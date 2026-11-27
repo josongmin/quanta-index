@@ -3,7 +3,7 @@
 use super::*;
 
 fn without_environment(args: &[String]) -> TestResult<Output> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"));
     let _command = command.env_clear().args(args);
     bounded_output(
         |stdout, stderr| Ok(command.stdout(stdout).stderr(stderr).spawn()?),
@@ -45,7 +45,11 @@ fn native_semantic_offline_boot_needs_no_credentials_or_provider_calls() -> Test
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec(), openai_semantic_spec(&base_url)?],
+            instances: vec![
+                literal_spec(),
+                text_spec(),
+                openai_semantic_spec(&base_url)?,
+            ],
         },
         &budget(),
     )?;

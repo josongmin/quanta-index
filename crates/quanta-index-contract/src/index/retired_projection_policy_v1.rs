@@ -100,6 +100,7 @@ pub struct RetiredProjectionPolicyRefV1 {
     pub sha256: Digest,
     pub identity_count: u32,
 }
+
 crate::native_serde_struct!([serde_identifier] RetiredProjectionPolicyRefV1 {
     object: ObjectRef,
     sha256: Digest,
@@ -162,7 +163,9 @@ impl RetiredProjectionPolicyViewV1<'_> {
     ) -> Result<bool, E> {
         for row in self.identities.chunks_exact(IDENTITY_BYTES_V1) {
             checkpoint()?;
-            if &row[..16] == projection.0.as_slice() || &row[16..] == instance.0.as_slice() {
+            if &row[..16] == projection.0.as_slice()
+                || &row[16..] == instance.0.as_slice()
+            {
                 return Ok(true);
             }
         }
@@ -259,8 +262,8 @@ pub fn decode_retired_projection_policy_v1<'a, E>(
     checkpoint: &mut impl FnMut() -> Result<(), E>,
 ) -> Result<RetiredProjectionPolicyViewV1<'a>, RetiredProjectionPolicyErrorV1<E>> {
     checkpoint().map_err(RetiredProjectionPolicyErrorV1::Admission)?;
-    let preflight_count = preflight_retired_projection_policy_v1(bytes)
-        .map_err(RetiredProjectionPolicyErrorV1::Format)?;
+    let preflight_count =
+        preflight_retired_projection_policy_v1(bytes).map_err(RetiredProjectionPolicyErrorV1::Format)?;
     let mut offset = MAGIC_V1.len();
     let mut take = |length: usize| {
         let next = offset + length;
@@ -390,6 +393,32 @@ pub fn retired_repomap_route_identity_v1(
 mod tests {
     use super::*;
 
+    #[test]
+    fn retired_policy_reference_wire_keeps_closed_named_fields() {
+        let reference = RetiredProjectionPolicyRefV1 {
+            object: ObjectRef(Digest([1; 32])),
+            sha256: Digest([2; 32]),
+            identity_count: 7,
+        };
+        let expected = format!(
+            r#"{{"object":[{}],"sha256":[{}],"identity_count":7}}"#,
+            ["1"; 32].join(","),
+            ["2"; 32].join(","),
+        );
+        assert_eq!(
+            serde_json::to_string(&reference).expect("reference"),
+            expected
+        );
+        assert_eq!(
+            serde_json::from_str::<RetiredProjectionPolicyRefV1>(&expected).expect("reference"),
+            reference
+        );
+        for suffix in [r#", "identity_count": 7}"#, r#", "unknown": 1}"#] {
+            let invalid = format!("{}{suffix}", expected.trim_end_matches('}'));
+            assert!(serde_json::from_str::<RetiredProjectionPolicyRefV1>(&invalid).is_err());
+        }
+    }
+
     fn fixture() -> (
         RetiredProjectionPolicyHeaderV1,
         [RetiredProjectionIdentityV1; 2],
@@ -435,31 +464,9 @@ mod tests {
         let view =
             decode_retired_projection_policy_v1(&bytes, &mut scratch, &mut checkpoint).unwrap();
         assert_eq!(view.header_v1(), header);
-        assert!(
-            view.rejects_v1(
-                ProjectionId([1; 16]),
-                IndexInstanceId([0; 16]),
-                &mut checkpoint
-            )
-            .unwrap()
-        );
-        assert!(
-            view.rejects_v1(
-                ProjectionId([0; 16]),
-                IndexInstanceId([4; 16]),
-                &mut checkpoint
-            )
-            .unwrap()
-        );
-        assert!(
-            !view
-                .rejects_v1(
-                    ProjectionId([9; 16]),
-                    IndexInstanceId([9; 16]),
-                    &mut checkpoint
-                )
-                .unwrap()
-        );
+        assert!(view.rejects_v1(ProjectionId([1; 16]), IndexInstanceId([0; 16]), &mut checkpoint).unwrap());
+        assert!(view.rejects_v1(ProjectionId([0; 16]), IndexInstanceId([4; 16]), &mut checkpoint).unwrap());
+        assert!(!view.rejects_v1(ProjectionId([9; 16]), IndexInstanceId([9; 16]), &mut checkpoint).unwrap());
         assert_eq!(view.identity_v1(usize::MAX / IDENTITY_BYTES_V1), None);
         assert_eq!(view.identity_v1(usize::MAX), None);
         assert_eq!(digest, Digest(Sha256::digest(&bytes).into()));
@@ -499,52 +506,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preflight_retired_projection_policy_v1(&bytes), Ok(0));
-        let view =
-            decode_retired_projection_policy_v1(&bytes, &mut scratch, &mut checkpoint).unwrap();
+        let view = decode_retired_projection_policy_v1(&bytes, &mut scratch, &mut checkpoint)
+            .unwrap();
         assert_eq!(view.header_v1(), header);
         assert_eq!(view.len_v1(), 0);
         assert_eq!(digest, Digest(Sha256::digest(&bytes).into()));
-        assert!(
-            !view
-                .rejects_v1(
-                    ProjectionId([1; 16]),
-                    IndexInstanceId([2; 16]),
-                    &mut checkpoint
-                )
-                .unwrap()
-        );
+        assert!(!view.rejects_v1(ProjectionId([1; 16]), IndexInstanceId([2; 16]), &mut checkpoint).unwrap());
         let reference = RetiredProjectionPolicyRefV1 {
             object: ObjectRef(Digest([9; 32])),
             sha256: digest,
             identity_count: 0,
         };
-        assert_eq!(
-            reference
-                .matches_body_v1(&bytes, &mut scratch, &mut checkpoint)
-                .unwrap(),
-            true
-        );
+        assert_eq!(reference.matches_body_v1(&bytes, &mut scratch, &mut checkpoint).unwrap(), true);
         let mut changed_candidate_config = bytes.clone();
         let candidate_config_at = MAGIC_V1.len() + 4 + 32 * 3 + 4 + 32;
         changed_candidate_config[candidate_config_at] ^= 1;
-        assert_eq!(
-            reference
-                .matches_body_v1(&changed_candidate_config, &mut scratch, &mut checkpoint)
-                .unwrap(),
-            false
-        );
+        assert_eq!(reference.matches_body_v1(&changed_candidate_config, &mut scratch, &mut checkpoint).unwrap(), false);
         let mut missing_old_route = header;
         missing_old_route.old_routes_ref = None;
-        assert!(
-            encode_retired_projection_policy_v1(
-                missing_old_route,
-                &[],
-                &mut scratch,
-                &mut checkpoint,
-                io::sink(),
-            )
-            .is_err()
-        );
+        assert!(encode_retired_projection_policy_v1(
+            missing_old_route,
+            &[],
+            &mut scratch,
+            &mut checkpoint,
+            io::sink(),
+        ).is_err());
     }
 
     #[test]
@@ -555,15 +541,15 @@ mod tests {
         assert_eq!(
             pair.projection.0,
             [
-                0x31, 0xfa, 0x1a, 0x2b, 0xf2, 0x00, 0xe6, 0x8d, 0xe8, 0x45, 0xeb, 0x3d, 0x94, 0xb9,
-                0x1e, 0x8f,
+                0x31, 0xfa, 0x1a, 0x2b, 0xf2, 0x00, 0xe6, 0x8d, 0xe8, 0x45, 0xeb, 0x3d,
+                0x94, 0xb9, 0x1e, 0x8f,
             ]
         );
         assert_eq!(
             pair.instance.0,
             [
-                0x06, 0x99, 0xfb, 0x51, 0xf3, 0xda, 0xb0, 0xe2, 0x5f, 0x10, 0x63, 0xd2, 0x85, 0xb7,
-                0x57, 0x09,
+                0x06, 0x99, 0xfb, 0x51, 0xf3, 0xda, 0xb0, 0xe2, 0x5f, 0x10, 0x63, 0xd2,
+                0x85, 0xb7, 0x57, 0x09,
             ]
         );
     }

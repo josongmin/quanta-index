@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use lance::index::DatasetIndexExt as _;
 use quanta_index_core::index::{
     MemoryLeaseOwner, MemoryScope, MemoryScopePort, ObjectRef, WorkLimits,
 };
@@ -248,9 +249,7 @@ async fn trained_region_body() -> Result<(), Box<dyn std::error::Error>> {
         "trained ANN fixture fell below index floor",
     )?;
     let root = tempfile::tempdir()?;
-    let connection = lancedb::connect(&root.path().to_string_lossy())
-        .execute()
-        .await?;
+    let uri = local_fixture_uri(root.path(), "trained")?;
     let recipe = Digest([9; 32]);
     let vectors: Vec<_> = (0..ROWS)
         .map(|value| u16::try_from(value).map(vector))
@@ -288,9 +287,9 @@ async fn trained_region_body() -> Result<(), Box<dyn std::error::Error>> {
     budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(BoundedMemory(
         memory.clone(),
     )))));
-    let (table, seal) = build_region(
-        &connection,
-        "trained",
+    let (dataset, seal) = build_region_at(
+        &uri,
+        Arc::new(Session::default()),
         &rows,
         recipe,
         1,
@@ -309,17 +308,21 @@ async fn trained_region_body() -> Result<(), Box<dyn std::error::Error>> {
         ),
         "trained ANN seal was not classified as IVF-HNSW-SQ",
     )?;
+    let vector_field = dataset
+        .schema()
+        .field(COLUMN_VECTOR)
+        .ok_or("missing vector column")?;
     verify(
-        table.list_indices().await?.iter().any(|index| {
+        dataset.load_indices().await?.iter().any(|index| {
             index.name == crate::vector_index::VECTOR_INDEX_NAME
-                && index.columns.iter().any(|column| column == COLUMN_VECTOR)
+                && index.fields.contains(&vector_field.id)
         }),
-        "trained ANN physical table has no vector index",
+        "trained ANN physical dataset has no vector index",
     )?;
-    let opened = open_region(table, seal.clone(), &mut budget).await?;
+    let opened = open_region(dataset, seal.clone(), &mut budget).await?;
     check_selected_query(&opened, &vectors, recipe, &mut budget, &memory).await?;
-    let reopened_table = connection.open_table("trained").execute().await?;
-    let reopened = open_region(reopened_table, seal, &mut budget).await?;
+    let reopened_dataset = Arc::new(Dataset::open(&uri).await?);
+    let reopened = open_region(reopened_dataset, seal, &mut budget).await?;
     check_selected_query(&reopened, &vectors, recipe, &mut budget, &memory).await?;
     verify(
         memory.live.load(Ordering::SeqCst) == 0 && !memory.invalid_release.load(Ordering::SeqCst),

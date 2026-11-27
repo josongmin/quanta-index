@@ -46,7 +46,7 @@ impl de::Error for BoundedError {
         let mut output = Limited(String::with_capacity(MAX_ERROR_BYTES));
         match write!(&mut output, "{message}") {
             Ok(()) => Self(output.0),
-            Err(_) => Self(LARGE_ERROR.to_owned()),
+            Err(fmt::Error) => Self(LARGE_ERROR.to_owned()),
         }
     }
 }

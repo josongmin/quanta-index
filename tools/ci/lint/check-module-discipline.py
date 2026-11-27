@@ -35,6 +35,7 @@ helpers or factories.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,14 @@ class Violation:
     snippet: str
 
 
+def _reject_symlinked_path(path: Path) -> None:
+    current = ROOT
+    for part in path.relative_to(ROOT).parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"cannot certify symlinked facade source: {current}")
+
+
 def workspace_members() -> list[Path]:
     data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
     members = data.get("workspace", {}).get("members")
@@ -74,6 +83,7 @@ def workspace_members() -> list[Path]:
         if not matches:
             raise ValueError(f"workspace member has no matching path: {member}")
         for directory in matches:
+            _reject_symlinked_path(directory / "src")
             resolved = directory.resolve()
             if resolved in seen:
                 raise ValueError(f"duplicate workspace member: {member}")
@@ -89,11 +99,24 @@ def workspace_members() -> list[Path]:
 def collect_facade_files() -> list[Path]:
     """Return every `mod.rs` under workspace members, plus the contract lib.rs."""
     files: list[Path] = []
+
+    def fail(error: OSError) -> None:
+        raise error
+
     for member in workspace_members():
         src = member / "src"
-        files.extend(sorted(src.rglob("mod.rs")))
+        for directory, directories, names in os.walk(src, onerror=fail):
+            for name in directories:
+                _reject_symlinked_path(Path(directory) / name)
+            for name in names:
+                if name == "mod.rs":
+                    path = Path(directory) / name
+                    _reject_symlinked_path(path)
+                    files.append(path)
+    _reject_symlinked_path(CONTRACT_LIB_RS)
     if not CONTRACT_LIB_RS.is_file():
         raise ValueError(f"missing protected contract facade: {CONTRACT_LIB_RS}")
+    files.sort()
     files.append(CONTRACT_LIB_RS)
     return files
 

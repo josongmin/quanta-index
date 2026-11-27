@@ -70,6 +70,40 @@ def semantic_children(node: Any) -> list[Any]:
     ]
 
 
+def test_only_attribute(source: bytes, node: Any) -> bool:
+    attributes = semantic_children(node)
+    if len(attributes) != 1 or attributes[0].type != "attribute":
+        return False
+    parts = semantic_children(attributes[0])
+    return (
+        len(parts) == 2
+        and parts[0].type == "identifier"
+        and identifier(source, parts[0]) == b"cfg"
+        and parts[1].type == "token_tree"
+        and [
+            text(source, child)
+            for child in parts[1].children
+            if child.type not in {"line_comment", "block_comment"}
+        ]
+        == [b"(", b"test", b")"]
+    )
+
+
+def production_children(source: bytes, node: Any) -> list[Any]:
+    children = []
+    attributes = []
+    for child in semantic_children(node):
+        if child.type == "attribute_item":
+            attributes.append(child)
+            continue
+        if not any(test_only_attribute(source, attribute) for attribute in attributes):
+            children.extend(attributes)
+            children.append(child)
+        attributes.clear()
+    children.extend(attributes)
+    return children
+
+
 def unwrap_parens(node: Any) -> Any | None:
     while node is not None and node.type == "parenthesized_expression":
         children = semantic_children(node)
@@ -353,6 +387,36 @@ def opaque_search_authority(source: bytes, node: Any) -> bool:
     return False
 
 
+def opaque_result_branch(source: bytes, node: Any) -> bool:
+    if node.type not in {"token_tree", "token_repetition"}:
+        return False
+    # Associate an else with the condition in its own token group.
+    tokens = [
+        token for token in node.children if token.type not in {"line_comment", "block_comment"}
+    ]
+    start = None
+    for offset, token in enumerate(tokens):
+        if token.type == "if":
+            start = offset + 1
+        elif token.type in {";", "=>"}:
+            start = None
+        elif start is not None and token.type == "identifier" and text(source, token) == b"else":
+            body = tokens[offset - 1]
+            if body.type == "token_tree" and source[body.start_byte : body.start_byte + 1] == b"{":
+                condition = tokens[start : offset - 1]
+                while condition:
+                    part = condition.pop()
+                    if part.type == "identifier" and identifier(source, part) in {
+                        b"is_ok",
+                        b"is_err",
+                    }:
+                        return True
+                    if part.type in {"token_tree", "token_repetition"}:
+                        condition.extend(semantic_children(part))
+            start = None
+    return False
+
+
 def opaque_macro_contains_policy_syntax(
     source: bytes,
     macro: Any,
@@ -363,29 +427,20 @@ def opaque_macro_contains_policy_syntax(
     # A token tree is not a Rust expression AST. Inspect actual identifier/if
     # tokens, not raw bytes, so strings and comments do not create blockers.
     stack = list(macro.named_children[1:])
-    has_if = False
-    has_else = False
-    has_predicate = False
     while stack:
         node = stack.pop()
-        if node.type in {"line_comment", "block_comment", "string_literal"}:
+        if node.type in {"line_comment", "block_comment", "string_literal", "raw_string_literal"}:
             continue
         if include_debug and opaque_debug_cfg(source, node):
             return True
         if include_search_plane and opaque_search_authority(source, node):
             return True
-        if node.type == "identifier":
-            token = identifier(source, node)
-            if token == b"or_else":
-                return True
-            if token in {b"is_ok", b"is_err"}:
-                has_predicate = True
-            if token == b"else":
-                has_else = True
-        elif node.type == "if":
-            has_if = True
+        if node.type == "identifier" and identifier(source, node) == b"or_else":
+            return True
+        if opaque_result_branch(source, node):
+            return True
         stack.extend(node.children)
-    return has_if and has_else and has_predicate
+    return False
 
 
 def scan_source(
@@ -440,7 +495,7 @@ def scan_source(
                     f"governed syntax inside opaque Rust macro at line {node.start_point.row + 1}"
                 )
             continue
-        stack.extend(reversed(node.named_children))
+        stack.extend(reversed(production_children(source, node)))
         if check_search_plane:
             if node.type == "use_declaration":
                 argument = node.child_by_field_name("argument")
@@ -530,6 +585,8 @@ def main() -> int:
                         findings.append((relative, line, rule))
                 except ValueError as error:
                     refusals.append((relative, str(error)))
+        if scoped == 0:
+            raise ValueError("no Rust source files in policy scope")
     except (
         ImportError,
         OSError,

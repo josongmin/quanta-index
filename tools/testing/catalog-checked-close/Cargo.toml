@@ -12,7 +12,4 @@ publish = false
 unsafe_code = "allow"
 
 [dev-dependencies]
-rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
-
-[patch.crates-io]
-libsqlite3-sys = { path = "../../../vendor/libsqlite3-sys-0.38.2" }
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }

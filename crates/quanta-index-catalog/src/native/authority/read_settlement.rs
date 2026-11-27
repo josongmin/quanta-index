@@ -256,6 +256,9 @@ impl CatalogReadSettlementPort for SqliteCatalog {
         budget.checkpoint()?;
         transaction.commit().map_err(|error| sql(&error))?;
         drop(connection);
+        if !has_remaining_target_pins {
+            self.record_released_pin(&pin.5, pin.6, pin.7);
+        }
         Ok(NativeReadReleaseObservation {
             scope,
             has_remaining_target_pins,

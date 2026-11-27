@@ -72,9 +72,9 @@ fn read_control(path: &Path, maximum: u64) -> Result<Vec<u8>> {
         "retirement control file exceeds bound"
     );
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len())?);
-    let bytes_read = (&mut file).take(maximum + 1).read_to_end(&mut bytes)?;
+    let read_bytes = (&mut file).take(maximum + 1).read_to_end(&mut bytes)?;
     ensure!(
-        u64::try_from(bytes_read)? == metadata.len()
+        u64::try_from(read_bytes)? == metadata.len()
             && same_file_version(&metadata, &file.metadata()?)
             && same_file_version(&metadata, &fs::symlink_metadata(path)?),
         "retirement control file changed"

@@ -44,6 +44,75 @@ macro_rules! require_eq {
 }
 
 #[test]
+fn catalog_lock_adapter_retains_charge_until_held_reader_drops() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let baseline = authority.snapshot()?;
+    let path = root.join("catalog-lock-adapter");
+    let held = crate::catalog_lock_files::open(Arc::clone(&common), &path, true, None)?;
+    require!(path.exists())?;
+    require!(crate::catalog_lock_files::open(Arc::clone(&common), &path, true, None).is_err())?;
+    crate::catalog_lock_files::unlink(&common, &path, held.file()?)?;
+    require!(!path.exists())?;
+    require!(authority.snapshot()?.used_files > baseline.used_files)?;
+    drop(held);
+    common.sweep_retired()?;
+    require_eq!(authority.snapshot()?, baseline)?;
+    Ok(())
+}
+
+#[test]
+fn catalog_lock_adapter_refuses_a_different_held_inode() -> TestResult {
+    let (dir, root, _lease, authority, common) = fixture()?;
+    let baseline = authority.snapshot()?;
+    let path = root.join("catalog-lock-identity");
+    let held = crate::catalog_lock_files::open(Arc::clone(&common), &path, true, None)?;
+    let other_path = dir.path().join("unrelated-lock");
+    fs::write(&other_path, b"")?;
+    let other = File::open(other_path)?;
+    require!(crate::catalog_lock_files::unlink(&common, &path, &other).is_err())?;
+    require!(path.exists())?;
+    crate::catalog_lock_files::unlink(&common, &path, held.file()?)?;
+    drop(held);
+    common.sweep_retired()?;
+    require_eq!(authority.snapshot()?, baseline)?;
+    Ok(())
+}
+
+#[test]
+fn catalog_lock_creation_uses_only_the_active_owner_funding() -> TestResult {
+    use std::num::NonZeroU64;
+
+    use crate::catalog_lock_files::CatalogFileFunding;
+    use quanta_index_core::index::IndexError;
+
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let baseline = authority.snapshot()?;
+    let owner = CatalogFileFunding::new(NonZeroU64::MIN);
+    let foreign = CatalogFileFunding::new(NonZeroU64::try_from(2_u64)?);
+    let parent = common.reserve_publication_allowance(4, 1)?;
+    let path = root.join("catalog-lock-funded");
+    let funding = owner.bind(Arc::clone(&parent));
+    {
+        let _foreign = foreign.bind(Arc::clone(&parent));
+        require!(matches!(
+            owner.open(Arc::clone(&common), &path, true),
+            Err(IndexError::BackendViolation(_))
+        ))?;
+        require!(!path.exists())?;
+        require_eq!(parent.available_capacity()?, (4, 1))?;
+    }
+    let held = owner.open(Arc::clone(&common), &path, true)?;
+    require_eq!(parent.available_capacity()?, (4, 0))?;
+    crate::catalog_lock_files::unlink(&common, &path, held.file()?)?;
+    drop(held);
+    drop(funding);
+    drop(parent);
+    common.sweep_retired()?;
+    require_eq!(authority.snapshot()?, baseline)?;
+    Ok(())
+}
+
+#[test]
 fn safe_reader_lease_owns_actual_opened_fd_until_retirement() -> TestResult {
     let (_dir, root, _lease, authority, common) = fixture()?;
     let path = root.join("owned-reader");
@@ -597,10 +666,7 @@ fn private_parent_swap_between_claim_and_temp_declaration_cannot_adopt_replaceme
         .declared_temp
         .as_ref()
         .ok_or("temp anchor missing")?;
-    require_eq!(
-        declared.parent.metadata()?.ino(),
-        fs::metadata(&displaced)?.ino()
-    )?;
+    require_eq!(declared.parent.metadata()?.ino(), fs::metadata(&displaced)?.ino())?;
     require!(!temporary.exists() && !target.exists())?;
     require!(matches!(
         mutation.before_replace(&target),
@@ -700,17 +766,13 @@ fn private_parent_swap_after_replace_check_cannot_settle_detached_inode() -> Tes
     require!(authority.retained_inode(born.inode, 4)?.is_none())?;
     drop(mutation);
     drop(parent);
-    require_eq!(
-        authority.snapshot()?.uncertain_pending,
-        baseline.uncertain_pending + 1
-    )?;
+    require_eq!(authority.snapshot()?.uncertain_pending, baseline.uncertain_pending + 1)?;
     require!(!common.is_quiescent()?)?;
     Ok(())
 }
 
 #[test]
-fn private_parent_reserved_output_creates_missing_nested_parents_with_unstarted_ticket()
--> TestResult {
+fn private_parent_reserved_output_creates_missing_nested_parents_with_unstarted_ticket() -> TestResult {
     let (_dir, root, _lease, authority, common) = fixture()?;
     let target = root.join("private-cold/deep/object");
     let baseline = authority.snapshot()?;
@@ -784,8 +846,7 @@ fn private_parent_device_policy_distinguishes_same_and_foreign_device() -> TestR
 }
 
 #[test]
-fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_without_leak()
--> TestResult {
+fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_without_leak() -> TestResult {
     let (dir, root, _lease, authority, common) = fixture()?;
     let baseline = authority.snapshot()?;
     let first = common.reserve_publication_allowance(4, 1)?;
@@ -803,16 +864,14 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     ))?;
     require!(!missing.parent().ok_or("missing parent")?.exists())?;
     let mut wrong = Some(first.reserve_output(4)?);
-    require!(
-        common
-            .begin_create_with_reserved_output_in_private_parent(
-                &missing,
-                4,
-                Arc::clone(&second),
-                &mut wrong,
-            )
-            .is_err()
-    )?;
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &missing,
+            4,
+            Arc::clone(&second),
+            &mut wrong,
+        )
+        .is_err())?;
     require!(wrong.is_some())?;
     require!(!missing.parent().ok_or("missing parent")?.exists())?;
     drop(wrong);
@@ -821,16 +880,14 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     fs::create_dir(&outside)?;
     symlink(&outside, root.join("private-link"))?;
     let mut link_ticket = Some(first.reserve_output(4)?);
-    require!(
-        common
-            .begin_create_with_reserved_output_in_private_parent(
-                &root.join("private-link/object"),
-                4,
-                Arc::clone(&first),
-                &mut link_ticket,
-            )
-            .is_err()
-    )?;
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &root.join("private-link/object"),
+            4,
+            Arc::clone(&first),
+            &mut link_ticket,
+        )
+        .is_err())?;
     require!(link_ticket.is_some())?;
     require!(!outside.join("object").exists())?;
     drop(link_ticket);
@@ -839,16 +896,14 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     fs::create_dir(&open_parent)?;
     fs::set_permissions(&open_parent, fs::Permissions::from_mode(0o777))?;
     let mut open_ticket = Some(first.reserve_output(4)?);
-    require!(
-        common
-            .begin_create_with_reserved_output_in_private_parent(
-                &open_parent.join("object"),
-                4,
-                Arc::clone(&first),
-                &mut open_ticket,
-            )
-            .is_err()
-    )?;
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &open_parent.join("object"),
+            4,
+            Arc::clone(&first),
+            &mut open_ticket,
+        )
+        .is_err())?;
     require!(open_ticket.is_some())?;
     drop(open_ticket);
 
@@ -858,16 +913,14 @@ fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_w
     let busy_target = busy_parent.join("object");
     let blocker = common.begin_create(&busy_target)?;
     let mut busy_ticket = Some(first.reserve_output(4)?);
-    require!(
-        common
-            .begin_create_with_reserved_output_in_private_parent(
-                &busy_target,
-                4,
-                Arc::clone(&first),
-                &mut busy_ticket,
-            )
-            .is_err()
-    )?;
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &busy_target,
+            4,
+            Arc::clone(&first),
+            &mut busy_ticket,
+        )
+        .is_err())?;
     require!(busy_ticket.is_some())?;
     drop(blocker);
     drop(busy_ticket);
@@ -1942,6 +1995,59 @@ fn post_link_cut_reconciles_original_inode_without_a_second_link() -> TestResult
     require_eq!(fs::read(&alias)?, b"abc")?;
     require_eq!(authority.snapshot()?, charged)?;
     common.begin_delete(&alias)?.perform_and_sync()?;
+    common.begin_delete(&source)?.perform_and_sync()?;
+    require_eq!(authority.snapshot()?, baseline)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn copy_overwrite_recovers_alias_and_retires_replaced_inode_after_reader() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let baseline = authority.snapshot()?;
+    let source = root.join("copy-source");
+    let target = root.join("copy-target");
+    publish_file(&common, &source, b"new")?;
+    publish_file(&common, &target, b"old!")?;
+    let both = authority.snapshot()?;
+    let mut ticket = common.begin_copy_overwrite(&source, &target)?;
+    ticket.change_started()?;
+    ticket.link_copy_alias()?;
+    let alias = root.join(
+        &ticket
+            .copy_alias
+            .as_ref()
+            .ok_or("missing copy alias")?
+            .relative,
+    );
+    require_eq!(fs::read(&alias)?, b"new")?;
+    require_eq!(fs::read(&target)?, b"old!")?;
+    require_eq!(ticket.reconcile_after_failure()?, PathRecovery::Unchanged)?;
+    require!(!alias.exists())?;
+    require_eq!(fs::metadata(&source)?.nlink(), 1)?;
+    require_eq!(authority.snapshot()?, both)?;
+
+    let reader = common
+        .begin_reader_open(&target)?
+        .opened_owned(File::open(&target)?)?;
+    let mut ticket = common.begin_copy_overwrite(&source, &target)?;
+    ticket.perform_change()?;
+    require_eq!(ticket.reconcile_after_failure()?, PathRecovery::Changed)?;
+    require_eq!(fs::metadata(&target)?.ino(), fs::metadata(&source)?.ino())?;
+    require_eq!(fs::metadata(&source)?.nlink(), 2)?;
+    require_eq!(fs::read(&target)?, b"new")?;
+    require_eq!(authority.snapshot()?, both)?;
+    let mut old = [0_u8; 4];
+    require_eq!(reader.file()?.read_at(&mut old, 0)?, 4)?;
+    require_eq!(old, *b"old!")?;
+    reader.retire()?;
+    require_eq!(
+        authority.snapshot()?.used_bytes,
+        both.used_bytes
+            .checked_sub(4)
+            .ok_or("old copy target charge underflow")?
+    )?;
+    common.begin_delete(&target)?.perform_and_sync()?;
     common.begin_delete(&source)?.perform_and_sync()?;
     require_eq!(authority.snapshot()?, baseline)?;
     require!(common.is_quiescent()?)?;

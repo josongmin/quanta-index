@@ -1633,7 +1633,7 @@ mod tests {
         };
         let mut config = native_config(&state, &socket, workload);
         config["text"]["layout"] = json!("segmented-layered-v2");
-        config["text"]["descriptor"]["format"] = json!([77_u8; 16]);
+        config["text"]["descriptor"]["format"] = json!(vec![77_u8; 16]);
         config["resources"]["physical"]["inventory"]["max_files"] = json!(30_000);
         for class in ["capacity", "interactive", "enrichment"] {
             config["resources"]["execution"][class]["provider_units"] = json!(1);
@@ -1643,7 +1643,7 @@ mod tests {
             "provider": {"kind": "local_code", "egress": {"source_content_consent": true}},
             "scopes": [scope.clone()],
             "max_source_bytes": 1024,
-            "descriptor": {"kind": [32_u8; 16], "schema": [34_u8; 16], "format": [35_u8; 16]},
+            "descriptor": {"kind": vec![32_u8; 16], "schema": vec![34_u8; 16], "format": vec![35_u8; 16]},
         });
         config["owned_work"] = json!({"scopes": [scope]});
         config["read_sessions"] = json!({});
@@ -1701,22 +1701,22 @@ mod tests {
             ("/text/layout", json!("tree-v1"), "Text layout"),
             (
                 "/text/descriptor/format",
-                json!([75_u8; 16]),
+                json!(vec![75_u8; 16]),
                 "Text descriptor",
             ),
             (
                 "/text/descriptor/schema",
-                json!([17_u8; 16]),
+                json!(vec![17_u8; 16]),
                 "Text descriptor",
             ),
             (
                 "/text/descriptor/kind",
-                json!([1_u8; 16]),
+                json!(vec![1_u8; 16]),
                 "Text descriptor",
             ),
             (
                 "/text/admission_policy",
-                json!([17_u8; 32]),
+                json!(vec![17_u8; 32]),
                 "Text admission policy",
             ),
         ] {
@@ -1745,7 +1745,7 @@ mod tests {
                 .is_err_and(|cause| cause.to_string().contains("isolated Core profile"))
         );
 
-        config["text"]["descriptor"]["format"] = json!([75_u8; 16]);
+        config["text"]["descriptor"]["format"] = json!(vec![75_u8; 16]);
         let _layout = config["text"]
             .as_object_mut()
             .context("fixture Text config missing")?

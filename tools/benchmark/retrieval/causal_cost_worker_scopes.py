@@ -522,14 +522,13 @@ def _build_closed_scope_report(
     return report
 
 
-def build_closed_worker_report(
-    capture: dict[str, Any],
+def validate_closed_worker_options(
     *,
-    window_ns: tuple[int, int] | None = None,
-    minimum_closed_workers: int = 1,
-    occupancy_only: bool = False,
-) -> dict[str, Any]:
-    """Preserve partial custody and optionally report a bounded observed window."""
+    window_ns: tuple[int, int] | None,
+    minimum_closed_workers: int,
+    occupancy_only: bool,
+) -> None:
+    """Validate report options independently of the capture."""
     if window_ns is not None and (
         not isinstance(window_ns, tuple)
         or len(window_ns) != 2
@@ -545,6 +544,21 @@ def build_closed_worker_report(
         raise ValueError("worker occupancy requires a capture window")
     if occupancy_only and minimum_closed_workers != 1:
         raise ValueError("worker occupancy does not accept a minimum closed worker sample")
+
+
+def build_closed_worker_report(
+    capture: dict[str, Any],
+    *,
+    window_ns: tuple[int, int] | None = None,
+    minimum_closed_workers: int = 1,
+    occupancy_only: bool = False,
+) -> dict[str, Any]:
+    """Preserve partial custody and optionally report a bounded observed window."""
+    validate_closed_worker_options(
+        window_ns=window_ns,
+        minimum_closed_workers=minimum_closed_workers,
+        occupancy_only=occupancy_only,
+    )
     return _build_closed_scope_report(
         capture,
         maintenance=False,

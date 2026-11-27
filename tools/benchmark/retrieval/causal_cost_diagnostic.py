@@ -30,6 +30,11 @@ from tools.benchmark.retrieval.causal_cost_timeline import (
     _union_ns,
     parse_stream,
 )
+from tools.benchmark.retrieval.causal_cost_worker_scopes import (
+    build_closed_maintenance_report,
+    build_closed_worker_report,
+    validate_closed_worker_options,
+)
 
 EVENT = "native_owned_work_refusal"
 TRACE_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -1161,6 +1166,15 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--lane", type=int)
     query.add_argument("--refusals-only", action="store_true")
     args = parser.parse_args(argv)
+    worker_window = None
+    if args.command == "closed-workers":
+        if args.window_ns is not None:
+            worker_window = (args.window_ns[0], args.window_ns[1])
+        validate_closed_worker_options(
+            window_ns=worker_window,
+            minimum_closed_workers=args.minimum_closed_workers,
+            occupancy_only=args.occupancy_only,
+        )
     if args.command in ("build", "closed-workers", "closed-maintenance", "native-ingest"):
         with args.input.open("rb") as stream:
             if os.fstat(stream.fileno()).st_size > args.max_capture_bytes:
@@ -1174,21 +1188,14 @@ def main(argv: list[str] | None = None) -> int:
                 raw_log = stream.read().decode("utf-8")
         if args.command == "native-ingest":
             result = build_native_ingest_report(capture, limit=args.limit)
-        elif args.command in ("closed-workers", "closed-maintenance"):
-            from tools.benchmark.retrieval.causal_cost_worker_scopes import (
-                build_closed_maintenance_report,
-                build_closed_worker_report,
-            )
-
-            result = (
-                build_closed_maintenance_report(capture)
-                if args.command == "closed-maintenance"
-                else build_closed_worker_report(
-                    capture,
-                    window_ns=tuple(args.window_ns) if args.window_ns is not None else None,
-                    minimum_closed_workers=args.minimum_closed_workers,
-                    occupancy_only=args.occupancy_only,
-                )
+        elif args.command == "closed-maintenance":
+            result = build_closed_maintenance_report(capture)
+        elif args.command == "closed-workers":
+            result = build_closed_worker_report(
+                capture,
+                window_ns=worker_window,
+                minimum_closed_workers=args.minimum_closed_workers,
+                occupancy_only=args.occupancy_only,
             )
         else:
             result = build_index(capture, refusal_log=raw_log)

@@ -13,6 +13,8 @@ pub struct ConnectOptions<P = PathBuf> {
     /// `state_root/search-plane/ingest.sock`.
     pub(crate) ingest_socket: Option<P>,
     pub(crate) native_selection: Option<quanta_index_contract::index::ViewSelection>,
+    /// The configured Native text member that serves the default `.text()`.
+    pub(crate) native_text_instance: Option<quanta_index_contract::index::IndexInstanceId>,
     request_io_timeout: Duration,
     request_io_deadline: Option<Instant>,
 }
@@ -38,6 +40,7 @@ pub(crate) struct ResolvedConnectOptions {
     pub(crate) ingest_socket: Option<PathBuf>,
     pub(crate) io_policy: ClientIoPolicy,
     pub(crate) native_selection: Option<quanta_index_contract::index::ViewSelection>,
+    pub(crate) native_text_instance: Option<quanta_index_contract::index::IndexInstanceId>,
     pub(crate) profile: ClientProfile,
 }
 
@@ -49,6 +52,7 @@ impl Default for ConnectOptions {
             control_socket: None,
             ingest_socket: None,
             native_selection: None,
+            native_text_instance: None,
             request_io_timeout: ClientIoPolicy::default().request_timeout(),
             request_io_deadline: None,
         }
@@ -134,6 +138,7 @@ impl ConnectOptions {
             ingest_socket: None,
             io_policy,
             native_selection: Some(selection),
+            native_text_instance: self.native_text_instance,
             profile,
         })
     }
@@ -156,7 +161,7 @@ impl ConnectOptions {
         mut self,
         profile: ClientProfile,
     ) -> Result<ResolvedConnectOptions, SdkError> {
-        if self.native_selection.is_some() {
+        if self.native_selection.is_some() || self.native_text_instance.is_some() {
             return Err(SdkError::Usage(
                 "Legacy connect cannot accept Native selection".into(),
             ));
@@ -193,6 +198,7 @@ impl ConnectOptions {
             ingest_socket,
             io_policy,
             native_selection: None,
+            native_text_instance: None,
             profile,
         })
     }
@@ -243,6 +249,18 @@ impl<P> ConnectOptions<P> {
         self
     }
 
+    /// Name the configured Native text member that serves the default
+    /// `.text()` code search. The SDK checks it against each read session's
+    /// captured profile; it never guesses a member from the profile.
+    #[must_use]
+    pub fn with_native_text_instance(
+        mut self,
+        instance: quanta_index_contract::index::IndexInstanceId,
+    ) -> Self {
+        self.native_text_instance = Some(instance);
+        self
+    }
+
     #[must_use]
     pub fn with_request_io_timeout(mut self, timeout: Duration) -> Self {
         self.request_io_timeout = timeout;
@@ -287,6 +305,7 @@ impl<'input> ConnectOptions<&'input Path> {
             control_socket: None,
             ingest_socket: None,
             native_selection: None,
+            native_text_instance: None,
             request_io_timeout: ClientIoPolicy::default().request_timeout(),
             request_io_deadline: None,
         }
@@ -301,6 +320,7 @@ impl<'input> ConnectOptions<&'input Path> {
             control_socket: None,
             ingest_socket: None,
             native_selection: None,
+            native_text_instance: None,
             request_io_timeout: ClientIoPolicy::default().request_timeout(),
             request_io_deadline: None,
         }

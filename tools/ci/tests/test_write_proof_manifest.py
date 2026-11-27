@@ -142,6 +142,10 @@ def _build_fixture_root(tmp_path: Path) -> tuple[Path, dict]:
         owner = root / proof["owner"]
         owner.parent.mkdir(parents=True, exist_ok=True)
         owner.touch(exist_ok=True)
+    native_owner = Path("crates/quanta-index-catalog/src/native/authority.rs")
+    fixture_native_owner = root / native_owner
+    fixture_native_owner.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO_ROOT / native_owner, fixture_native_owner)
 
     _run(root, "git", "init", "-q")
     _run(root, "git", "config", "user.name", "Proof Fixture")
@@ -1131,7 +1135,6 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
                 parent,
                 name,
                 content,
-                *,
                 publication_name=publication_name,
                 previous_candidates=previous_candidates,
                 detached=detached,

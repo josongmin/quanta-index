@@ -24,9 +24,10 @@ mod retirement_gate_v2;
 mod service;
 #[path = "native_source_route_seal.rs"]
 mod source_route_seal;
+mod source_scrub_page;
 use quanta_index_catalog::{SqliteCatalog, WalReclaimOutcome};
 use quanta_index_contract::{
-    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
+    SemanticQueryRequest, TextQueryRequest,
     index::{
         IndexInstanceId, OperationKey, OperationStatus, OwnerKey, SubmitOutcome, ViewRef,
         ViewSelection,
@@ -34,13 +35,14 @@ use quanta_index_contract::{
     native_protocol::{
         MAX_NATIVE_TEXT_TOP_K, NativeFilePathEntry, NativeIndexErrorCode, NativeIndexResponse,
         NativeIndexWireError, NativeLiteralHit, NativeLiteralPage, NativePathPage,
+        NativeTextMatchesRequest,
     },
 };
 use quanta_index_core::index::{
-    BootstrapRef, IndexError, MAX_RECLAIM_DRAIN_PAGE, MemoryLifetime, ObjectRef, QueryCoverage,
-    QueryOutcome, SourceRecordOwner, WorkBudget, WorkLimits,
+    BootstrapRef, IndexError, InputDomain, MAX_RECLAIM_DRAIN_PAGE, MemoryLifetime, ObjectRef,
+    QueryCoverage, QueryOutcome, SourceRecordOwner, WorkBudget, WorkLimits, decode_member_binding,
     effort::{ReservationGuard, ResourceNeed},
-    owner_map_key,
+    member_map_key, owner_map_key,
     ports::{
         CatalogGenesisPort, CatalogReadPort, ImmutableObjectPort, ObjectReadIoPort,
         OperationInspectAccess, PersistentMapPort,
@@ -55,20 +57,23 @@ use quanta_index_ipc::{
 };
 use quanta_index_kernel::{
     AdapterDescriptor, AdapterRegistry, Kernel, KernelServices, QueryAdapterRegistry,
+    with_loaded_profile_v1,
 };
+#[cfg(any(test, feature = "native-test-fixtures"))]
+use quanta_index_lexical::native::{NativeLiteralIndex, NativeLiteralReader};
 use quanta_index_lexical::{
     native::{
-        LiteralPage, LiteralReadRequest, NativeLiteralIndex, NativeLiteralReader, PlannedTextRead,
-        TextReadResult,
+        LiteralPage, LiteralReadRequest, NativeTextMatchResult, PlannedTextRead, TextReadResult,
     },
     planner::LexicalPlanner,
 };
-use quanta_index_repomap::native::{
-    FilePathPage, NativeFileMap, NativePathReader, PathReadRequest,
-};
+use quanta_index_repomap::native::{FilePathPage, PathReadRequest};
+#[cfg(any(test, feature = "native-test-fixtures"))]
+use quanta_index_repomap::native::{NativeFileMap, NativePathReader};
 use quanta_index_searchd::app::{
     runtime::{RuntimeRetirementPort, StateRootLease},
     state_format::STATE_ROOT_LEASE_FILE_NAME,
+    state_root_quota::STOCK_SQLITE_TEMP_DIR_NAME,
 };
 use quanta_index_semantic::native::{
     EmbeddingRecipe, ReadContext as SemanticReadContext, SearchResult, SemanticReadRequest,
@@ -83,6 +88,10 @@ pub use crate::native_auto_signals::{
     NativeInteractionActivityPort,
 };
 pub use crate::native_interaction::NativeInteractionRecorder;
+use crate::native_progress_observation::NativeProgressClose as _;
+pub use crate::native_progress_observation::{
+    NativeProgressKind, NativeProgressMark, NativeProgressObservation, NativeProgressWaitError,
+};
 pub use crate::native_provider_signals::{NativeProviderPoolSignals, NativeProviderSignalPort};
 pub use crate::native_pump::{
     FixedPumpPolicy, NativePumpConfig, NativePumpDecision, NativePumpObservation, NativePumpPolicy,
@@ -90,10 +99,20 @@ pub use crate::native_pump::{
 };
 pub use crate::native_read_sessions::NativeReadSessionConfig;
 pub use crate::native_reclaim_driver::{NativeReclaimConfig, NativeReclaimStep};
+pub use crate::native_reclaim_observation::{
+    NATIVE_RECLAIM_STALL_PASSES, NativeReclaimMark, NativeReclaimObservation, NativeReclaimProgress,
+};
+pub use crate::native_release_deadline::{
+    NATIVE_RELEASE_RECLAIM_DEADLINE, NativeReleaseDeadlineError, validate_release_reclaim_deadline,
+};
 pub use crate::native_resources::{
     NativeClassSnapshot, NativeResourceObservation, NativeResourcePlan, NativeResourceSnapshot,
 };
 pub use crate::native_retention::{NativeRetentionConfig, NativeRetentionScope};
+pub use crate::native_retention_observation::{
+    NATIVE_RETENTION_STALL_PASSES, NativeRetentionMark, NativeRetentionObservation,
+    NativeRetentionReleases, NativeRetentionTurns,
+};
 pub use crate::native_semantic_result::ScopedNativeSemanticResult;
 pub use crate::native_text_result::ScopedNativeTextResult;
 pub use crate::native_wal_reclaim::NativeWalReclaimPolicy;
@@ -110,7 +129,6 @@ use crate::{
     native_reclaim_driver::reclaim_one_step,
     native_resources::{NativeClassScheduler, NativeResourceClass, NativeResourceLedger},
     native_scratch_io::NativeScratchIo,
-    native_source_path::valid_native_source_path,
     native_work_diagnostic::{self, DiscardFailureStage},
     native_worker::{DIRECT_ENRICHMENT_DISPATCH_LIMIT, NativeOperationWorker},
     publication_file_capacity::{
@@ -118,12 +136,12 @@ use crate::{
         RecoveryReadRootRegistrationV1,
     },
     publication_inventory::{
-        PublicationBootInventoryLimits, seed_publication_capacity,
-        seed_publication_capacity_admitted_v1,
+        PublicationBootInventoryLimits, seed_publication_capacity_admitted_stock_catalog_v1,
+        seed_publication_capacity_stock_catalog,
     },
-    publication_sqlite_vfs::SqliteCapacityVfs,
 };
 pub use quanta_index_catalog::CatalogWriterCachePolicy;
+pub use source_scrub_page::{NativeSourceScrubCursor, NativeSourceScrubPage};
 
 const PROTECTED_CORE_DISPATCH_SLOTS: usize = 2;
 
@@ -246,16 +264,23 @@ fn native_layout_entry_allowed(
     is_socket: bool,
     selected_socket: bool,
     initialized: bool,
+    stock_sqlite: bool,
 ) -> bool {
     name == STATE_ROOT_LEASE_FILE_NAME
         || name == NATIVE_MARKER_NAME
+        || stock_sqlite && is_directory && name == STOCK_SQLITE_TEMP_DIR_NAME
         || initialized
             && is_directory
             && (name == "catalog" || name == "native-objects" || name == "native-scratch-v1")
         || initialized && selected_socket && is_socket
 }
 
-fn check_native_layout(root: &Path, socket_entry: &Path, initialized: bool) -> Result<()> {
+fn check_native_layout(
+    root: &Path,
+    socket_entry: &Path,
+    initialized: bool,
+    stock_sqlite: bool,
+) -> Result<()> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -266,11 +291,23 @@ fn check_native_layout(root: &Path, socket_entry: &Path, initialized: bool) -> R
             kind.is_socket(),
             entry.path() == socket_entry,
             initialized,
+            stock_sqlite,
         ) {
             return Err(anyhow::anyhow!(
                 "native index root contains foreign entry: {}",
                 entry.path().display()
             ));
+        }
+        if name == STOCK_SQLITE_TEMP_DIR_NAME {
+            let metadata = entry.metadata()?;
+            if !metadata.is_dir()
+                || metadata.uid() != rustix::process::geteuid().as_raw()
+                || metadata.mode() & 0o7777 != 0o700
+            {
+                return Err(anyhow::anyhow!(
+                    "stock SQLite temp directory must be owned and private"
+                ));
+            }
         }
     }
     Ok(())
@@ -279,6 +316,7 @@ fn check_native_layout(root: &Path, socket_entry: &Path, initialized: bool) -> R
 fn check_native_layout_admitted(
     root: &Path,
     socket_entry: &Path,
+    stock_sqlite: bool,
     io: &crate::publication_file_capacity::ExistingTreeReadIoV1,
     budget: &mut WorkBudget,
 ) -> Result<()> {
@@ -293,6 +331,7 @@ fn check_native_layout_admitted(
             kind == Kind::Socket,
             selected_socket,
             true,
+            stock_sqlite,
         ) {
             return Err(IndexError::RebuildRequired.into());
         }
@@ -304,6 +343,7 @@ fn check_native_layout_admitted(
 fn open_native_format(
     root: &Path,
     socket_entry: &Path,
+    stock_sqlite: bool,
     physical: &Arc<PublicationFileCapacity>,
     startup: &mut WorkBudget,
 ) -> Result<()> {
@@ -336,10 +376,10 @@ fn open_native_format(
             if content != NATIVE_MARKER_CONTENT {
                 return Err(anyhow::anyhow!("native index marker version mismatch"));
             }
-            check_native_layout(root, socket_entry, true)?;
+            check_native_layout(root, socket_entry, true, stock_sqlite)?;
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            check_native_layout(root, socket_entry, false)?;
+            check_native_layout(root, socket_entry, false, stock_sqlite)?;
             let mut ticket = physical.begin_native_create(&marker)?;
             ticket.reserve_end(u64::try_from(NATIVE_MARKER_CONTENT.len())?)?;
             ticket.creation_started()?;
@@ -379,6 +419,27 @@ fn open_native_format(
 
 pub use crate::native_stub_certificate_projection_v1::StubGrammarPolicy;
 
+/// Operational telemetry: the logical work one retained read-session query
+/// charged.
+///
+/// The counters are the same `WorkUsage` the request's `WorkLimits` are
+/// enforced against, so they report exactly what admission saw. `query` is
+/// the request's query budget: planning, member and Source reads, scanning
+/// and result projection. `custody` is its session gate: session lookup,
+/// ticket validation and admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeRetainedReadWork {
+    pub session: quanta_index_contract::native_protocol::NativeReadSessionId,
+    pub query: quanta_index_core::index::WorkUsage,
+    pub custody: quanta_index_core::index::WorkUsage,
+    /// Whether the query produced its reply rather than a refusal.
+    pub succeeded: bool,
+}
+
+/// Receiver of [`NativeRetainedReadWork`] telemetry; see
+/// [`NativeIndexService::observe_retained_read_work`].
+pub type NativeRetainedReadWorkObserver = Arc<dyn Fn(NativeRetainedReadWork) + Send + Sync>;
+
 pub(super) struct NativeDispatcher {
     pub(super) retirement_approval: Option<NativeRetirementAuthorityV2>,
     pub(super) read_sessions: Arc<OnceLock<Arc<crate::native_read_sessions::NativeReadSessions>>>,
@@ -392,6 +453,8 @@ pub(super) struct NativeDispatcher {
         quanta_index_repomap::native::RepositoryFilePathPage,
     >,
     pub(super) text_queries: QueryAdapterRegistry<PlannedTextRead, TextReadResult>,
+    pub(super) text_match_queries:
+        QueryAdapterRegistry<NativeTextMatchesRequest, NativeTextMatchResult>,
     pub(super) history_queries: QueryAdapterRegistry<
         quanta_index_search_plane::native_history::PlannedNativeHistoryReadV1,
         quanta_index_search_plane::native_history::NativeHistoryQueryResultV1,
@@ -417,6 +480,7 @@ pub(super) struct NativeDispatcher {
     >,
     pub(super) installation_config_sha256: OnceLock<quanta_index_contract::index::Digest>,
     pub(super) overlay: OnceLock<Arc<crate::native_overlay::NativeOverlay>>,
+    pub(super) retained_read_work: OnceLock<NativeRetainedReadWorkObserver>,
     pub(super) stub_ast:
         OnceLock<Arc<dyn quanta_index_lexical::native::stub::StubAstCertificatePort>>,
     pub(super) interaction: OnceLock<Arc<crate::native_interaction::NativeInteractionRecorder>>,
@@ -549,6 +613,11 @@ impl NativeDispatcher {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<ScopedNativePathPage, IndexError> {
+        if after.is_some() && !matches!(selection, ViewSelection::Exact(_)) {
+            return Err(IndexError::InvalidInput(
+                "path continuation requires an exact view".into(),
+            ));
+        }
         let request = PathReadRequest {
             prefix,
             after,
@@ -774,23 +843,35 @@ fn plan_native_text_query(
         quanta_index_core::index::MemoryLifetime,
     ) -> Result<Option<quanta_index_core::index::MemoryLease>, IndexError>,
 ) -> Result<PlannedTextRead, IndexError> {
-    if query.syntax == TextQuerySyntax::CodeSearch
-        || !query.constraints.language_any_of.is_empty()
-        || query.generation.is_some()
+    // Native selects published views, never manifest generations.
+    if query.generation.is_some()
         || query.generation_selector.is_some()
         || query.cursor.is_some()
         || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&query.top_k)
     {
         return Err(IndexError::InvalidInput(
-            "native text route requires bounded Native or Sourcegraph queries with exact-path constraints".into(),
+            "native text route requires a bounded first-page query on a selected view".into(),
         ));
     }
     let (lowered, lowering_memory) =
         crate::native_query_lowering::lower_native_text_input(query, &reserve)?.into_parts();
     let backing = quanta_index_lexical::native::validate_native_text_input(&lowered)?;
-    let plan_memory = reserve(backing, quanta_index_core::index::MemoryLifetime::Retained)?;
+    let plan_memory = reserve(
+        backing.retained,
+        quanta_index_core::index::MemoryLifetime::Retained,
+    )?;
+    // The planner's regex HIR and engine sets die before it returns the plan.
+    let planning_memory = if backing.planning == 0 {
+        None
+    } else {
+        reserve(
+            backing.planning,
+            quanta_index_core::index::MemoryLifetime::Temporary,
+        )?
+    };
     let plan = LexicalPlanner::plan(&lowered)
         .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+    drop(planning_memory);
     if plan.filters.surface == quanta_index_lexical::symbol::ResultSurface::Path
         && !(allow_path_projection
             && lowered.filters.iter().any(|filter| {
@@ -806,11 +887,26 @@ fn plan_native_text_query(
             "native path grouping requires select:path on a projection-capable text route".into(),
         ));
     }
+    // The language constraint is already lowered into per-file `lang:`
+    // filters, which the reader verifies against Source language metadata;
+    // only the exact-path selection remains a reader constraint.
+    let reader_constraints = query
+        .constraints
+        .repo_relative_path_exact
+        .as_ref()
+        .map_or_else(
+            quanta_index_contract::QueryConstraintSetV1::unconstrained,
+            |path| {
+                quanta_index_contract::QueryConstraintSetV1::from_exact_repo_relative_path(
+                    path.clone(),
+                )
+            },
+        );
     Ok(
-        PlannedTextRead::new(plan, query.top_k, &query.constraints, reserve)?.with_plan_memory([
+        PlannedTextRead::new(plan, query.top_k, &reader_constraints, reserve)?.with_plan_memory([
             plan_memory,
-            lowering_memory[0].clone(),
-            lowering_memory[1].clone(),
+            lowering_memory,
+            None,
         ]),
     )
 }
@@ -863,7 +959,7 @@ pub(super) fn native_literal_result(
         })?;
     for hit in &page.hits {
         let cursor = literal_owner_cursor(&hit.owner);
-        if !valid_native_source_path(&hit.record.path)
+        if !quanta_index_contract::index::is_canonical_source_path(&hit.record.path)
             || prior
                 .as_ref()
                 .is_some_and(|previous| cursor.as_slice() <= previous.as_slice())
@@ -941,7 +1037,7 @@ pub(super) fn native_path_result(
     }
     let mut prior = requested_after;
     for entry in &page.entries {
-        if !valid_native_source_path(&entry.path)
+        if !quanta_index_contract::index::is_canonical_source_path(&entry.path)
             || !entry.path.starts_with(prefix)
             || prior.is_some_and(|previous| entry.path.as_str() <= previous)
         {
@@ -1104,7 +1200,7 @@ pub(super) fn prepare_native_boot_authority(
             "native socket must not use a nested directory inside the state root"
         ));
     }
-    let authority = seed_publication_capacity(
+    let authority = seed_publication_capacity_stock_catalog(
         &lease,
         root,
         resources.physical.inventory,
@@ -1122,7 +1218,6 @@ pub(super) fn prepare_native_boot_authority(
     )?;
     let io = NativeScratchIo::register_with_maintenance(
         Arc::clone(&physical),
-        std::ffi::CString::new("quanta-publication-capacity")?,
         resources.physical.global_max_sqlite_handles,
     )?;
     Ok(NativeBootAuthority {
@@ -1134,7 +1229,7 @@ pub(super) fn prepare_native_boot_authority(
     })
 }
 
-/// Recovery uses the same Native Common and VFS as ordinary boot, but its
+/// Recovery uses the same file capacity authority and stock SQLite as ordinary boot, but its
 /// initial physical inventory belongs to the caller's Original Control budget.
 pub(super) fn prepare_native_recovery_boot_authority(
     lease: Arc<StateRootLease>,
@@ -1161,7 +1256,7 @@ pub(super) fn prepare_native_recovery_boot_authority(
         usize::try_from(resources.physical.max_process_roots)?,
         Arc::clone(&memory),
     )?;
-    let inventory = seed_publication_capacity_admitted_v1(
+    let inventory = seed_publication_capacity_admitted_stock_catalog_v1(
         &registration,
         resources.physical.inventory,
         std::slice::from_ref(&socket_entry),
@@ -1181,12 +1276,6 @@ pub(super) fn prepare_native_recovery_boot_authority(
         entries,
         inventory.max_path_bytes,
     )?;
-    let vfs_name = "quanta-publication-capacity";
-    let vfs_bytes = SqliteCapacityVfs::initial_recovery_allocation_bytes_v1(
-        entries,
-        inventory.max_path_bytes,
-        vfs_name.len(),
-    )?;
     let scratch_io_layout =
         quanta_index_core::index::MemoryLease::shared_allocation_backing_layout(
             std::alloc::Layout::new::<NativeScratchIo>(),
@@ -1201,8 +1290,7 @@ pub(super) fn prepare_native_recovery_boot_authority(
     let maintenance_bytes =
         u64::try_from(maintenance_layout.size()).map_err(|_| IndexError::ResourceLimited)?;
     let backing = common_bytes
-        .checked_add(vfs_bytes)
-        .and_then(|bytes| bytes.checked_add(scratch_io_bytes))
+        .checked_add(scratch_io_bytes)
         .and_then(|bytes| bytes.checked_add(maintenance_bytes))
         .ok_or(IndexError::ResourceLimited)?;
     let binder = budget
@@ -1222,7 +1310,6 @@ pub(super) fn prepare_native_recovery_boot_authority(
     budget.checkpoint()?;
     let io = NativeScratchIo::register_with_maintenance(
         Arc::clone(&physical),
-        std::ffi::CString::new(vfs_name)?,
         resources.physical.global_max_sqlite_handles,
     )?;
     Ok(NativeBootAuthority {
@@ -1306,11 +1393,12 @@ pub(super) fn verify_existing_native_format(
         check_native_layout_admitted(
             root,
             &socket_entry,
+            true,
             &authority.physical.existing_tree_read_io_v1(),
             budget,
         )?;
     } else {
-        check_native_layout(root, &socket_entry, true)?;
+        check_native_layout(root, &socket_entry, true, true)?;
     }
     authority.lease.require_state_root_v1(root)?;
     budget.checkpoint()?;
@@ -1333,6 +1421,8 @@ pub struct NativeIndexService {
     maintenance_enabled: bool,
     object_io_observation: Option<Arc<ObjectIoObservation>>,
     catalog_retirement: Arc<NativeCatalogRetirement>,
+    reclaim_observation: Arc<NativeReclaimObservation>,
+    retention_observation: Arc<NativeRetentionObservation>,
 }
 
 /// In-process maintenance authority retained under the same state-root lease.
@@ -1368,7 +1458,14 @@ impl NativeIndexMaintenance {
         .ok_or_else(|| self.maintenance_scheduler.denial())?;
         budget.bind_memory_scope(reservation.memory_scope());
         let _physical = self.io.enter_maintenance_scope()?;
-        self.kernel.with_reproved_source_member_artifact(
+        if self
+            .catalog
+            .resume_source_body_quarantine(view, budget)?
+            .is_some()
+        {
+            return self.reprove_quarantined_source_member_artifact(view, instance, budget);
+        }
+        let result = self.kernel.with_reproved_source_member_artifact(
             ViewSelection::Exact(view),
             instance,
             budget,
@@ -1381,7 +1478,102 @@ impl NativeIndexMaintenance {
                         .map(Some)
                 }
             },
-        )
+        );
+        match result {
+            Err(primary @ IndexError::CorruptObject(_)) => {
+                if self
+                    .catalog
+                    .resume_source_body_quarantine(view, budget)?
+                    .is_some()
+                {
+                    self.reprove_quarantined_source_member_artifact(view, instance, budget)
+                } else {
+                    Err(primary)
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn reprove_quarantined_source_member_artifact(
+        &self,
+        view: ViewRef,
+        instance_id: IndexInstanceId,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        let (profile, members, owners) = self
+            .catalog
+            .quarantined_member_roots_for_scrub(view, budget)?;
+        let artifact = with_loaded_profile_v1(
+            profile,
+            self.objects.as_ref(),
+            budget,
+            |profile, budget| {
+                // Match the normal Kernel read's retired-profile refusal
+                // before resolving any selected member from this view.
+                for candidate in &profile.instances {
+                    budget.checkpoint()?;
+                    if candidate.policy
+                        == quanta_index_contract::native_protocol::native_repomap_rank_policy()
+                        || matches!(candidate.input_domain, InputDomain::Projection { producer, .. }
+                            if producer == quanta_index_contract::index::ProducerId(*b"semantica-r5-v1!"))
+                    {
+                        return Err(IndexError::InvalidInput(
+                            "retired RepoMap projection identity".into(),
+                        ));
+                    }
+                }
+                let instance = profile
+                    .instances
+                    .iter()
+                    .find(|instance| instance.instance == instance_id)
+                    .ok_or(IndexError::SnapshotUnavailable)?;
+                if instance.input_domain != InputDomain::SourceLocal {
+                    return Err(IndexError::InvalidInput(
+                        "source member requires a source-local instance".into(),
+                    ));
+                }
+                let reference = self
+                    .objects
+                    .lookup_object(members, &member_map_key(instance_id), budget)?
+                    .ok_or(IndexError::SnapshotUnavailable)?;
+                let stored = self.objects.get(reference, budget)?;
+                let member = decode_member_binding(&stored.payload, budget)?;
+                let children = [Some(member.artifact), member.input.root.0];
+                if stored.registration.reference != reference
+                    || !stored
+                        .registration
+                        .children
+                        .iter()
+                        .copied()
+                        .eq(children.into_iter().flatten())
+                    || member.instance != instance.instance
+                    || member.format != instance.format
+                    || member.input.schema != instance.schema
+                    || member.input.policy != instance.policy
+                    || member.input.root != owners
+                {
+                    return Err(IndexError::CorruptObject(
+                        "source member differs from selected ticket or instance".into(),
+                    ));
+                }
+                Ok(member.artifact)
+            },
+        )??;
+        let intact = match self.objects.get(artifact, budget) {
+            Ok(stored) => stored.registration.reference == artifact,
+            Err(IndexError::CorruptObject(_)) => false,
+            Err(error) => return Err(error),
+        };
+        if intact {
+            return self
+                .catalog
+                .source_body_incident_for_scrub(view, artifact, budget)
+                .map(|known| known.then_some(artifact));
+        }
+        self.catalog
+            .quarantine_view_object(view, artifact, budget)
+            .map(Some)
     }
 
     /// Re-prove the selected Source body under the original maintenance budget.
@@ -1433,14 +1625,14 @@ impl NativeIndexMaintenance {
         let ticket = self.kernel.pin_view(ViewSelection::Exact(view), budget)?;
         let result = (|| {
             ticket.validate_for_request(budget)?;
-            let (body, intact) =
+            let (_source, damaged, intact) =
                 self.check_source_body(ticket.view().source.owners, owner, budget)?;
             ticket.validate_for_request(budget)?;
             if intact {
                 return Ok(None);
             }
             self.catalog
-                .quarantine_source_body(view, body, budget)
+                .quarantine_view_object(view, damaged, budget)
                 .map(Some)
         })();
         ticket.finish(result, budget)
@@ -1455,17 +1647,23 @@ impl NativeIndexMaintenance {
         let owners = self
             .catalog
             .quarantined_source_owners_for_scrub(view, budget)?;
-        let (body, intact) = self.check_source_body(owners, owner, budget)?;
+        let (source, damaged, intact) = self.check_source_body(owners, owner, budget)?;
         if intact {
+            if self
+                .catalog
+                .source_body_incident_for_scrub(view, source, budget)?
+            {
+                return Ok(Some(source));
+            }
             return self
                 .catalog
-                .source_body_incident_for_scrub(view, body, budget)
-                .map(|known| known.then_some(body));
+                .source_body_incident_for_scrub(view, damaged, budget)
+                .map(|known| known.then_some(damaged));
         }
-        // The write rechecks the exact view and body reachability under the
+        // The write rechecks the exact view and object reachability under the
         // catalog transaction, including retirement during the physical read.
         self.catalog
-            .quarantine_source_body(view, body, budget)
+            .quarantine_view_object(view, damaged, budget)
             .map(Some)
     }
 
@@ -1474,35 +1672,58 @@ impl NativeIndexMaintenance {
         owners: quanta_index_contract::index::MapRoot,
         owner: OwnerKey,
         budget: &mut WorkBudget,
-    ) -> Result<(ObjectRef, bool), IndexError> {
+    ) -> Result<(ObjectRef, ObjectRef, bool), IndexError> {
         let source = self
             .objects
             .lookup_object(owners, &owner_map_key(owner), budget)?
             .ok_or_else(|| {
                 IndexError::InvalidInput("scrub owner is absent from the selected view".into())
             })?;
-        let stored = self.objects.get(source, budget)?;
-        let record =
-            SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
+        let (damaged, intact) = self.check_source_body_ref(source, budget)?;
+        Ok((source, damaged, intact))
+    }
+
+    /// Re-prove the Source object already selected by an authenticated owner
+    /// map row. The scalar scrub looks that row up first; a bounded map page
+    /// passes its selected ref directly without paying for a second lookup.
+    fn check_source_body_ref(
+        &self,
+        source: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(ObjectRef, bool), IndexError> {
+        let stored = match self.objects.get(source, budget) {
+            Ok(stored) => stored,
+            Err(IndexError::CorruptObject(_)) => return Ok((source, false)),
+            Err(error) => return Err(error),
+        };
+        let record = match SourceRecordOwner::decode_json(
+            &stored.payload,
+            budget,
+            MemoryLifetime::Temporary,
+        ) {
+            Ok(record) => record,
+            Err(IndexError::CorruptObject(_)) => return Ok((source, false)),
+            Err(error) => return Err(error),
+        };
         if stored.registration.reference != source
             || stored.registration.children.as_slice() != [record.bytes]
         {
-            return Err(IndexError::CorruptObject(
-                "selected Source record registration differs".into(),
-            ));
+            return Ok((source, false));
         }
         let body = record.bytes;
-        let intact = match self.objects.get(body, budget) {
-            Ok(stored) => {
-                stored.registration.reference == body
-                    && stored.registration.children.is_empty()
-                    && u64::try_from(stored.payload.len())
-                        .map_err(|_| IndexError::ResourceLimited)?
-                        == record.byte_len
-            }
-            Err(IndexError::CorruptObject(_)) => false,
+        let (intact, length) = match self.objects.get(body, budget) {
+            Ok(stored) => (
+                stored.registration.reference == body && stored.registration.children.is_empty(),
+                Some(u64::try_from(stored.payload.len()).map_err(|_| IndexError::ResourceLimited)?),
+            ),
+            Err(IndexError::CorruptObject(_)) => (false, None),
             Err(error) => return Err(error),
         };
+        if intact && length != Some(record.byte_len) {
+            // The body is authenticated; its size disagreement belongs to the
+            // Source record, which may be shared differently by other views.
+            return Ok((source, false));
+        }
         Ok((body, intact))
     }
 
@@ -1922,6 +2143,9 @@ pub struct NativeServiceCapabilities {
     pub literal: QueryAdapterRegistry<LiteralReadRequest, LiteralPage>,
     pub path: QueryAdapterRegistry<PathReadRequest, FilePathPage>,
     pub text: QueryAdapterRegistry<PlannedTextRead, TextReadResult>,
+    /// Text-match readers; each is the `match_reader` of a `text` reader
+    /// registered under the same descriptor and reservation.
+    pub text_matches: QueryAdapterRegistry<NativeTextMatchesRequest, NativeTextMatchResult>,
     pub semantic: QueryAdapterRegistry<SemanticReadRequest, SearchResult>,
     pub pump: Option<NativePumpConfig>,
     /// The same pool used by configured providers. Physical attempts retain
@@ -1987,11 +2211,12 @@ impl NativeServiceCapabilities {
         resources.physical.validate()?;
         if let Some(config) = retention {
             config.validate()?;
-            if maintenance.is_none() {
+            let Some(reclaim) = maintenance else {
                 return Err(anyhow::anyhow!(
                     "native retention requires automatic reclaim capacity"
                 ));
-            }
+            };
+            validate_release_reclaim_deadline(config, &reclaim)?;
         }
         if let Some(config) = &self.pump {
             config.validate()?;
@@ -2040,6 +2265,8 @@ impl NativeServiceCapabilities {
         self.path
             .validate_reservation(resources.execution.interactive)?;
         self.text
+            .validate_reservation(resources.execution.interactive)?;
+        self.text_matches
             .validate_reservation(resources.execution.interactive)?;
         self.semantic
             .validate_reservation(resources.execution.interactive)?;
@@ -2170,6 +2397,35 @@ impl NativeIndexService {
             .map_err(|_sessions| IndexError::Conflict)
     }
 
+    /// Install the per-request work telemetry of retained read-session
+    /// queries.
+    ///
+    /// Guarantees:
+    /// - The observer receives one [`NativeRetainedReadWork`] for every
+    ///   retained read-session query request that reaches session custody
+    ///   (`SearchText*`, `SearchHybridFile`,
+    ///   `SearchHistory`, `SearchDslV1`, `SearchTextMatches`, `ReadProfile`
+    ///   and the History reads), after its result is final and before its
+    ///   reply is written, on the dispatching thread. Session control requests
+    ///   (open, renew, status, release, settlement) are not reported.
+    /// - It is read-only: it receives a copy of the charged counters after
+    ///   the result is fixed, so it cannot change limits, admission, results
+    ///   or replies.
+    /// - At most one observer is installed per service; a second call is
+    ///   refused with `Conflict`.
+    ///
+    /// The observer runs inside the request's dispatch, so it must be cheap,
+    /// must not block and must not panic: release builds abort on panic.
+    pub fn observe_retained_read_work(
+        &self,
+        observer: NativeRetainedReadWorkObserver,
+    ) -> Result<(), IndexError> {
+        self.dispatcher
+            .retained_read_work
+            .set(observer)
+            .map_err(|_observer| IndexError::Conflict)
+    }
+
     /// Install the bounded foreground publisher source before serving requests.
     /// Publisher freshness is finite; an abrupt client crash becomes Unknown
     /// after expiry because individual SDK calls use separate UDS connections.
@@ -2237,6 +2493,7 @@ impl NativeIndexService {
         }
     }
 
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind(
         state_root: &Path,
         socket_path: &Path,
@@ -2277,6 +2534,7 @@ impl NativeIndexService {
                 literal,
                 path,
                 text: QueryAdapterRegistry::new(),
+                text_matches: QueryAdapterRegistry::new(),
                 semantic: QueryAdapterRegistry::new(),
                 pump: None,
                 provider_attempt_pool: None,
@@ -2287,6 +2545,7 @@ impl NativeIndexService {
 
     /// Binds a native service with a caller-composed typed adapter registry.
     /// The same registry serves every operation and work claim on this root.
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind_with_registry(
         state_root: &Path,
         socket_path: &Path,
@@ -2306,6 +2565,7 @@ impl NativeIndexService {
 
     /// Binds separately registered native text read capabilities to the same
     /// service root and resource plan as its build adapters.
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind_with_registry_and_queries(
         state_root: &Path,
         socket_path: &Path,
@@ -2323,6 +2583,7 @@ impl NativeIndexService {
                 literal: QueryAdapterRegistry::new(),
                 path: QueryAdapterRegistry::new(),
                 text: queries,
+                text_matches: QueryAdapterRegistry::new(),
                 semantic: QueryAdapterRegistry::new(),
                 pump: None,
                 provider_attempt_pool: None,
@@ -2336,6 +2597,7 @@ impl NativeIndexService {
     /// Only the
     /// listed workspace epochs are polled; the registry must contain their
     /// owner adapters. Existing bind factories leave the pump disabled.
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind_with_registry_and_pump(
         state_root: &Path,
         socket_path: &Path,
@@ -2353,6 +2615,7 @@ impl NativeIndexService {
                 literal: QueryAdapterRegistry::new(),
                 path: QueryAdapterRegistry::new(),
                 text: QueryAdapterRegistry::new(),
+                text_matches: QueryAdapterRegistry::new(),
                 semantic: QueryAdapterRegistry::new(),
                 pump,
                 provider_attempt_pool: None,
@@ -2363,6 +2626,7 @@ impl NativeIndexService {
 
     /// Binds all configured native capabilities under one state-root lease.
     /// Reader ceilings are validated before creating any persistent state.
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind_with_capabilities(
         state_root: &Path,
         socket_path: &Path,
@@ -2383,6 +2647,7 @@ impl NativeIndexService {
     /// Binds native capabilities with an explicit measured-RSS gate on
     /// publication start. The caller retains the admission handle for exact
     /// refusal observation; regular bind factories keep this gate disabled.
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind_with_capabilities_and_process_memory_admission(
         state_root: &Path,
         socket_path: &Path,
@@ -2405,6 +2670,7 @@ impl NativeIndexService {
 
     /// Enable bounded service-owned reclaim of objects already queued by
     /// their custody authority. History retirement remains explicit.
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind_with_capabilities_and_maintenance(
         state_root: &Path,
         socket_path: &Path,
@@ -2426,6 +2692,7 @@ impl NativeIndexService {
 
     /// Install explicit sequence-window retirement before the service opens.
     /// The existing maintenance class and manager also own this work.
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     pub fn bind_with_retention(
         state_root: &Path,
         socket_path: &Path,
@@ -2447,6 +2714,7 @@ impl NativeIndexService {
         )
     }
 
+    #[cfg(any(test, feature = "native-test-fixtures"))]
     fn bind_with_retention_and_process_memory_admission(
         state_root: &Path,
         socket_path: &Path,
@@ -2521,6 +2789,7 @@ impl NativeIndexService {
             literal: literal_queries,
             path: path_queries,
             text: queries,
+            text_matches: text_match_queries,
             semantic: semantic_queries,
             pump,
             provider_attempt_pool,
@@ -2566,27 +2835,23 @@ impl NativeIndexService {
         )?;
         worker.bind_provider_owner(lease.clone())?;
         let mut startup = WorkBudget::with_request(NATIVE_BOOT_WORK_LIMITS, request);
-        open_native_format(root, &socket_entry, &physical, &mut startup)?;
-        let scratch = Arc::new(
-            FileScratchSpace::open_managed_with_io_budgeted(
-                root.join("native-scratch-v1"),
-                resources.scratch_reserved_bytes,
-                io.clone(),
-                &mut startup,
-            )
-            .context("open admitted native scratch namespace")?,
-        );
-        // Reopening may recreate WAL/SHM and run Catalog recovery while
-        // foreground has no unassigned capacity. Use the already-held parent
-        // through recovery and namespace binding, before admitting requests.
+        open_native_format(root, &socket_entry, true, &physical, &mut startup)?;
+        let scratch = FileScratchSpace::open_managed_with_io_budgeted(
+            root.join("native-scratch-v1"),
+            resources.scratch_reserved_bytes,
+            io.clone(),
+            &mut startup,
+        )
+        .context("open admitted native scratch namespace")?;
+        let scratch = Arc::new(scratch.into_quota_managed_stock()?);
+        // Retain the maintenance parent for managed boot operations and lock
+        // files. Stock Catalog data files use the verified StateRoot quota.
         let boot_funding = io
             .enter_maintenance_scope()
             .context("admit native Catalog recovery funding")?;
         let catalog = Arc::new(
-            SqliteCatalog::open_with_io_admission_and_writer_cache(
-                root,
+            io.open_catalog_writer(
                 Duration::from_secs(2),
-                io.clone(),
                 resources.catalog_writer_cache,
                 catalog_cache_memory,
             )
@@ -2681,6 +2946,7 @@ impl NativeIndexService {
             path_queries,
             repository_path_queries,
             text_queries: queries,
+            text_match_queries,
             history_queries,
             semantic_queries,
             objects,
@@ -2699,6 +2965,7 @@ impl NativeIndexService {
             graph: OnceLock::new(),
             installation_config_sha256: OnceLock::new(),
             overlay: OnceLock::new(),
+            retained_read_work: OnceLock::new(),
             stub_ast: OnceLock::new(),
             root_lease: Arc::clone(&lease),
             wal_checkpoint_bytes: resources.physical.maintenance_reserved_bytes,
@@ -2716,6 +2983,14 @@ impl NativeIndexService {
             socket_access,
             Arc::new(IpcServerCounters::for_plane("native-index")),
         )?;
+        let reclaim_observation = Arc::new(NativeReclaimObservation::default());
+        if maintenance.is_none() {
+            reclaim_observation.close();
+        }
+        let retention_observation = Arc::new(NativeRetentionObservation::default());
+        if retention.is_none() {
+            retention_observation.close();
+        }
         let pump = if pump.is_some() || maintenance.is_some() {
             Some(NativeOwnedPump::start(
                 Arc::new(NativePumpServices {
@@ -2732,6 +3007,8 @@ impl NativeIndexService {
                     control_need: dispatcher.control_need,
                     io: Arc::clone(&dispatcher.io),
                     diagnostic_context,
+                    reclaim_observation: Arc::clone(&reclaim_observation),
+                    retention_observation: Arc::clone(&retention_observation),
                 }),
                 pump,
                 maintenance,
@@ -2757,6 +3034,8 @@ impl NativeIndexService {
             maintenance_enabled,
             object_io_observation,
             catalog_retirement,
+            reclaim_observation,
+            retention_observation,
         })
     }
 
@@ -2787,6 +3066,18 @@ impl NativeIndexService {
     #[must_use]
     pub fn transport_observation(&self) -> Arc<IpcServerCounters> {
         self.server.counters()
+    }
+
+    /// Automatic reclaim progress; closed when the service has no reclaim driver.
+    #[must_use]
+    pub fn reclaim_observation(&self) -> Arc<NativeReclaimObservation> {
+        Arc::clone(&self.reclaim_observation)
+    }
+
+    /// Automatic retention progress; closed when the service has no retention driver.
+    #[must_use]
+    pub fn retention_observation(&self) -> Arc<NativeRetentionObservation> {
+        Arc::clone(&self.retention_observation)
     }
 
     /// The configured regular-file authority; excludes device/RSS/total-FD claims.
@@ -3117,6 +3408,7 @@ mod native_closeout_tests {
                 | NativeReply::TextPreview(_)
                 | NativeReply::TextPaths(_)
                 | NativeReply::TextPathPage(_)
+                | NativeReply::TextMatches(_)
                 | NativeReply::TextPage(_)
                 | NativeReply::DslPageV1(_)
                 | NativeReply::HistoryPage(_)

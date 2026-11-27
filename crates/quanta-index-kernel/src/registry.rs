@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use quanta_index_core::index::{
     AttemptContext, BaseMember, CoverageBinding, DeltaInput, GroupActivation, IndexError,
-    IndexKind, InputBinding, InputDomain, InstanceSpec, MapRoot, MemberBinding, ObjectRef,
+    IndexInstanceId, IndexKind, InputBinding, InputDomain, InstanceSpec, MapRoot, MemberBinding, ObjectRef,
     OwnerInputBinding, OwnerKey, OwnerMemberBinding, OwnerMutationSet, PlanContext, PlanDecision,
     ProjectionBinding, SchemaId, SourceCut, SourceDelta, StorageFormatId, WorkBudget,
     effort::ResourceNeed,
@@ -397,6 +397,8 @@ pub struct AdapterRegistry {
     projection: BTreeMap<IndexKind, Arc<dyn ErasedProjectionAdapter>>,
     history: BTreeMap<IndexKind, Arc<dyn ErasedHistoryAdapter>>,
     owners: BTreeMap<IndexKind, OwnerRegistration>,
+    /// Dependent kind -> the one source-local companion its reads require.
+    companions: BTreeMap<IndexKind, AdapterDescriptor>,
 }
 
 impl AdapterRegistry {
@@ -465,6 +467,41 @@ impl AdapterRegistry {
                     backend,
                     decode_delta,
                 }));
+                Ok(())
+            }
+        }
+    }
+
+    /// Requires every profile that contains a `dependent` instance to contain
+    /// exactly one core source-local instance of `companion`, and no other
+    /// instance in the companion's storage format.
+    ///
+    /// A reader that consults a pinned sibling member (for example Text
+    /// anchoring `file.contains` on Literal grams) depends on that sibling
+    /// being published in every view; a profile without it is refused at
+    /// staging instead of silently degrading the read.
+    pub fn require_companion(
+        &mut self,
+        dependent: IndexKind,
+        companion: AdapterDescriptor,
+    ) -> Result<(), IndexError> {
+        if !self.core.contains_key(&dependent)
+            || self
+                .core
+                .get(&companion.kind)
+                .is_none_or(|adapter| adapter.descriptor() != companion)
+            || dependent == companion.kind
+        {
+            return Err(IndexError::InvalidInput(
+                "profile companion requires two registered core adapters".into(),
+            ));
+        }
+        match self.companions.entry(dependent) {
+            std::collections::btree_map::Entry::Occupied(_) => Err(IndexError::InvalidInput(
+                "duplicate profile companion requirement".into(),
+            )),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                let _registered = slot.insert(companion);
                 Ok(())
             }
         }
@@ -692,6 +729,46 @@ impl AdapterRegistry {
         instances: &[InstanceSpec],
         budget: &WorkBudget,
     ) -> Result<(), IndexError> {
+        self.validate_profile_with_retained_text_v20(instances, None, budget)
+    }
+
+    /// Only a lone retained Text instance may lack the later Literal
+    /// companion. A present companion is handled by ordinary validation.
+    pub(crate) fn retained_text_companion_absent_v20(
+        &self,
+        instances: &[InstanceSpec],
+        text_kind: IndexKind,
+        text_instance: IndexInstanceId,
+    ) -> bool {
+        let Some(companion) = self.companions.get(&text_kind) else {
+            return false;
+        };
+        let mut text = instances
+            .iter()
+            .filter(|instance| instance.kind == text_kind);
+        matches!((text.next(), text.next()), (Some(first), None) if first.instance == text_instance)
+            && !instances.iter().any(|instance| {
+                instance.kind == companion.kind || instance.format == companion.format
+            })
+    }
+
+    /// A previously admitted Text profile is read only as a signed Source
+    /// witness. All other profile checks still run.
+    pub(crate) fn validate_retained_text_profile_v20(
+        &self,
+        instances: &[InstanceSpec],
+        historical_instance: IndexInstanceId,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.validate_profile_with_retained_text_v20(instances, Some(historical_instance), budget)
+    }
+
+    fn validate_profile_with_retained_text_v20(
+        &self,
+        instances: &[InstanceSpec],
+        retained_text_instance: Option<IndexInstanceId>,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
         // One bounded shape validator owns its temporary backing. Invalid
         // identities and activation groups refuse before adapter validation.
         crate::profile::validate_instances(instances, budget)?;
@@ -731,6 +808,33 @@ impl AdapterRegistry {
                     .get(&instance.kind)
                     .ok_or_else(|| IndexError::InvalidInput("unregistered owner adapter".into()))?
                     .validate_instance(instance)?,
+            }
+        }
+        for (dependent, companion) in &self.companions {
+            budget.checkpoint()?;
+            if !instances.iter().any(|instance| instance.kind == *dependent) {
+                continue;
+            }
+            if retained_text_instance.is_some_and(|instance| {
+                self.retained_text_companion_absent_v20(instances, *dependent, instance)
+            }) {
+                continue;
+            }
+            let mut sharing_format = instances
+                .iter()
+                .filter(|instance| instance.format == companion.format);
+            let unique = match (sharing_format.next(), sharing_format.next()) {
+                (Some(instance), None) => {
+                    instance.kind == companion.kind
+                        && instance.activation == GroupActivation::CoreRequired
+                        && instance.input_domain == InputDomain::SourceLocal
+                }
+                _ => false,
+            };
+            if !unique {
+                return Err(IndexError::InvalidInput(
+                    "profile lacks the unique source-local companion its index requires".into(),
+                ));
             }
         }
         budget.checkpoint()
@@ -1539,6 +1643,39 @@ pub(crate) mod tests {
             Ok(delta.changed.count)
         })?;
         Ok(registry)
+    }
+
+    #[test]
+    fn profile_requires_exactly_one_source_local_companion() -> Result<(), IndexError> {
+        let mut registry = registered_number()?;
+        registry.register(descriptor(2), NumberBackend, |delta: &SourceDelta| {
+            Ok(delta.changed.count)
+        })?;
+        check!(
+            registry
+                .require_companion(IndexKind(id(1)), descriptor(9))
+                .is_err()
+        )?;
+        registry.require_companion(IndexKind(id(1)), descriptor(2))?;
+        check!(
+            registry
+                .require_companion(IndexKind(id(1)), descriptor(2))
+                .is_err()
+        )?;
+        let refused = Err(IndexError::InvalidInput(
+            "profile lacks the unique source-local companion its index requires".into(),
+        ));
+        let budget = demand_test_budget()?;
+        // The dependent alone, or with two companions, is refused.
+        check_eq!(registry.validate_profile(&[spec(1, 3)], &budget), refused)?;
+        check_eq!(
+            registry.validate_profile(&[spec(1, 3), spec(2, 4), spec(2, 5)], &budget),
+            refused
+        )?;
+        // Exactly one companion, or no dependent at all, is admitted.
+        registry.validate_profile(&[spec(1, 3), spec(2, 4)], &budget)?;
+        registry.validate_profile(&[spec(2, 4)], &budget)?;
+        Ok(())
     }
 
     #[test]

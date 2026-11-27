@@ -140,21 +140,55 @@ fn publish(
         stream: scope.stream(kind),
         ..operation(event_predecessor + 1)
     };
-    let request = client.prepare_dsl_publication_v1(
-        &NativeDslPublicationV1 {
-            operation,
-            expected_view,
-            event_predecessor,
-            authority: Digest([22; 32]),
-            changes,
-        },
-        &budget(),
-    )?;
-    let first = published(&client.submit_borrowed(&request, &budget())?)?;
+    let input = NativeDslPublicationV1 {
+        operation,
+        expected_view,
+        event_predecessor,
+        authority: Digest([22; 32]),
+        changes,
+    };
+    let memory = MemoryScope::new(Arc::new(CountedNativeTestMemory(Arc::new(AtomicU64::new(0)))));
+    let sealed = client.prepare_dsl_publication_sealed_admitted_v1(&input, &budget(), &memory)?;
+    let exact = sealed.submission;
+    assert_eq!(exact.ingress.operation, operation);
     assert_eq!(
-        published(&client.submit_borrowed(&request, &budget())?)?,
+        client.read_sealed_dsl_admitted_v1(exact.replay, &budget(), &memory)?,
+        Some(exact)
+    );
+    assert_eq!(client.begin_input(operation, &budget())?, exact.ingress);
+    let mut foreign_replay = exact.replay;
+    foreign_replay.authority = Digest([96; 32]);
+    assert!(client.read_sealed_dsl_admitted_v1(foreign_replay, &budget(), &memory).is_err());
+    assert_eq!(client.status(operation, &budget())?, OperationStatus::Unknown);
+    let mut foreign = sealed.request.clone();
+    foreign.expected_view.digest = Digest([99; 32]);
+    assert!(matches!(
+        client.submit_borrowed(&foreign, &budget()),
+        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::DigestConflict
+    ));
+    assert_eq!(client.status(operation, &budget())?, OperationStatus::Unknown);
+    let mut foreign = exact;
+    foreign.ingress.fence = foreign.ingress.fence.checked_add(1).expect("foreign fence");
+    assert!(client.submit_sealed_dsl_admitted_v1(foreign, &budget(), &memory).is_err());
+    let mut foreign_request = exact;
+    foreign_request.request_ref = ObjectRef(Digest([97; 32]));
+    assert!(client.submit_sealed_dsl_admitted_v1(foreign_request, &budget(), &memory).is_err());
+    assert_eq!(client.status(operation, &budget())?, OperationStatus::Unknown);
+    let first = published(&client.submit_sealed_dsl_admitted_v1(exact, &budget(), &memory)?)?;
+    assert_eq!(client.read_sealed_dsl_admitted_v1(exact.replay, &budget(), &memory)?, None);
+    let identity = client.operation_request_identity_admitted_v1(operation, &budget(), &memory)?;
+    assert!(matches!(
+        identity.response(),
+        NativeIndexResponse::OperationRequestIdentityV1(reply)
+            if reply.payload.request == exact.request_ref
+    ));
+    assert_eq!(
+        published(&client.submit_sealed_dsl_admitted_v1(exact, &budget(), &memory)?)?,
         first
     );
+    let mut foreign_stamp = exact;
+    foreign_stamp.replay.authority = Digest([98; 32]);
+    assert!(client.submit_sealed_dsl_admitted_v1(foreign_stamp, &budget(), &memory).is_err());
     Ok(first)
 }
 
@@ -1212,6 +1246,114 @@ fn native_dsl_retained_cursor_refuses_another_view_and_keeps_original_rows_v1() 
     assert_eq!(admitted_page, &first);
     drop(admitted);
     assert_eq!(active.load(Ordering::SeqCst), 0);
+    let publication: NativeDslPublicationV1 =
+        serde_json::from_slice(&std::fs::read(inputs.path().join(RUNTIME_CATALOG_INPUT))?)?;
+    let NativeDslChangesV1::RuntimeMetadata(expected_catalog) = publication.changes else {
+        return Err("expected the published RuntimeMetadata fixture".into());
+    };
+    let seed = client.read_session_runtime_catalog_page_admitted_v1(
+        &retained,
+        scope.clone(),
+        0,
+        &budget(),
+        &memory,
+    )?;
+    let NativeIndexResponse::DslRuntimeCatalogPageV1(page) = seed.response() else {
+        return Err(format!("retained RuntimeMetadata header refused: {:?}", seed.response()).into());
+    };
+    assert_eq!(page.view, ready);
+    assert_eq!(page.structural_certificate, expected_catalog.corpus_certificate);
+    let mut expected_payload = Vec::new();
+    ciborium::ser::into_writer(&expected_catalog, &mut expected_payload)?;
+    assert_eq!(page.bytes, expected_payload);
+    assert_eq!(
+        Some(page.output),
+        quanta_index_contract::index::native_immutable_object_ref_v1(&expected_payload, &[]),
+    );
+    assert!(active.load(Ordering::SeqCst) > 0);
+    drop(seed);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    let corpus: NativeDslPublicationV1 =
+        serde_json::from_slice(&std::fs::read(inputs.path().join("native-corpus.json"))?)?;
+    let NativeDslChangesV1::Corpus { files, .. } = corpus.changes else {
+        return Err("expected the Structural fixture".into());
+    };
+    let roster = client.read_session_structural_chunks_admitted_v1(
+        &retained, scope.clone(), None, &budget(), &memory,
+    )?;
+    let NativeIndexResponse::DslStructuralChunksPageV1(page) = roster.response() else {
+        return Err(format!("Structural chunk roster refused: {:?}", roster.response()).into());
+    };
+    let mut owners = files.iter().filter_map(|file| {
+        Some((
+            quanta_index_contract::native_protocol::native_dsl_file_owner_v1(file.source_owner),
+            file.next.as_ref()?,
+        ))
+    }).collect::<Vec<_>>();
+    owners.sort_unstable_by_key(|(owner, _)| *owner);
+    let expected = owners
+        .iter()
+        .flat_map(|(owner, file)| {
+            file.chunks.iter().map(move |chunk| (*owner, chunk.chunk_id.as_str()))
+        })
+        .collect::<Vec<_>>();
+    assert!(expected.windows(2).any(|pair| pair[0].0 != pair[1].0));
+    assert_eq!(
+        page.chunks
+            .iter()
+            .map(|chunk| (chunk.owner, chunk.chunk_id.as_str()))
+            .collect::<Vec<_>>(),
+        expected,
+    );
+    assert_eq!(page.view, ready);
+    assert_eq!(page.structural_certificate, expected_catalog.corpus_certificate);
+    assert!(page.after.is_none());
+    let (owner, last_file) = owners.last().ok_or("missing Structural fixture owner")?;
+    let resume = quanta_index_contract::native_protocol::NativeDslStructuralChunksCursorV1 {
+        view: ready, projection: page.projection,
+        structural_certificate: page.structural_certificate,
+        owner: *owner, chunk_offset: Some(0),
+    };
+    drop(roster);
+    let last = client.read_session_structural_chunks_admitted_v1(
+        &retained, scope.clone(), Some(resume), &budget(), &memory,
+    )?;
+    let NativeIndexResponse::DslStructuralChunksPageV1(page) = last.response() else {
+        return Err(format!("Structural chunk continuation refused: {:?}", last.response()).into());
+    };
+    assert_eq!(
+        page.chunks
+            .iter()
+            .map(|chunk| (chunk.owner, chunk.chunk_id.as_str()))
+            .collect::<Vec<_>>(),
+        last_file.chunks
+            .iter()
+            .map(|chunk| (*owner, chunk.chunk_id.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    assert!(page.after.is_none());
+    drop(last);
+    let foreign = quanta_index_contract::native_protocol::NativeDslStructuralChunksCursorV1 {
+        structural_certificate: ObjectRef(Digest([77; 32])), ..resume
+    };
+    let refused = client.read_session_structural_chunks_admitted_v1(
+        &retained, scope.clone(), Some(foreign), &budget(), &memory,
+    )?;
+    assert!(matches!(refused.response(), NativeIndexResponse::Error(error)
+        if error.code == NativeIndexErrorCode::InvalidInput));
+    drop(refused);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    let page_size = quanta_index_contract::native_protocol::NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1;
+    for (session, offset, code) in [
+        (&missing, 0, NativeIndexErrorCode::SnapshotUnavailable),
+        (&retained, page_size, NativeIndexErrorCode::InvalidInput),
+    ] {
+        let refusal = client.read_session_runtime_catalog_page_admitted_v1(
+            session, scope.clone(), offset, &budget(), &memory,
+        )?;
+        assert!(matches!(refusal.response(), NativeIndexResponse::Error(error) if error.code == code));
+    }
+    assert_eq!(active.load(Ordering::SeqCst), 0);
     assert_eq!(
         first.rows.candidate_ids().collect::<Vec<_>>(),
         ["e2e-3-src/changed.rs"]
@@ -1283,6 +1425,14 @@ fn native_dsl_retained_cursor_refuses_another_view_and_keeps_original_rows_v1() 
         client.search_dsl_in_read_session_v1(&recertified_session, without_cursor.clone(), &budget()),
         Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::SnapshotUnavailable
     ));
+    let stale_seed = client.read_session_runtime_catalog_page_admitted_v1(
+        &recertified_session, scope.clone(), 0, &budget(), &memory,
+    )?;
+    assert!(matches!(
+        stale_seed.response(), NativeIndexResponse::Error(error)
+            if error.code == NativeIndexErrorCode::SnapshotUnavailable
+    ));
+    drop(stale_seed);
     let mut catalog: NativeDslPublicationV1 = serde_json::from_reader(std::fs::File::open(
         inputs.path().join(RUNTIME_CATALOG_INPUT),
     )?)?;
@@ -1303,7 +1453,22 @@ fn native_dsl_retained_cursor_refuses_another_view_and_keeps_original_rows_v1() 
         .certificate;
     runtime.catalog.overlay_epoch_ms += 1;
     quanta_index_ipc::stamp_batch_digest_v1(&mut runtime.catalog)?;
-    let second_catalog = published(&client.publish_dsl_v1(&catalog, &budget())?)?;
+    let sealed = client.prepare_dsl_publication_sealed_admitted_v1(&catalog, &budget(), &memory)?;
+    assert_eq!(client.status(catalog.operation, &budget())?, OperationStatus::Unknown);
+    assert_eq!(
+        client.read_sealed_dsl_admitted_v1(sealed.submission.replay, &budget(), &memory)?,
+        Some(sealed.submission),
+    );
+    assert_eq!(client.begin_input(catalog.operation, &budget())?, sealed.submission.ingress);
+    assert_current(&client, recertified)?;
+    let second_catalog = published(&client.submit_sealed_dsl_admitted_v1(
+        sealed.submission, &budget(), &memory,
+    )?)?;
+    assert_eq!(
+        published(&client.submit_sealed_dsl_admitted_v1(sealed.submission, &budget(), &memory)?)?,
+        second_catalog,
+    );
+    assert_eq!(published(&client.publish_dsl_v1(&catalog, &budget())?)?, second_catalog);
     assert_eq!(
         client
             .published_view_metadata(catalog.operation, &budget())?

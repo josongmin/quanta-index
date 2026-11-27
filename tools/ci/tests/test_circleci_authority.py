@@ -205,6 +205,11 @@ def test_f15_recipe_requires_three_passes_and_preserves_producer_failure(
     result = subprocess.run(
         ["just", "--set", "cargo", str(stub), "rust-test-f15-no-default"],
         cwd=ROOT,
+        env={
+            **os.environ,
+            "QUANTA_INDEX_LEGACY_SEARCHD_BIN": str(stub),
+            "QUANTA_INDEX_LEGACY_SEARCHD_SHA256": hashlib.sha256(stub.read_bytes()).hexdigest(),
+        },
         capture_output=True,
         text=True,
     )
@@ -238,12 +243,43 @@ def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_binary
             "native_boot::legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback",
         ]
     events = []
+    inventory_suites = {}
     for binary, names in roster.items():
         witnesses = names[:-1] if binary == omit_binary else names
         suite = {"crate": package, "test_binary": binary, "kind": "test"}
+        excluded = ("fixture_ignored",) if binary == "native_index_uds" else ()
+        inventory_suites[f"{package}::{binary}"] = {
+            "package-name": package,
+            "binary-name": binary,
+            "kind": "test",
+            "status": "listed",
+            "testcases": {
+                **{
+                    name: {"ignored": False, "filter-match": {"status": "matches"}}
+                    for name in names
+                },
+                **{
+                    name: {
+                        "ignored": True,
+                        "filter-match": {"status": "mismatch", "reason": "ignored"},
+                    }
+                    for name in excluded
+                },
+            },
+        }
         events.append(
-            {"type": "suite", "event": "started", "test_count": len(witnesses), "nextest": suite}
+            {
+                "type": "suite",
+                "event": "started",
+                "test_count": len(witnesses) + len(excluded),
+                "nextest": suite,
+            }
         )
+        for witness in excluded:
+            name = f"{package}::{binary}${witness}"
+            events.extend(
+                {"type": "test", "event": event, "name": name} for event in ("started", "ignored")
+            )
         for witness in witnesses:
             name = f"{package}::{binary}${witness}"
             events.extend(
@@ -255,16 +291,29 @@ def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_binary
                 "event": "ok",
                 "passed": len(witnesses),
                 "failed": 0,
-                "ignored": 0,
+                "ignored": len(excluded),
                 "nextest": suite,
             }
         )
 
     args = tmp_path / "nextest-args"
+    list_args = tmp_path / "nextest-list-args"
+    inventory = json.dumps(
+        {
+            "test-count": sum(len(suite["testcases"]) for suite in inventory_suites.values()),
+            "rust-suites": inventory_suites,
+        }
+    )
     payload = "".join(f"{json.dumps(event)}\n" for event in events)
     stub = tmp_path / "cargow"
     stub.write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {shlex.quote(str(args))}\n"
+        f"#!/bin/sh\n"
+        f'if [ "$4" = list ]; then\n'
+        f"  printf '%s\\n' \"$@\" > {shlex.quote(str(list_args))}\n"
+        f"  printf '%s' {shlex.quote(inventory)}\n"
+        f"  exit 0\n"
+        f"fi\n"
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(args))}\n"
         f"printf '%s' {shlex.quote(payload)}\n"
     )
     stub.chmod(0o700)
@@ -282,6 +331,9 @@ def test_native_history_recipe_requires_each_platform_body(tmp_path, omit_binary
     )
     assert result.returncode == int(omit_binary is not None), (result.stdout, result.stderr)
     argv = args.read_text().splitlines()
+    collection_argv = list_args.read_text().splitlines()
+    assert collection_argv[4:-2] == argv[4 : argv.index("--no-tests")]
+    assert collection_argv[-2:] == ["--message-format", "json"]
     targets = {argv[i + 1] for i, arg in enumerate(argv) if arg == "--test"}
     assert targets == roster.keys()
     selections = argv[argv.index("-E") + 1].split(" | ")
@@ -839,12 +891,9 @@ def test_pr_coverage_uses_exact_base_and_fails_closed(tmp_path):
     tools.mkdir()
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    for path in (tools / "git", tools / "uv", tools / "just", scripts / "cargow"):
+    for path in (tools / "git", tools / "uv", scripts / "cargow"):
         path.write_text(
             "#!/bin/sh\n"
-            'if [ "${0##*/}" = git ] && [ "$1" = rev-parse ]; then\n'
-            '    printf "%s\\n" "$TEST_HEAD"; exit 0\n'
-            "fi\n"
             'printf "%s %s\\n" "${0##*/}" "$*"\n'
             'if [ "${0##*/}" = "${FAIL_COMMAND:-}" ]; then exit 19; fi\n',
             encoding="utf-8",
@@ -852,24 +901,25 @@ def test_pr_coverage_uses_exact_base_and_fails_closed(tmp_path):
         path.chmod(0o700)
 
     base = "1a" * 20
-    candidate = "2b" * 20
+    lcov = "/tmp/quanta-index-coverage.lcov"
     expected = [
         f"git fetch --no-tags origin {base}",
         f"git cat-file -e {base}^{{commit}}",
         "uv run --frozen --extra dev python -m pytest "
         "tools/ci/tests/test_check_changed_line_coverage.py -q",
-        f"just rust-coverage-changed {base} 90",
+        "cargow --lane coverage-lane llvm-cov nextest --workspace --all-features --locked "
+        f"--lcov --output-path {lcov}",
+        "uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py "
+        f"--lcov {lcov} --base {base} --minimum-percent 90",
     ]
 
-    def run(base_sha, fail_command="", head=candidate):
+    def run(base_sha, fail_command=""):
         return subprocess.run(
             ["bash", "-c", coverage["command"]],
             cwd=tmp_path,
             env={
                 "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
                 "CI_PR_BASE_SHA": base_sha,
-                "CIRCLE_SHA1": candidate,
-                "TEST_HEAD": head,
                 "FAIL_COMMAND": fail_command,
             },
             capture_output=True,
@@ -885,13 +935,9 @@ def test_pr_coverage_uses_exact_base_and_fails_closed(tmp_path):
     accepted = run(base)
     assert accepted.returncode == 0, accepted.stderr
     assert accepted.stdout.splitlines() == expected
-    wrong_head = run(base, head=base)
-    assert wrong_head.returncode == 2
-    assert "PR coverage requires the checked-out CircleCI SHA" in wrong_head.stderr
-    assert wrong_head.stdout.splitlines() == expected[:-1]
-    failed = run(base, fail_command="just")
+    failed = run(base, fail_command="cargow")
     assert failed.returncode == 19
-    assert failed.stdout.splitlines() == expected
+    assert failed.stdout.splitlines() == expected[:-1]
 
 
 def test_bench_capacity_matches_worker_without_changing_compile_scope():
@@ -935,12 +981,18 @@ def test_regular_workflow_keeps_standard_rust_and_precommit_gates():
         step["run"]["name"]: step["run"]["command"] for step in python_steps if "run" in step
     }
     for name, commands in {
+        "Rust format and clippy": ("just fmt-check",),
         "Rust dependency and MSRV checks": (
             "just rust-machete",
             "just rust-msrv",
         ),
         "Rust documentation": ("just rust-doc",),
         "Rust benchmark compilation": ("just rust-bench-build",),
+        "explicit descriptor custody": (
+            "just rust-audit-explicit-fd",
+            "just rust-test-explicit-fd",
+            "just rust-clippy-explicit-fd",
+        ),
     }.items():
         script = rust_runs[name]
         assert script.startswith("set -euo pipefail\n")
@@ -952,10 +1004,22 @@ def test_regular_workflow_keeps_standard_rust_and_precommit_gates():
     justfile = (ROOT / "Justfile").read_text(encoding="utf-8")
     rust_policy = justfile.split("\nrust-policy:\n", 1)[1].split("\n\n", 1)[0]
     assert "    @just rust-read-view-ambient" in rust_policy.splitlines()
-    assert (
-        "\nrust-read-view-ambient:\n    python3 tools/ci/lint/check-read-view-ambient-lookup.py\n"
-        in justfile
-    )
+    command = subprocess.run(
+        ["just", "--dry-run", "rust-read-view-ambient"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stderr
+    assert shlex.split(command) == [
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "python",
+        "tools/ci/lint/check-read-view-ambient-lookup.py",
+    ]
     assert precommit.startswith("set -euo pipefail\n")
     assert (
         "uv run --frozen --extra dev pre-commit run --all-files --show-diff-on-failure" in precommit

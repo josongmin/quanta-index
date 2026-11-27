@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 PATH = Path(__file__).resolve().parents[1] / "lint/handoff_validation.py"
 spec = importlib.util.spec_from_file_location("quanta_handoff_validation_test", PATH)
@@ -102,3 +106,33 @@ def test_product_chain_refuses_unproven_handoff_and_extra_join_item() -> None:
     errors = VALIDATOR.validate_product_handoff_chain(broken)
     assert "P07 has no recorded owner-proof handoff" in errors
     assert "P02I integration_commits must name P02A then P02B" in errors
+
+
+def test_exported_contract_requires_regular_git_blob(tmp_path: Path) -> None:
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Fixture")
+    git("config", "user.email", "fixture@example.invalid")
+    (tmp_path / "regular.txt").write_text("contract\n", encoding="utf-8")
+    (tmp_path / "directory").mkdir()
+    (tmp_path / "directory" / "nested.txt").write_text("nested\n", encoding="utf-8")
+    (tmp_path / "linked.txt").symlink_to("regular.txt")
+    git("add", ".")
+    git("commit", "-qm", "fixture")
+    sha = git("rev-parse", "HEAD")
+
+    assert (
+        VALIDATOR._git_blob_sha256(tmp_path, sha, "regular.txt")
+        == hashlib.sha256(b"contract\n").hexdigest()
+    )
+    assert (
+        VALIDATOR._git_blob_sha256(tmp_path, sha, "directory/nested.txt")
+        == hashlib.sha256(b"nested\n").hexdigest()
+    )
+    for path in ("directory", "linked.txt"):
+        with pytest.raises(ValueError, match="not a regular file"):
+            VALIDATOR._git_blob_sha256(tmp_path, sha, path)

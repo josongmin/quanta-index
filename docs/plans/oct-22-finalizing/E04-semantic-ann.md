@@ -20,7 +20,7 @@
 신규 소스는 owning 본문, 실제 SDK·daemon 제품, E07 성능·운영을 각각 판정한다.
 새 구현의 현재 상태와 제한은 [NC-B](../nov-12-native-cutover/tickets/NC-B-semantic.md),
 출하 결합은 [NC-F](../nov-12-native-cutover/tickets/NC-F-integration.md),
-전체 합격선은 [전환 DoD](../nov-12-native-cutover/DOD.md#자체-ann-검증)를 따른다.
+전체 합격선은 [전환 DoD](../nov-12-native-cutover/DOD.md#native-lancedb-ann-검증)를 따른다.
 
 10월 SourceAdvance·worker throughput 실패와 단계별 원인·수리 결과는
 [VALIDATION](VALIDATION.md#e07-fulltail-rca-20261028)에 남는다.
@@ -51,6 +51,20 @@ stale job/delete/ABA fencing과 held-old view pin을 유지한다.
 mask/delete/replacement는 top-k/refill 전에 적용한다.
 새 source-file identity는 인증된 source record와 같은 view에서 결정한다.
 [NC-B 파일 계약](../nov-12-native-cutover/tickets/NC-B-semantic.md#shared_contracts).
+
+선택된 vector의 논리 identity는 `(owner, member, vector_id)`와
+owner input stamp·recipe에 묶는다. `vector_id`는 물리 row offset이 아니며
+기존 1024B 상한·variable-length ID의 decode/copy/result grant를 지킨다.
+chunk는 선택 artifact와 위치의 일대일 대응, whole-file은 canonical
+`b"whole-file"` ID를 검증한다. row/schema/digest/seal·중복·ABA·재오픈에서도
+같은 identity를 사용한다.
+
+현재 view의 membership은 selected owner/input과 sealed exact delta·region을
+함께 검사한다. unindexed tail을 숨기는 `fast_search`나 무제한 exact fallback은
+수용 경로가 아니다. 고정 fanout/probe/candidate/refill 예산에서 필터·삭제 후
+top-k 부족은 `approximate/capped/incomplete`로 보고한다. 후보의 exact 거리
+재계산만으로 전역 exact top-k를 증명하지 않는다. 관련 없는 owner 변경이
+안정된 owner의 준비를 무한히 stale로 만들지 않는 진행성도 별도 검증한다.
 
 ## Implemented source contract — reuse, no new ticket
 
@@ -141,7 +155,7 @@ physical durability, quality oracle, Kernel/Semantic materialization을
 5c6d0f8a의 original4K 일부 통과, 현행 자체 ANN 집중 본문 통과,
 신규 출하 후보의 전체 수용은 각각 다른 판정이다.
 상세 unchanged profile/layout/golden은
-[보존 Semantic 사양](../../history/oct-22-finalizing/oct-17-index-closeout/tickets/W2-13-ann-product-integration.md),
+[W2-13 원문 복구 색인](../../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages),
 전체 R18–R22와 통합은 [원 DoD](DOD.md)를 따른다.
 
 - [ ] genuine complete affected output의 desired/covered/missing,

@@ -87,18 +87,17 @@ def test_gold_producer_binds_the_actual_parser_sources_and_released_extensions()
 
     digests = binding._gold_producer_source_digests()
     assert "declaration_parsers" in digests
-    for relative in (
-        "vendor/tree-sitter-typescript/typescript/src/parser.c",
-        "vendor/tree-sitter-typescript/tsx/src/parser.c",
-        "vendor/tree-sitter-typescript/common/scanner.h",
-    ):
-        assert digests[relative] == binding.digest_bytes(
-            (declaration_parsers.ROOT / relative).read_bytes()
-        )
-    for grammar in declaration_parsers.RELEASED_GRAMMARS:
+    assert not any(key.startswith("vendor/") for key in digests)
+    for grammar in declaration_parsers.RELEASED_VERSIONS:
         extension = declaration_parsers._released_extension(grammar)
         key = f"tree-sitter-{grammar}/{extension.name}"
         assert digests[key] == binding.digest_bytes(extension.read_bytes())
+    assert {
+        "go_projection",
+        "projection_process",
+        "symbol_coverage",
+        "ts_projection_script",
+    } <= set(digests)
     for name, relative in (("pyproject_toml", "pyproject.toml"), ("uv_lock", "uv.lock")):
         assert digests[name] == binding.digest_bytes(
             (binding.GOLD_RUNTIME_SOURCE_ROOT / relative).read_bytes()
@@ -126,7 +125,7 @@ def test_gold_capsule_validation_refuses_changed_source_pinfile(inputs, tmp_path
         (pins / relative).write_bytes((source_root / relative).read_bytes())
     monkeypatch.setattr(binding, "GOLD_RUNTIME_SOURCE_ROOT", pins)
 
-    def gold_material(*_args):
+    def gold_material(*_args, **_kwargs):
         return {
             "selection.json": canonical(selection) + b"\n",
             "recipe.json": b"{}\n",
@@ -154,8 +153,11 @@ def test_gold_runtime_requires_source_locked_parser_versions():
         "regex": "2025.10.23",
         "tree-sitter": "0.25.2",
         "tree-sitter-language-pack": "0.10.0",
+        "tree-sitter-go": "0.25.0",
+        "tree-sitter-javascript": "0.25.0",
         "tree-sitter-python": "0.25.0",
         "tree-sitter-rust": "0.24.2",
+        "tree-sitter-typescript": "0.23.2",
         "unicodedata2": "17.0.0",
     }
 
@@ -388,7 +390,7 @@ def test_gold_capture_checks_staged_bytes_without_rederiving_source(tmp_path, mo
     }
     calls = 0
 
-    def derive_once(*_args):
+    def derive_once(*_args, **_kwargs):
         nonlocal calls
         calls += 1
         return material
@@ -436,7 +438,7 @@ def test_gold_capture_refuses_source_drift_before_publication(tmp_path, monkeypa
         "blind.json": b"{}\n",
         "identity.json": canonical({"producer_source_digests": {"source_oracle": "stale"}}) + b"\n",
     }
-    monkeypatch.setattr(binding, "_gold_material", lambda *_args: material)
+    monkeypatch.setattr(binding, "_gold_material", lambda *_args, **_kwargs: material)
     root = tmp_path / "release"
     root.mkdir()
     target = tmp_path / "gold"
@@ -886,21 +888,21 @@ def test_split_manifest_accepts_129_historical_revisions_and_disjoint_holdout(
 
     dev_root, _dev_doc = split_releases["dev_only"]
     hold_root, hold_doc = split_releases["hold_only"]
-    source_checkout = tmp_path / "historical-source"
+    upstream = tmp_path / "historical-source"
     subprocess.run(
-        ["git", "clone", "-q", str(dev_root / "bundles" / "alpha.bundle"), str(source_checkout)],
+        ["git", "clone", "-q", str(dev_root / "bundles" / "alpha.bundle"), str(upstream)],
         check=True,
     )
-    subprocess_git(source_checkout, "config", "user.name", "Fixture")
-    subprocess_git(source_checkout, "config", "user.email", "fixture@localhost")
-    revisions = [subprocess_git(source_checkout, "rev-parse", "HEAD").decode().strip()]
+    subprocess_git(upstream, "config", "user.name", "Fixture")
+    subprocess_git(upstream, "config", "user.email", "fixture@localhost")
+    revisions = [subprocess_git(upstream, "rev-parse", "HEAD").decode().strip()]
     for index in range(1, 129):
-        (source_checkout / "src" / "revision.rs").write_text(
+        (upstream / "src" / "revision.rs").write_text(
             f"pub const HISTORICAL_REVISION: usize = {index};\n"
         )
-        subprocess_git(source_checkout, "add", "src/revision.rs")
-        subprocess_git(source_checkout, "commit", "-qm", f"historical revision {index}")
-        revisions.append(subprocess_git(source_checkout, "rev-parse", "HEAD").decode().strip())
+        subprocess_git(upstream, "add", "src/revision.rs")
+        subprocess_git(upstream, "commit", "-qm", f"historical revision {index}")
+        revisions.append(subprocess_git(upstream, "rev-parse", "HEAD").decode().strip())
     assert len(set(revisions)) == 129
 
     checkouts = tmp_path / "historical-checkouts"
@@ -909,7 +911,7 @@ def test_split_manifest_accepts_129_historical_revisions_and_disjoint_holdout(
     for index, revision in enumerate(revisions):
         name = f"historical-alpha-{index:03d}"
         subprocess_git(
-            source_checkout, "worktree", "add", "--detach", "-q", str(checkouts / name), revision
+            upstream, "worktree", "add", "--detach", "-q", str(checkouts / name), revision
         )
         entries.append(
             {

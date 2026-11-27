@@ -11,6 +11,7 @@ use tinyvec::{Array, TinyVec};
 use unicode_normalization::char::{canonical_combining_class, compose, decompose_canonical};
 
 mod admission;
+mod prepaid;
 mod retained;
 pub use NfcError as NativeNormalizationErrorV1;
 pub use ScratchOwner as NativeNormalizationScratchOwnerV1;
@@ -18,16 +19,17 @@ pub use admission::{
     NativeNormalizationAdmissionV1, NativeNormalizationScratchDemandV1,
     try_for_each_nfc_with_native_admission_v1, try_is_nfc_with_native_admission_v1,
 };
-pub use retained::{
-    NormalizationDataRefusalV1, NormalizationDataV1, NormalizationOutcomeV1, for_each_nfc_into_v1,
-    is_nfc_into_v1,
-};
+pub use prepaid::{PrepaidNfcError, try_is_nfc_with_prepaid_scratch_v1};
 pub use retained::{
     NormalizationDataRefusalV1 as NativeNormalizationDataRefusalV1,
     NormalizationDataV1 as NativeNormalizationDataV1,
     NormalizationOutcomeV1 as NativeNormalizationOutcomeV1,
     for_each_nfc_into_v1 as try_for_each_nfc_into_with_native_admission_v1,
     is_nfc_into_v1 as try_is_nfc_into_with_native_admission_v1,
+};
+pub use retained::{
+    NormalizationDataRefusalV1, NormalizationDataV1, NormalizationOutcomeV1, for_each_nfc_into_v1,
+    is_nfc_into_v1, is_nfc_unbounded_into_v1,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +52,12 @@ pub trait ScratchAdmission {
     type Error;
 
     fn checkpoint(&mut self, units: u64) -> Result<(), Self::Error>;
+
+    /// Poll an already charged bulk phase without a second debit.
+    fn checkpoint_prepaid(&mut self) -> Result<(), Self::Error> {
+        self.checkpoint(0)
+    }
+
     fn birth(
         &mut self,
         demand: ScratchDemand,
@@ -135,6 +143,7 @@ struct Scratch<'a, A: ScratchAdmission> {
     sort: &'a mut Vec<(u8, char)>,
     recomposition: &'a mut TinyVec<[char; 4]>,
     sort_attempted: &'a mut bool,
+    allow_portable_short_sort: bool,
 }
 
 impl<'a, A: ScratchAdmission> Scratch<'a, A> {
@@ -145,6 +154,7 @@ impl<'a, A: ScratchAdmission> Scratch<'a, A> {
             sort: &mut buffers.sort,
             recomposition: &mut buffers.recomposition,
             sort_attempted: &mut buffers.sort_attempted,
+            allow_portable_short_sort: false,
         }
     }
 }
@@ -274,11 +284,17 @@ fn work<A: ScratchAdmission>(
     scratch: &mut Scratch<'_, A>,
     units: usize,
 ) -> Result<(), NfcError<A::Error>> {
-    let units = u64::try_from(units).map_err(|_| NfcError::ArithmeticOverflow)?;
+    let units = u64::try_from(units).map_err(|_error| NfcError::ArithmeticOverflow)?;
     scratch
         .admission
         .checkpoint(units)
         .map_err(NfcError::Admission)
+}
+
+const BULK_SCALARS: usize = 512;
+
+fn checkpoint_prepaid<A: ScratchAdmission>(admission: &mut A) -> Result<(), NfcError<A::Error>> {
+    admission.checkpoint_prepaid().map_err(NfcError::Admission)
 }
 
 fn sort_pending<A: ScratchAdmission>(
@@ -294,18 +310,39 @@ fn sort_pending<A: ScratchAdmission>(
     if len <= 512 {
         // The pinned 64-bit Rust 1.92 stable sort keeps <=512 pairs on the
         // stack. This is the same platform boundary as the current producer.
-        if !cfg!(all(
-            target_pointer_width = "64",
-            any(target_os = "linux", target_os = "macos")
-        )) || size_of::<(u8, char)>() != 8
-        {
-            return Err(NfcError::UnsupportedNativeSortBacking);
-        }
-        scratch
+        let pairs = scratch
             .decomposition
             .get_mut(start..)
-            .ok_or(NfcError::InvalidNativeProducer)?
-            .sort_by_key(|pair| pair.0);
+            .ok_or(NfcError::InvalidNativeProducer)?;
+        if cfg!(all(
+            target_pointer_width = "64",
+            any(target_os = "linux", target_os = "macos")
+        )) && size_of::<(u8, char)>() == 8
+        {
+            pairs.sort_by_key(|pair| pair.0);
+        } else if scratch.allow_portable_short_sort {
+            // The prepaid borrowed protocol covers a quadratic pass. A
+            // stable insertion sort on at most 512 entries needs no backing.
+            for index in 1..pairs.len() {
+                checkpoint_prepaid(scratch.admission)?;
+                let mut current = index;
+                while let Some(previous) = current.checked_sub(1) {
+                    let previous_class = pairs
+                        .get(previous)
+                        .ok_or(NfcError::InvalidNativeProducer)?
+                        .0;
+                    let current_class =
+                        pairs.get(current).ok_or(NfcError::InvalidNativeProducer)?.0;
+                    if previous_class <= current_class {
+                        break;
+                    }
+                    pairs.swap(previous, current);
+                    current = previous;
+                }
+            }
+        } else {
+            return Err(NfcError::UnsupportedNativeSortBacking);
+        }
         return Ok(());
     }
     let sort_work = len.checked_mul(3).ok_or(NfcError::ArithmeticOverflow)?;
@@ -320,19 +357,34 @@ fn sort_pending<A: ScratchAdmission>(
         )?;
     }
     scratch.sort.clear();
-    scratch.sort.resize(len, (0, '\0'));
-    let mut positions = [0_usize; 256];
-    for &(class, _) in scratch
-        .decomposition
-        .get(start..)
-        .ok_or(NfcError::InvalidNativeProducer)?
-    {
-        let position = positions
-            .get_mut(usize::from(class))
-            .ok_or(NfcError::InvalidNativeProducer)?;
-        *position = position
-            .checked_add(1)
+    while scratch.sort.len() < len {
+        checkpoint_prepaid(scratch.admission)?;
+        let additional = len
+            .checked_sub(scratch.sort.len())
+            .ok_or(NfcError::ArithmeticOverflow)?
+            .min(BULK_SCALARS);
+        let target = scratch
+            .sort
+            .len()
+            .checked_add(additional)
             .ok_or(NfcError::ArithmeticOverflow)?;
+        scratch.sort.resize(target, (0, '\0'));
+    }
+    let pairs = scratch
+        .decomposition
+        .get_mut(start..)
+        .ok_or(NfcError::InvalidNativeProducer)?;
+    let mut positions = [0_usize; 256];
+    for chunk in pairs.chunks(BULK_SCALARS) {
+        checkpoint_prepaid(scratch.admission)?;
+        for &(class, _) in chunk {
+            let position = positions
+                .get_mut(usize::from(class))
+                .ok_or(NfcError::InvalidNativeProducer)?;
+            *position = position
+                .checked_add(1)
+                .ok_or(NfcError::ArithmeticOverflow)?;
+        }
     }
     let mut next = 0;
     for position in &mut positions {
@@ -342,27 +394,28 @@ fn sort_pending<A: ScratchAdmission>(
             .checked_add(count)
             .ok_or(NfcError::ArithmeticOverflow)?;
     }
-    for &pair in scratch
-        .decomposition
-        .get(start..)
-        .ok_or(NfcError::InvalidNativeProducer)?
-    {
-        let position = positions
-            .get_mut(usize::from(pair.0))
-            .ok_or(NfcError::InvalidNativeProducer)?;
-        *scratch
-            .sort
-            .get_mut(*position)
-            .ok_or(NfcError::InvalidNativeProducer)? = pair;
-        *position = position
-            .checked_add(1)
-            .ok_or(NfcError::ArithmeticOverflow)?;
+    for chunk in pairs.chunks(BULK_SCALARS) {
+        checkpoint_prepaid(scratch.admission)?;
+        for &pair in chunk {
+            let position = positions
+                .get_mut(usize::from(pair.0))
+                .ok_or(NfcError::InvalidNativeProducer)?;
+            *scratch
+                .sort
+                .get_mut(*position)
+                .ok_or(NfcError::InvalidNativeProducer)? = pair;
+            *position = position
+                .checked_add(1)
+                .ok_or(NfcError::ArithmeticOverflow)?;
+        }
     }
-    scratch
-        .decomposition
-        .get_mut(start..)
-        .ok_or(NfcError::InvalidNativeProducer)?
-        .copy_from_slice(scratch.sort);
+    for (target, sorted) in pairs
+        .chunks_mut(BULK_SCALARS)
+        .zip(scratch.sort.chunks(BULK_SCALARS))
+    {
+        checkpoint_prepaid(scratch.admission)?;
+        target.copy_from_slice(sorted);
+    }
     Ok(())
 }
 
@@ -403,6 +456,8 @@ fn reset_decomposition<A: ScratchAdmission>(
         .checked_sub(state.ready.end)
         .ok_or(NfcError::InvalidNativeProducer)?;
     work(scratch, pending)?;
+    // The next starter completes the ready run. At most the remaining
+    // parts of that one decomposed scalar follow it. At EOF pending is empty.
     scratch.decomposition.copy_within(state.ready.end.., 0);
     scratch.decomposition.truncate(pending);
     state.ready = 0..0;

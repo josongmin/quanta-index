@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-semantic-bench = []
+semantic-bench = ["quanta-index-semantic/legacy-semantic-adapter"]
 
 [lints]
 workspace = true
@@ -30,9 +30,9 @@ quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical", de
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
-# The ANN rail seals and queries a semantic generation through the adapter
-# itself: the production build, seal and open, with no daemon between.
-quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
+# Native corpus generation needs pure embedding helpers. The direct persisted
+# ANN benchmark enables its adapter through semantic-bench.
+quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

@@ -687,6 +687,7 @@ fn native_retained_path_page_preserves_repository_cursor() -> Result<(), Box<dyn
         },
         remaining: 0,
         after: None,
+        code_search: Vec::new(),
     };
     let expected_cursor = cursor.clone();
     let expected_page = page.clone();
@@ -1013,4 +1014,45 @@ fn unknown_native_command_remains_usage_instead_of_capability_refusal() {
         assert_eq!(exit, ExitCode::from(2));
         assert!(stderr.contains(&format!("unsupported native command {command}")));
     }
+}
+
+#[test]
+fn code_search_refusals_point_legacy_callers_at_the_native_command() {
+    let (exit, stderr) = run_native(vec![
+        "lexical".into(),
+        "--query-text".into(),
+        "todo main".into(),
+    ]);
+    assert_eq!(exit, ExitCode::from(EXIT_UNSUPPORTED));
+    assert!(stderr.contains("searchctl code-search"), "{stderr}");
+
+    let (exit, stderr) = run_native(vec![
+        "legacy".into(),
+        "lexical".into(),
+        "--socket".into(),
+        "/tmp/absent-legacy.sock".into(),
+        "--repo-id".into(),
+        "repo-e2e".into(),
+        "--revision-id".into(),
+        "rev-e2e".into(),
+        "--syntax".into(),
+        "code_search".into(),
+        "--query-text".into(),
+        "todo main".into(),
+        "--top-k".into(),
+        "10".into(),
+    ]);
+    assert_eq!(exit, ExitCode::from(EXIT_USAGE));
+    assert!(
+        stderr.contains("--manifest-generation") && stderr.contains("searchctl code-search"),
+        "{stderr}"
+    );
+
+    let (exit, stderr) = run_native(vec![
+        "code-search".into(),
+        "--repo".into(),
+        "repo-e2e".into(),
+    ]);
+    assert_eq!(exit, ExitCode::from(EXIT_USAGE));
+    assert!(stderr.contains("--socket"), "{stderr}");
 }

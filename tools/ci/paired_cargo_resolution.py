@@ -33,6 +33,11 @@ except ModuleNotFoundError:  # Python 3.10 compatibility, matching proof tooling
 REQUIRED_QUANTA_PACKAGES = frozenset(
     {"quanta-index-contract", "quanta-index-ipc", "quanta-index-sdk"}
 )
+PAIRED_CONSUMER_FEATURES = {
+    "quanta-runtime": "index-sdk-ingress",
+    "quanta-runtime-retrieval-kernel": "index-sdk-ingress-surface",
+    "quanta-sdk-runtime-executor": "ifx150-restart-recovery-test-support",
+}
 QBC_STATUS_MAX_BYTES = 4 * 1024 * 1024
 QBC_METADATA_MAX_BYTES = 64 * 1024 * 1024
 
@@ -53,13 +58,8 @@ def _unsigned_environment() -> dict[str, str]:
 def source_python_environment(environment: MutableMapping[str, str]) -> Iterator[str]:
     """Isolate source-backed imports and shell startup for proof children."""
     removed = (
-        "BASH_ENV",
-        "ENV",
-        "PYTHONHOME",
-        "PYTHONPATH",
-        "PYTHONUSERBASE",
-        "PYTHONSTARTUP",
-        "PYTHONINSPECT",
+        "BASH_ENV", "ENV", "PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE",
+        "PYTHONSTARTUP", "PYTHONINSPECT",
     )
     controlled = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
     keys = (*removed, *controlled, "PYTHONPYCACHEPREFIX")
@@ -82,35 +82,23 @@ def frozen_source_head(root: Path) -> str:
     """Admit a physical checkout before running any of its QBC code."""
     environment = _unsigned_environment()
     local_env = subprocess.check_output(
-        ["git", "rev-parse", "--local-env-vars"],
-        env=environment,
-        text=True,
+        ["git", "rev-parse", "--local-env-vars"], env=environment, text=True,
     )
     if any(
         name in environment
         for name in (*local_env.splitlines(), "GIT_NAMESPACE")
-        if name
-        not in {
-            "GIT_CONFIG",
-            "GIT_CONFIG_COUNT",
-            "GIT_CONFIG_PARAMETERS",
-            "GIT_NO_REPLACE_OBJECTS",
+        if name not in {
+            "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_NO_REPLACE_OBJECTS",
         }
     ):
         raise ValueError(f"paired proof refuses an overridden Git repository environment: {root}")
     git = [
-        "git",
-        "--no-replace-objects",
-        "--no-optional-locks",
-        "-c",
-        "core.fsmonitor=false",
-        "-C",
-        str(root),
+        "git", "--no-replace-objects", "--no-optional-locks",
+        "-c", "core.fsmonitor=false", "-C", str(root),
     ]
     identity = subprocess.check_output(
         [*git, "rev-parse", "--show-toplevel", "--verify", "HEAD^{commit}"],
-        env=environment,
-        text=True,
+        env=environment, text=True,
     )
     actual_root, _, head = identity.rstrip("\n").rpartition("\n")
     if actual_root != str(root) or len(head) != 40:
@@ -229,11 +217,7 @@ def resolve_from_qbc(
 
 
 def _resolve_with_qbc(
-    quanta_root: Path,
-    paired_root: Path,
-    consumer: str,
-    feature: str,
-    lane: str,
+    quanta_root: Path, paired_root: Path, consumer: str, feature: str, lane: str,
     environment: dict[str, str],
 ) -> dict[str, Any]:
     roots = {root: frozen_source_head(root) for root in (quanta_root, paired_root)}
@@ -454,10 +438,7 @@ def validate_resolution(
             raise ValueError("reachable Cargo dependency lacks a resolve node")
         reachable.add(identity)
         pending.extend(nodes[identity]["dependencies"])
-    required_feature = {
-        "quanta-runtime": "index-sdk-ingress",
-        "quanta-runtime-retrieval-kernel": "index-sdk-ingress-surface",
-    }.get(consumer)
+    required_feature = PAIRED_CONSUMER_FEATURES.get(consumer)
     consumer_features = nodes[roots[0]].get("features")
     if (
         required_feature is None
@@ -538,7 +519,7 @@ def main() -> int:
     parser.add_argument("--quanta-root", type=Path, required=True)
     parser.add_argument("--paired-root", type=Path, required=True)
     parser.add_argument(
-        "--consumer", choices=["quanta-runtime", "quanta-runtime-retrieval-kernel"], required=True
+        "--consumer", choices=PAIRED_CONSUMER_FEATURES, required=True
     )
     parser.add_argument(
         "--qbc-lane", help="registered QBC lane for source-bound metadata preflight"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import stat
 import sys
 from pathlib import Path
 
@@ -105,41 +104,22 @@ def grammar_identity(root: Path = ROOT) -> str:
         rows = [p for p in lock["package"] if p["name"] == name]
         if not rows or any(row["version"] != version for row in rows):
             raise ValueError(f"grammar lock identity differs: {name}")
-        if name in {"tree-sitter", "tree-sitter-rust", "tree-sitter-python"}:
-            if len(rows) != 1:
-                raise ValueError(f"grammar lock identity differs: {name}")
-            row = rows[0]
-            checksum = row.get("checksum")
-            if row.get(
-                "source"
-            ) != "registry+https://github.com/rust-lang/crates.io-index" or not is_sha(checksum):
-                raise ValueError(f"{name} must have a crates.io checksum")
-            registry_checksums[name] = checksum
-        else:
-            path_rows = [row for row in rows if "source" not in row and "checksum" not in row]
-            alias = name + "-official"
-            has_alias = alias in workspace
-            registry_rows = [row for row in rows if row not in path_rows]
-            if alias in benchmark_dependencies:
-                raise ValueError(f"{name} official candidate must not enter product dependencies")
-            if len(path_rows) != 1 or len(registry_rows) != int(has_alias):
-                raise ValueError(f"{name} grammar must resolve to one source-bound path dependency")
-            if has_alias:
-                if workspace[alias] != {"package": name, "version": "=" + version}:
-                    raise ValueError(f"{name} official candidate dependency differs")
-                if benchmark_dev_dependencies.get(alias) != {"workspace": True}:
-                    raise ValueError(
-                        f"{name} official candidate must be a benchmark dev dependency"
-                    )
-                row = registry_rows[0]
-                if row.get(
-                    "source"
-                ) != "registry+https://github.com/rust-lang/crates.io-index" or not is_sha(
-                    row.get("checksum")
-                ):
-                    raise ValueError(f"{name} official candidate lacks a crates.io checksum")
-            elif alias in benchmark_dev_dependencies:
-                raise ValueError(f"{name} official candidate has no workspace pin")
+        if len(rows) != 1:
+            raise ValueError(f"grammar lock identity differs: {name}")
+        row = rows[0]
+        checksum = row.get("checksum")
+        if row.get(
+            "source"
+        ) != "registry+https://github.com/rust-lang/crates.io-index" or not is_sha(checksum):
+            raise ValueError(f"{name} must have a crates.io checksum")
+        registry_checksums[name] = checksum
+        alias = name + "-official"
+        if (
+            alias in workspace
+            or alias in benchmark_dependencies
+            or alias in benchmark_dev_dependencies
+        ):
+            raise ValueError(f"{name} official candidate must use a separate executable")
     for tag, version in [
         ("typescript", "0.23.2"),
         ("go", "0.25.0"),
@@ -148,49 +128,69 @@ def grammar_identity(root: Path = ROOT) -> str:
         ("javascript", "0.25.0"),
     ]:
         expected = "=" + version
-        if tag not in {"rust", "python"}:
-            expected = {"version": expected, "path": "vendor/tree-sitter-" + tag}
         name = "tree-sitter-" + tag
         if workspace[name] != expected or benchmark_dependencies.get(name) != {"workspace": True}:
             raise ValueError(f"{tag} grammar dependency differs")
     return (
         "tree-sitter@0.25.10;rust@0.24.2;registry-checksum="
         + registry_checksums["tree-sitter-rust"]
-        + ";"
-        "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256="
-        + _vendor_digest(root / "vendor/tree-sitter-go", "go")
-        + ";javascript@0.25.0+quanta-javascript-export-names-1;vendored-source-sha256="
-        + _vendor_digest(root / "vendor/tree-sitter-javascript", "javascript")
+        + ";go@0.25.0;registry-checksum="
+        + registry_checksums["tree-sitter-go"]
+        + ";javascript@0.25.0;registry-checksum="
+        + registry_checksums["tree-sitter-javascript"]
         + ";python@0.25.0;registry-checksum="
         + registry_checksums["tree-sitter-python"]
-        + ";"
-        "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256="
-        + _vendor_digest(root / "vendor/tree-sitter-typescript", "typescript")
+        + ";typescript@0.23.2;registry-checksum="
+        + registry_checksums["tree-sitter-typescript"]
     )
 
 
-def _vendor_digest(vendor: Path, tag: str) -> str:
-    files = []
-    for path in vendor.rglob("*"):
-        mode = path.lstat().st_mode
-        if stat.S_ISDIR(mode):
-            continue
-        if not stat.S_ISREG(mode):
-            raise ValueError(f"non-regular vendored grammar input: {path}")
-        files.append((path.relative_to(vendor).as_posix(), path))
-    if not files or vendor.is_symlink():
-        raise ValueError("vendored grammar source is empty or symlinked")
-    digest = hashlib.sha256(f"quanta-index:vendored-{tag}-inputs:v1\0".encode())
-    for name, path in sorted(files):
-        name_bytes, data = name.encode(), regular_bytes(path)
-        digest.update(len(name_bytes).to_bytes(8, "little"))
-        digest.update(name_bytes)
-        digest.update(len(data).to_bytes(8, "little"))
-        digest.update(data)
-    return digest.hexdigest()
+def candidate_grammar_identity(manifest_path: Path, manifest_sha256: str, root: Path = ROOT) -> str:
+    """Derive the explicit candidate identity from pinned manifest and lock bytes."""
+    if not is_sha(manifest_sha256):
+        raise ValueError("candidate manifest SHA-256 must be lowercase hex")
+    raw = regular_bytes(manifest_path, max_bytes=1 << 20)
+    if hashlib.sha256(raw).hexdigest() != manifest_sha256:
+        raise ValueError("candidate manifest differs from pinned SHA-256")
+    manifest = parse_json(raw)
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema") != "quanta-symbol-candidate-artifacts-v1"
+    ):
+        raise ValueError("candidate artifact manifest schema is invalid")
+    candidate = manifest.get("grammar_identity")
+    if (
+        not isinstance(candidate, str)
+        or not candidate.startswith("registry-")
+        or len(candidate) > 4096
+    ):
+        raise ValueError("candidate grammar identity is invalid")
+    lock = tomllib.loads(regular_bytes(root / "Cargo.lock").decode())
+    checksums = {}
+    for name, version in (("rust", "0.24.2"), ("python", "0.25.0")):
+        rows = [row for row in lock["package"] if row["name"] == "tree-sitter-" + name]
+        if (
+            len(rows) != 1
+            or rows[0]["version"] != version
+            or rows[0].get("source") != "registry+https://github.com/rust-lang/crates.io-index"
+            or not is_sha(rows[0].get("checksum"))
+        ):
+            raise ValueError(f"candidate fallback grammar lock identity differs: {name}")
+        checksums[name] = rows[0]["checksum"]
+    fallback = (
+        f"rust@0.24.2;registry-checksum={checksums['rust']};"
+        f"python@0.25.0;registry-checksum={checksums['python']}"
+    )
+    return f"{candidate};fallback={fallback};artifact-manifest-sha256={manifest_sha256}"
 
 
-def policy_digest(policy: dict, root: Path = ROOT) -> str:
+def policy_digest(
+    policy: dict,
+    root: Path = ROOT,
+    *,
+    candidate_identity: str | None = None,
+    candidate_manifest_sha256: str | None = None,
+) -> str:
     exact(policy, set(LIMITS + TIMEOUTS), "symbol extraction policy")
     if any(not count(policy[key]) for key in LIMITS):
         raise ValueError("invalid symbol extraction limit")
@@ -206,7 +206,7 @@ def policy_digest(policy: dict, root: Path = ROOT) -> str:
     parts = [
         b"quanta-index:symbol-preflight:v1",
         PRODUCER.encode(),
-        grammar_identity(root).encode(),
+        (candidate_identity or grammar_identity(root)).encode(),
     ]
     parts += [
         regular_bytes(root / path)
@@ -220,6 +220,20 @@ def policy_digest(policy: dict, root: Path = ROOT) -> str:
     ]
     for data in parts:
         digest.update(str(len(data)).encode() + b"\0" + data)
+    if candidate_identity is not None:
+        if not is_sha(candidate_manifest_sha256) or not candidate_identity.endswith(
+            f";artifact-manifest-sha256={candidate_manifest_sha256}"
+        ):
+            raise ValueError("candidate policy identity differs from pinned manifest")
+        digest.update(b"quanta-index:candidate-artifact-manifest-sha256:v1\0")
+        digest.update(candidate_manifest_sha256.encode())
+        for path in (
+            "benchmarks/retrieval/src/symbols/official_candidate_process.rs",
+            "benchmarks/retrieval/src/symbols/go_candidate_process.rs",
+            "benchmarks/retrieval/src/symbols/syntax_candidate_process.rs",
+        ):
+            data = regular_bytes(root / path)
+            digest.update(str(len(data)).encode() + b"\0" + data)
     for key in LIMITS:
         digest.update(str(policy[key]).encode() + b"\0")
     for key in TIMEOUTS:
@@ -401,8 +415,10 @@ def verify_artifact(
     root: Path = ROOT,
     *,
     expected_timeout_total_ms: int | None = None,
+    candidate_identity: str | None = None,
+    candidate_manifest_sha256: str | None = None,
 ) -> Path:
-    validate_metrics(metrics, grammar_identity(root))
+    validate_metrics(metrics, candidate_identity or grammar_identity(root))
     artifact = phase_path.parent / metrics["symbol_preflight_out"]
     raw = regular_bytes(artifact, max_bytes=64 * 1024 * 1024)
     if hashlib.sha256(raw).hexdigest() != metrics["symbol_preflight_sha256"]:
@@ -447,7 +463,13 @@ def verify_artifact(
         or report["lockfile_sha256"]
         != hashlib.sha256(regular_bytes(root / "Cargo.lock")).hexdigest()
         or report["producer_policy_sha256"] != metrics["symbol_producer_policy_sha256"]
-        or report["producer_policy_sha256"] != policy_digest(report["policy"], root)
+        or report["producer_policy_sha256"]
+        != policy_digest(
+            report["policy"],
+            root,
+            candidate_identity=candidate_identity,
+            candidate_manifest_sha256=candidate_manifest_sha256,
+        )
     ):
         raise ValueError("preflight source/grammar/policy commitment mismatch")
     if expected_timeout_total_ms is not None:

@@ -17,8 +17,11 @@ use quanta_index_core::index::{
     IndexError, ScratchAllocation, ScratchIoBinding, ScratchNamespaceLease, ScratchRequest,
     ScratchSpacePort, WorkBudget, WorkUsage,
 };
+use quanta_index_core::publication_capacity::InodeKey;
 use rustix::fs::{AtFlags, Dir, Mode, OFlags};
 use tempfile::TempDir;
+
+mod stock;
 
 const MAX_CLEANUP_ENTRIES: u64 = 1_000_000;
 
@@ -28,7 +31,7 @@ struct SpaceInner {
     root_file: File,
     max_bytes: u64,
     reserved: Mutex<u64>,
-    io_binding: Option<Arc<dyn ScratchIoBinding>>,
+    io: ScratchNamespaceIo,
     _lock: NamespaceLock,
 }
 
@@ -40,6 +43,13 @@ enum NamespaceLock {
     Managed {
         _lease: Box<dyn ScratchNamespaceLease>,
     },
+}
+
+#[derive(Debug)]
+enum ScratchNamespaceIo {
+    Unbound,
+    Bound(Arc<dyn ScratchIoBinding>),
+    Stock(Arc<stock::StockScratchIo>),
 }
 
 /// A private scratch namespace.
@@ -56,9 +66,21 @@ pub struct FileScratchSpace {
 struct FileScratchAllocation {
     path: PathBuf,
     directory: Option<TempDir>,
+    identity: InodeKey,
     max_bytes: u64,
     reserved: Mutex<u64>,
     inner: Arc<SpaceInner>,
+}
+
+#[derive(Clone, Debug)]
+struct SharedFileScratchAllocation(Arc<FileScratchAllocation>);
+
+impl std::ops::Deref for SharedFileScratchAllocation {
+    type Target = FileScratchAllocation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl FileScratchSpace {
@@ -180,7 +202,7 @@ impl FileScratchSpace {
                 root_file,
                 max_bytes,
                 reserved: Mutex::new(0),
-                io_binding,
+                io: io_binding.map_or(ScratchNamespaceIo::Unbound, ScratchNamespaceIo::Bound),
                 _lock: lock,
             }),
         })
@@ -267,25 +289,32 @@ impl ScratchSpacePort for FileScratchSpace {
             }
         };
         let path = directory.path().to_path_buf();
-        if let Err(error) = validate_private_directory(&path, root_device)
-            .and_then(|()| validate_open_root(&self.inner))
-        {
-            if remove_allocation(directory, self.inner.io_binding.as_deref()).is_ok() {
-                release_reservation(&self.inner, request.initial_bytes);
+        let identity = match validate_private_directory(&path, root_device).and_then(|identity| {
+            validate_open_root(&self.inner)?;
+            Ok(identity)
+        }) {
+            Ok(identity) => identity,
+            Err(error) => {
+                if remove_allocation(directory, &self.inner.io, None).is_ok() {
+                    release_reservation(&self.inner, request.initial_bytes);
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-        Ok(Box::new(FileScratchAllocation {
-            path,
-            directory: Some(directory),
-            max_bytes: request.max_bytes,
-            reserved: Mutex::new(request.initial_bytes),
-            inner: Arc::clone(&self.inner),
-        }))
+        };
+        Ok(Box::new(SharedFileScratchAllocation(Arc::new(
+            FileScratchAllocation {
+                path,
+                directory: Some(directory),
+                identity,
+                max_bytes: request.max_bytes,
+                reserved: Mutex::new(request.initial_bytes),
+                inner: Arc::clone(&self.inner),
+            },
+        ))))
     }
 }
 
-impl ScratchAllocation for FileScratchAllocation {
+impl ScratchAllocation for SharedFileScratchAllocation {
     fn path(&self) -> &Path {
         &self.path
     }
@@ -336,7 +365,15 @@ impl ScratchAllocation for FileScratchAllocation {
     }
 
     fn io_binding(&self) -> Option<Arc<dyn ScratchIoBinding>> {
-        self.inner.io_binding.clone()
+        match &self.inner.io {
+            ScratchNamespaceIo::Unbound => None,
+            ScratchNamespaceIo::Bound(owner) => Some(Arc::clone(owner)),
+            ScratchNamespaceIo::Stock(owner) => Some(owner.clone()),
+        }
+    }
+
+    fn retain_namespace(&self) -> Option<Arc<dyn Send + Sync>> {
+        Some(Arc::clone(&self.0) as Arc<dyn Send + Sync>)
     }
 }
 
@@ -345,7 +382,7 @@ impl Drop for FileScratchAllocation {
         if let Some(directory) = self.directory.take() {
             // A failed close leaves the reservation held for this service
             // lifetime. The next exclusive managed open can reclaim it.
-            let removed = remove_allocation(directory, self.inner.io_binding.as_deref());
+            let removed = remove_allocation(directory, &self.inner.io, Some(self.identity));
             if removed.is_ok() {
                 // Poison means the reservation cannot be proved; retain it conservatively.
                 if let Ok(reserved) = self.reserved.lock() {
@@ -358,11 +395,17 @@ impl Drop for FileScratchAllocation {
 
 fn remove_allocation(
     directory: TempDir,
-    binding: Option<&dyn ScratchIoBinding>,
+    io: &ScratchNamespaceIo,
+    identity: Option<InodeKey>,
 ) -> Result<(), IndexError> {
-    match binding {
-        Some(binding) => binding.retire_namespace(&directory.keep(), None),
-        None => directory
+    match io {
+        ScratchNamespaceIo::Bound(owner) => owner.retire_namespace(&directory.keep(), None),
+        ScratchNamespaceIo::Stock(owner) => {
+            let path = directory.keep();
+            let identity = identity.ok_or(IndexError::MaintenanceRequired)?;
+            owner.retire_owned_allocation(&path, identity)
+        }
+        ScratchNamespaceIo::Unbound => directory
             .close()
             .map_err(|error| IndexError::Storage(format!("remove scratch allocation: {error}"))),
     }
@@ -419,10 +462,14 @@ fn validate_open_root(inner: &SpaceInner) -> Result<(), IndexError> {
     Ok(())
 }
 
-fn validate_private_directory(path: &Path, device: u64) -> Result<(), IndexError> {
+fn validate_private_directory(path: &Path, device: u64) -> Result<InodeKey, IndexError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| IndexError::Storage(format!("inspect scratch allocation: {error}")))?;
-    validate_private_metadata(&metadata, device, true)
+    validate_private_metadata(&metadata, device, true)?;
+    Ok(InodeKey {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
 }
 
 fn validate_private_metadata(
@@ -879,6 +926,47 @@ mod tests {
     }
 
     #[test]
+    fn retained_namespace_keeps_allocation_and_reservation_until_final_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let space = FileScratchSpace::open_standalone(root.path().join("scratch"), 100)?;
+        let allocation = space.allocate(
+            ScratchRequest {
+                initial_bytes: 60,
+                max_bytes: 60,
+            },
+            &mut budget()?,
+        )?;
+        let path = allocation.path().to_path_buf();
+        let retained = allocation
+            .retain_namespace()
+            .ok_or("file scratch allocation did not retain namespace")?;
+        drop(allocation);
+        check!(path.is_dir());
+        check!(matches!(
+            space.allocate(
+                ScratchRequest {
+                    initial_bytes: 41,
+                    max_bytes: 41,
+                },
+                &mut budget()?,
+            ),
+            Err(IndexError::ResourceLimited)
+        ));
+        drop(retained);
+        check!(!path.exists());
+        let refunded = space.allocate(
+            ScratchRequest {
+                initial_bytes: 100,
+                max_bytes: 100,
+            },
+            &mut budget()?,
+        )?;
+        check!(refunded.path().is_dir());
+        Ok(())
+    }
+
+    #[test]
     fn growth_is_shared_atomic_and_released_with_namespace()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -1158,13 +1246,17 @@ mod tests {
                 path: &Path,
             ) -> Result<Box<dyn ScratchNamespaceLease>, IndexError> {
                 let _previous = self.acquired.fetch_add(1, Ordering::SeqCst);
-                match fs::DirBuilder::new().mode(0o700).create(path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(error) => {
-                        return Err(IndexError::Storage(format!("fixture namespace: {error}")));
-                    }
-                }
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(path)
+                    .or_else(|error| {
+                        if error.kind() == io::ErrorKind::AlreadyExists {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    })
+                    .map_err(|error| IndexError::Storage(format!("fixture namespace: {error}")))?;
                 let metadata = fs::metadata(path)
                     .map_err(|error| IndexError::Storage(format!("fixture metadata: {error}")))?;
                 Ok(Box::new(Lease(

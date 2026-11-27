@@ -8,7 +8,7 @@
 완료된 구현이나 과거 compiler/벤치 결과를 여기서 새 작업으로 발급하지 않는다.
 
 - Native 출하 후보·SDK 호출자·설치 복구·Tantivy/History 퇴역:
-  [Nov-12 계획](../nov-12-native-cutover/README.md)과 [퇴역 계획](../nov-12-native-cutover/TANTIVY-RETIREMENT.md).
+  [Nov-12 계획](../nov-12-native-cutover/README.md)과 [퇴역 계획](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md).
   B/D/F/H/TEXT의 최신 코드·실행 판정은 각 활성 티켓이 소유한다. 완료된 C 공급 범위는 Query ADR에서 재사용한다.
 - C0·설치 DELTA/P09: [B05](../nov-12-bugbash-c0-p09/tickets/B05-final-verification.md#p09-observer-acceptance).
   완료된 로컬 IPC/SDK 계약은 ADR에서 재사용하고 설치 수용을 별도로 판정한다.

@@ -246,6 +246,7 @@ fn native_history_cut_read_keeps_new_session_wire_tag_and_exact_reply_identity()
         view: view.identity,
         instance: IndexInstanceId([8; 16]),
         member: ObjectRef(Digest([9; 32])),
+        source_input: ObjectRef(Digest([12; 32])),
         cut: HistorySourceCutV1 {
             generation: crate::index::AuxiliaryGenerationKeyV1 {
                 repo_id: RepoId::new("repo")?,
@@ -257,7 +258,17 @@ fn native_history_cut_read_keeps_new_session_wire_tag_and_exact_reply_identity()
             replay_start: Digest([11; 32]),
         },
     });
-    assert!(serde_json::to_value(&reply)?.get("HistoryCut").is_some());
+    let wire = serde_json::to_value(&reply)?;
+    assert_eq!(
+        wire["HistoryCut"]["source_input"],
+        serde_json::to_value(ObjectRef(Digest([12; 32])))?
+    );
+    let mut old_wire = wire;
+    let _removed = old_wire["HistoryCut"]
+        .as_object_mut()
+        .ok_or("History cut response is not a record")?
+        .remove("source_input");
+    assert!(serde_json::from_value::<NativeIndexResponse>(old_wire).is_err());
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&reply, &mut bytes)?;
     assert_eq!(

@@ -1,8 +1,7 @@
 //! Request serialization, physical edges and publication-copy preparation.
 
 use quanta_index_core::index::{
-    IndexError, MemoryLease, MemoryLifetime, ObjectChildren, ProducerCompleteness, SourceEvent,
-    UpdateKind, UpdateRequest, WorkBudget, WorkScope,
+    IndexError, MemoryLease, MemoryLifetime, ObjectChildren, SourceEvent, UpdateRequest, WorkBudget,
 };
 
 use crate::staging_payload::StagedPayload;
@@ -20,36 +19,9 @@ pub(crate) fn encode(
 /// Request dependencies are a sorted, deduplicated set. Historical expected
 /// roots and stamps are deliberately absent, matching the existing wire.
 pub(crate) fn children(request: &UpdateRequest) -> ObjectChildren {
-    let references = match &request.kind {
-        UpdateKind::SourceAdvance(transition) | UpdateKind::SourceResync { transition, .. } => {
-            [transition.owners.root.0, None, None, None]
-        }
-        UpdateKind::SourceHistoryAdvance(transition)
-        | UpdateKind::SourceHistoryResync { transition, .. } => [
-            transition.source.owners.root.0,
-            Some(transition.history.input),
-            Some(transition.history.profile),
-            None,
-        ],
-        UpdateKind::ProjectionAdvance(transition) => {
-            let certificate = match transition.completeness {
-                ProducerCompleteness::CompleteAffectedDomain { certificate } => Some(certificate),
-                ProducerCompleteness::Partial { .. } => None,
-            };
-            [transition.owners.root.0, certificate, None, None]
-        }
-        UpdateKind::Reconfigure { profile } => [Some(*profile), None, None, None],
-        UpdateKind::CompactSourceLocal { .. } => [None; 4],
-        UpdateKind::HistoryAdvance(transition) => {
-            [Some(transition.input), Some(transition.profile), None, None]
-        }
-        UpdateKind::HistoryAppend(append) => [Some(append.input), Some(append.profile), None, None],
-        UpdateKind::Materialize { claim } => match claim.intent.scope {
-            WorkScope::Owner { expected, .. } => [expected.source, expected.projection, None, None],
-            WorkScope::ProjectionDomain { .. } => [None; 4],
-        },
-    };
-    ObjectChildren::from_references(references)
+    ObjectChildren::from_references(
+        quanta_index_core::index::native_update_request_direct_children_v1(request),
+    )
 }
 
 /// Temporary backing for the separate event copy consumed synchronously by
@@ -98,9 +70,10 @@ pub(crate) mod tests {
     use crate::staging_payload::tests::{require, scoped_budget};
     use quanta_index_core::index::{
         CollectionId, Digest, IndexInstanceId, MapRoot, ObjectRef, OperationKey, OwnerInputBinding,
-        OwnerKey, OwnerMutationSet, ProducerId, ProjectionId, ProjectionTransition, SchemaId,
-        SlotId, SourceCut, SourceTransition, StableOwnerId, StreamId, TenantId, ViewRef, WorkClaim,
-        WorkIntent, WorkspaceKey, WorktreeId,
+        OwnerKey, OwnerMutationSet, ProducerCompleteness, ProducerId, ProjectionId,
+        ProjectionTransition, SchemaId, SlotId, SourceCut, SourceTransition, StableOwnerId,
+        StreamId, TenantId, UpdateKind, ViewRef, WorkClaim, WorkIntent, WorkScope, WorkspaceKey,
+        WorktreeId,
     };
 
     fn reference(byte: u8) -> ObjectRef {
@@ -193,7 +166,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn requests() -> [UpdateRequest; 10] {
+    pub(crate) fn requests() -> [UpdateRequest; 11] {
         let history_cut: quanta_index_core::index::HistorySourceCutV1 =
             serde_json::from_value(serde_json::json!({
                 "generation": {"repo_id": "repo-a", "revision_id": "rev-a", "generation": 1},
@@ -255,6 +228,18 @@ pub(crate) mod tests {
                 prior_epoch: u64::MAX,
                 transition: Box::new(combined),
             },
+            UpdateKind::SourceHistoryBootstrap(Box::new(
+                quanta_index_core::index::SourceHistoryBootstrapV1 {
+                    source: transition,
+                    history: quanta_index_core::index::HistoryTransition {
+                        instance: IndexInstanceId([253; 16]),
+                        expected: None,
+                        next: history_cut,
+                        input: reference(3),
+                        profile: reference(5),
+                    },
+                },
+            )),
             materialize(WorkScope::ProjectionDomain {
                 projection: ProjectionId([255; 16]),
                 source: historical_cut(),
@@ -324,7 +309,16 @@ pub(crate) mod tests {
             .find(|sample| matches!(&sample.kind, UpdateKind::SourceHistoryResync { .. }))
             .ok_or(IndexError::Conflict)?;
         require(
-            children(&combined_resync).as_slice() == [reference(3), reference(4), reference(5)],
+            children(&combined_resync).as_slice()
+                == [reference(3), reference(4), reference(5)],
+        )?;
+        let combined_bootstrap = requests()
+            .into_iter()
+            .find(|sample| matches!(&sample.kind, UpdateKind::SourceHistoryBootstrap(_)))
+            .ok_or(IndexError::Conflict)?;
+        require(
+            children(&combined_bootstrap).as_slice()
+                == [reference(3), reference(4), reference(5)],
         )?;
         require(
             children(&request(projection(
@@ -394,6 +388,73 @@ pub(crate) mod tests {
             require(children(&request(kind)).as_slice() == gold)?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn source_request_ref_matches_actual_identification_and_refuses_cancelled_work()
+    -> Result<(), IndexError> {
+        use quanta_index_core::index::{
+            RegisteredObject, native_immutable_object_ref_v1,
+            native_update_request_object_ref_with_work_v1,
+        };
+
+        let mut samples: Vec<_> = requests().into_iter().filter(|sample| {
+            matches!(
+                &sample.kind,
+                UpdateKind::SourceAdvance(_)
+                    | UpdateKind::SourceResync { .. }
+                    | UpdateKind::SourceHistoryAdvance(_)
+                    | UpdateKind::SourceHistoryBootstrap(_)
+                    | UpdateKind::SourceHistoryResync { .. }
+            )
+        }).collect();
+        let mut duplicate_roots = (*samples.iter()
+            .find(|sample| matches!(&sample.kind, UpdateKind::SourceHistoryAdvance(_)))
+            .ok_or(IndexError::ResourceLimited)?).clone();
+        if let UpdateKind::SourceHistoryAdvance(pair) = &mut duplicate_roots.kind {
+            pair.history.input = reference(4);
+            pair.history.profile = reference(4);
+        }
+        samples.push(duplicate_roots);
+        for sample in samples {
+            let (mut budget, ledger) = scoped_budget(1_000_000)?;
+            let staged_ref = crate::update::identify_update_request_with(
+                &sample,
+                &mut budget,
+                |payload, children, _budget| {
+                    let reference = native_immutable_object_ref_v1(payload, children)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    let bytes = payload
+                        .len()
+                        .checked_add(children.len() * 32)
+                        .and_then(|value| value.checked_add(16))
+                        .and_then(|value| u64::try_from(value).ok())
+                        .ok_or(IndexError::ResourceLimited)?;
+                    Ok(RegisteredObject::unscoped(
+                        reference,
+                        bytes,
+                        children.to_vec(),
+                    ))
+                },
+            )?;
+            let pure_ref = native_update_request_object_ref_with_work_v1(&sample, &mut || {
+                budget.checkpoint()
+            })
+            .map_err(|error| error.into_error(|_| IndexError::ResourceLimited))?
+            .ok_or(IndexError::ResourceLimited)?;
+            require(pure_ref == staged_ref && ledger.live() == 0)?;
+        }
+
+        let sample = requests().into_iter().next().ok_or(IndexError::ResourceLimited)?;
+        let (budget, ledger) = scoped_budget(0)?;
+        budget.request().cancel_handle().cancel();
+        require(matches!(
+            native_update_request_object_ref_with_work_v1(&sample, &mut || budget.checkpoint()),
+            Err(quanta_index_core::index::NativeProtectedEncodingErrorV1::Work(
+                IndexError::Cancelled
+            ))
+        ))?;
+        require(ledger.live() == 0)
     }
 
     #[test]

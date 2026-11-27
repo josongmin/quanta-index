@@ -6,12 +6,8 @@ show_help() {
 Usage: bash scripts/check-lock-freshness.sh
 
 Checks:
-  - staged Cargo.toml changes still resolve against Cargo.lock
-  - staged pyproject.toml changes do not leave obvious tooling drift
-
-Notes:
-  - This repo currently has no Python lockfile.
-  - Python dependency edits are gated by installable metadata and CI.
+  - all listed locked Rust workspaces resolve against their lockfiles
+  - the current Python project resolves against uv.lock
 EOF
 }
 
@@ -22,19 +18,22 @@ fi
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+source ./scripts/rust-workspaces.sh
 
-staged="$(git diff --cached --name-only)"
+rust_manifests="$(rust_locked_workspace_manifests)"
+lockfiles=(uv.lock)
+while IFS= read -r manifest; do
+  lockfiles+=("${manifest%Cargo.toml}Cargo.lock")
+done <<< "$rust_manifests"
 
-if grep -q '^Cargo\.toml$' <<<"$staged" || grep -q '^crates/.*/Cargo\.toml$' <<<"$staged"; then
-  cargo metadata --format-version 1 --locked >/dev/null
-fi
+for lockfile in "${lockfiles[@]}"; do
+  if [[ ! -f "$lockfile" ]]; then
+    echo "Missing required lockfile: $lockfile" >&2
+    exit 1
+  fi
+done
 
-if grep -q '^pyproject\.toml$' <<<"$staged"; then
-  python3 - <<'PY'
-from pathlib import Path
-import tomllib
-
-with Path("pyproject.toml").open("rb") as fh:
-    tomllib.load(fh)
-PY
-fi
+while IFS= read -r manifest; do
+  ./scripts/cargow metadata --manifest-path "$manifest" --format-version 1 --locked >/dev/null
+done <<< "$rust_manifests"
+uv lock --check

@@ -954,6 +954,7 @@ fn native_owned_pump_renews_while_automatic_reclaim_deletes_discarded_input() ->
             literal: QueryAdapterRegistry::new(),
             path: QueryAdapterRegistry::new(),
             text: QueryAdapterRegistry::new(),
+            text_matches: QueryAdapterRegistry::new(),
             semantic: QueryAdapterRegistry::new(),
             pump: Some(pump_config),
             provider_attempt_pool: None,

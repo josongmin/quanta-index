@@ -40,18 +40,25 @@
 //! exact lane, and that count and that pass observe the budget like the
 //! first.
 
-use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use std::{
+    future::Future,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use quanta_index_core::{CoreError, MetricPointV1, RequestBudgetV1};
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use quanta_index_core::MetricPointV1;
+use quanta_index_core::{CoreError, RequestBudgetV1};
 
 /// Rows the lane reads back between two looks at the budget.
 ///
 /// A look costs one `Instant::now()` and one atomic load; a row costs
 /// several string copies, so at this interval the looks are noise. The
-/// rows a lane reads are bounded by the fetch ceiling, which keeps the
-/// number of looks per query small either way.
+/// Ordinary vector read-back is bounded by the fetch ceiling. The canonical
+/// exact tie path scans every eligible row before its Top-K cut, so its number
+/// of looks grows with the sealed generation size.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) const SEMANTIC_BUDGET_TICK_ROWS: usize = 256;
 
 /// How long the in-flight watcher sleeps between looks at the cancellation
@@ -64,6 +71,7 @@ pub(crate) const SEMANTIC_BUDGET_POLL_INTERVAL: Duration = Duration::from_millis
 
 /// Which index the dense lane runs through, as the checkpoint names it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) enum DenseLaneKindV1 {
     /// The sealed approximate index (QI-BB-027).
     Approximate,
@@ -71,6 +79,7 @@ pub(crate) enum DenseLaneKindV1 {
     Exact,
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 impl DenseLaneKindV1 {
     const ALL: [Self; 2] = [Self::Approximate, Self::Exact];
 
@@ -92,6 +101,7 @@ impl DenseLaneKindV1 {
 
 /// One lane's counts since process start.
 #[derive(Debug)]
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 struct LaneTallyV1 {
     /// Vector queries handed to the library.
     queries: AtomicU64,
@@ -99,6 +109,7 @@ struct LaneTallyV1 {
     interruptions: AtomicU64,
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 impl LaneTallyV1 {
     const fn new() -> Self {
         Self {
@@ -117,6 +128,7 @@ impl LaneTallyV1 {
 /// One instance per adapter, shared by every searcher it opens; the
 /// adapter reports it to the metrics scrape (QI-BB-015).
 #[derive(Debug)]
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) struct DenseLaneTalliesV1 {
     approximate: LaneTallyV1,
     exact: LaneTallyV1,
@@ -125,12 +137,14 @@ pub(crate) struct DenseLaneTalliesV1 {
     exact_completions: AtomicU64,
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 impl Default for DenseLaneTalliesV1 {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 impl DenseLaneTalliesV1 {
     /// Scrape points one lane contributes.
     const POINTS_PER_LANE: usize = 2;
@@ -214,6 +228,7 @@ impl DenseLaneTalliesV1 {
 /// The request's budget and the tallies the lane reports to; handed down
 /// every query path explicitly, so a new query path cannot forget either.
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) struct DenseLaneBudgetV1<'a> {
     pub(crate) budget: &'a RequestBudgetV1,
     pub(crate) tallies: &'a DenseLaneTalliesV1,
@@ -225,12 +240,14 @@ pub(crate) struct DenseLaneBudgetV1<'a> {
 /// Rows are read on one task, so this needs no sharing; an observed
 /// interruption is counted in the tallies and returned typed, and the
 /// read-back ends there.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) struct RowBudgetProbe<'a> {
     watch: DenseLaneBudgetV1<'a>,
     lane: DenseLaneKindV1,
     rows: usize,
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 impl<'a> RowBudgetProbe<'a> {
     pub(crate) const fn new(watch: DenseLaneBudgetV1<'a>, lane: DenseLaneKindV1) -> Self {
         Self {
@@ -280,6 +297,7 @@ pub(crate) async fn wait_for_request_interruption(
 /// what that does inside the library). An interruption `work` observed
 /// itself, through its row probe, comes back as its own `Err` and is
 /// already counted.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) async fn race_with_budget<T, F>(
     watch: DenseLaneBudgetV1<'_>,
     lane: DenseLaneKindV1,
@@ -303,7 +321,7 @@ where
 /// An armed hold parks every dense lane before its query is issued, so
 /// the only way the request ends is its budget — deterministic where a
 /// naturally slow query would be a timing guess.
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, all(feature = "legacy-semantic-adapter", debug_assertions)))]
 pub(crate) mod failpoint {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -325,7 +343,7 @@ pub(crate) mod failpoint {
     }
 }
 
-#[cfg(not(any(test, debug_assertions)))]
+#[cfg(all(feature = "legacy-semantic-adapter", not(any(test, debug_assertions))))]
 pub(crate) mod failpoint {
     /// Release builds carry no hold: the lane issues its query at once.
     pub(crate) fn hold_dense_lane_if_armed() -> std::future::Ready<()> {

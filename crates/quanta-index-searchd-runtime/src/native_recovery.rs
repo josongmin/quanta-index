@@ -19,16 +19,19 @@ use quanta_index_core::{
 use quanta_index_searchd::cli::NativeRecoveryCommandV1;
 use std::{fmt::Write as _, os::unix::net::UnixDatagram, path::Path};
 
-use crate::native_product::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 use crate::{
     deployment_selection::{
         DeploymentRecoveryModeV1, DeploymentSelectionBeforeDocumentV1,
         DeploymentSelectionErrorV1 as Error, DeploymentSelectionPublishedV1,
-        DeploymentSelectionRequestV1, DeploymentSelectionResolutionV1,
+        DeploymentSelectionRequestV1, DeploymentSelectionResolutionV1, LockedDeploymentSelectionV1,
         with_locked_deployment_selection_reconciliation_v1, with_locked_published_recovery_v1,
     },
-    native_product::{RestoreForwardSourceRefusalV1, with_native_recovery_control_v1},
+    native_product::{
+        RestoreForwardSourceRefusalV1, verify_locked_source_only_catalog_v7,
+        with_native_recovery_control_v1,
+    },
 };
+use crate::native_product::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 
 /// Process entry. `0` requires an Applied or Reconciled terminal from this helper;
 /// `2` refuses before rename, `3` reports possible publication. The resident
@@ -64,11 +67,7 @@ pub fn run(command: &NativeRecoveryCommandV1, request: RequestBudgetV1) -> Resul
     let history_fd7 = match history_fd7 {
         Ok(history) => history,
         Err(error) => {
-            return send_outcome(
-                &socket,
-                &begin,
-                Err(Error::RefusedBeforeRename(error.into())),
-            );
+            return send_outcome(&socket, &begin, Err(Error::RefusedBeforeRename(error.into())));
         }
     };
     run_after_begin(command, request, &socket, &begin, bootstrap, history_fd7)
@@ -105,29 +104,42 @@ fn run_after_begin(
                             .read_evidence_v1(begin.evidence_length, begin.evidence_sha256, budget)
                             .map_err(before)?;
                         let evidence = &evidence.facts;
-                        validate_bindings_v1(command, begin, evidence).map_err(before)?;
-                        let sdk_path = Path::new(&evidence.header.sdk_lock_path);
+                        let (header, saved_selection, retained_terminal) = match evidence {
+                            wire::NativeCutoverEvidenceEnvelopeV1::HistoricalV5(evidence) => (
+                                &evidence.header,
+                                &evidence.before_selection,
+                                evidence.retained_terminal.as_ref(),
+                            ),
+                            wire::NativeCutoverEvidenceEnvelopeV1::SourceOnlyV7(evidence) => (
+                                &evidence.header,
+                                &evidence.before_selection,
+                                evidence.retained_terminal.as_ref(),
+                            ),
+                        };
+                        validate_bindings_v1(command, begin, header).map_err(before)?;
+                        let sdk_path = Path::new(&header.sdk_lock_path);
                         let mut checkpoint = |budget: &mut WorkBudget| {
                             if signal.load(std::sync::atomic::Ordering::Acquire) {
                                 budget.request().cancel_handle().cancel();
                             }
-                            custody.revalidate_locks_v1(evidence, sdk_path, budget)
+                            custody.revalidate_locks_v1(header, sdk_path, budget)
                         };
                         let mut require_history_fence = |budget: &mut WorkBudget| {
                             custody.require_history_writer_fence_v1(
-                                Path::new(&evidence.header.writer_state_root),
+                                Path::new(&header.writer_state_root),
                                 budget,
                             )
                         };
                         checkpoint(budget).map_err(before)?;
                         let selection = selection_request_v1(command);
                         let retained_terminal =
-                            decode_retained_terminal_v1(evidence, begin, budget).map_err(before)?;
+                            decode_retained_terminal_v1(retained_terminal, begin, budget)
+                                .map_err(before)?;
                         let original_before = DeploymentSelectionBeforeDocumentV1 {
                             operation_id_v1: &begin.operation_id,
-                            bytes_v1: &evidence.before_selection.document.0,
-                            raw_sha256_v1: evidence.before_selection.raw_sha256,
-                            file_version_v1: evidence.before_selection.file_version,
+                            bytes_v1: &saved_selection.document.0,
+                            raw_sha256_v1: saved_selection.raw_sha256,
+                            file_version_v1: saved_selection.file_version,
                             retained_terminal_v1: retained_terminal.as_ref(),
                         };
                         with_locked_deployment_selection_reconciliation_v1(
@@ -135,6 +147,26 @@ fn run_after_begin(
                             &original_before,
                             budget,
                             |locked, budget| {
+                                let evidence = match evidence {
+                                    wire::NativeCutoverEvidenceEnvelopeV1::HistoricalV5(evidence) => evidence,
+                                    wire::NativeCutoverEvidenceEnvelopeV1::SourceOnlyV7(evidence) => {
+                                        return publish_source_only_v7(
+                                            command,
+                                            begin,
+                                            locked,
+                                            evidence,
+                                            RestoreForwardHistoryV1 {
+                                                retained_terminal: retained_terminal.as_ref(),
+                                                selected: &mut installed_history,
+                                            },
+                                            budget,
+                                            &mut |budget| {
+                                                checkpoint(budget)?;
+                                                require_history_fence(budget)
+                                            },
+                                        );
+                                    }
+                                };
                                 let joined = facts::join_source_and_host_v1(evidence, budget)
                                     .map_err(before)?;
                                 facts::require_fresh_source_parity_v1(&joined, budget)
@@ -222,6 +254,49 @@ fn run_after_begin(
         Ok(sent) => sent,
         Err(error) => send_outcome(socket, begin, Err(before(error))),
     }
+}
+
+fn publish_source_only_v7(
+    command: &NativeRecoveryCommandV1,
+    begin: &wire::NativeCutoverControlBeginV1,
+    locked: &mut LockedDeploymentSelectionV1,
+    evidence: &wire::NativeCutoverSourceOnlyEvidenceV6,
+    history: RestoreForwardHistoryV1<'_>,
+    budget: &mut WorkBudget,
+    checkpoint: &mut impl FnMut(&mut WorkBudget) -> Result<()>,
+) -> std::result::Result<DeploymentSelectionPublishedV1, Error> {
+    let before = Error::RefusedBeforeRename;
+    let helper = (|| -> Result<_> {
+        ensure!(
+            command.mode == wire::NativeCutoverRecoveryModeV1::RestoreForward,
+            "Source-only FD6 requires V7 restore-forward"
+        );
+        let selected = locked.candidate_v1();
+        let native = selected
+            .native_command_v1()
+            .ok_or_else(|| anyhow!("V7 restore-forward candidate is not Native"))?;
+        ensure!(
+            native.config_path == command.config_path
+                && native.config_digest == Some(command.config_digest),
+            "V7 candidate configuration differs from recovery Control"
+        );
+        Ok(selected.binary_sha256_v1())
+    })()
+    .map_err(before)?;
+    let _running_image = peer::retain_running_image_v1(helper, budget).map_err(before)?;
+    checkpoint(budget).map_err(before)?;
+    let verified = verify_locked_source_only_catalog_v7(
+        locked,
+        evidence,
+        budget,
+        checkpoint,
+        |watches, budget| facts::require_source_only_host_preflight_v7(evidence, watches, budget),
+    )
+    .map_err(before)?;
+    locked
+        .bind_recovery_witness_v1(begin, command.config_digest, helper)
+        .map_err(before)?;
+    verified.publish_v7(locked, history, budget, checkpoint)
 }
 
 fn selection_request_v1(command: &NativeRecoveryCommandV1) -> DeploymentSelectionRequestV1<'_> {
@@ -338,8 +413,9 @@ fn send_outcome_with_history(
     result: std::result::Result<DeploymentSelectionPublishedV1, Error>,
     installed_history: Option<FundedInstalledHistoryV1>,
 ) -> Result<u8> {
-    let (history, _memory) =
-        installed_history.map_or((None, None), |proof| (Some(proof.value), proof._memory));
+    let (history, _memory) = installed_history.map_or((None, None), |proof| {
+        (Some(proof.value), proof._memory)
+    });
     let (terminal, status) = terminal_v1(begin, &result, history);
     control::send_terminal_v1(socket, &terminal)?;
     Ok(status)
@@ -362,9 +438,8 @@ fn validate_begin_v1(
 fn validate_bindings_v1(
     command: &NativeRecoveryCommandV1,
     begin: &wire::NativeCutoverControlBeginV1,
-    evidence: &wire::NativeCutoverEvidenceV1,
+    header: &wire::NativeCutoverEvidenceHeaderV1,
 ) -> Result<()> {
-    let header = &evidence.header;
     ensure!(
         header.current_selection_sha256 == begin.current_selection_sha256
             && header.candidate_selection_sha256 == begin.candidate_selection_sha256
@@ -392,11 +467,11 @@ fn validate_bindings_v1(
 }
 
 fn decode_retained_terminal_v1(
-    evidence: &wire::NativeCutoverEvidenceV1,
+    retained_terminal: Option<&wire::NativeCutoverByteStringV1>,
     begin: &wire::NativeCutoverControlBeginV1,
     budget: &mut WorkBudget,
 ) -> Result<Option<wire::NativeCutoverControlTerminalV1>> {
-    let Some(bytes) = &evidence.retained_terminal else {
+    let Some(bytes) = retained_terminal else {
         return Ok(None);
     };
     budget.charge(WorkUsage {
@@ -419,16 +494,10 @@ fn decode_retained_terminal_v1(
             ..
         }
         | Terminal::AppliedHistory {
-            operation_id,
-            before_sha256,
-            after_sha256,
-            ..
+            operation_id, before_sha256, after_sha256, ..
         }
         | Terminal::ReconciledHistory {
-            operation_id,
-            before_sha256,
-            after_sha256,
-            ..
+            operation_id, before_sha256, after_sha256, ..
         } => {
             ensure!(
                 *before_sha256 == begin.current_selection_sha256
@@ -456,11 +525,9 @@ fn decode_retained_terminal_v1(
         operation == &begin.operation_id,
         "retained terminal belongs to another operation"
     );
-    ensure!(
-        terminal.installed_history_v1().is_none()
-            || begin.mode == wire::NativeCutoverRecoveryModeV1::RestoreForward,
-        "retained History witness requires restore-forward"
-    );
+    ensure!(terminal.installed_history_v1().is_none()
+        || begin.mode == wire::NativeCutoverRecoveryModeV1::RestoreForward,
+        "retained History witness requires restore-forward");
     // The first response's nonce is historical. This attempt's Begin nonce
     // authenticates its new terminal; neither nonce is a publication permit.
     budget.checkpoint()?;
@@ -488,24 +555,20 @@ fn terminal_v1(
                     before_sha256: published.before_sha256_v1(),
                     after_sha256: published.after_sha256_v1(),
                 },
-                (DeploymentSelectionResolutionV1::Published, Some(history)) => {
-                    Terminal::AppliedHistory {
-                        operation_id: begin.operation_id.clone(),
-                        nonce: begin.nonce,
-                        before_sha256: published.before_sha256_v1(),
-                        after_sha256: published.after_sha256_v1(),
-                        history,
-                    }
-                }
-                (DeploymentSelectionResolutionV1::Reconciled, Some(history)) => {
-                    Terminal::ReconciledHistory {
-                        operation_id: begin.operation_id.clone(),
-                        nonce: begin.nonce,
-                        before_sha256: published.before_sha256_v1(),
-                        after_sha256: published.after_sha256_v1(),
-                        history,
-                    }
-                }
+                (DeploymentSelectionResolutionV1::Published, Some(history)) => Terminal::AppliedHistory {
+                    operation_id: begin.operation_id.clone(),
+                    nonce: begin.nonce,
+                    before_sha256: published.before_sha256_v1(),
+                    after_sha256: published.after_sha256_v1(),
+                    history,
+                },
+                (DeploymentSelectionResolutionV1::Reconciled, Some(history)) => Terminal::ReconciledHistory {
+                    operation_id: begin.operation_id.clone(),
+                    nonce: begin.nonce,
+                    before_sha256: published.before_sha256_v1(),
+                    after_sha256: published.after_sha256_v1(),
+                    history,
+                },
             },
             0,
         ),

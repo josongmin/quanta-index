@@ -1,6 +1,6 @@
 //! Pure immutable-object wire identity shared by the store and Native producers.
 
-use super::{Digest, ObjectRef};
+use super::{Digest, ObjectRef, UpdateKind, UpdateRequest, WorkScope};
 use sha2::{Digest as _, Sha256};
 use std::convert::Infallible;
 use std::fmt;
@@ -156,6 +156,90 @@ pub fn native_immutable_object_ref_with_work_v1<E>(
         digest.update(chunk);
     }
     Ok(Some(ObjectRef(Digest(digest.finalize().into()))))
+}
+
+/// The exact direct edges used by Q's immutable UpdateRequest registration.
+/// Expected historical roots are deliberately excluded from this object.
+pub fn native_update_request_direct_children_v1(request: &UpdateRequest) -> [Option<ObjectRef>; 4] {
+    match &request.kind {
+        UpdateKind::SourceAdvance(source) | UpdateKind::SourceResync { transition: source, .. } => {
+            [source.owners.root.0, None, None, None]
+        }
+        UpdateKind::SourceHistoryAdvance(pair)
+        | UpdateKind::SourceHistoryResync { transition: pair, .. } => [
+            pair.source.owners.root.0,
+            Some(pair.history.input),
+            Some(pair.history.profile),
+            None,
+        ],
+        UpdateKind::SourceHistoryBootstrap(pair) => [
+            pair.source.owners.root.0,
+            Some(pair.history.input),
+            Some(pair.history.profile),
+            None,
+        ],
+        UpdateKind::ProjectionAdvance(projection) => [
+            projection.owners.root.0,
+            match projection.completeness {
+                super::ProducerCompleteness::CompleteAffectedDomain { certificate } => Some(certificate),
+                super::ProducerCompleteness::Partial { .. } => None,
+            },
+            None,
+            None,
+        ],
+        UpdateKind::Reconfigure { profile } => [Some(*profile), None, None, None],
+        UpdateKind::CompactSourceLocal { .. } => [None; 4],
+        UpdateKind::HistoryAdvance(history) => [Some(history.input), Some(history.profile), None, None],
+        UpdateKind::HistoryAppend(history) => [Some(history.input), Some(history.profile), None, None],
+        UpdateKind::Materialize { claim } => match claim.intent.scope {
+            WorkScope::Owner { expected, .. } => [expected.source, expected.projection, None, None],
+            WorkScope::ProjectionDomain { .. } => [None; 4],
+        },
+    }
+}
+
+/// Compute Q's immutable UpdateRequest ref without a JSON Vec. The two
+/// serialization passes match Kernel's staged JSON and use the same sorted,
+/// deduplicated child edges. The caller funds both passes and hash work.
+pub fn native_update_request_object_ref_with_work_v1<E>(
+    request: &UpdateRequest,
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Option<ObjectRef>, NativeProtectedEncodingErrorV1<E>> {
+    struct Count(usize);
+    impl io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self.0.checked_add(bytes.len())
+                .ok_or_else(|| io::Error::other("request JSON length overflow"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    struct Hash<'a>(&'a mut Sha256);
+    impl io::Write for Hash<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    let mut count = Count(0);
+    serialize_protected_with_work_v1(request, &mut count, checkpoint, "request JSON count refused")?;
+    let mut input = native_update_request_direct_children_v1(request);
+    input.sort_unstable();
+    let mut children = [ObjectRef(Digest([0; 32])); 4];
+    let mut used = 0usize;
+    for child in input.into_iter().flatten() {
+        if used == 0 || children[used - 1] != child {
+            children[used] = child;
+            used += 1;
+        }
+    }
+    checkpoint().map_err(NativeProtectedEncodingErrorV1::Work)?;
+    let Some(mut hasher) = native_immutable_object_hasher_v1(count.0, &children[..used]) else {
+        return Ok(None);
+    };
+    serialize_protected_with_work_v1(request, Hash(&mut hasher), checkpoint, "request JSON hash refused")?;
+    Ok(Some(ObjectRef(Digest(hasher.finalize().into()))))
 }
 
 pub(super) fn native_immutable_object_hasher_v1(

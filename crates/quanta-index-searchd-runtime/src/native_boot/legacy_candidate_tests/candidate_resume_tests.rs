@@ -15,23 +15,26 @@ use quanta_index_searchd::app::runtime::StateRootLease;
 
 fn candidate_guard(fixture: &PreparedNativeFixture) -> Result<()> {
     let lease = Arc::new(StateRootLease::acquire_existing(&fixture.root)?);
+    let request = request();
+    fixture.config.admit_state_root_quota(&lease, &request)?;
     let authority = prepare_native_boot_authority(
         lease,
         &fixture.config.socket_path,
         &fixture.config.resources,
-        &request(),
+        &request,
     )?;
     let registry = compose_boot_registry(&fixture.config)?;
-    boot::require_candidate_start_v1(&authority, &fixture.config, &registry, &request())?;
+    boot::require_candidate_start_v1(&authority, &fixture.config, &registry, &request)?;
     boot::require_retired(&authority)
 }
 
 fn start_candidate(fixture: &mut PreparedNativeFixture, name: &str) -> TestResult {
+    let authority = prepare_unselected_authority(&fixture.config, &request())?;
     let service = bind(
         &fixture.config,
         fixture.config_digest,
         compose(&fixture.config)?,
-        None,
+        authority,
         &request(),
         true,
     )?;

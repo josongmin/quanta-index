@@ -35,6 +35,7 @@ fn fixture_with_staged_parent() -> Result<Fixture, Box<dyn Error>> {
     fixture_with_layout(false, true, false)
 }
 
+#[cfg(feature = "legacy-semantic-adapter")]
 fn fixture_with_semantic_tree() -> Result<Fixture, Box<dyn Error>> {
     fixture_with_layout(false, false, true)
 }
@@ -804,6 +805,13 @@ fn control_create_reconcile_preserves_directory_move_and_delete_receipts() -> Te
     fs::rename(&source, &target)?;
     require(
         matches!(
+            fixture.owner.reconcile_pending_namespace_under(&source),
+            Err(CoreError::Typed { code, .. }) if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+        ),
+        "a one-sided generation scope consumed a cross-generation move receipt",
+    )?;
+    require(
+        matches!(
             fixture.owner.reconcile_retired_control_creates(),
             Err(CoreError::Typed { code, .. }) if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
         ),
@@ -859,6 +867,7 @@ fn control_create_reconcile_preserves_directory_move_and_delete_receipts() -> Te
 }
 
 #[test]
+#[cfg(feature = "legacy-semantic-adapter")]
 fn semantic_finish_interrupted_reclaim_settles_original_move_and_exact_charge() -> TestResult {
     use quanta_index_core::SealedGenerationReclaimPort as _;
     use quanta_index_semantic::{SemanticAdapter, semantic_state_root};
@@ -1008,6 +1017,98 @@ fn create_only_move_refuses_existing_target_without_replacement() -> TestResult 
     require(
         fixture.binder.is_quiescent()?,
         "refused create-only move retained namespace claim",
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "legacy-semantic-adapter")]
+#[test]
+fn copy_overwrite_busy_target_refuses_without_alias_and_retries() -> TestResult {
+    let fixture = fixture_with_staged_parent()?;
+    let source = fixture.root.join("source");
+    let parent = fixture.root.join("target-parent");
+    let target = parent.join("target");
+    let source_before = fs::metadata(&source)?;
+    let target_before = fs::metadata(&target)?;
+    let charged = fixture.authority.snapshot()?;
+    let opening = fixture.binder.begin_reader_open(&target)?;
+
+    for _attempt in 0..2 {
+        let refusal = fixture.owner.begin_copy_overwrite(&source, &target);
+        require(
+            matches!(
+                refusal,
+                Err(CoreError::Typed { code, message })
+                    if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+                        && message == "publication file capacity: path-change registry busy or full"
+            ),
+            "busy target accepted an overwrite copy or lost its typed capacity refusal",
+        )?;
+        require(
+            fs::read(&source)? == b"abc"
+                && fs::read(&target)? == b"prior"
+                && fs::metadata(&source)?.ino() == source_before.ino()
+                && fs::metadata(&target)?.ino() == target_before.ino()
+                && fs::metadata(&source)?.nlink() == source_before.nlink()
+                && fixture.authority.snapshot()? == charged,
+            "refused overwrite copy changed source, target, or physical charge",
+        )?;
+        for entry in fs::read_dir(&parent)? {
+            require(
+                !entry?
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".qiv-copy-"),
+                "refused overwrite copy left a product staging alias",
+            )?;
+        }
+    }
+
+    drop(opening);
+    require(
+        fixture.binder.is_quiescent()?,
+        "busy-target refusal retained namespace custody after the opening guard closed",
+    )?;
+    fixture
+        .owner
+        .begin_copy_overwrite(&source, &target)?
+        .perform_and_sync()?;
+    let copied = fixture.authority.snapshot()?;
+    require(
+        fs::read(&source)? == b"abc"
+            && fs::read(&target)? == b"abc"
+            && fs::metadata(&source)?.ino() == source_before.ino()
+            && fs::metadata(&target)?.ino() == source_before.ino()
+            && fs::metadata(&source)?.nlink() == 2
+            && copied.used_bytes == charged.used_bytes - target_before.len()
+            && copied.used_files == charged.used_files - 1
+            && copied.retained_inodes == charged.retained_inodes - 1
+            && fixture.binder.is_quiescent()?,
+        "overwrite copy retry did not retire only the old target inode",
+    )?;
+    for entry in fs::read_dir(&parent)? {
+        require(
+            !entry?
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".qiv-copy-"),
+            "successful overwrite copy left a product staging alias",
+        )?;
+    }
+
+    fixture.owner.delete_file_and_sync(&target)?;
+    require(
+        fs::read(&source)? == b"abc" && fixture.authority.snapshot()? == copied,
+        "deleting the copied alias refunded its still-linked source inode",
+    )?;
+    fixture.owner.delete_file_and_sync(&source)?;
+    let retired = fixture.authority.snapshot()?;
+    require(
+        retired.used_bytes == charged.used_bytes - target_before.len() - source_before.len()
+            && retired.used_files == charged.used_files - 2
+            && retired.retained_inodes == charged.retained_inodes - 2
+            && fixture.binder.is_quiescent()?,
+        "copy retry cleanup did not restore the remaining fixture charge",
     )?;
     Ok(())
 }

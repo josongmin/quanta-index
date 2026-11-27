@@ -1293,6 +1293,18 @@ def validate_file_observation(row: dict, product: str) -> bool:
         or type(row.get("no_gold_empty_at_10")) is not bool
     ):
         raise ValueError(f"{product}: no-answer file observation lacks its empty-result metric")
+    if status == "abstained":
+        candidates = row.get("candidates", 0)
+        empty_scores = (
+            not row["file_hit_at_10"] if row["answerable"] else row["no_gold_empty_at_10"]
+        )
+        if (
+            type(candidates) is not int
+            or candidates != 0
+            or row.get("paths", []) != []
+            or not empty_scores
+        ):
+            raise ValueError(f"{product}: abstained file observation reports results")
     return True
 
 
@@ -1566,6 +1578,8 @@ def evaluate_external_captures(
     ):
         raise ValueError("external join inputs must be explicit absolute canonical paths")
     suite_raw, pack_raw = _bytes(native_paths["suite"]), _bytes(native_paths["query_pack"])
+    suite_sha256 = hashlib.sha256(suite_raw).hexdigest()
+    pack_sha256 = hashlib.sha256(pack_raw).hexdigest()
     roots: dict[Path, set[str]] = {}
     resolved_roots = {}
     for name, root in external_roots.items():
@@ -1582,7 +1596,13 @@ def evaluate_external_captures(
             raise ValueError("external root selected products differ from the join mapping")
         if _bytes(root / "suite.json") != suite_raw or _bytes(root / "query-pack.json") != pack_raw:
             raise ValueError("external and native suite or query-pack bytes differ")
-        binding = (summary["release_digest"], summary["binding"])
+        verified = summary["binding"]
+        if (verified.get("suite_digest"), verified.get("query_pack_digest")) != (
+            f"sha256:{suite_sha256}",
+            f"sha256:{pack_sha256}",
+        ):
+            raise ValueError("replayed external controls differ from native inputs")
+        binding = (summary["release_digest"], verified)
         if common_binding is not None and common_binding != binding:
             raise ValueError("external product source bindings differ")
         common_binding = binding
@@ -1599,6 +1619,8 @@ def evaluate_external_captures(
         {name + "_rows": root / (name + "_rows.jsonl") for name, root in resolved_roots.items()}
     )
     result = evaluate_capture(paths)
+    if (result["suite_sha256"], result["query_pack_sha256"]) != (suite_sha256, pack_sha256):
+        raise ValueError("scored controls differ from the independently replayed inputs")
     for name, root in resolved_roots.items():
         if result["products"][name]["raw_sha256"] != summaries[root]["rows_sha256"][name]:
             raise ValueError("scored external rows differ from the independently replayed capture")

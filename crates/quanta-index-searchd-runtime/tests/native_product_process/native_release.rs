@@ -9,6 +9,7 @@ use quanta_index_contract::{
     },
 };
 use quanta_index_sdk::{ConnectOptions, NativeQueryError, QuantaIndex, SdkError};
+use quanta_index_searchd_harness::product_xfs::ProductXfsProfile;
 
 use super::{
     read_view_lifetime::{TextOwnerUpdate, publish_text, stage_text_update},
@@ -17,10 +18,12 @@ use super::{
 
 struct ReleaseProcess {
     _home: tempfile::TempDir,
+    _product_root: Option<tempfile::TempDir>,
     root: PathBuf,
     config: PathBuf,
     socket: PathBuf,
     binary: PathBuf,
+    sqlite_temp: Option<PathBuf>,
 }
 
 impl ReleaseProcess {
@@ -47,32 +50,66 @@ impl ReleaseProcess {
         settings: impl FnOnce(&Path, &Path) -> TestResult<serde_json::Value>,
     ) -> TestResult<Self> {
         let home = quanta_index_searchd_harness::private_tempdir()?;
-        let root = home.path().join("state");
-        let socket = home.path().join("native.sock");
         let config = home.path().join("native-config.json");
-        fs::write(&config, serde_json::to_vec(&settings(&root, &socket)?)?)?;
-        let binary = match std::env::var_os("QUANTA_INDEX_SEARCHD_BIN") {
-            Some(path) => PathBuf::from(path),
-            None if std::env::var_os("QUANTA_PROOF_DAEMON_WITNESS_DIR").is_some() => {
-                return Err("release proof requires QUANTA_INDEX_SEARCHD_BIN".into());
-            }
-            None => PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-searchd")),
-        };
-        require(
-            binary.is_absolute(),
+        let selected = selected_test_daemon_binary(
+            "release proof requires QUANTA_INDEX_SEARCHD_BIN",
             "Native release daemon path must be absolute",
         )?;
+        let binary = selected.path;
+        let product = selected.product;
+        let socket = if product {
+            ProductXfsProfile::service_socket(home.path(), "uds")?
+        } else {
+            home.path().join("native.sock")
+        };
+        let profile = product.then(ProductXfsProfile::from_env).transpose()?;
+        let product_root = profile
+            .as_ref()
+            .map(ProductXfsProfile::tempdir)
+            .transpose()?;
+        let root = product_root.as_ref().map_or_else(
+            || home.path().join("state"),
+            |directory| directory.path().join("state"),
+        );
+        let mut configuration = settings(&root, &socket)?;
+        let sqlite_temp = if let Some(profile) = profile.as_ref() {
+            profile.configure(&mut configuration)?;
+            Some(profile.prepare_root(&root, &socket)?)
+        } else {
+            None
+        };
+        fs::write(&config, serde_json::to_vec(&configuration)?)?;
+        if let Some(sqlite_temp) = sqlite_temp.as_ref() {
+            ProductXfsProfile::preflight(&binary, &config, sqlite_temp)?;
+        }
         Ok(Self {
             _home: home,
+            _product_root: product_root,
             root,
             config,
             socket,
             binary,
+            sqlite_temp,
         })
     }
 
     fn start(&self) -> TestResult<Daemon> {
-        Daemon::start_binary(&self.binary, &self.config, &self.socket, None, None)
+        self.start_with_api_key(None)
+    }
+
+    fn start_with_api_key(&self, api_key: Option<&str>) -> TestResult<Daemon> {
+        if let Some(sqlite_temp) = self.sqlite_temp.as_ref() {
+            Daemon::start_command_before(
+                ProductXfsProfile::command(&self.binary, sqlite_temp),
+                &self.config,
+                &self.socket,
+                api_key,
+                None,
+                None,
+            )
+        } else {
+            Daemon::start_binary(&self.binary, &self.config, &self.socket, api_key, None)
+        }
     }
 
     fn client(&self) -> NativeUdsClient {
@@ -97,7 +134,13 @@ fn configure(client: &NativeUdsClient, instances: Vec<InstanceSpec>) -> TestResu
     };
     let operation = operation(1);
     let ingress = client.begin_input(operation, &budget())?;
-    let profile = client.stage_profile(ingress, IndexProfile { instances }, &budget())?;
+    let profile = client.stage_profile(
+        ingress,
+        IndexProfile {
+            instances: [vec![literal_spec()], instances].concat(),
+        },
+        &budget(),
+    )?;
     published(&client.submit(
         UpdateRequest {
             operation,
@@ -218,43 +261,51 @@ fn activation_readers_see_complete_views_and_reopen_the_published_head() -> Test
     )?;
     let request = query(ACTIVATION_NEEDLE, 4);
     let (ready, before_publish) = mpsc::channel();
+    let (publication_terminal, terminal_observed) = mpsc::channel::<Result<(), String>>();
     let (new, seen) = thread::scope(|scope| -> TestResult<_> {
         let reader = fixture.client();
         let request = request.clone();
         let observed = scope.spawn(move || -> Result<NativeTextResult, String> {
-            let limit = Instant::now() + Duration::from_secs(10);
-            let request_budget = RequestBudgetV1::for_duration(Duration::from_secs(10));
             let read = || {
                 reader
-                    .search_text(
-                        latest(),
-                        text_spec().instance,
-                        request.clone(),
-                        &request_budget,
-                    )
+                    .search_text(latest(), text_spec().instance, request.clone(), &budget())
                     .map_err(|error| error.to_string())
             };
             let initial = read()?;
             require_complete_activation(&initial, old, old_paths, old_sources)
                 .map_err(|error| error.to_string())?;
             ready.send(()).map_err(|error| error.to_string())?;
-            while Instant::now() < limit {
+            loop {
                 let result = read()?;
                 if result.view != old {
                     return Ok(result);
                 }
                 require_complete_activation(&result, old, old_paths, old_sources)
                     .map_err(|error| error.to_string())?;
-                thread::sleep(NATIVE_LIFECYCLE_POLL);
+                match terminal_observed.try_recv() {
+                    Ok(Ok(())) => return read(),
+                    Ok(Err(error)) => return Err(format!("publication failed: {error}")),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        return Err("publisher dropped its terminal signal".into());
+                    }
+                    Err(mpsc::TryRecvError::Empty) => thread::sleep(NATIVE_LIFECYCLE_POLL),
+                }
             }
-            Err("Latest never reached the newly published view".into())
         });
-        before_publish.recv_timeout(Duration::from_secs(10))?;
-        let new = published(&client.submit(candidate, &budget())?)?;
+        let publication_result = (|| -> TestResult<ViewRef> {
+            before_publish.recv_timeout(Duration::from_secs(10))?;
+            published(&client.submit(candidate, &budget())?)
+        })();
+        let _terminal_sent = publication_terminal.send(
+            publication_result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+        );
         let seen = observed
             .join()
-            .map_err(|_| "Native activation reader panicked")??;
-        Ok((new, seen))
+            .map_err(|_| "Native activation reader panicked")?;
+        Ok((publication_result?, seen?))
     })?;
     require_complete_activation(&seen, new, next_paths, next_sources)?;
     require(new != old, "publication did not advance the Native head")?;
@@ -263,7 +314,7 @@ fn activation_readers_see_complete_views_and_reopen_the_published_head() -> Test
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec()],
+            instances: vec![literal_spec(), text_spec()],
         },
         &budget(),
     )?;
@@ -687,13 +738,7 @@ fn check_loopback_provider_budget() -> TestResult<Option<read_view_daemon_witnes
         )?;
         Ok(settings)
     })?;
-    let daemon = Daemon::start_binary(
-        &fixture.binary,
-        &fixture.config,
-        &fixture.socket,
-        Some("loopback-fixture-key"),
-        None,
-    )?;
+    let daemon = fixture.start_with_api_key(Some("loopback-fixture-key"))?;
     let client = fixture.client();
     let semantic = openai_semantic_spec(&base_url)?;
     let instance = semantic.instance;

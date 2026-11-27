@@ -48,6 +48,71 @@ impl Deref for ScopedOverlayReply {
 struct SaveAuthority<'a>(&'a NativeDispatcher);
 
 impl SaveAuthority<'_> {
+    fn source_record(
+        &self,
+        record_ref: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<SourceRecordOwner, IndexError> {
+        let stored = self.0.objects.get(record_ref, budget)?;
+        let record =
+            SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
+        if stored.registration.reference != record_ref
+            || stored.registration.children.as_slice() != [record.bytes]
+        {
+            return Err(IndexError::CorruptObject(
+                "save source record registration differs".into(),
+            ));
+        }
+        Ok(record)
+    }
+
+    /// A row that asserts a repository saves only into it: a durable owner's
+    /// repository, or the witness's repository for a new file. A new file
+    /// without a witness asserts none, so the producer-staged record's
+    /// authenticated repository is authoritative. Deletions stage none.
+    fn check_save_repository(
+        &self,
+        ticket: &ReadTicket,
+        intent: &NativeOverlaySaveIntent,
+        repository_witness: Option<quanta_index_core::index::OwnerKey>,
+        next: Option<ObjectRef>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        let Some(next) = next else {
+            return Ok(());
+        };
+        let anchor = match (intent.expected_source, repository_witness) {
+            (Some(_), Some(_)) => {
+                return Err(IndexError::InvalidInput(
+                    "durable overlay owner keeps its own repository".into(),
+                ));
+            }
+            (Some(source), None) => source,
+            (None, Some(witness)) => self.owner_at(ticket, witness, budget)?.ok_or_else(|| {
+                IndexError::InvalidInput(
+                    "overlay repository witness is outside the save base view".into(),
+                )
+            })?,
+            (None, None) => return Ok(()),
+        };
+        let staged = self.source_record(next, budget)?;
+        let anchor = self.source_record(anchor, budget)?;
+        let expected = anchor.source_repo_id.as_ref();
+        let compared = staged
+            .source_repo_id
+            .as_ref()
+            .map_or(0, |repo| repo.as_str().len())
+            .max(expected.map_or(0, |repo| repo.as_str().len()));
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(compared).map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        if staged.source_repo_id.as_ref() != expected {
+            return Err(IndexError::Conflict);
+        }
+        Ok(())
+    }
+
     fn owner_at(
         &self,
         ticket: &ReadTicket,
@@ -73,7 +138,7 @@ impl SaveAuthority<'_> {
         )?;
         if record_object.registration.reference != record_ref
             || record_object.registration.children.as_slice() != [record.bytes]
-            || !crate::native_source_path::valid_native_source_path(&record.path)
+            || !quanta_index_contract::index::is_canonical_source_path(&record.path)
         {
             return Err(IndexError::CorruptObject(
                 "save source record registration differs".into(),
@@ -126,8 +191,9 @@ impl SourceSaveIntentPort for SaveAuthority<'_> {
         intent: &NativeOverlaySaveIntent,
         content_digest: Option<Digest>,
         expected_path_digest: Option<Digest>,
+        repository_witness: Option<quanta_index_core::index::OwnerKey>,
         budget: &mut WorkBudget,
-    ) -> Result<ObjectRef, IndexError> {
+    ) -> Result<(ObjectRef, Option<Digest>), IndexError> {
         let UpdateKind::SourceAdvance(transition) = &intent.request.kind else {
             return Err(IndexError::Conflict);
         };
@@ -162,6 +228,24 @@ impl SourceSaveIntentPort for SaveAuthority<'_> {
         if self.owner_at(&ticket, intent.document.owner, budget)? != intent.expected_source {
             return Err(IndexError::Conflict);
         }
+        // A replacement with no explicit path inherits the durable owner's
+        // path. A tombstone has no next Source and therefore no target path.
+        let bound_path_digest = match (content_digest, expected_path_digest, intent.expected_source)
+        {
+            (None, None, _) => None,
+            (None, Some(_), _) => return Err(IndexError::Conflict),
+            (Some(_), Some(digest), _) => Some(digest),
+            (Some(_), None, Some(source)) => {
+                let record = self.source_record(source, budget)?;
+                if !quanta_index_contract::index::is_canonical_source_path(&record.path) {
+                    return Err(IndexError::CorruptObject(
+                        "save base source path is invalid".into(),
+                    ));
+                }
+                Some(path_digest(&record.path))
+            }
+            (Some(_), None, None) => None,
+        };
         let mutation_value = self
             .0
             .objects
@@ -189,18 +273,19 @@ impl SourceSaveIntentPort for SaveAuthority<'_> {
             .map(|next| self.source_content_and_path_digests(next, budget))
             .transpose()?;
         if next_digests.map(|(content, _path)| content) != content_digest
-            || expected_path_digest
+            || bound_path_digest
                 .is_some_and(|expected| next_digests.map(|(_content, path)| path) != Some(expected))
         {
             return Err(IndexError::Conflict);
         }
+        self.check_save_repository(&ticket, intent, repository_witness, mutation.next, budget)?;
         let request = self.identify_save_request(intent, budget)?;
         if pending_request.is_some_and(|original| original != request) {
             return Err(IndexError::Conflict);
         }
         ticket.validate()?;
         budget.checkpoint()?;
-        Ok(request)
+        Ok((request, bound_path_digest))
     }
 }
 
@@ -310,6 +395,7 @@ pub(super) fn dispatch(
             revision,
             text,
             path,
+            repository_witness,
         } => {
             overlay.update(
                 OverlayDocumentKey::from_wire(document, uid),
@@ -317,6 +403,7 @@ pub(super) fn dispatch(
                 revision,
                 text.as_deref(),
                 path.as_deref(),
+                repository_witness,
                 &mut budget,
             )?;
             NativeOverlayReply::Updated { document, revision }
@@ -352,6 +439,7 @@ pub(super) fn dispatch(
                     revision: snapshot.revision,
                     text,
                     path,
+                    repository_witness: snapshot.repository_witness,
                 })
             } else {
                 None

@@ -470,34 +470,19 @@ Root가 소스 작성을 마친 일반 NC-D claim11개를 자기 owner token으�
 <a id="d-native2-actual-red-20261116"></a>
 ### R10 upstream 실행 이력 · Native2·Java7 실제 FAILED
 
-R10 Native2의 원 terminal을 직접 수집했다. 이전의 Native2 compiler/body 실행 중 기록보다 이 결과를 우선한다. artifact root는 `sdk-structural/rr-sdk-source23-r10-final-qbc/native2`이며 `rr-internal-controller`의 sibling이다. `result.json`, `receipt.json`, `stage-audit.json`, `stdout.log`, `stderr.log`, `refused-frame-check.json`을 보존한다.
-
-- **FAILED — runtime:** run `20261115T165642.404129Z-939335cbe30b`, request `70c3c2f216ed06aec933203dcab9e09c`, class `quanta-sdk-runtime-executor.no-default.2220cf6444bb`, frozen S `5a3b4605bcd924a0e050f399b6664571fb5c30e7+ovl-272bf357569a821ddcebef6f6486a2c5+ext-c85717004b4c8c7cec49`. 실제 compiler는 `build-finished.success=true`이며 outer2 실행 / 0PASS / 2FAIL / 1994filtered / 425.87s다. QBC의 `last_compile_exit_code_v1=101`을 compiler 실패로 읽지 않는다.
-- **직접 원인:** 두 Native writer child가 `taskmesh.large_stack:sdk.ensure_indexed`에서 stack overflow로 abort했다. parent는 기대 exit91 대신 `None`을 받았다. 대상은 `genuine_native_no_effect_cancelled_waiter_retains_one_worker_v12`와 `genuine_native_no_effect_preclear_restart_retries_exact_clear_v12`다. 의도한 no-effect cancel/retry·restart semantic 성공은 입증되지 않았다.
-- **실제 경계:** frozen `quanta-runtime/src/governance/plan_builder.rs::ensure_indexed_async_task_spec_v2`는 명시적으로8MiB를 요청한다. 반면 진단 marker는 fixture64MiB(`67108864`)를 기록하며 selected chain lower bound는 generation owner8,750,944 / Java inventory9,579,584 / Java post-head10,192,176 bytes다. fixture budget과 실제 worker budget을 혼동하거나8→64 상향만으로 수용하지 않는다. `verified-frame-check.json`은 없다.
-- **중복 구현 제외:** current S `6e16fc9aa816`와 R10 frozen의 `complete_generation_preparation_v1.rs`, `facts_original_admission_v11.rs`, `original_bootstrap_birth_v11.rs`, governance 파일이 byte-identical임을 확인했다. 이전 in-place/slot 수리 시도는 이미 실패 입력에 포함돼 있었다. 이4파일 비교만으로 최신 전체 compile closure가 동적으로 실패했다고 확대하지 않으며, 다른 caller/type 변경이 있으면 새 source의8MiB frame·동일 Native2 본문으로 입증한다. 기존 `NOV14-JAVA-TRANSPORT-STACK` caller와 `P07-GOVERNED8-BOOTSTRAP-VALIDATION-20261116` callee 오너에게 실제 RED를 인계했다. Root는 같은 frame hunk를 작성하지 않는다.
-- **Java7 원 결과:** 같은 R10의 Java7도 실제 본문을 실행했고0PASS/7FAIL이다. Java stage들의 `cargo_build_success=true`와 terminal `exit1`을 확인했으며 Java를 compiler/body0이나 단순 실행 대기로 남기지 않는다. 이 실패는 R10 고정 입력의 결과이며 후속 수정 source의 결과가 아니다.
-- **실행 소유:** 기존 R10 controller의 immutable terminal을 재검증해 재사용하고 cargo build/body 실패를 구분한다. 기존 producer/controller를 Root가 종료·복제하거나 lock을 바꾸지 않는다. 당시 F44988의 Product capture·4role·sign/install·Linux3은 유효한 Native2 입력이 없어 수용하지 못했다. 현재 입력/실행은 위 최신 처분에 따라 별도로 확인한다.
-
-후속 완료 조건은 기존 오너의 구조 수리 또는 변경된 caller closure 입증 → 실제8MiB frame 진단 → 같은 Native2 두 semantic body 통과 → 필요한 Java7 및 기존 current-source supplier 재결속이다. 실패 ELF SHA256은 `aa49437c5328532ac26e6de4e7c82a39a9ba6e2889fcafd4e4546db53bb49648`, 원 receipt SHA256은 `387741d7c0e9d0621b8f4d856d18bcd64d7d04c35b58eec74bddc119d6783495`다. 서명 Linux3과 D owning5의 미수용은 별도 잔여로 유지한다.
-
-**Q 실행 범위도 재분리했다.** F의 combined Native selection 마지막 원 결과는107run/106PASS/1FAIL/exit100이고 후속 Contract70만 exit0이다. 둘을 현행107 PASS로 합치지 않는다. F에게 같은 기존 selection의 current-source 재검증을 인계했다. 별도의 기존 물리 검사 `native_product::boot::legacy_candidate_tests::repomap_recovery_tests::legacy_active_repomap_recovery_holds_a_separate_real_root`는 Linux getdents64 때문에 macOS에서 ignored이며 combined107 filter에도 포함되지 않는다. 기존 paired Linux Q supplier의 current source에서 이 exact lib test1을 정식 `scripts/cargow`로 실행해야 한다. Root는 새 Q writer/runner를 만들지 않고 F 단일 mutex·기존 Linux supplier를 유지한다. Linux installed3은 이 unit1과 별도다.
-
-**후속 상태 재검증 — frame 후보 반영, 현재 admission BLOCKED.** Source callee 오너가 R10 이후4파일 후보를 Main에 반영했다. S `a260cb668b86fb1186be3ac387daffe472a66128`에서 독립 검토한 범위는 `bootstrap_parser_catalog_v93.rs`, `original_bootstrap_birth_v11.rs`, `complete_generation_preparation_v1.rs`, `facts_original_admission_v11.rs`다. 기존 rejection 조건·typed cause·Source finisher 순서와 paid bank 보존을 유지하며 accepted 경로에서 큰 error 임시값을 만드는 부분을 분리했다. 추가 확정 type/arity/cause/lifetime 회귀는 발견하지 못했다. 이 후보는 위의 R10 frozen 입력과 다르며 새로운8MiB ELF/frame·Native2 semantic body는 NOT_RUN이다. Root는 callee/caller의 기존 hunk를 재작성하지 않는다.
-
-실행 용량도 실제 재측정했다. 초기 QBC GC dry-run은43.16GiB/50GiB 미달이며 실패 전용 cache 후보0이었다. 성공 warm target을 삭제하지 않았다. 이후 Native2 컨테이너 종료·제거 뒤 canonical `gc --dry-run --json --max-lanes 30`은 available61,876,232,192bytes /3.1012% /reserved0 /`capacity_below_threshold=false`를 반환했다. `diskutil list external physical`은 빈 결과였으나 현재는 내부 용량 기준이 충족되므로 SSD 재연결을 필수 입력으로 고정하지 않는다. GC 적용·컨테이너/volume 삭제·VM 변경은0이다.
-
-이 상태에서 Host906의 동일 기존 warm-lane owning 요청을 unique live run0 확인 후 실제 제출했다. session60901은 canonical shared compile-activity admission에서60s 대기 후 **exit75 / compiler0 / body0**으로 끝났다. 테스트 실패가 아니라 admission BLOCKED다. C1 Docker `63b4f3f2b417`는 실제 `quanta_sdk_runtime_executor` rustc를 실행 중이며 EX가 반환되지 않았다. C1 실제 release 전 Host 요청을 다시 제출하지 않는다. 내부 용량 회복, 새 frame 후보의 작성 상태, Host actual75를 F 및 기존 두 Source 오너에게 인계했다. 이 결과도 source_ready 또는 정상 rollback/restore-forward 성공이 아니다.
-
-**실행권 인계와 재개 조건.** 같은 C1 exclusive admission 차단이 연속3회 이상의 goal turn에서 확인됐고 두 차례 Host actual 제출도75/body0이다. Root의 마지막 확인에서는 C1이 SQL rulepack worker를 실제 compile 중이었다. Root가 강제 해제하거나 별도 실행면으로 우회하지 않는다. Root의 pending Rust run은0이며, 기존 F 단일 coordinator에 준비된 owning5의 실행권을 인계한다: Host906 → Runtime15f → Lifecycle82 → CLI842 → SDKaf4. 실제 lease 반환과 current-source 입력이 확인되면 위 existing request/class/selector를 직렬 실행하고 nonzero body 결과를 인수한다. Root가 다시 작업을 시작할 때도 F의 live run/terminal을 먼저 대조해 같은 job을 중복 제출하지 않는다. 새 controller·lane·VM·source writer는 만들지 않는다.
-
-재개 조건은 실제 C1 EX 반환, 필요한 새 source의8MiB frame/Native2 양성 입력, 그 입력에 결속된 기존 signed supplier의4role/sign/install 결과다. 내부 용량은 마지막 probe에서 이미 기준을 충족했으므로 과거 SSD 부재만으로 재개를 막지 않는다. 작성·등록된 D 변경과 S owning5, Q current selection/물리 unit1, signed Linux3, nonempty FD6/Q 전체 회귀의 미수용을 각각 유지하며 goal 완료로 처리하지 않는다.
+The frozen R10 Cargo build succeeded, then both governed Native writer bodies
+aborted from an 8 MiB worker stack overflow (**FAILED 0/2**). The seven Java
+bodies also **FAILED**; getter3 refused with
+`SupplierInvalidSelection / NativeSourceMaterializationRefusedV3(InvalidNativeProducer)`.
+Later code/fixture and frame-probe changes require a new ELF and actual body
+execution; they do not convert R10 to a pass. [Fixed-cohort result](NC-F-integration.md#고정-입력별-진행-기록--현재-판정으로-재사용하지-않음) ·
+[original receipt and repair chronology](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Root source-only 인수 · 2026-11-16
 
-Root가 로컬 최신 `paired-q.patch`(SHA256 `48d48708365414f2b8451732d37a33ef37b7fcd5d4211c26f7be6095417aa220`)의 Main/base preimage와 work postimage 7경로를 대조한 뒤 Main에 적용했다. 적용 전 check와 적용 후 reverse-check는 모두 exit0이다. 이전 `native_recovery/facts.rs` drift도 해소된 입력이다. 아래의 Q Main7 미반영·전역 Text 동결 대기는 이전 상태다. 현재 [Text packet의 후속 수용 경계](NC-TEXT-build-final.md#후속-수용-경계와-전체-work-소유자)는 초기 캡처를 무효로 두고 합류 후 재결속하도록 기록하며 binary/SDK는 NOT_RUN이다. Root는 기존 사용자 Main 합류 권한 안에서 준비된 구현만 통합했고 새 D writer/runner는 만들지 않았다.
-
-**구현 인수와 수용을 구분한다:** Q Main 통합7경로는 반영됐지만 통합 compiler·새 owning 본문·S readback/Host·signed Linux 정상/복구는 아직 NOT_RUN이다. contract API baseline도 실제 renderer로 후속 대조해야 한다. `source_ready=false`와 D1–D3 전체 미완료는 유지하며, 아래 과거 7경로 미반영 기록을 추가 구현 작업으로 재배정하지 않는다. 첫 Root 합류 check는 `native_cutover_evidence_v1.rs`의 Hasher::update 반환값 미사용2건에서 compiler101/body0였다. Root가 같은 해시 순서를 유지하는 단일 update chain으로 수리했고 재제출했다. 이 merge fix 이후 해당 한 줄은 원 prepared postimage와 달라지며 새 행동/해시 의미는 추가하지 않았다. 현재 Root의 Native 합류 check는 기존 단일 mutex 아래 대기 중이다.
+Root applied the reviewed seven-path Q patch to Main after preimage/postimage
+checks. This was source integration, not current S/Q compiler, installed or
+Native2 body acceptance. [Original patch custody](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### 실제 구현 진행 · S/Q Main 반영과 실행 수용 분리
 
@@ -646,199 +631,76 @@ Q old/current signed Source→physical root/RepoMap→단일 publisher 감사에
 <a id="d-actual-code-residual-20261115"></a>
 ### 세 패킷의 초기 인계 이력
 
-현행 판정과 검증 입력은 [현재 마감표](#d-current-code-disposition-20261118)를 따른다.
-
-| 패킷 | 당시 코드·인계 상태 | 당시 완료 조건 |
-| --- | --- | --- |
-| D1 · Main 반영, owning 수용 미완료 | F가 exact7경로를 Main에 반영했다. 인수 시점6경로는 prepared postimage와 같고 contract evidence에는 같은 해시 순서의 반환값 수리가 있었다. 이후 F가 실제 Native test compiler의 let_underscore_drop 진단을 받아 같은 contract 파일의 음성 fixture2곳을 명시 drop으로 수리했다. 당시 draft 대비 차이는 이3hunk였고, 이후 source_join의 SDK 양성 fixture 정규 hex 수리와 Contract70 재검증을 위 최신 실행 인수에서 별도로 기록한다. 기대 거절·wire는 바꾸지 않았다. 격리 patch를 다시 적용하거나 같은 producer/API를 재구현하지 않는다. | 첫 합류 check는 반환값 미사용2건 compiler101/body0이었다. F가 수리해 같은 레인의 재검사로 인계했다. 당시 S readback·Host·signed Linux 본문 수용은 미완료였다. |
-| D2 · IO 취소·startup 보완 반영, 실행 미수용 | reference-only ordinal도 checkpoint owner의 원 receipt로 읽어 누락 terminal을 마친다. startup·replacement·ordinary full 앞에서 retained references 전체를 readback→terminal→receipt 전체 slice GC로 정산하고 잔존 참조가 있으면 새 publication을 차단한다. pending consumed custody의 issued receipt만 재시도하며 receiptless 이벤트는 원 observation cut에 남긴다. | 기존 inbox/typed custody/현재 checkpoint authority를 사용한다. 새 역사 store/issuer는 없다. reference-only reopen·NoRecovery/foreign proof 거절·실제 remove 실패 뒤 같은 receipt 재시도 및 receiptless pending의 추가 scan0 회귀를 작성했다. Host readback stub 범위와 Runtime 실제 validator 범위를 구분하며 compiler/본문은 NOT_RUN이다. |
-| D3 · normal Q 검색 반영·실행 미수용 | 실제 공개 SDK Rename 뒤 변경 파일·원 receipt·durable Source generation·Q Latest/Exact를 검사한다. AST-only exact test는 BOOT AST Published가 실제 old Latest임을 확인하고 같은 Source의 fresh Native root로 복구한다. 두 모드는 같은 runner의 ACK-loss·same-request reconcile·두 재시작·Q 검색·Source·선택 inode/bytes/xattr oracle를 재사용한다. | D3-NORMAL-Q-QUERY는 위 SS 배치에 반영됐다. normal1의 성공 rollback은 보존하고 stale rollback 거절과 분리한다. 기존 graph/DFG·no-effect 처리와 producer를 다시 구현하지 않는다. 기존 supplier에 연결된 세 exact selector를 현재 paired source로 실행해 Linux normal1·Watch/SDK1·AST-head1을 수용한다. |
-
-**이번 감사에서 바로 수리한 연결 누락.** S `workspace_session_manager.rs`와 `change_event_workspace_status_v1.rs`의 기존 `with_durable_inbox_facts_v1`이 아직3인자 callback을 요구해 Host의4인자 원 receipt loan과 맞지 않았다. 동일 API의 인자를 전달하도록 수정했다. `tools/ci/product_process_contract_v1.py`에는 Rust에 존재하는 postpublication test가 빠져 있었으므로 추가했다. 기존 canonical Rust source scanner·feature closure로 Product 필수36개와 실제 대상36개가 일치함을 확인했다. 두 Rust adapter의 boundary preflight1정책·구문 parse·diff check는 통과했다. 이는 compiler/본문 검증이 아니다.
-
-**후속 정적 검증.** AST exact test `installed_native_ast_head_restore_forward_preserves_source_v1`와 `native-installed-ast-head-recovery-process-owner`를 추가한 뒤 canonical scanner의 실제 feature closure 대상37개와 Product 필수37개가 일치한다. `tools/testing/run-suite-v1.sh <suite> --resolve-only`로 normal·postpublication·AST 세 selector 모두 기존 class `quanta-cli-server.no-default.61b2510e7d2a`와 expected1을 반환했다. 실행용 새 lane을 만들지 않았다. 현재 변경9경로 boundary preflight5정책, Rust7파일의 비변경 구문 검사·Python 구문·scoped whitespace/diff 검사가 exit0이다. Host의 단일 replacement cut을 보존하기 위해 receiptless pending에 새 full을 먼저 실행하는 초안을 제거하고 issued receipt-only retry로 수리했다.
-
-**초기 합류 검증 이력.** F의 첫 Q 합류 check는 반환값 미사용 두 건으로 **FAILED**(exit101·본문0)였다. 해시 입력 순서를 유지한 수리 뒤 기존 레인의 재검사로 인수했다. 당시 `published-current-20261115/guest-published-suites.py`의 normal·Watch/SDK·AST 세 selector 등록을 확인했고 signed Linux 본문은 **NOT_RUN**이었다. 현행 실행 범위는 [현재 마감표](#d-current-code-disposition-20261118)를 따른다.
-
-**이전 통합 차단 재확인 — Main 인수 전 상태.** Main의 원7경로와 draft base가 일치하며 `/tmp/NC-D-Q-20261115-01a1cbf6/paired-q.patch`의 `git apply --check --whitespace=error-all`은 exit0이다. 실제 Main 반영은0이다. 전체 reachable wire/DTO/생성자·소비자 대조에서 알려진 Main 미통합 외 추가 확정 누락은 없었다. F와 Text에7경로 source-only 반환을 요청했고 실행권은 계속 Text에 두었다. 연속된 세 goal 턴에서 같은 명시 반환 부재가 유지돼, 당시 D1 통합은 **BLOCKED**, 해당 코호트의 compiler·Linux 본문은 **NOT_RUN**이었다. 이후 반영과 현행 입력은 [현재 마감표](#d-current-code-disposition-20261118)에 기록한다.
+D1–D3 supersede the six older supply/consumer splits. The early Q integration
+first stopped at compiler exit 101/body 0 for two unused returns; its repaired
+source and later owning execution retain their separate receipts. This intake
+never qualified signed Linux recovery. [Original handoff](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts) ·
+[current D packets](#d-current-disposition-20261116).
 
 <a id="d-final-code-scope-20261115"></a>
 ### 세 패킷의 고정 변경 범위와 완료 조건
 
-아래는 세 패킷의 계약이다. 작성된 부분을 다시 신규 배정하지 않는다. 현재 작성/통합 상태와 남은 코드는 바로 위 실제 구현 진행·확정 코드 잔여를 따른다.
-
-| 패킷 | 고정한 변경 범위 | 재사용과 완료 조건 |
-| --- | --- | --- |
-| D1 · Native 게시 후 복구 | Native aggregate의 기존 RepoMap 검증 결과를 signed reader→FD6→Q 물리 verifier에 대여한다. Q `restore_forward.rs::verify_native_separate_repomap_v1`과 이전 head의 물리 검증을 연결했다. SDK DELTA old head는 원 SDK ACK Source4의 현재 ancestry membership·operation별 getter를 소비하며 실제 AST Published 행도 기존 AST fact의 typed old-root census/head로 처리한다. | Initial/Watch의 Source4→현재 ancestry 인증, old root의 lexical Published↔reservation/V9 대조, held root·단일 publisher는 이미 있다. 이를 재작성하거나 막연한 새 coverage 프로토콜을 만들지 않는다. 기존 event predecessor/high-water·settled V9/outbox·미결0 검증을 유지하고 SDK/AST 실제 head까지 필요한 분기만 완성한다. Required RepoMap receipt/locator와 NotApplicable(reason,policy,scope)를 모두 원 검증 결과로 처리한다. |
-| D2 · Host 재시작 후 정산 | Runtime의 실제 검증을 활성화 없는 `read_completed_full_recovery_receipt_v2` 읽기 API로 분리·대여했다. 기존 durable inbox 안에 원 요청·tail IDs·observation cut·operation·checkpoint 참조를 보존하고, 재시작 후 원 checkpoint/publication으로 재검증한 receipt만 offline borrower→FD6→Q에 연결한다. Source-only 완료 request는 Native reservation 필터 전의 기존 paid visitor에서 소비한다. | 기존 receipt를 메모리에 보관하는 custody, PendingApply의 durable intent·동일 operation/batch startup 분류, NoSemanticWork·좁은 Watch 정산은 재사용한다. 새 Store/issuer나 label·snapshot만의 성공은 금지한다. genuinely pending인 작업은 거절하고, 이미 정산된 작업은 원 receipt/기존 startup reconciliation으로 증명한다. foreign op/tail/cut/checkpoint·참조 누락·중단/재시작 반례를 포함한다. |
-| D3 · 실제 통합 회귀 | 기존 normal1을 보존하고 실제 SDK/Watch 게시 뒤 rollback 거절→fresh Native FULL restore-forward→ACK-loss 동일 요청 정산→재시작의 회귀를 확장한다. 게시 후 candidate 입력은 원 current Source snapshot/generation에서 읽는다. 기존 `next_candidate_v1`의 baseline snapshot 복사는 게시 후 사례에 그대로 쓸 수 없다. | 기존 normal1은 구현됨: forward→rollback→fresh forward, 양방향 ACK-loss, selection inode/bytes/xattr·Legacy query·두 재시작. 새 harness/controller/VM을 만들지 않는다. 독립 S Source/Q head·exact query로 갱신 유실0·중복 논리 게시0을 확인한다. SDK/AST 분기는 D1 계약에 맞는 실제 양성/거절 oracle로 실행한다. |
-
-**이미 구현되어 재작성하지 않을 범위.** ordinary 초기 Source binding의 producer→V9/phase/retry→signed reader→FD6/Q, Native Initial immutable Source4, completed Watch의 paid decoder/ancestry·operation/batch/V9 join, FD custody·공통 publisher, cold graph/Java DFG caller와 기존 normal1 fixture다. 이들에 남은 것은 현재 입력의 compiler/동작 검증 및 그 검증에서 확인된 해당 원인 수리다. Initial/Watch의 ancestry membership을 미공급 API로 다시 세지 않는다.
-
-**작성권.** S RepoMap/Source·Host/Runtime·CLI의 실제 변경은 `NC-D1-NATIVE-REPOMAP-LOAN-20261115`, `NC-D1-SDK-ANCESTRY-20261115`, `NC-D2-HOST-DURABLE-RECOVERY-20261115`, `NC-D2-RUNTIME-RECOVERY-READ-20261115`, `NC-D-CLI-RECOVERY-CONSUME-20261115`의 정확한 shared-main claim으로 분리했다. 기존 P07 오너가 정상 fixture claim을 해제하고 postpublication child·scenario/commands 훅·부모 등록만 인계했다. 해당6경로는 `NC-D3-POSTPUBLICATION-REGRESSION-20261115`, suite 등록은 `NC-D3-POSTPUBLICATION-REGISTRATION-20261115` 단일 writer가 맡았다. 기존 normal1·P07 Java 작업을 재작성하지 않았다. Q Main7경로는 F가 인수했으며 D는 동일 hunk를 변경하지 않는다. 별도 Q/S Rust 실행은 기존 실행권 조건을 계속 따른다.
-
-**검증 대기는 코드 결손과 별개다.** Text 실행권의 명시 반환 전 새 Q/S Rust·SDK job을 시작하지 않는다. 반환 뒤 기존 warm lane에서 S producer/readback·Host owning, Q 변경분 회귀, 같은 signed S/Q/SQLworker cohort의 Linux normal1 및 D3 순서로 실행한다. 현재 `published-current-20261115/guest-published-suites.py`에는 normal1·AST-head1·Watch/SDK1 세 suite가 등록돼 있다. 등록은 실행 성공이 아니며 이전 Published4 제외 기록은 과거 cohort에만 적용한다. 새 정식 P11·Hybrid·Tantivy/성능 작업은 이 세 코드 패킷에 추가하지 않는다.
-
-**앞선 재감사: VERIFIED(정적 범위).** 현재 producer→signed borrower→FD6→Q와 활성 claim, 기존 fixture/현재 guest suite 등록을 읽어 대조했다. 당시 생산 Rust 수정·Rust 실행은0이었으며 D1–D3 완료나 Linux 성공으로 승격하지 않는다. 아래 [기존 인수·검증](#d-completed-watch-intake-20261115)의 실행 ID와 oracle는 보존한다. 이후 코드 작성과 현재 제한은 위 실제 구현 진행 절을 따른다.
-
-기존 candidate/graph/DFG의 이전 frozen capture는 S `e64b7d2907c26a21b92b84b91c299d21f128e1a0` + overlay였다. 그19개 파일의 byte equality와 Source-only InputStore·candidate bootstrap·paid inventory/graph 연결 기록은 보존하되, 이후 producer 변경의 compiler/설치 proof로 재사용하지 않는다.
-
-기존 채팅 네 곳·D 내부 두 레인의 이전 인수 경계는 [코드 마감 병렬 배정안](../../../ARCHIVE-INDEX.md#2026-11-17-native-dispatch-retirement-and-six-ticket-intake)에 보존한다. 현재 미완료 재배정은 위 D1–D3와 현행 claim을 기준으로 하며 이미 연결된 초기 Source·Caller를 다시 배정하지 않는다. 이번 재감사에서 외부 메시지·새 채팅 생성·작업 발송은 하지 않았다.
+Keep the original Source/Host/SDK typed guards, previous-Native coverage,
+ordinary and Watch ACK, immutable phase/FD6 custody and the single selection
+publisher. D1–D3 require real S/Q caller and receiver execution plus normal,
+postpublication and ACK-loss recovery on the same signed input. Already mounted
+cold graph/DFG and FULL dispatch are reused. [Live acceptance](#d-current-disposition-20261116).
 
 <a id="d-completed-watch-intake-20261115"></a>
 ### 완료 Watch 실제 API 인수·현재 검증 · 2026-11-15
 
-- **구현 연결, S 본문 NOT_RUN.** `OriginalCompletedSourceIntentCensusBirthV1`/intent/closeout reader가 원 content-addressed 디렉터리를 EOF까지 유계 읽고 nofollow/regular-file/크기·해시를 확인한다. RecordOnly는 존재하지 않는 AnalysisEpoch를 요구하지 않는다. 실제 retained Watch는 기존 JSON scanner·canonical ChangeEvent visitor를 사용하는 `OriginalNativeWatchBatchDecodeBankV11`에서 DTO/부분 문자열·Vec·NFC backing과 원 실패를 외부 수명으로 보존한다. 새로운 store/issuer/JSON schema나 임의 wire-length 배수 승인은 없다.
-- **실제 호출 경로.** 같은 SDK RepoState의 `with_native_cutover_committed_source_context_v1`가 기존 manifest/transaction store를 빌린다. D `evidence_file_v1.rs`는 `stage_completed_native_watch_source_with_original_v1` → `with_signed_completed_native_watch_bindings_v1` → `CompletedNativeWatchSource`를 호출한다. Source+Output/reader close 뒤 실제 origin operation hash·verified batch·유일한 settled Native V9를 조인한다. fresh Source 값에서 과거 binding을 역생성하지 않는다.
-- **단일 wire.** 원 Source4 정의를 `NativeCutoverEvidenceSourcePublicationBindingV1`로 이름만 일반화했다. ordinary 필드명/네 축/기존 Digest64 64-element tuple wire는 유지했고 alias/병렬 IR은 없다. 새 completed fact 하나는 실제 `OperationKey`, Source4와 sorted-unique 실제 event ID 집합을 가진다. DATA이며 자체 게시 허가가 아니다.
-- **VERIFIED — Q wire12 + Source join44.** 기존 `test-workspace-lane`에서 `QUANTA_INDEX_BUILD_LANE=test-workspace-lane QUANTA_INDEX_RESOURCE_WAIT_SECONDS=10 ./scripts/cargow nextest run --locked --offline --build-jobs 2 -p quanta-index-contract --lib --features quanta-native-identity-v1 -E 'test(native_cutover_evidence_v1::tests::) | test(native_cutover_source_join_v1::tests::)' --no-tests fail --no-fail-fast --test-threads 1`. run `fe47aa32-26f1-4b19-a048-84bba92222e0`: **56 PASS / 373 skip / exit0**, compile6.27s/body0.571s. 앞선 run `866f4440-4d10-49aa-80e5-c1345e478981`은54 PASS/2 FAIL이었다. 두 신규 독립 golden이 기존 Digest64 tuple을 byte string으로 잘못 기대한 fixture 오류였으며 production wire를 바꾸지 않고 원 tuple 계약으로 수정했다. full-u128·malformed/duplicate/foreign/cap·Watch reservation/V9 양방향 대응·전역 event 중복 거절이 포함된다. Linux/Source producer proof는 아니다.
-- **Host 수신 범위.** `active_units`는 retained `max(ordinals.len(),1)` 점유량이다. Q는 그 합·capacity, prepared configuration, cursor receipt와 ordinal disposition을 확인한다. 일반 emitted ID는 실제 완료된 Native Watch 또는 Source-only 요청과 매칭돼야 한다. Full recovery에 포괄된 ID는 기존 typed receipt의 exact tail·checkpoint와 현재 Source에서 검증한다. `NoSemanticWork`는 emitted/reconciliation ID가 없는 terminal만 허용한다. GC된 Host가 Source 완료 행마다 남아 있어야 한다는 역방향 조건은 없다. 미정산 apply·ordinal과 근거 없는 recovery는 거절한다. 아래 receiver3은 이 helper의 당시 단위 테스트다. 현재 nonempty 설치 양성은 [F 단일 큐](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)의 기존 retained fixture에서 수용한다.
-- **VERIFIED — Q receiver3.** `QUANTA_INDEX_BUILD_LANE=test-workspace-lane QUANTA_INDEX_RESOURCE_WAIT_SECONDS=10 ./scripts/cargow nextest run --locked --offline --build-jobs 2 -p quanta-index-searchd-runtime --lib --no-default-features -E 'test(native_recovery::facts::tests::)' --no-tests fail --no-fail-fast --test-threads 1`: run `7c9856c2-6d40-41b3-b7fc-ac8b6ce8f896`, **3 PASS / 640 skip / exit0**, compile2m57s/body0.077s. ordinary Source4 parity·Host ordinal shape/event membership·중복/Work 거절 범위다. 후속 inventory 회귀를 추가한 run `bd462ad8-f6cf-4578-a291-a424de446613`은 **3 PASS / 1 FAIL / 640 skip / exit100**이었다. all-filtered 양성 fixture에서 메모리 authority 없는 scalar 전용 WorkBudget을 재사용해 예산 거절이 발생했다. 이 원인을 수정·재검증 중이며 production fee를 줄이지 않는다. signed Source/Host 조합·Linux는 포함하지 않는다.
-- **추가 owner 회귀, NOT_RUN.** 기존 `coordination::durable_source_publication_transaction_v1::original_source_terminal_records_v11::watch_record_only_tests_v11::paid_watch_record_only_terminal_has_no_analysis_authority_v11`은 실제 RecordOnly intent·verified disk terminal·completion과 기존 retained Watch batch/request fixture를 결합한다. paid typed read/event-ID·미존재·Source 거절·본문 손상·FD close 뒤 원 bytes 보존을 검사한다. 이 테스트는 reader close gate까지이며 production Source/Output finisher나 Native reservation/V9/CLI FD6 양성을 대신하지 않는다. 두 test hunk의 boundary preflight6정책은 통과했다.
-- **BLOCKED — S 실행.** 정확한 contract selector/current feature class 실제 실행은 exit75/body0으로 기존 C1 exclusive `compile-activity-admission.lock`에서 거절됐다. F가 추가한 `quanta-runtime-execution.no-default.2fdfbe5324db`는 `[artifact-registry-store,native-watch-replay-request-v11,original-trace-v3]`의 새 paid reader/decoder owning class다. 해당 decoder 모듈도 같은 기존 warm lane에서 실제 실행을 시도했으나 exit75/body0이었다. resolve는 command shape만 확인한다. peer job 종료·lock 우회·새 lane은 없다.
-- **BLOCKED / NOT_RUN — signed Linux normal1.** 기존 suite는 `native-installed-forward-rollback-forward-process-owner`, exact `installed_native_forward_rollback_forward_retains_committed_source_v1`, expected1, class `quanta-cli-server.no-default.61b2510e7d2a`다. 이전 shell의 필수 설치 입력17개 부재와 `published-attach/installed-status.json`의 `WAITING_EXISTING_ROOT_QUEUE`는 당시 관측이다. 현재 `published-current-20261115/guest-published-suites.py`는 normal1을 다섯 번째 suite로 포함한다. 기존 `published-status.json`/`signing-status.json`의 대기 문구나 suite 등록은 현재 nonzero terminal이 아니다. 과거 ELF나 resolver·컴파일 진행을 설치 성공으로 재사용하지 않는다.
-
-**이전 Native FULL 결손의 코드 보완 — S 실행 대기.** F는 기존 Caller에게 같은 offline/keeper의 실제 typed Source reader→first Preparing 전 전달만 exact loan했다. D는 `NativeSourcePreparationIntentV1.initial_source_publication_binding_v1: Option<NativeCutoverEvidenceSourcePublicationBindingV1>`를 초기 FULL에 필수/후속 SDK·Watch에는 금지로 고정하고 strict/admitted decode, exact 비교, preparation digest·V9 CAS/retry/readback에 반영했다. Caller의 두 inspect 및 collector는 source 인자 바로 뒤 같은 `&Source4`를 전달한다. shared Source carrier나 ordinary binding으로 우회하지 않는다. D signed getter는 persisted field·종결 V9·유일한 Initial reservation과 completed ancestry의 원 Source4 네 축을 확인하고, CLI는 `NativeInitialSourceBinding { operation, aggregate_identity_digest, source }` fact14로 복사한다. 기존 Replay CBOR arity는 유지한다. S 실제 edition2021 owned6파일 구문 파싱과 boundary preflight19정책은 통과했지만 compiler/본문은 아직 성공하지 않았다.
-
-**VERIFIED — Q 최신 wire14 + Source join46.** 기존 contract command의 run `579e5abc-1157-4866-87b7-03bebb816486`: **60 PASS / 373 skip / exit0**, compile24.83s/body0.470s. 첫60 run `88c9832f-ec5d-4ff7-897f-11b4ea48ed5d`과 후속 `7a50d277-d4b4-4e4e-8d8f-478b3ce87c82`은 각각59 PASS/1 FAIL이었다. SDK negative fixture의 noncanonical `g` 및 parity negative가 fresh 값과 같은 `e`를 사용한 원인을 수정해 실제 의도한 거절에 도달시켰다. 단순 `is_err`로 oracle을 약화하지 않았다. NativeInitial은 Source pointer **M**(`fresh.target_snapshot_id`)과 frozen FULL **N**(`fresh.committed_source_snapshot_id`, V5/V9 published snapshot)을 구분한다. 실제 S `native_cutover_fresh_snapshot_v1.rs`의 pointer M·exact-baseline closure N·동일 Source digest 검증을 소비하며 임의 snapshot ordering은 증거가 아니다. ordinary 및 SDK/Watch의 기존 조건은 유지한다.
-
-**VERIFIED — Q 최신 Host4.** run `c49ff4e5-7faa-483d-9586-1814263970e9`: **4 PASS / 640 skip / exit0**, compile3m37s/body0.104s. all-filtered retained Host의 점유량·capacity·cursor·prepared authority 회귀가 포함된다. 앞선 예산 거절은 scalar 전용 fixture에 memory scope가 없던 원인이었다. real `NativeResourceLedger`/`ReservationGuard` scope를 바인딩하고 authority가 없으면 계속 거절하는 반례를 추가했다. production 비용/정책은 바꾸지 않았다.
-
-**VERIFIED — Q 최신 publisher/receiver39.** `QUANTA_INDEX_BUILD_LANE=test-workspace-lane QUANTA_INDEX_RESOURCE_WAIT_SECONDS=10 ./scripts/cargow nextest run --locked --offline --build-jobs 2 -p quanta-index-searchd-runtime --lib --no-default-features -E 'test(native_recovery::facts::tests::) | test(restore_forward_tests::) | test(repomap_recovery_tests::) | test(deployment_selection::)' --no-tests fail --no-fail-fast --test-threads 1`: run `bdd78f4e-e133-403d-b324-1b1988bbba8f`, **39 PASS / 605 skip / exit0**, compile3m30s/body5.218s. 공통 단일 publisher·선택/fault/reconciliation34, 실제 fresh Native candidate1, Host4를 포함한다. 앞선 compiler exit101/body0은 obsolete refusal variant와 쓰지 않던 old head/count/getter의 세 dead-code 오류였으며 obsolete variant 제거·실제 held head/count 대조로 수리했다. Linux-only held-previous/RepoMap와 signed 설치 본문은 포함하지 않는다.
-
-**이전 Native→Native 입력 거절.** 당시 Native-only evidence는 원 RepoMap loan이 없어 `NativeRepoMapVerificationUnavailable`을 반환했다. 현재 typed RepoMap·old-head coverage·Host 정산 연결은 [잔여 패킷](#d-current-disposition-20261116)에 반영했다. 실제 signed 본문은 별도 수용 대상이다.
-
-**최신 실행 입장 — BLOCKED.** C1의 이전 PID 종료와 shared admission의 일시적 available 관측은 실제 실행 성공이 아니었다. 현재 Native preparation exact selector 및 `indexing::native_source_preparation_v1::tests` 전체 모듈을 기존 `worktree-heavy-semantica-codegraph-v2-d0b8b5a985ea`/class `quanta-contract-retrieval.no-default.6d9c579a784c`로 실행했으나, source snapshot 캡처 뒤 다시 exclusive compile-activity contention으로 각각 exit75/body0이었다. 모듈은 `--wait-seconds 60`의 bounded 재시도도 동일했다. 새 Source reader/Native preparation/SDK/Runtime·signed Linux 본문은 아직 NOT_RUN이다. dry-run GC에서 RootD의 안전하게 회수할 대용량 자산은 없었다. 비어 있지 않은 prunable 대상은 peer 소유이고 RootD topology는 active lease여서 삭제·핀 변경을 하지 않았다. 호스트 여유는 관측 중 약51–57.6GiB로 변동했으며 한때2.75% admission 기준을 밑돌았다. D의 실행 자식은 모두 종료됐고 별도 runner/VM/chat은 생성하지 않았다.
-
-**단일 실행권 반환.** F의 독립 Text owning 인계를 위해 D는 기록된 자기 launcher live process0을 확인하고 Q/S Rust 실행권을 F에게 반환했다. Text 원 오너가 F를 통해 명시 반환하기 전에는 D가 새 Q/S Rust·SDK job을 시작하지 않는다. source/read-only·RepoMap/Host 최소 구현 조정은 가능하다. 이는 Text 실행 시작이나 성공의 증거가 아니며 Source7/Nativeprep/paiddecode/Linux body0는 그대로 미완료다. peer 종료·lock 변경·새 runner 생성은 없다.
-
-**현재 검증 순서.** 기존 D1/D2 공급과 D3 fixture를 사용한다. S/Q owning 결과와 같은 signed cohort의 Linux 정상 복구를 확인한 뒤 게시 후·Host 회귀를 수용한다. 현재 상태와 실행권은 [F 단일 큐](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)에 기록한다.
+The retained Watch path used the existing bounded content-addressed intent
+reader and canonical event visitor. Its earlier API/static checks were
+source-scoped; the later S producer and installed Watch bodies require their
+own execution. [Original Watch intake](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 <a id="d-code-hardening-20261115"></a>
 ### D 설치 fixture 보완·실제 API 인수 대기 · 2026-11-15
 
-Historical fixture/API intake. The five installed-recovery leaves already
-contain the direct Scalar import, held selection FD/inode/bytes/xattr checks,
-Legacy readback, process/restart ordering and exact ACK-loss request oracle.
-Their November-15 source hashes, static checks and exact normal1 resolve are
-in the [recovery entry](../../../ARCHIVE-INDEX.md#2026-11-17-rfc-source-and-current-sdk-reconciliation).
-The old missing ordinary Source binding and replay/Host join descriptions
-are retired as implementation requests. Reuse the
-[adopted source/receiver contract](../../../adr/NOV-07-001-native-index-execution-and-custody.md#initial-source-and-completed-watch-admission).
-Current owning and signed Linux bodies follow the active packet; static fixture
-intake never supplied that installed acceptance.
+The five recovery fixtures cover held selection identity, Scalar import and
+failure preservation. Fixture source alone did not supply an installed result.
 
 <a id="d-live-supplier-recheck-20261115"></a>
 ### 실제 공급 API·Linux 큐 재점검 · 2026-11-15
 
-The fd852b8b/2f76fa8b audit recorded absent ordinary Source, prior-Native
-coverage and nonempty Host settlement APIs on its then-current source.
-Those producer/store/signed-reader/FD6/Q paths now exist and are reused by
-D1–D3. The [current packet](#d-current-disposition-20261116) owns affected
-compilation, CP2 mixed and signed normal/postpublication/ACK-loss acceptance.
-
-The old WAITING_EXISTING_ROOT_QUEUE, PID, free-space and paired-build
-observations are historical, not current admission or execution state.
-Exact original bindings, deferred checks and the unchanged normal1
-selector/expected body are preserved in the recovery entry above.
-No resolve, source-only join or component test closes signed installation.
+Earlier missing-API and queue observations applied only to their frozen source.
+Current supplier readiness and Linux bodies follow D1–D3 and the signed
+closeout; no historical queue record reserves execution.
 
 <a id="d-producer-implementation-handoff-20261115"></a>
 ### 실제 구현 인수·D 양방향 ACK-loss 보완 · 2026-11-15
 
-사용자가 F·기존 오너의 세 API 실제 구현과 D의 즉시 소비·Linux 검증을 명시 지시해 두 기존 채팅에 write-set·생산/저장/reader/join·회귀·DoD를 전달했다. 기존 「증분」 `01a10d0b-bc57-7662-a2d3-315c1a07fdb5`은 turn `01a1db06-cd3a-7952-8812-1c5c44ea5ee0`에서 외부 위임을 수락하지 않았다고 종료했다. 해당 채팅을 이 세 API의 구현 중 오너로 표시하지 않으며 추가 위임 메시지를 보내지 않는다.
-
-F 「검색 벤치마크 지표 확인」 `01a1a63f-d425-79e3-bc41-2c431d1e77f0`는 이 거절을 인수하고, 실제 활성 claim/dirty를 대조해 미소유 producer·V9 store·signed reader·Q pure join exact hunk를 기존 Root/F 경계에서 인수한다고 회신했다. D는 S projector/fixture와 Q private receiver를 유지한다. 단순 메시지 발송을 owner 착수·공급 완료로 판정하지 않는다. 직접 경로를 선택한 shared-main status 관측에서는 관련 활성 claim이 없었고 역사적 stale claim만 있었다. stale claim을 지우거나 다른 writer의 변경을 덮지 않았다.
-
-**Q wire 실물은 반영됐다.** `NativeCutoverEvidenceOrdinarySourceBindingV1`의 transition·CompletionPointer·physical target Source `Digest64`와 snapshot `u64`, `Replay.ordinary_source_binding: Option<…>` 필드를 확인했다. F는 codec RED run `63bb83a0`(4body/3FAIL/1PASS)→GREEN `184d9e16`(4/4)을 보고했다. 이는 codec scope이며 S의 영속 producer/signed reader·Q join·설치 복구 검증이 아니다. 아직 없는 S getter를 FreshSdk에서 역생성하거나 모든 Replay에 임의 None을 넣어 연결 완료로 표시하지 않는다.
-
-**D 코드 보완은 양방향으로 확장했다.** 기존 normal1 fixture에서 rollback도 실제 wire terminal을 유실시키고 원 rollback 요청을 보존한다. 첫 Legacy Q/RepoMap·resident 재시작 후 같은 요청 `Reconciled`를 확인하고 선택 inode/bytes/publication xattr·Source 불변, 다음 재시작의 원 Legacy active head/query 불변을 검증한다. 새 suite/harness는 만들지 않았다. `scenario_v1.rs`의 새 SHA-256은 `af9082cb0277ab9c626b82df17f7532d0fac1d47ff6c60a1af06c7afaf1b5022`이며 나머지 네 D leaf는 기존 인수 바이트를 유지한다. 이 경로의 변경 전후 boundary preflight1정책·구문 parse·scoped diff check는 exit0이다. 실제 RED/컴파일/Linux body는 **NOT_RUN**이다.
-
-**실제 Linux 실행 목록의 누락도 F에 인수 요청했다.** active `published-attach/guest-published-suites.py` plan은 Published4만 포함하고 normal1은 없다. F는 현재 서명 guest/lease의 같은 17-key `suite_environment()`·bundle Source/receipt/artifact SHA·Linux profile/ABI 검증을 재사용해 normal exact suite를 합치거나 후속 실행해야 한다. `run_suite_v1.py native-installed-forward-rollback-forward-process-owner --receipt <existing-evidence>/<suite>.json`의 실제 terminal executed1/passed1/failed0/ignored0을 확인하며 resolve-only는 body0이다. 게시 후 Native→Native·Host/fault는 normal1/Published4에 포함되지 않아 actual implementation과 함께 별도 exact body로 원 registry writer가 등록한다. D는 새 VM/controller/동일 Cargo 요청을 만들지 않는다.
-
-**현행 실행 목록 정정 · 2026-11-20.** 위 누락은 당시 `published-attach` 계획의 기록이다. `published-current-20261115/guest-published-suites.py`의 현행 plan은 같은 검증된 설치 환경에서 `native-installed-forward-rollback-forward-process-owner`, AST Head 및 postpublication을 실행하도록 연결돼 있다. retained plan에는 History FULL/DELTA도 있다. 기존 suite를 그대로 인수한다. paired Native Q와 서명 설치 산출물이 아직 없으며 정상 rollback·restore-forward 실제 본문은 **NOT_RUN**이다.
+The original owner split required actual producer/store/reader/join custody for
+ordinary and Watch ACK loss. Registration, static source checks or a synthetic
+fixture were not the installed normal/postpublication witness. The current
+producer-consumer boundary is [D1–D3](#d-current-disposition-20261116).
 
 <a id="d-source-pipeline-code-intake-20261115"></a>
 ### Source 저장·대여·Q 소비 실제 연결 · 2026-11-15
 
-F는 Q pure join과 S DTO/store/strict codec/signed reader를 D의 기존 idle writer에 exact loan했고, SDK actual producer·ingress·generic Preparing·immutable phase propagation은 기존 Source 추적 worker 한 명에게 별도 loan했다. 원 F는 공용 계약/부모·Cargo/registry와 무거운 QBC/설치 큐를 유지한다. 같은 파일/함수의 두 writer를 만들지 않는다.
-
-**VERIFIED — Q pure join 기능6건.** 최종 Q join SHA `076651c2f7b8aa3c303a7672f6f7d57091270a2d7f3cca20b59c1fb7ae7415d3`, F wire `e860e40417632e7a86813b316b1fa0aa5b980407c6819da732ab4d62d4ddf94b`에서 Root nextest `3f4f8817-1976-4ce9-ae9a-eb2dd64a8851`가 contract `--features quanta-native-identity-v1 --lib`의 새 ordinary4건+기존 CE2건을 실행해 6/6 PASS, skipped417, exit0이었다. 이전5건 run `ca385dfe-98c6-40d6-92c5-0f48bfa47277`은 해당 이전 입력 결과로 보존한다. current는 canonical transition으로 선택하고 같은 pointer/다른 transition 충돌을 거절한다. physical Source+snapshot을 공유하는 별도 역사 transition/pointer를 heuristic matching-count로 거절하지 않는다. ordinary를 CE PendingStoreSdkAck로 위조하지 않고 `current_legacy_ordinary_source_binding_v1()`로 빌린다. 이6건은 S production/installed proof가 아니다.
-
-**S 저장·signed API는 실제 코드에 있다 — Rust body NOT_RUN.** V9 `ordinary_source_binding_v1()`은 같은 Q canonical type을 재사용한다. strict/admitted sixth field, Native mix/invalid tuple/snapshot parity, phase CAS immutable metadata, pending→V9 exact retry equality가 구현됐다. `NativeCutoverInspectionBirthV1::with_signed_current_ordinary_source_binding_v1(keeper, actual_manifest, actual_pointer_digest, actual_snapshot, callback)`은 완료된 Source/Output census의 unique Acked/Cleaned row에서만 원 Replay와 tuple을 대여한다. 부재는 None, unfinished/foreign/partial/ambiguous는 Err이며 FreshSdk에서 tuple을 만들지 않는다.
-
-**D projector와 Q 수신은 실제 새 API를 소비한다 — Rust body NOT_RUN.** S `evidence_file_v1.rs`는 current pending ACK가 없을 때 새 signed ordinary API를 호출하고 그 Replay loan 안에서 기존 `read_current_legacy_v1`으로 원 V5 Q receipt/activation·RepoMap을 읽는다. Replay→FD6는 persisted getter의 `.copied()`만 사용한다. Q `facts.rs`는 네 축을 fresh SDK에 대조하고 ordinary/CE current 충돌을 거절한다. `restore_forward.rs`와 parent `native_boot.rs::verify_legacy_publication_v1`은 검증된 ordinary 또는 CE 결합을 받아 기존 held Legacy 물리 검증기로 전달한다.
-
-**VERIFIED — Q 수신 4축 거절1건.** D는 F의 반환된 실행권으로 기존 `test-workspace-lane`에서 `./scripts/cargow nextest run --locked --offline -p quanta-index-searchd-runtime --lib --no-default-features -E 'test(ordinary_source_binding_requires_all_four_fresh_source_axes)' --no-tests=fail --test-threads=1`을 실행했다. nextest `31b7c383-006d-4707-9f6c-e90d1bf2420a`:1run/1PASS/640skip/exit0, compile1m54s·body0.022s·resource lock 반환. 이는 Mac의 수신 순수 검증이며 Linux-only held-old-root·설치 복구 본문은 포함하지 않는다.
-
-**BLOCKED — S owning 실행 입장.** 정확한 `indexing::admitted_decode_v3::policy_tests_v3::ordinary_source_binding_uses_recursive_native_replay_decoder_v1`를 `quanta-contract-retrieval.no-default.6d9c579a784c`/기존 warm lane `worktree-heavy-semantica-codegraph-v2-d0b8b5a985ea`로 resolve한 뒤 실제 owner run을 시도했으나 host `compile-activity-admission.lock` exclusive contention으로 exit75/body0이었다. actual holder는 기존 C1 Linux supplier controller이며 종료하거나 lock을 우회하지 않았다. 재개 대기 요청은 Q와 중간에 중첩 실행되지 않도록 D 자신의 PID54580만 SIGINT로 닫아 exit130/body0을 확인했다. Source7·signed normal1은 아직 실행 성공이 아니다.
-
-**D 이전 Native 물리 관측과 실제 Source 행 대조를 연결했다 — authorization 아님.** private `restore_forward/held_previous_native_v1.rs`는 선택된 config digest·BOOT·root nonce와 실제 current Catalog head를 별도 held authority/lease로 검증·재검사한다. parsed config와 복제된 command DATA는 grant와 함께 보유해 먼저 drop된다. 새 `observe_signed_source_rows_v1`는 Q의 실제 전체 Published census와 이미 canonical join된 Source 예약·완료 V9를 operation key/root nonce/request object hash 기준으로 양방향 대조하고 BOOT·마지막 Source event·실제 head 및 전체 count를 확인한다. AST를 lexical로 재해석하지 않는다. fresh FULL과 old 마지막 Source의 완료 pointer 관계는 아직 별도 필요한 입력이므로 Native/Host 게시 거절을 유지한다. 이 D 소비 body는 **NOT_RUN**이다.
-
-**VERIFIED — Q Catalog census4건.** F Root nextest `42e3f4ea-57bd-429e-8746-8f78065e52db`는 `source_root_publication_census_visits_actual_middle_row_and_refuses_orphan`, ingress/pending operation/work 거절, foreign workspace 거절, actual head의 다른 view terminal 거절을 실제 실행해4/4 PASS, skipped382, exit0이었다. compile33.89s·body0.899s·실행권 반환을 확인했다. 같은 admitted txn에서 full quiescence 후 실제 행을 빌리며 callback의 임시 관측은 최종 close/input 재검사까지 성공해야만 완전하다. 이4건은 S signed Source join/D 소비/설치 proof가 아니며 동일 입력을 중복 제출하지 않는다.
-
-**Host 정산의 실제 남은 경계.** `intents-v1`의 canonical content-addressed records를 EOF까지 유계 조회하는 원장 reader와5개 회귀는 코드에 있다. 다만 기존 retained Watch loader의 typed serde batch/문자열·canonical 재직렬화는 Original별 allocation 승인이 없으므로 아직 signed observation으로 노출하지 않는다. 임의 `encoded_len×8` grant 초안과 기존 arbitrary-digest manifest reader를 복제한 초안은 제거했다. 기존 paid JSON tree/원 canonical typed decoder를 재사용할 승인 경계를 보완한 뒤, 원 manifest Birth의 ancestry·completion pointer/participant closeout·Watch idempotency hash+verified batch로 원 Q OperationKey를 조인해야 한다. live Host echo·GC된 Host 누락·Watch 밖 reconciliation ID를 성공 근거로 사용하지 않는다.
-
-**최초 Legacy 발행의 ordering 결손은 코드에서 수리했다 — Rust body NOT_RUN.** 첫 plain Legacy Attach→SymbolSearch와 뒤 Native cold candidate 프로세스는 별개다. 기존 actual initial baseline publisher가 Source pointer를 CAS/visible readback한 뒤 receipt를 발급하지만 host는 그보다 먼저 stage돼 fresh no-pointer를 None으로 보유했던 문제다. baseline receipt는 그 CAS의 pointer와 기존 manifest issuer의 scalar axes를 보존하고 manifest/intent/source/snapshot/genesis를 대조한다. SDK는 동일 RepoState의 repo path·ID·revision과 staged request를 exact 비교한 뒤, 동일 runtime의 receipt로 첫 V9 전 같은 staged-host Arc에 capture-once로 결속한다. 발급과 결속은 같은 Mutex를 사용하며 host 누락·poison·발급 후 결속은 거절한다. V9는 원 값만 immutable 운반한다. Recovered authority constructor는 내부로 제한하고 이미 읽은 manifest의 target/predecessor를 pointer와 대조했다. 새 issuer/store/read·재stage·후발 tuple 보완·임의 digest는 없다. actual baseline1·contract2·runtime4는 F 단일 owning 큐에 인계했으며 normal Linux body와 게시 후 복구는 여전히 **NOT_RUN/BLOCKED**다.
+Q pure join and S typed DTO/store/reader were integrated on their recorded
+cohorts. The Host intent and Watch payload still required Original-funded
+retention and actual S/Q execution. Historical body counts are recoverable
+from the [original preimage](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### 이전 분해 목록 · 현재 세 패킷에 통합
 
-현재 **확정된 Legacy Source의 cold 후보 FULL**의 genuine seed·retained Java inventory·pin→Original graph helper→RepoState 게시 전 bootstrap은 코드에 연결됐다. 아래 여섯 행은 이전 분해와 인수 경계를 보존한 기록이다. 현재 실행 목록은 위 D1–D3이며, 이미 연결된 Caller·초기 ACK·normal1을 새 구현으로 재배정하지 않는다. fresh Source 생성/Attach를 committed candidate의 선행 조건으로 확대하지 않는다.
-
-| 패킷 | 실제 변경 또는 실행 | 기존 담당과 선행 입력 | 완료 조건 |
-| --- | --- | --- | --- |
-| 후보 FULL · cold graph | 실제 caller 연결됨·통합 검증 대기. 같은 committed Source를 복원하고 inventory 생산 종료 뒤 graph를 파생·Source/Output 종료 후 seed 설치 | 기존 backend·SDK hunk 반영. Source 재수집·새 generation·ordinary graph 덮어쓰기 없음 | exact module/edge·issuer, live 변경 불변, missing/foreign 거절과 현재 owning/installed 본문 |
-| 후보 FULL · Java DFG 회귀 | 반영된 Java actual/typed-empty visitor와 ingress를 재사용하고 누락된 owner oracle·현재 FULL 본문 검증 | 기존 Runtime-analysis 오너의 정확한 regression hunk, F의 원 owning 큐. 새 producer/bank/visitor 구현 없음 | zero/nonzero callsite·direct/virtual edge, wrong Original/foreign site 거절. 임의 None을 empty 성공으로 바꾸지 않음 |
-| REQ-03C · 초기 ACK 공동 변경 | 인증된 초기 Source 관계를 V9 Preparing/ACK/retry에 저장하고 signed reader→FD6→Q ordinary join까지 같은 계약으로 변경 | 기존 초기 Source 오너·03C·wire 오너. D는 receiver 소비, F는 공용 mount 통합 | 첫 ordinary 양성, tuple 누락/foreign/중복 거절, 세 durable 전이 사이 중단과 동일 작업 정산 |
-| REQ-03D · 정상 복구 연결·검증 | 반영된 cycle·ACK-loss/reconciliation·readback·등록 selector를 재사용하고 실제 03C signed reader→FD6를 연결. Q-only 성공 oracle은 실제 지원 경계와 대조 | D 설치/CLI 단독 hunk, F signed bundle/원 큐. fixture 재작성·중복 등록 없음 | 최초 요청 Applied·같은 요청 Reconciled/재게시0·선택 inode/attribute·검색·재시작 gold의 실제 본문 |
-| REQ-03B/03C · 게시 후 복구 | 이전 Q head↔새 FULL replay coverage와 Host ordinal별 Source 정산을 공급하고 기존 Native receiver 검증 확장 | 기존 Source/Caller·Host 오너 공급, D/F 소비. 계약 설계는 독립 진행, 최종 process 수용은 정상 fixture 뒤 실행 | baseline 이후 rollback 거절, fresh restore-forward/replay와 갱신 유실0·중복 논리 게시0 |
-| owning·signed process·P11 | 현재 변경분의 좁은 owning 회귀, 같은 S/Q 서명 묶음, 정상·게시 후·ACK-loss/late-stop·재시작 process 실행 | 기존 F/Root supplier·검증 큐 재사용. 정식 P11은 원 observer/설치 target 입력 별도 결속 | 현재 source/target의 nonzero 필수 본문과 원 oracle 충족, 각 scope별 결과 기록 |
-
-Java V7 cold reader·retained FULL batch/preseed·FULL dispatch/packet, Q producer 호출·terminal·guard/FD·RepoMap 검증·단일 CAS/fsync publisher·reconciliation은 재사용한다. cold 후보의 retained Java inventory·seed/pin→graph helper→RepoState 연결과 아래 2026-11-15 체크포인트의 P2 원인 전파·회귀 코드는 반영됐다. 잔여는 현재 source의 Rust 타입·동작 검증과 미커버 통합/fault 본문이다. fresh Original Java Store/mixed Attach의 결손은 초기 Source 생성 경로의 별도 문제다. 유효한 committed Source를 다시 생성·수집하거나 그 초기 경로의 수리를 cold 후보의 선행 조건으로 요구하지 않는다. 기존 복구 fixture의 Source 공급자가 신규 Original Attach를 사용하는 경우에만 해당 생성 오너가 그 분기를 보완한다. Original 종료 뒤 정산 불능도 기존 exact fault가 재현될 때만 해당 owner의 보존 계약을 보완한다.
-
-이 채팅의 P07 Rust·공개 Published 입력과 Root 실행은 [F 최종 실행 패킷](NC-F-integration.md#p07-final-actions-20261115)에 통합했다. 후속 관련 12파일 대조에서 SDK R5는 Main과 2파일, Published는 5파일이 다르다. Runtime restart 18파일은 포맷 정규화 후 동일하다. 입력 인수와 아래 D의 실제 코드 잔여를 구분하며 이미 있는 Java FULL·Legacy direct terminal·publisher를 재구현하지 않는다.
+The old six-row split is superseded by D1–D3. Do not reassign already mounted
+Java V7 cold reader, FULL dispatch/packet, Q terminal/FD receiver or single
+CAS/fsync publisher from those rows.
 
 ### 단일 계약과 수정 경계
 
-현재 제품의 producer·reader·FD6 encoder/decoder·join을 같은 계약으로 변경한다. 필요한 persisted/wire 형식 변경은 원 오너가 해당 signed SQL worker·query 등록·canonical encoding·bounded scan·sort/range·원가 계산·golden과 함께 반영한다. 구형 형식·부분 tuple은 typed refusal로 종료하고, 초기 ordinary/Watch/SDK의 실제 입력 종류는 하나의 canonical representation에서 구분한다. 개발 fixture는 그 현재 형식으로 생성한다. 이번 패킷의 구현 범위에 구형 decoder·upcaster·dual write·자동 fallback을 추가하는 작업은 없다.
-
-rollback이 사용하는 보존된 이전 릴리스의 Legacy root·원 영수증은 복구 대상 데이터다. 현재 작업의 first-before 문서·파일 version·publication attribute·원 terminal도 해당 operation의 신원 검증 입력이다. 이 계약을 현재 producer/consumer와 함께 유지한다. 원 Legacy 물리 검증기와 이미 구현된 Native publisher를 재사용한다.
-
-| 수정 단위 | 기존 공급/작성 경계 | 직접 소비자와 인수 조건 |
-| --- | --- | --- |
-| cold graph 오류·회귀 마감 | 연결된 Caller·backend builder 재사용. `cold_full_v11.rs`의 candidate helper 실패 처리만 보완 | 실제 연결을 재작성하지 않고 선택된 Source/query/request 원인을 보존. mixed 성공·거절·환급을 기존 회귀에서 검증 |
-| Java DFG 회귀 | 기존 Runtime-analysis 오너의 직접 regression hunk | 반영된 visitor/ingress와 기존 bank·Args·FULL dispatch를 검증. source-only를 runtime 수용으로 승격하지 않음 |
-| 초기 Source→V9 저장·signed read | 기존 초기 게시 생산자·03C의 ingress, Preparing/Terminal/Acked, store/worker·snapshot reader | 실제 Source pointer와 V9/terminal exact identity를 원 오너가 함께 전달 |
-| FD6 초기 association | 기존 wire/encoder 오너의 Source fact·CLI projection·canonical codec | Q decode와 03C Source join을 같은 변경으로 인수. D가 연결된 receiver를 소비 |
-| 정상/장애 fixture | 기존 CLI-server process fixture 오너의 setup·lifecycle·suite inventory | F/Root가 같은 installed candidate·정확한 본문을 실행 |
-| coverage와 게시 | Host/03C/Caller의 event·replay association, D의 인수된 receiver/publisher hunk | F가 공용 CLI/bin/Cargo·서명 설치 묶음에 통합 |
+Persisted/wire tuple changes require the producer, reader, FD6 codec,
+canonical ordering, bounded admission, gold and old-format typed refusal to
+move together. Keep one writer for shared parent/CLI/Cargo surfaces.
 
 ### 경계별 구현 판정
 
-`구현됨`은 현재 소스의 해당 기능을 재사용한다는 뜻이다. 현재 설치 제품의 실행 수용은 별도로 판정한다. `연결만`은 생산자 출력·소비자 입력·영속 수명까지 맞고 호출만 빠진 경우에 적용한다. 아래 신규 범위는 기존 오너 안의 adapter·인증 관계·검증 시나리오다.
-
-| 범위 | 판정 | 현재 있는 것과 최소 남은 변경 |
-| --- | --- | --- |
-| Q 후보 FULL/BOOT 준비 | 구현됨·현재 제품 검증 대기 | 실제 S producer 호출·handoff·Q drain/join·clean-drain·BOOT·retry 재사용. 현재 S 후보 FULL의 양성 생산과 signed process 실행 필요 |
-| Java cold HIR | 구현·candidate 연결 있음, 동작 검증 대기 | manifest-named paid V7 child·retained FULL batch·preseed 설치 재사용. HIR는 artifact CAS에서 복원하고 ImportGraph는 같은 committed Source의 canonical parser/inventory 생산을 별도로 재사용한다. Source 재수집·새 generation은 발급하지 않음. 일반 OriginalColdFull poststate의 Source 재hydrate와 구분 |
-| fresh Original Java owner→Store | 현행 Store 연결·Rust 본문 NOT_RUN | `1d79f501cb5` 이후 Store가 OriginalJava payload를 retained inventory·Source receipt로 검증하고 snapshot 없이 encode한다. committed candidate는 기존 retained FULL을 복원한다. |
-| Java FULL DFG admission | 구현됨·현재 회귀 대기 | `visit_original_callsite_facts_with_v3`가 Java actual/typed-empty와 기존 Python을 처리하고 ingress가 소비. 기존 bank·Args 재사용, owning/combined FULL 본문 NOT_RUN |
-| Java synthetic initializer | 조건부·현재 후보 필수 목록 제외 | 현재 process fixture에는 static/instance initializer가 없다. 실제 수용 committed Source에 initializer가 있으면 기존 typed refusal과 paid index/callee 한계를 원 분석 오너가 먼저 해결. 현재 fixture 성공을 일반 initializer 지원으로 확대하지 않음 |
-| Q 실제 publish·activation terminal | 구현됨 | direct ordinary V9의 원본 receipt·CAS ACK·content-addressed terminal과 별도 outbox replay 재사용 |
-| REQ-03B/03D guard·helper·Q 단일 게시 | 구현됨·현재 제품 검증 대기 | Host/SDK loan·FD3–FD6·peer/image·Legacy/RepoMap 물리 검증·held-root publisher·CAS/fsync·publication attribute 재사용 |
-| fresh mixed Legacy Attach | 별도 초기 생성 결손·cold 후보 선행에서 제외 | mixed 준비 결과를 generation owner output·영속 아티팩트로 넘기는 adapter가 필요하나, 이미 확정된 mixed FULL의 candidate 복원은 기존 inventory·Java/Python partition을 재사용. 신규 Source 공급을 맡은 원 오너의 범위 |
-| cold Original ImportGraph | builder·실제 caller 연결됨·검증 대기 | `prepare_preseed_pair_v7`의 canonical Java inventory 생산 종료 뒤 `derive_retained_original_import_graph_v11`을 호출. Python-only도 같은 helper 사용. FULL pin/generation·store head·raw member digest·census와 Source/Output 종료 확인 후 RepoState 전에 설치 |
-| 초기 Source→ordinary V9 | 소스 연결됨 | 기존 executor/Source owner의 manifest·CompletionPointer·physical Source·snapshot 관계가 aggregate 발급에 들어간다. |
-| V9의 초기 binding 저장 | 소스 연결됨 | 기존 Preparing·CAS·terminal/checkpoint·Acked에서 같은 초기 binding을 보존하고 readback·exact retry에서 대조한다. |
-| signed reader | 소스 연결됨 | 기존 bounded reader가 current ordinary 관계를 선택한다. pending ACK 경로와 initial/change-event 중복 current 거절도 유지한다. |
-| FD6·Q 초기 조인 | 소스 연결됨 | FD6 `ordinary_source_binding`과 `join_mixed_legacy`가 서명된 V9의 네 축과 current Source를 대조한다. |
-| 정상 설치 복구 cycle | fixture 연결·등록됨, 실제 수용 대기 | 기존 helper pin·Legacy root·resident 재시작·normal/ACK-loss rollback·fresh restore-forward에서 nonzero 본문을 수용한다. |
-| 게시 후 Native→Native | 소스 연결됨, 실제 수용 대기 | FD6가 이전 Native Q head와 새 FULL 사이 완료 Source coverage를 전달하고 기존 held-old-Native 검증기가 양끝을 대조한다. |
-| nonempty Host 정산 | 양성·거절 fixture 연결됨, 실제 수용 대기 | 기존 suite가 미정산 거절과 수거 후 성공에 이어 같은 Native resident에서 실제 완료 Watch delivery를 FD6→Q로 보낸다. 테스트 전용 분기는 완료 terminal과 cursor ACK를 기존 저장기에 내구화한 뒤 수거를 유예한다. |
-| journal·같은 요청 reconciliation | 구현됨·한정 조건부 보완 | intent/first-before/terminal/xattr/archive 재사용. Original 종료 뒤 Source 부재로 정산 불능인 exact fault에서만 원 owner의 durable completion/evidence 보존 계약 보완 |
-| signed bundle·P11 | 기존 supplier/실행 등록의 입력·검증 잔여 | 같은 source/target/정책의 실제 번들과 nonzero process 본문, P11 observer/설치 target 결속 필요 |
-
-[Q 후보와 물리 검증](../../../../crates/quanta-index-searchd-runtime/src/native_boot.rs) · [실제 FD 수신](../../../../crates/quanta-index-searchd-runtime/src/native_recovery.rs) · [단일 선택 게시](../../../../crates/quanta-index-searchd-runtime/src/deployment_selection.rs) · [기존 복구 운영 계약](../../../operator/state-cutover-runbook.md#installed-offline-recovery)
+`구현됨` in the original table meant source presence, not same-input compiler
+or signed installation. The [current D packets](#d-current-disposition-20261116)
+and [signed closeout](../../nov-20-native-cutover-closeout/tickets/03-signed-published-cp2.md)
+own actual acceptance. [Historical matrix](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### 후보 FULL · 기존 Caller/SDK composition 오너
 

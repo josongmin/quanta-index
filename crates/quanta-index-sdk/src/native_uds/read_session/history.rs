@@ -193,6 +193,7 @@ fn validate_history_cut_reply(
     if result.session != expected.session
         || result.view != expected.view
         || result.instance != instance
+        || result.source_input.0 == Digest([0; 32])
         || result.cut.durable_epoch == quanta_index_contract::AuxEpochV1::GENESIS
         || result.cut.snapshot_digest.0 == [0; 32]
         || result.cut.replay_start.0 == [0; 32]
@@ -229,11 +230,7 @@ mod tests {
     struct NoAdmission(Arc<AtomicU64>);
 
     impl MemoryScopePort for NoAdmission {
-        fn reserve(
-            &self,
-            _bytes: u64,
-            _lifetime: MemoryLifetime,
-        ) -> Result<MemoryLease, IndexError> {
+        fn reserve(&self, _bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
             let _previous = self.0.fetch_add(1, Ordering::SeqCst);
             Err(IndexError::ResourceLimited)
         }

@@ -179,3 +179,25 @@ fn native_rejects_legacy_subroutes_before_their_local_validation() {
     ));
     assert_no_query_connection(&listener);
 }
+
+#[test]
+fn native_lower_level_text_syntaxes_keep_their_explicit_native_contracts() {
+    let (_directory, listener, client) = native_query_listener();
+    for (syntax, builder) in [
+        (
+            TextQuerySyntax::Native,
+            client.lexical().query().native("sphinx"),
+        ),
+        (
+            TextQuerySyntax::Sourcegraph,
+            client.lexical().query().sourcegraph("sphinx"),
+        ),
+    ] {
+        let error = builder
+            .pinned(sample_generation_pin())
+            .top_k(10)
+            .execute()
+            .expect_err("Native SDK must refuse the Legacy LQ text builder");
+        assert_native_query_refusal(&listener, error, LegacyQueryCapabilityV1::Text, syntax, 10);
+    }
+}

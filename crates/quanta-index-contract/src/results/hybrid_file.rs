@@ -350,12 +350,17 @@ mod tests {
             revision_id: generation.revision_id,
             manifest_generation: generation.manifest_generation,
             repo_relative_path: RepoRelativePath::new(path),
-            start_line: 1,
-            end_line: 2,
+            lines: Some(crate::LexicalLineRange {
+                start_line: 1,
+                end_line: 2,
+            }),
+            excerpt: Some(crate::LexicalMatchExcerpt {
+                snippet: String::new(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 1.0,
-            snippet: String::new(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         }
     }
 

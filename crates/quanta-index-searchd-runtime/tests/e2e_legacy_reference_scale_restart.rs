@@ -304,8 +304,18 @@ fn check_row(row: &LexicalCandidate, truth: &SourceTruth, generation: u64) -> Te
         || row.repo_id != repo()?
         || row.revision_id != revision()?
         || row.manifest_generation != ManifestGeneration::new(generation)
-        || row.start_line != 1
-        || row.end_line != *expected_lines
+        || row
+            .lines
+            .as_ref()
+            .ok_or("fixture row carries no match lines")?
+            .start_line
+            != 1
+        || row
+            .lines
+            .as_ref()
+            .ok_or("fixture row carries no match lines")?
+            .end_line
+            != *expected_lines
     {
         return Err(format!("source identity or bytes changed for {key:?}").into());
     }

@@ -102,6 +102,7 @@ impl StubQueryTransport {
             | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
+
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::Error(_) => {}
@@ -551,12 +552,17 @@ fn sample_hit() -> quanta_index_contract::LexicalCandidate {
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        start_line: 10,
-        end_line: 20,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 10,
+            end_line: 20,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "fn sample() {}".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score: 1.0,
-        snippet: "fn sample() {}".to_string(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 

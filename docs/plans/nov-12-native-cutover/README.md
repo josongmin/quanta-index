@@ -2,7 +2,7 @@
 
 이 문서는 2026-11-16 `ade5fadc1`에서 고정한 설계·수용 범위다. 현재 작업 상태와 실제 본문은 [Nov-20 통합 원장](../nov-20-native-cutover-closeout/tickets/README.md) 및 [06 퇴역 티켓](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)에서 판정한다. [E06 전환](../oct-22-finalizing/E06-sdk-service-cutover.md), [E08 통합](../oct-22-finalizing/E08-integration-release.md), [Native 구현 ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md)과 [수용 기준](DOD.md)을 함께 적용한다.
 
-[Tantivy 퇴역 계획](TANTIVY-RETIREMENT.md)은 원래의 오너 경계, 벤치와 삭제 조건을 보존한다. 코드·Cargo/lock/vendor 정리는 현재 소스에서 완료됐고, 실제 Linux 출하 빌드·설치·복구·제품 수용은 남았다. 최신 범위는 [06.3–06.5](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md)를 따른다.
+[Tantivy 퇴역 ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement)은 코드·Cargo/lock/vendor 제거를 기록한다. 실제 Linux 출하 빌드·설치·복구는 [06.4–06.5](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md), 같은 후보의 제품·벤치 수용은 [07](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md)이 소유한다.
 
 P07 Rust·공개 SDK/CLI Published의 실제 입력·검증은 [F 최종 패킷](tickets/NC-F-integration.md#p07-final-actions-20261115)을 따른다. Source/Host/Native 복구의 마감 범위와 기존 오너에서 인수할 입력은 [NC-D 잔여 패킷](tickets/NC-D-boot.md#d-current-disposition-20261116)에 있다. 초기 Source binding·cold graph/DFG·normal fixture의 완료 구현을 재사용한다. 코드 작성·Main 통합·컴파일·signed 제품 수용은 각 영수증의 범위에서 판정한다.
 
@@ -21,7 +21,7 @@ retains its original source, input and product scope.
 | Independent Native holdout | [F](tickets/NC-F-integration.md) owns the actual source roster, labels/qrels, DEV/EVAL split, SDK/daemon capture and signed release/config/policy binding. A source-only roster or replay fixture is not evaluation. Preserve the [original sample/quality/statistical gates](DOD.md#독립-홀드아웃-실행과-판정) |
 | Native caller and installed recovery | Source/V9/FD6/Q, Initial/Watch ancestry, typed RepoMap and Host travel through the existing producer and receiver. [D1-D3](tickets/NC-D-boot.md#current-work-packets-20261115) owns signed normal rollback, fresh restore-forward and postpublication acceptance. The [F queue](tickets/NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16) records current static proof and the signed fixture for a settled nonempty Host delivery. |
 | Legacy History migration | Reuse the [History ADR](../../adr/NOV-12-001-native-query-and-semantic-engine.md#legacy-history-replay-during-cutover) for exact inventory preflight, multi-generation FULL, retained replay and checkpoint handoff. [H](tickets/NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit) owns History replay, the successor and lost-ACK cases. [D](tickets/NC-D-boot.md) and the Q Source/RepoMap owners own preservation of sibling active SearchCorpus and RepoMap heads. [F](tickets/NC-F-integration.md) owns the signed installed run |
-| Shipping engine retirement | [06.2–06.3](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) owns completed source/feature/dependency/lock/vendor removal. [06.4–06.5](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) requires the actual Linux release, signed bundle and installed recovery. Preserve the prior external old-Q comparison pair and recovery-only physical verifier. |
+| Shipping engine retirement | [06.2–06.3](../../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement) owns completed source/feature/dependency/lock/vendor removal. [06.4–06.5](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) requires the actual Linux release, signed bundle and installed recovery. Preserve the prior external old-Q comparison pair and recovery-only physical verifier. |
 
 ## 종료 범위
 
@@ -69,7 +69,7 @@ rollback은 등록 action, 승인 Linux 대상과 독립 observer로 수용한�
 
 ## 실행 순서
 
-아래는 전체 Native 단일 엔진 수용 순서다. 이번 Tantivy 작업의 중간 릴리스에는 [Tantivy 우선 실행 순서](TANTIVY-RETIREMENT.md#실행-순서와-담당)를 적용한다.
+아래는 전체 Native 단일 엔진 수용 순서다. Tantivy 퇴역 후보는 [현행 합류·수용 순서](../nov-20-native-cutover-closeout/tickets/LANES.md#현행-구현과-수용-순서)를 적용한다.
 
 1. **Freeze functionality and inputs.** Existing producer/caller owners reuse the accepted Query contracts and enumerate actual SDK, CLI, API/MCP and benchmark behavior, permissions, filters and results. F preserves the previous signed Legacy comparison/recovery pair and freezes equivalent inputs, hardware, budgets and independent evaluation rules.
 2. **출하 후보 구성.** 완료된 Legacy 엔진·Cargo 정리를 인수하고 A/B/C의 조회·ANN·공개 wire와 D의 daemon·launcher를 같은 후보에 결속한다. Native Semantic의 LanceDB 등록과 실제 release recipe의 의존성·번들을 확인한 뒤 후보를 동결한다. [퇴역 체크리스트](DOD.md#최종-제거-및-증거-체크리스트)

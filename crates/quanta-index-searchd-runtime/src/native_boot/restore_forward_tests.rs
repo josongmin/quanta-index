@@ -282,21 +282,18 @@ fn select_native_fixture_with_registry_v1(
 
 #[cfg(target_os = "linux")]
 fn probe_previous_native_v1(
-    current: &PreparedNativeFixture,
-    candidate: &PreparedNativeFixture,
+    current_base: &Path,
+    candidate_config: &ValidatedConfig,
+    candidate_wire: &[u8],
     current_wire: &[u8],
     check: impl FnOnce(
         &crate::deployment_selection::DeploymentSelectionDocumentV1,
         &mut quanta_index_core::index::WorkBudget,
     ) -> TestResult,
 ) -> TestResult {
-    let selection = current.base.join("previous-native-selection.json");
-    let next = current.base.join("fresh-native-candidate.json");
-    let candidate_wire = selected_native_wire_v1(candidate)?;
-    for (path, wire) in [
-        (&selection, current_wire),
-        (&next, candidate_wire.as_slice()),
-    ] {
+    let selection = current_base.join("previous-native-selection.json");
+    let next = current_base.join("fresh-native-candidate.json");
+    for (path, wire) in [(&selection, current_wire), (&next, candidate_wire)] {
         fs::write(path, wire)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
@@ -305,12 +302,12 @@ fn probe_previous_native_v1(
         selection_path_v1: &selection,
         expected_current_sha256_v1: Digest(Sha256::digest(current_wire).into()),
         candidate_path_v1: &next,
-        expected_candidate_sha256_v1: Digest(Sha256::digest(&candidate_wire).into()),
+        expected_candidate_sha256_v1: Digest(Sha256::digest(candidate_wire).into()),
         mode_v1: DeploymentRecoveryModeV1::RestoreForward,
     };
     let mut observed = None;
     let attempt =
-        boot::with_admitted_control_budget(&candidate.config, request(), false, |budget, _| {
+        boot::with_admitted_control_budget(candidate_config, request(), false, |budget, _| {
             Ok(with_locked_deployment_selection_v1(
                 &request_v1,
                 budget,
@@ -338,53 +335,277 @@ fn probe_previous_native_v1(
     )
 }
 
-#[test]
 #[cfg(target_os = "linux")]
-fn held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> TestResult {
-    let mut old = prepare_native_fixture()?;
-    let mut fresh = prepare_native_fixture()?;
-    let old_live = old
-        .client
-        .observe_root_view(ViewSelection::Exact(old.native_view), &request())?;
-    old.running.stop()?;
-    fresh.running.stop()?;
-    select_native_fixture_v1(&old)?;
-    select_native_fixture_v1(&fresh)?;
-    let correct = selected_native_wire_v1(&old)?;
-    probe_previous_native_v1(&old, &fresh, &correct, |selected, budget| {
-        let held = boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget)?;
+#[test]
+#[ignore = "requires an enforced Linux XFS project and its privileged verifier socket"]
+fn stock_held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> TestResult {
+    let project = PathBuf::from(
+        std::env::var_os("QIDX_NATIVE_XFS_TEST_PARENT").ok_or("XFS project parent absent")?,
+    )
+    .canonicalize()?;
+    if let Some(phase) = std::env::var_os(STOCK_REEXEC_PHASE) {
+        let parent = PathBuf::from(
+            std::env::var_os(STOCK_REEXEC_PARENT).ok_or("stock phase parent absent")?,
+        )
+        .canonicalize()?;
         require(
-            Digest(held.observed_v1().snapshot.root_nonce) == old_live.root_nonce
-                && held.observed_v1().current_head == old_live.view,
-            "previous Native nonce or actual Catalog head differs from live Q",
+            parent.starts_with(&project),
+            "stock phase parent escaped the XFS project",
         )?;
-        let mut unexpected_history = false;
-        let count = held.visit_history_members_v1(None, budget, |_, _, _, _| {
-            unexpected_history = true;
-            Ok(())
-        })?;
+        return stock_previous_native_phase(&parent, phase.to_str().ok_or("phase is not UTF-8")?);
+    }
+    let parent = tempfile::Builder::new()
+        .prefix("qrf-stock-previous-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(&project)?;
+    for phase in [
+        "prepare-old",
+        "prepare-fresh",
+        "probe-before",
+        "pending-old",
+        "probe-after",
+    ] {
+        stock_previous_native_child(parent.path(), phase)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+const STOCK_REEXEC_PHASE: &str = "QIDX_STOCK_PREVIOUS_REEXEC_PHASE";
+#[cfg(target_os = "linux")]
+const STOCK_REEXEC_PARENT: &str = "QIDX_STOCK_PREVIOUS_REEXEC_PARENT";
+#[cfg(target_os = "linux")]
+const STOCK_PREVIOUS_EXACT: &str = "native_product::boot::legacy_candidate_tests::restore_forward_tests::stock_held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1";
+
+#[cfg(target_os = "linux")]
+fn stock_previous_native_child(parent: &Path, phase: &str) -> TestResult {
+    let label = if phase == "prepare-fresh" {
+        "fresh"
+    } else {
+        "old"
+    };
+    let sqlite_temp = parent
+        .join(label)
+        .join("native")
+        .join(quanta_index_searchd::app::state_root_quota::STOCK_SQLITE_TEMP_DIR_NAME);
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            STOCK_PREVIOUS_EXACT,
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(STOCK_REEXEC_PHASE, phase)
+        .env(STOCK_REEXEC_PARENT, parent)
+        .env("SQLITE_TMPDIR", sqlite_temp)
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        || !stdout.contains("running 1 test")
+        || !stdout.contains("test result: ok. 1 passed; 0 failed;")
+    {
+        return Err(format!(
+            "stock previous Native phase={phase} failed: status={}; stdout={stdout}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn stock_previous_native_prepare(parent: &Path, label: &str) -> TestResult {
+    let verifier_socket = PathBuf::from(
+        std::env::var_os("QIDX_NATIVE_XFS_VERIFIER_SOCKET").ok_or("XFS verifier socket absent")?,
+    );
+    let quota = serde_json::json!({
+        "verifier_socket": verifier_socket,
+        "project_id": std::env::var("QIDX_NATIVE_XFS_PROJECT_ID")?.parse::<u32>()?,
+        "hard_bytes": std::env::var("QIDX_NATIVE_XFS_HARD_BYTES")?.parse::<u64>()?,
+        "hard_inodes": std::env::var("QIDX_NATIVE_XFS_HARD_INODES")?.parse::<u64>()?,
+    });
+    let temp = tempfile::Builder::new()
+        .prefix(label)
+        .rand_bytes(0)
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(parent)?;
+    let mut fixture = prepare_native_fixture_in(temp, |root, configuration| {
+        fs::create_dir(root)?;
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+        // Stock admission opens the installer-provisioned lock.
+        drop(StateRootLease::acquire(root)?);
+        let sqlite_temp =
+            root.join(quanta_index_searchd::app::state_root_quota::STOCK_SQLITE_TEMP_DIR_NAME);
+        fs::create_dir(&sqlite_temp)?;
+        fs::set_permissions(&sqlite_temp, fs::Permissions::from_mode(0o700))?;
         require(
-            count == 0 && !unexpected_history,
-            "Source-only previous Native root exposed a History member",
+            std::env::var_os("SQLITE_TMPDIR").as_deref() == Some(sqlite_temp.as_os_str()),
+            "child SQLITE_TMPDIR differs from its stock quota root",
         )?;
-        held.require_current_and_retired_v1(budget)?;
-        let config_bytes = fs::read(&old.config_path)?;
-        fs::write(&old.config_path, [config_bytes.as_slice(), b" "].concat())?;
-        let stale = held.require_current_and_retired_v1(budget);
-        fs::write(&old.config_path, config_bytes)?;
-        require(
-            stale.is_err(),
-            "changed selected config passed pinned digest",
-        )?;
-        let moved = old.root.with_extension("held-original");
-        fs::rename(&old.root, &moved)?;
-        fs::create_dir(&old.root)?;
-        fs::set_permissions(&old.root, fs::Permissions::from_mode(0o700))?;
-        let replaced = held.require_current_and_retired_v1(budget);
-        fs::remove_dir(&old.root)?;
-        fs::rename(&moved, &old.root)?;
-        require(replaced.is_err(), "replaced named root passed held lease")
+        configuration["resources"]["scratch_reserved_bytes"] = serde_json::json!(1_u64 << 30);
+        configuration["state_root_quota"] = quota;
+        configuration["stock_sqlite_max_process_fds"] = serde_json::json!(4096);
+        Ok(())
     })?;
+    require(
+        fixture.config.uses_stock_sqlite(),
+        "fixture did not select stock SQLite",
+    )?;
+    let live = fixture
+        .client
+        .observe_root_view(ViewSelection::Exact(fixture.native_view), &request())?;
+    fixture.running.stop()?;
+    select_native_fixture_v1(&fixture)?;
+    fs::write(
+        fixture.base.join("selected-wire.json"),
+        selected_native_wire_v1(&fixture)?,
+    )?;
+    fs::write(
+        fixture.base.join("live-view.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "root_nonce": hex(live.root_nonce),
+            "view": stock_previous_view_wire(&live.view),
+        }))?,
+    )?;
+    // The outer exact test owns this private project subtree and removes it
+    // after all child phases. Preserve the selected roots across reexec.
+    let _persisted = fixture._temp.keep();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn stock_previous_view_wire(view: &quanta_index_contract::index::CatalogView) -> serde_json::Value {
+    serde_json::json!({
+        "identity": view.identity,
+        "profile": view.profile,
+        "source": view.source,
+        "projections": view.projections,
+        "members": view.members,
+        "coverage": view.coverage,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn stock_previous_native_phase(parent: &Path, phase: &str) -> TestResult {
+    match phase {
+        "prepare-old" => stock_previous_native_prepare(parent, "old"),
+        "prepare-fresh" => stock_previous_native_prepare(parent, "fresh"),
+        "probe-before" => stock_previous_native_probe(parent, false),
+        "probe-after" => stock_previous_native_probe(parent, true),
+        "pending-old" => {
+            let old = parent.join("old");
+            let config_path = old.join("native.json");
+            let config_bytes = fs::read(&config_path)?;
+            let config_digest = Digest(Sha256::digest(&config_bytes).into());
+            let config = read_config_checked(&config_path, Some(config_digest))?;
+            let authority = prepare_unselected_authority(&config, &request())?;
+            boot::refuse_plain_serve_on_selected_boot_v2(&authority, &config, &request())?;
+            let service = bind(
+                &config,
+                config_digest,
+                compose(&config)?,
+                authority,
+                &request(),
+                false,
+            )?;
+            let shutdown = service.shutdown_handle();
+            let running = thread::Builder::new()
+                .name("previous-native-pending".into())
+                .spawn(move || service.run(Duration::from_millis(10)))?;
+            let client = NativeUdsClient::new(old.join("native.sock"));
+            let _pending = client.begin_input(operation(3), &request())?;
+            shutdown.trigger();
+            running
+                .join()
+                .map_err(|_| "pending Native service panicked")??;
+            Ok(())
+        }
+        _ => Err("unexpected stock previous Native child phase".into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stock_previous_native_probe(parent: &Path, after_pending: bool) -> TestResult {
+    let old = parent.join("old");
+    let fresh = parent.join("fresh");
+    let correct = fs::read(old.join("selected-wire.json"))?;
+    let candidate_wire = fs::read(fresh.join("selected-wire.json"))?;
+    let config_path = fresh.join("native.json");
+    let config_bytes = fs::read(&config_path)?;
+    let candidate_config = read_config_checked(
+        &config_path,
+        Some(Digest(Sha256::digest(&config_bytes).into())),
+    )?;
+    if after_pending {
+        return probe_previous_native_v1(
+            &old,
+            &candidate_config,
+            &candidate_wire,
+            &correct,
+            |selected, budget| {
+                require(
+                    boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget)
+                        .is_err(),
+                    "unsettled previous Native ingress passed held-root quiescence",
+                )
+            },
+        );
+    }
+    let old_live: serde_json::Value =
+        serde_json::from_slice(&fs::read(old.join("live-view.json"))?)?;
+    probe_previous_native_v1(
+        &old,
+        &candidate_config,
+        &candidate_wire,
+        &correct,
+        |selected, budget| {
+            let held = boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget)?;
+            let observed_nonce = hex(Digest(held.observed_v1().snapshot.root_nonce));
+            let observed_view = stock_previous_view_wire(&held.observed_v1().current_head);
+            require(
+                old_live
+                    .get("root_nonce")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(observed_nonce.as_str())
+                    && old_live.get("view") == Some(&observed_view),
+                "previous Native nonce or actual Catalog head differs from live Q",
+            )?;
+            let mut unexpected_history = false;
+            let count = held
+                .visit_history_members_v1(None, budget, |_, _, _, _| {
+                    unexpected_history = true;
+                    Ok(())
+                })
+                .map_err(|cause| {
+                    anyhow!("stock previous Native History visit: {cause}; {budget:?}")
+                })?;
+            require(
+                count == 0 && !unexpected_history,
+                "Source-only previous Native root exposed a History member",
+            )?;
+            held.require_current_and_retired_v1(budget)?;
+            let old_config_path = old.join("native.json");
+            let config_bytes = fs::read(&old_config_path)?;
+            fs::write(&old_config_path, [config_bytes.as_slice(), b" "].concat())?;
+            let stale = held.require_current_and_retired_v1(budget);
+            fs::write(&old_config_path, config_bytes)?;
+            require(
+                stale.is_err(),
+                "changed selected config passed pinned digest",
+            )?;
+            let old_root = old.join("native");
+            let moved = old_root.with_extension("held-original");
+            fs::rename(&old_root, &moved)?;
+            fs::create_dir(&old_root)?;
+            fs::set_permissions(&old_root, fs::Permissions::from_mode(0o700))?;
+            let replaced = held.require_current_and_retired_v1(budget);
+            fs::remove_dir(&old_root)?;
+            fs::rename(&moved, &old_root)?;
+            require(replaced.is_err(), "replaced named root passed held lease")
+        },
+    )?;
     let mut wrong: serde_json::Value = serde_json::from_slice(&correct)?;
     let mut nonce = wrong["native_boot_receipt"]["root_nonce_hex"]
         .as_str()
@@ -395,35 +616,18 @@ fn held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> T
     wrong["native_boot_receipt"]["root_nonce_hex"] = serde_json::json!(String::from_utf8(nonce)?);
     let mut wrong = serde_json::to_vec(&wrong)?;
     wrong.push(b'\n');
-    probe_previous_native_v1(&old, &fresh, &wrong, |selected, budget| {
-        require(
-            boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget).is_err(),
-            "foreign selected BOOT nonce authenticated actual root",
-        )
-    })?;
-    let service = bind(
-        &old.config,
-        old.config_digest,
-        compose(&old.config)?,
-        None,
-        &request(),
-        false,
-    )?;
-    let shutdown = service.shutdown_handle();
-    let running = thread::Builder::new()
-        .name("previous-native-pending".into())
-        .spawn(move || service.run(Duration::from_millis(10)))?;
-    let _pending = old.client.begin_input(operation(3), &request())?;
-    shutdown.trigger();
-    running
-        .join()
-        .map_err(|_| "pending Native service panicked")??;
-    probe_previous_native_v1(&old, &fresh, &correct, |selected, budget| {
-        require(
-            boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget).is_err(),
-            "unsettled previous Native ingress passed held-root quiescence",
-        )
-    })
+    probe_previous_native_v1(
+        &old,
+        &candidate_config,
+        &candidate_wire,
+        &wrong,
+        |selected, budget| {
+            require(
+                boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget).is_err(),
+                "foreign selected BOOT nonce authenticated actual root",
+            )
+        },
+    )
 }
 
 #[test]
@@ -436,11 +640,24 @@ fn retained_v20_tree_boot_supports_selected_serve_but_not_a_current_candidate() 
     select_native_fixture_with_registry_v1(&old, retained_tree_v20_registry(&old.config)?)?;
     select_native_fixture_v1(&fresh)?;
     let old_wire = selected_native_wire_v1(&old)?;
-    probe_previous_native_v1(&old, &fresh, &old_wire, |selected, budget| {
-        let held = boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget)?;
-        held.require_current_and_retired_v1(budget)?;
-        Ok(())
-    })?;
+    let fresh_wire = selected_native_wire_v1(&fresh)?;
+    probe_previous_native_v1(
+        &old.base,
+        &fresh.config,
+        &fresh_wire,
+        &old_wire,
+        |selected, budget| {
+            require(
+                boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget).is_err(),
+                "historical Tree passed strict candidate-style BOOT",
+            )?;
+            let held = boot::restore_forward::HeldPreviousNativeV1::acquire_retained_source_v1(
+                selected, budget,
+            )?;
+            held.require_current_and_retired_v1(budget)?;
+            Ok(())
+        },
+    )?;
     let current_registry = compose_boot_registry(&old.config)?;
     boot::with_admitted_control_budget(&old.config, request(), false, |budget, _| {
         boot::with_boot_authority(&old.config, budget, |authority, budget| {
@@ -496,7 +713,7 @@ fn retained_v20_tree_boot_supports_selected_serve_but_not_a_current_candidate() 
                 selected,
                 &current_registry,
                 old.config.resources.physical.inventory.max_entries,
-                quanta_index_kernel::RetainedSourceTreePolicyV20 {
+                quanta_index_kernel::RetainedSourceTextPolicyV20 {
                     descriptor: old.config.text,
                     previous: Digest([0; 32]),
                     current: old.config.text_recipe.output_policy(),
@@ -510,6 +727,83 @@ fn retained_v20_tree_boot_supports_selected_serve_but_not_a_current_candidate() 
             Ok(())
         })
     })?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn retained_current_text_without_literal_uses_real_builder_as_previous_source_only() -> TestResult {
+    for layout in [
+        FixtureTextLayout::Tree,
+        FixtureTextLayout::SegmentedFull,
+        FixtureTextLayout::SegmentedLayered,
+    ] {
+        let mut old = prepare_native_fixture_current_text_only(layout)?;
+        let mut fresh = prepare_native_fixture_with_tree(false, false)?;
+        let old_view = old
+            .client
+            .read_view(ViewSelection::Exact(old.native_view), &request())?;
+        require(
+            old_view.source.owners.0.is_some(),
+            "current Text-only fixture did not publish eligible Source",
+        )?;
+        old.running.stop()?;
+        fresh.running.stop()?;
+        select_native_fixture_with_registry_v1(&old, current_text_only_registry(&old.config)?)?;
+        select_native_fixture_v1(&fresh)?;
+        let old_wire = selected_native_wire_v1(&old)?;
+        let fresh_wire = selected_native_wire_v1(&fresh)?;
+        probe_previous_native_v1(
+            &old.base,
+            &fresh.config,
+            &fresh_wire,
+            &old_wire,
+            |selected, budget| {
+                require(
+                    boot::restore_forward::HeldPreviousNativeV1::acquire_v1(selected, budget)
+                        .is_err(),
+                    "current Text-only profile passed strict candidate BOOT",
+                )?;
+                let held = boot::restore_forward::HeldPreviousNativeV1::acquire_retained_source_v1(
+                    selected, budget,
+                )?;
+                held.require_current_and_retired_v1(budget)?;
+                Ok(())
+            },
+        )?;
+        let current_registry = compose_boot_registry(&old.config)?;
+        boot::with_admitted_control_budget(&old.config, request(), false, |budget, _| {
+            boot::with_boot_authority(&old.config, budget, |authority, budget| {
+                let snapshot = quanta_index_catalog::verify_native_boot_catalog(
+                    &old.root,
+                    authority.io.as_ref(),
+                    budget,
+                )?;
+                let selected = snapshot
+                    .selected
+                    .as_ref()
+                    .ok_or(IndexError::SnapshotUnavailable)?;
+                for candidate in [false, true] {
+                    anyhow::ensure!(
+                        boot::authenticate(
+                            &authority,
+                            &snapshot,
+                            selected,
+                            &current_registry,
+                            old.config.resources.physical.inventory.max_entries,
+                            None,
+                            false,
+                            candidate,
+                            budget,
+                        )
+                        .is_err(),
+                        "current Text-only profile passed ordinary or candidate BOOT",
+                    );
+                }
+                Ok(())
+            })
+        })?;
+    }
     Ok(())
 }
 

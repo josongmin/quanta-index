@@ -220,14 +220,28 @@ pub fn execute_native_runtime_metadata_v1(
     let rows = page
         .results
         .into_iter()
-        .map(|row| NativeDslRuntimeHitV1 {
-            candidate_id: row.candidate_id,
-            source_repo_id: row.source_repo_id,
-            path: row.repo_relative_path,
-            start_line: row.start_line,
-            end_line: row.end_line,
-            snippet: row.snippet,
+        .map(|row| {
+            // Runtime metadata rows are projected chunks, which always carry
+            // their lines and text.
+            let lines = row.lines.ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "runtime metadata row carries no chunk lines".to_string(),
+                )
+            })?;
+            let excerpt = row.excerpt.ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "runtime metadata row carries no chunk excerpt".to_string(),
+                )
+            })?;
+            Ok(NativeDslRuntimeHitV1 {
+                candidate_id: row.candidate_id,
+                source_repo_id: row.source_repo_id,
+                path: row.repo_relative_path,
+                start_line: lines.start_line,
+                end_line: lines.end_line,
+                snippet: excerpt.snippet,
+            })
         })
-        .collect();
+        .collect::<Result<_, CoreError>>()?;
     Ok((rows, page.window))
 }

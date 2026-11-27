@@ -62,6 +62,13 @@ impl NativeResourcePlan {
             .ok_or(IndexError::ResourceLimited)
     }
 
+    pub(super) fn validate_response_memory(self, bytes: u64) -> Result<(), IndexError> {
+        if bytes == 0 || bytes > self.interactive.memory_bytes {
+            return Err(IndexError::ResourceLimited);
+        }
+        Ok(())
+    }
+
     pub fn validate(self) -> Result<(), IndexError> {
         let cap = self.capacity;
         if cap.cpu_units == 0 || cap.io_bytes == 0 || cap.memory_bytes == 0 {
@@ -1029,9 +1036,7 @@ impl NativeResourceLedger {
         self: &Arc<Self>,
         bytes: u64,
     ) -> Result<MemoryLease, IndexError> {
-        if bytes == 0 || bytes > self.plan.interactive.memory_bytes {
-            return Err(IndexError::ResourceLimited);
-        }
+        self.plan.validate_response_memory(bytes)?;
         self.reserve_detached_memory(bytes, NativeResourceClass::Interactive)
     }
 

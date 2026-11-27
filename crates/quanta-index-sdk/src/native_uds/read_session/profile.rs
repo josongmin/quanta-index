@@ -13,12 +13,22 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         expected: &NativeReadSessionStatus,
         budget: &RequestBudgetV1,
     ) -> Result<NativeReadSessionProfile, NativeUdsError> {
+        self.read_session_profile_with_observation(expected, budget, None)
+    }
+
+    pub(crate) fn read_session_profile_with_observation(
+        &self,
+        expected: &NativeReadSessionStatus,
+        budget: &RequestBudgetV1,
+        observation: Option<&mut ClientLexicalQueryObservationV1>,
+    ) -> Result<NativeReadSessionProfile, NativeUdsError> {
         validate_profile_request(expected)?;
-        let NativeIndexResponse::ReadSessionProfile(result) = self.request(
+        let NativeIndexResponse::ReadSessionProfile(result) = self.request_lexical(
             NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadProfile {
                 session: expected.session,
             }),
             budget,
+            observation,
         )?
         else {
             return Err(NativeUdsError::Protocol(

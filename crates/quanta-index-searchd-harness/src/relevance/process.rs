@@ -981,17 +981,29 @@ mod tests {
             revision_id: revision.clone(),
             manifest_generation: generation,
             repo_relative_path: RepoRelativePath::new(path),
-            start_line: 1,
-            end_line: 2,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 1,
+                end_line: 2,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: String::new(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 1.0,
-            snippet: String::new(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         };
         let second = LexicalCandidate {
             candidate_id: "auth-chunk-2".to_owned(),
-            start_line: 3,
-            end_line: 4,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 3,
+                end_line: 4,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: String::new(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 0.5,
             ..row.clone()
         };

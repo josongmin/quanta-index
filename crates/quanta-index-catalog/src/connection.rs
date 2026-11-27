@@ -56,6 +56,7 @@ impl CatalogClockPort for SystemCatalogClock {
 
 /// The catalog database file, under `state_root/catalog/`.
 pub const CATALOG_FILE_NAME: &str = "catalog-v1.sqlite";
+const CATALOG_DIRECTORY_NAME: &str = "catalog";
 
 /// Result of optional, funded WAL truncation. Native capacity and other
 /// storage failures remain errors; only an unfunded attempt or a real `SQLite`
@@ -71,7 +72,7 @@ pub enum WalReclaimOutcome {
 /// The catalog directory under a state root.
 #[must_use]
 pub fn catalog_dir(state_root: &Path) -> PathBuf {
-    state_root.join("catalog")
+    state_root.join(CATALOG_DIRECTORY_NAME)
 }
 
 /// The search plane's durable catalog over one `SQLite` file: the ingest
@@ -93,6 +94,22 @@ pub struct SqliteCatalog {
     // before it commits, these rows necessarily cover only this process.
     pub(crate) transient_source_body_quarantines:
         std::sync::RwLock<BTreeMap<(ViewRef, ObjectRef), Option<MemoryLease>>>,
+    // Process-local settlement custody for pins whose owning ticket was
+    // dropped after release failed. Read recovery retries them in order; a
+    // dead process instead leaves its pins to dead-session recovery.
+    pub(crate) abandoned_read_pins: std::sync::Mutex<Vec<AbandonedReadPin>>,
+    // Process-local maintenance demand recorded after committed releases,
+    // abandonment and retirement; consumed by the runtime pump.
+    pub(crate) maintenance_demand: std::sync::Mutex<crate::native::MaintenanceDemandState>,
+}
+
+/// One exact pin transferred from a dropped ticket to this Catalog.
+#[derive(Clone)]
+pub(crate) struct AbandonedReadPin {
+    pub(crate) session: Arc<dyn quanta_index_core::index::ReadSessionLease>,
+    pub(crate) ticket: quanta_index_core::index::ReadTicketLease,
+    /// The latest failed settlement attempt, if any.
+    pub(crate) last_error: Option<quanta_index_core::index::IndexError>,
 }
 
 impl std::fmt::Debug for SqliteCatalog {
@@ -321,10 +338,12 @@ impl SqliteCatalog {
         &self,
         callback: Option<fn(rusqlite::trace::TraceEvent<'_>)>,
     ) -> Result<(), CoreError> {
-        self.lock()?.trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
-            callback,
-        );
+        self.lock()?
+            .trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+                callback,
+            )
+            .map_err(|error| CoreError::Storage(format!("catalog statement profile: {error}")))?;
         Ok(())
     }
 }
@@ -425,12 +444,18 @@ pub(crate) fn count_u64(label: &str, count: usize) -> Result<u64, CoreError> {
 pub(crate) fn open_connection(
     state_root: &Path,
     vfs_name: Option<&str>,
+    stock_vfs: bool,
 ) -> Result<(Connection, PathBuf), CoreError> {
     let directory = catalog_dir(state_root);
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| storage("create directory", &directory, &error))?;
     let path = directory.join(CATALOG_FILE_NAME);
-    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
+    let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    if stock_vfs {
+        prepare_stock_catalog_file(state_root, &directory, &path)?;
+    } else {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| storage("create directory", &directory, &error))?;
+        flags |= OpenFlags::SQLITE_OPEN_CREATE;
+    }
     let connection = vfs_name
         .map_or_else(
             || Connection::open_with_flags(&path, flags),
@@ -438,6 +463,108 @@ pub(crate) fn open_connection(
         )
         .map_err(|error| engine_error("open", &path, &error))?;
     Ok((connection, path))
+}
+
+/// Create the stock database and its directory with the same private mode
+/// that the next boot's inventory requires. SQLite derives its sidecar modes
+/// from the main file. Never retry with SQLITE_OPEN_CREATE after validation.
+fn prepare_stock_catalog_file(
+    state_root: &Path,
+    directory: &Path,
+    path: &Path,
+) -> Result<(), CoreError> {
+    use std::fs::File;
+    use std::io::Error as IoError;
+    use std::os::unix::fs::MetadataExt as _;
+
+    use rustix::fs::{Mode, OFlags, mkdirat, open, openat};
+    use rustix::io::Errno;
+
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let root = open(state_root, directory_flags, Mode::empty())
+        .map(File::from)
+        .map_err(|error| {
+            storage(
+                "open stock directory parent",
+                state_root,
+                &IoError::from(error),
+            )
+        })?;
+    let created_directory = match mkdirat(
+        &root,
+        CATALOG_DIRECTORY_NAME,
+        Mode::RUSR | Mode::WUSR | Mode::XUSR,
+    ) {
+        Ok(()) => true,
+        Err(Errno::EXIST) => false,
+        Err(error) => {
+            return Err(storage(
+                "create stock directory",
+                directory,
+                &IoError::from(error),
+            ));
+        }
+    };
+    let held_directory = openat(
+        &root,
+        CATALOG_DIRECTORY_NAME,
+        directory_flags,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| storage("open stock directory", directory, &IoError::from(error)))?;
+    let uid = rustix::process::geteuid().as_raw();
+    let metadata = held_directory
+        .metadata()
+        .map_err(|error| storage("inspect stock directory", directory, &error))?;
+    if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return Err(CoreError::Storage(format!(
+            "catalog: stock directory must be private and owned: {}",
+            directory.display()
+        )));
+    }
+    if created_directory {
+        root.sync_all()
+            .map_err(|error| storage("sync stock directory parent", state_root, &error))?;
+    }
+    let safe_flags = OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    let file = match openat(
+        &held_directory,
+        CATALOG_FILE_NAME,
+        safe_flags | OFlags::RDWR | OFlags::CREATE | OFlags::EXCL,
+        Mode::RUSR | Mode::WUSR,
+    ) {
+        Ok(file) => file,
+        Err(Errno::EXIST) => openat(
+            &held_directory,
+            CATALOG_FILE_NAME,
+            safe_flags | OFlags::RDONLY,
+            Mode::empty(),
+        )
+        .map_err(|error| storage("open existing stock database", path, &IoError::from(error)))?,
+        Err(error) => {
+            return Err(storage(
+                "create stock database",
+                path,
+                &IoError::from(error),
+            ));
+        }
+    };
+    let file = File::from(file);
+    let metadata = file
+        .metadata()
+        .map_err(|error| storage("inspect stock database", path, &error))?;
+    if !metadata.is_file()
+        || metadata.uid() != uid
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(CoreError::Storage(format!(
+            "catalog: stock database must be a private, owned, single-link regular file: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Apply and verify the original durability settings on the same connection.

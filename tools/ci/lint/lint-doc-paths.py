@@ -87,7 +87,27 @@ def link_issue(doc_path: Path, raw_target: str, repo_root: Path = REPO_ROOT) -> 
             return None
         return "broken doc path"
     if not candidate.exists():
-        return "broken doc path"
+        # Codex local file links use `path:line`. Check the literal path first:
+        # a colon can also be part of an actual filename on this filesystem.
+        line_link = re.fullmatch(r"(.+):([1-9][0-9]*)", normalized) if not fragment else None
+        if line_link is None:
+            return "broken doc path"
+        base = Path(line_link.group(1))
+        candidate = (base if base.is_absolute() else doc_path.parent / base).resolve()
+        try:
+            candidate.relative_to(repo_root)
+        except ValueError:
+            return "broken doc path"
+        if not candidate.is_file():
+            return "broken doc path"
+        try:
+            line_number = int(line_link.group(2))
+            with candidate.open("rb") as stream:
+                if not any(index == line_number for index, _ in enumerate(stream, start=1)):
+                    return "broken doc line"
+        except (OSError, ValueError):
+            return "broken doc line"
+        return None
     if fragment and candidate.suffix in DOC_SUFFIXES:
         if unquote(fragment) not in heading_anchors(candidate):
             return "broken doc anchor"

@@ -457,6 +457,39 @@ def test_duplicate_native_verdict_is_refused(tmp_path: Path) -> None:
     assert any("duplicate" in refusal.reason for refusal in refusals)
 
 
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-be", "utf-32", "utf-32-le", "utf-8-sig"])
+def test_native_artifact_must_use_writer_utf8_encoding(tmp_path: Path, encoding: str) -> None:
+    path = tmp_path / "artifact.json"
+    path.write_bytes(json.dumps(artifact("scale")).encode(encoding))
+    refusals, checked, _ = MODULE.check_families(
+        tmp_path, (("scale", "artifact.json"),), head=HEAD, require=True
+    )
+    assert checked == [path]
+    assert any("UTF-8" in refusal.reason for refusal in refusals)
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "valid"), [("\U0001f680", True), ("\ud800", False), ("\udfff", False)]
+)
+def test_native_artifact_strings_must_be_unicode_scalars(
+    tmp_path: Path, scenario_id: str, valid: bool
+) -> None:
+    payload = artifact("scale")
+    payload["rows"][0]["scenario_id"] = scenario_id
+    path = tmp_path / "artifact.json"
+    path.write_bytes(json.dumps(payload, ensure_ascii=True).encode("utf-8"))
+
+    refusals, checked, _ = MODULE.check_families(
+        tmp_path, (("scale", "artifact.json"),), head=HEAD, require=True
+    )
+
+    assert checked == [path]
+    if valid:
+        assert refusals == []
+    else:
+        assert any("unpaired surrogate" in refusal.reason for refusal in refusals)
+
+
 @pytest.mark.parametrize("dimension,count", [("scale", 2), ("concurrency", 4)])
 def test_native_inventory_limit_refuses_before_parsing(tmp_path, monkeypatch, dimension, count):
     for index in range(count):

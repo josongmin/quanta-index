@@ -6,7 +6,9 @@
 mod batch;
 pub mod binding;
 pub(crate) mod client;
+mod client_observation;
 pub(crate) mod config;
+mod diagnostic_attempt;
 mod error;
 mod generations;
 mod history;
@@ -14,8 +16,13 @@ pub(crate) mod lexical;
 mod namespace;
 pub mod native_connect_v1;
 pub mod native_index;
+#[path = "client/native_code_search.rs"]
+mod native_code_search;
+pub use native_code_search::resolve_native_code_search_continuation_view_v1;
 #[path = "client/native_query.rs"]
 mod native_query;
+#[path = "client/native_text_matches.rs"]
+mod native_text_matches;
 pub mod native_uds;
 mod observability;
 pub mod preparation;
@@ -26,6 +33,7 @@ pub(crate) mod semantic;
 mod structural;
 mod symbol;
 pub(crate) mod text_query_builder;
+mod text_query_route_shared;
 mod transport;
 mod unsupported;
 
@@ -39,6 +47,7 @@ pub use client::{
     ControlClient, ProducerClient, QuantaIndex, ReaderClient,
 };
 pub use config::{ClientProfile, ConnectOptions};
+pub use diagnostic_attempt::{DiagnosticAttemptGuardV1, DiagnosticAttemptSourceV1};
 pub use error::ResponseBindingAxis;
 pub use error::SdkError;
 pub use error::{PublishedBatchEvidence, PublishedBatchFailureStage};
@@ -57,10 +66,11 @@ pub use lexical::{
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use native_query::{NativeQueryError, NativeQueryReader, NativeQuerySession};
+pub use native_text_matches::NativeTextMatchesResponse;
 pub use observability::ObservabilityNamespace;
 pub use quanta_index_contract::{
-    IngestObservationStatus, IngestStageDurations, IngestStageReport, RepoMapModuleId,
-    RepoMapNodeRef, SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
+    IngestObservationStatus, IngestStageDurations, IngestStageReport, SearchCorpusIngestObservation,
+    SearchCorpusPublishOutcome,
 };
 /// The canonical batch digest (QI-BB-032): the SDK builders stamp it on
 /// every batch they send; producers that assemble wire batches themselves
@@ -78,7 +88,6 @@ pub(crate) use transport::{
     ControlTransport, IngestTransport, QueryTransport, UdsControlTransport, UdsIngestTransport,
     UdsQueryTransport,
 };
-pub use transport::{DiagnosticAttemptGuardV1, DiagnosticAttemptSourceV1};
 pub use unsupported::{LegacyQueryCapabilityV1, UNSUPPORTED_QUERY_DIAGNOSTIC_VERSION};
 
 pub use quanta_index_contract::lex::{

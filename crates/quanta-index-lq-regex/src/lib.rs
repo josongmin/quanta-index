@@ -40,6 +40,7 @@ pub mod dialect_ast_walk;
 pub mod errors;
 pub mod estimator;
 pub mod executor;
+pub mod field;
 pub mod literal_extract;
 mod necessary_gram;
 
@@ -47,6 +48,12 @@ pub use dialect::dialect_filter;
 pub use dialect_ast_walk::ast_walk_filter;
 pub use errors::{ForbiddenKind, LimitDimension, RegexError, RegexErrorCode};
 pub use estimator::{MAX_NFA_STATES, estimate_nfa_states};
-pub use executor::{RegexCompilationPlan, RegexExecutor};
+pub use executor::{
+    ENGINE_DFA_CACHE_LIMIT_BYTES, ENGINE_NFA_SIZE_LIMIT_BYTES, ENGINE_ONEPASS_SIZE_LIMIT_BYTES,
+    RegexCompilationPlan, RegexExecutor, engine_config, engine_construction_bytes,
+    engine_retained_bytes,
+};
+pub use field::{FIELD_NFA_SIZE_LIMIT_BYTES, FieldRegex};
 pub use literal_extract::extract_prefilter_literal_alternation;
+pub use necessary_gram::MAX_NECESSARY_GRAM_NODES;
 pub use quanta_index_lq_trigram::{DocId, DocResolver};

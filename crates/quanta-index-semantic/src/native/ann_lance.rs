@@ -1,20 +1,19 @@
 //! Bounded immutable Lance regions for the Native semantic lane.
 //!
-//! The caller owns the admitted staging connection, the selected-view member
+//! The caller owns the admitted staging session, the selected-view member
 //! directory, and physical-file custody. This module cannot publish a region.
 
 use std::sync::Arc;
 
 use arrow_array::{
     Array, BinaryArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array, RecordBatch,
+    RecordBatchIterator,
     builder::{BinaryBuilder, FixedSizeBinaryBuilder},
 };
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
 use futures::{Stream, StreamExt as _, TryStreamExt as _};
-use lancedb::{
-    DistanceType,
-    query::{ExecutableQuery as _, QueryBase as _, Select},
-};
+use lance::{Dataset, dataset::write::WriteParams, session::Session};
+use lance_linalg::distance::MetricType;
 use quanta_index_contract::native_protocol::{
     MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES, NativeSemanticTraversal,
 };
@@ -30,15 +29,17 @@ use super::{
     ann_store::AnnMemoryStore,
 };
 use crate::{
+    COLUMN_VECTOR,
     manifest::VectorIndexSealV1,
     vector_index::{
-        LoadedVectorIndexV1, VectorIndexSealInputV1, seal_vector_index_v1, verify_vector_index_v1,
+        LoadedVectorIndexV1, seal_fresh_vector_index_dataset_v1, verify_vector_index_dataset_v1,
     },
 };
 
 const ROW_DOMAIN: &[u8] = b"quanta-index-native-ann-region-rows-v2\0";
 const INPUT_DOMAIN: &[u8] = b"quanta-index-native-ann-owner-input-v1\0";
-const COLUMN_VECTOR: &str = "vector";
+/// Region creation and selected reopen use the same private session path.
+pub(super) const ANN_DATASET_URI: &str = "memory://native-ann/region/region.lance";
 const COLUMN_PRODUCER: &str = "producer";
 const COLUMN_OWNER: &str = "owner";
 const COLUMN_MEMBER: &str = "member";
@@ -262,7 +263,7 @@ impl RefillDecisions {
 }
 
 pub(super) struct OpenRegion {
-    table: lancedb::Table,
+    dataset: Arc<lance::Dataset>,
     index: LoadedVectorIndexV1,
     seal: RegionSeal,
     read_store: Option<Arc<AnnMemoryStore>>,
@@ -487,29 +488,13 @@ fn arrow_batch(rows: &[RegionRow<'_>], dimension: usize) -> Result<RecordBatch, 
     .map_err(backend)
 }
 
-/// Build in a caller-owned, admitted and unpublished staging connection.
-///
-/// The caller must persist `RegionSeal` and register the resulting Lance files
-/// under the selected member artifact before exposing a view.
-pub(super) async fn build_region(
-    connection: &lancedb::Connection,
-    table_name: &str,
+fn admitted_region_batch(
     rows: &[RegionRow<'_>],
     recipe: Digest,
-    generation: u64,
     dimension: usize,
     budget: &mut WorkBudget,
-) -> Result<(lancedb::Table, RegionSeal), IndexError> {
+) -> Result<(RecordBatch, Digest, u64), IndexError> {
     budget.checkpoint()?;
-    if table_name.is_empty()
-        || !table_name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
-        return Err(invalid(
-            "Native ANN table name must be a nonempty ASCII identifier",
-        ));
-    }
     let rows_digest = validate_rows(rows, recipe, dimension)?;
     let row_count = u64::try_from(rows.len()).map_err(|_error| IndexError::ResourceLimited)?;
     let dimension_u64 = u64::try_from(dimension).map_err(|_error| IndexError::ResourceLimited)?;
@@ -537,26 +522,58 @@ pub(super) async fn build_region(
     // Admit escape capacity before allocating, using the original scope.
     let input_memory = budget.reserve_memory(bytes, MemoryLifetime::Retained)?;
     let batch = custody::retain_batch(arrow_batch(rows, dimension)?, input_memory.clone())?;
+    Ok((batch, rows_digest, row_count))
+}
+
+/// Create one fresh Native region through the bounded session and seal the
+/// exact Lance dataset returned by the writer before it can be published.
+pub(super) async fn build_region_direct(
+    session: Arc<Session>,
+    rows: &[RegionRow<'_>],
+    recipe: Digest,
+    generation: u64,
+    dimension: usize,
+    budget: &mut WorkBudget,
+) -> Result<(Arc<Dataset>, RegionSeal), IndexError> {
+    build_region_at(
+        ANN_DATASET_URI,
+        session,
+        rows,
+        recipe,
+        generation,
+        dimension,
+        budget,
+    )
+    .await
+}
+
+async fn build_region_at(
+    uri: &str,
+    session: Arc<Session>,
+    rows: &[RegionRow<'_>],
+    recipe: Digest,
+    generation: u64,
+    dimension: usize,
+    budget: &mut WorkBudget,
+) -> Result<(Arc<Dataset>, RegionSeal), IndexError> {
+    let (batch, rows_digest, row_count) = admitted_region_batch(rows, recipe, dimension, budget)?;
+    let schema = batch.schema();
+    let reader = RecordBatchIterator::new(std::iter::once(Ok::<_, ArrowError>(batch)), schema);
+    let params = WriteParams {
+        session: Some(session),
+        ..Default::default()
+    };
     let request = budget.request().clone();
-    let table = write_settle::settle_write(&request, async {
-        connection
-            .create_table(table_name, batch)
-            .execute()
+    let mut dataset = write_settle::settle_write(&request, async {
+        Dataset::write(reader, uri, Some(params))
             .await
             .map_err(backend)
     })
     .await?;
     let vector_index = write_settle::settle_write(&request, async {
-        seal_vector_index_v1(
-            &table,
-            VectorIndexSealInputV1 {
-                generation,
-                row_count,
-                inherited: None,
-            },
-        )
-        .await
-        .map_err(backend)
+        seal_fresh_vector_index_dataset_v1(&mut dataset, generation, row_count)
+            .await
+            .map_err(backend)
     })
     .await?;
     vector_index
@@ -570,15 +587,30 @@ pub(super) async fn build_region(
         rows_digest,
         vector_index,
     };
-    row_attestation::attest(&table, &seal, budget).await?;
+    row_attestation::attest(&dataset, &seal, budget).await?;
     budget.checkpoint()?;
-    Ok((table, seal))
+    Ok((Arc::new(dataset), seal))
+}
+
+#[cfg(test)]
+fn local_fixture_uri(root: &std::path::Path, name: &str) -> Result<String, IndexError> {
+    let path = root.join(format!("{name}.lance"));
+    url::Url::from_file_path(&path)
+        .map(|uri| uri.to_string())
+        .map_err(|()| invalid("Native ANN fixture requires an absolute file path"))
+}
+
+#[cfg(test)]
+async fn write_fixture_rows(uri: &str, batch: RecordBatch) -> lance::Result<Dataset> {
+    let schema = batch.schema();
+    let reader = RecordBatchIterator::new(std::iter::once(Ok::<_, ArrowError>(batch)), schema);
+    Dataset::write(reader, uri, None).await
 }
 
 /// Verify a bounded region already selected through Catalog. Caller must
 /// attest the physical dataset bytes and the row digest before this call.
 pub(super) async fn open_region(
-    table: lancedb::Table,
+    dataset: Arc<lance::Dataset>,
     seal: RegionSeal,
     budget: &mut WorkBudget,
 ) -> Result<OpenRegion, IndexError> {
@@ -597,19 +629,19 @@ pub(super) async fn open_region(
     seal.vector_index
         .validate(u64::from(seal.rows), seal.generation)
         .map_err(backend)?;
-    let actual = table.schema().await.map_err(backend);
+    let actual = arrow_schema::Schema::from(dataset.schema());
     budget.checkpoint()?;
-    if actual?.as_ref() != schema(dimension)?.as_ref() {
+    if &actual != schema(dimension)?.as_ref() {
         return Err(corrupt("Native ANN physical schema differs from seal"));
     }
-    let index = verify_vector_index_v1(&table, &seal.vector_index, u64::from(seal.rows))
+    let index = verify_vector_index_dataset_v1(&dataset, &seal.vector_index, u64::from(seal.rows))
         .await
         .map_err(backend);
     budget.checkpoint()?;
     let index = index?;
     budget.charge(OPEN_REGION_WORK)?;
     Ok(OpenRegion {
-        table,
+        dataset,
         index,
         seal,
         read_store: None,
@@ -932,22 +964,34 @@ async fn query_prefix(
     if seen.capacity() > fetch {
         return Err(IndexError::ResourceLimited);
     }
-    let query = region
-        .table
-        .vector_search(query_vector)
-        .map_err(backend)?
-        .distance_type(DistanceType::Cosine)
-        .limit(fetch)
-        .select(Select::columns(&[
+    let query_vector = Float32Array::from(query_vector);
+    let mut scan = region.dataset.scan();
+    let _ = scan
+        .nearest(COLUMN_VECTOR, &query_vector, fetch)
+        .map_err(backend)?;
+    let _ = scan.distance_metric(MetricType::Cosine);
+    let _ = scan
+        .limit(
+            Some(i64::try_from(fetch).map_err(|_error| IndexError::ResourceLimited)?),
+            None,
+        )
+        .map_err(backend)?;
+    let _ = scan
+        .project(&[
             COLUMN_PRODUCER,
             COLUMN_OWNER,
             COLUMN_MEMBER,
             COLUMN_VECTOR_ID,
             COLUMN_INPUT,
-        ]));
-    let query = region.index.apply(query, fetch).map_err(backend)?;
+        ])
+        .map_err(backend)?;
+    let _ = scan.batch_size(1024);
+    region
+        .index
+        .apply_scanner(&mut scan, fetch)
+        .map_err(backend)?;
     budget.checkpoint()?;
-    let batches = match query.execute().await.map_err(backend) {
+    let batches = match scan.try_into_stream().await.map_err(backend) {
         Ok(batches) => batches,
         Err(error) => {
             budget.checkpoint()?;
@@ -1491,9 +1535,7 @@ mod tests {
             .build()?;
         crate::run_blocking(&runtime, async {
             let root = tempfile::tempdir()?;
-            let connection = lancedb::connect(&root.path().to_string_lossy())
-                .execute()
-                .await?;
+            let uri = local_fixture_uri(root.path(), "near_full_refill")?;
             let recipe = Digest([9; 32]);
             let vector = [1.0, 0.0, 0.0];
             let ids: Vec<[u8; 2]> = (0..64u8).map(|ordinal| [b'v', ordinal]).collect();
@@ -1502,9 +1544,9 @@ mod tests {
                 .map(|vector_id| row(vector_id, &vector, recipe))
                 .collect();
             let mut build = budget()?;
-            let (table, seal) = build_region(
-                &connection,
-                "near_full_refill",
+            let (dataset, seal) = build_region_at(
+                &uri,
+                Arc::new(Session::default()),
                 &rows,
                 recipe,
                 1,
@@ -1512,7 +1554,7 @@ mod tests {
                 &mut build,
             )
             .await?;
-            let opened = open_region(table, seal, &mut build).await?;
+            let opened = open_region(dataset, seal, &mut build).await?;
             // Each first prefix fits by itself. Both refill policies already
             // have a result, so neither must retain cross-prefix identities.
             for (initial, progress) in [
@@ -1566,9 +1608,7 @@ mod tests {
 
     async fn exact_region_body() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let connection = lancedb::connect(&root.path().to_string_lossy())
-            .execute()
-            .await?;
+        let uri = local_fixture_uri(root.path(), "region")?;
         let recipe = Digest([9; 32]);
         let vectors = [
             [1.0, 0.0, 0.0],
@@ -1594,8 +1634,16 @@ mod tests {
         work.bind_memory_scope(Some(MemoryScope::new(Arc::new(CountedScope(
             memory.clone(),
         )))));
-        let (table, seal) =
-            build_region(&connection, "region", &rows, recipe, 1, 3, &mut work).await?;
+        let (dataset, seal) = build_region_at(
+            &uri,
+            Arc::new(Session::default()),
+            &rows,
+            recipe,
+            1,
+            3,
+            &mut work,
+        )
+        .await?;
         verify(
             memory.retained_requests.load(Ordering::SeqCst) == 1,
             "spawned Arrow input was not admitted to escape execution",
@@ -1606,13 +1654,14 @@ mod tests {
             .first_mut()
             .ok_or("region fixture has no row")?
             .vector = &changed_vector;
-        let tampered_vector = connection
-            .create_table("tampered_vector", arrow_batch(&changed_rows, 3)?)
-            .execute()
-            .await?;
+        let tampered_vector_dataset = write_fixture_rows(
+            &local_fixture_uri(root.path(), "tampered_vector")?,
+            arrow_batch(&changed_rows, 3)?,
+        )
+        .await?;
         verify(
             matches!(
-                row_attestation::attest(&tampered_vector, &seal, &mut work).await,
+                row_attestation::attest(&tampered_vector_dataset, &seal, &mut work).await,
                 Err(IndexError::CorruptObject(_))
             ),
             "physical vector tamper matched the original row seal",
@@ -1623,13 +1672,14 @@ mod tests {
             .ok_or("region fixture has no row")?
             .input
             .producer_context = Digest([7; 32]);
-        let tampered_stamp = connection
-            .create_table("tampered_stamp", arrow_batch(&changed_rows, 3)?)
-            .execute()
-            .await?;
+        let tampered_stamp_dataset = write_fixture_rows(
+            &local_fixture_uri(root.path(), "tampered_stamp")?,
+            arrow_batch(&changed_rows, 3)?,
+        )
+        .await?;
         verify(
             matches!(
-                row_attestation::attest(&tampered_stamp, &seal, &mut work).await,
+                row_attestation::attest(&tampered_stamp_dataset, &seal, &mut work).await,
                 Err(IndexError::CorruptObject(_))
             ),
             "physical input stamp tamper matched the original row seal",
@@ -1644,7 +1694,7 @@ mod tests {
             seal.rows_digest == validate_rows(&rows, recipe, 3)?,
             "region seal changed vector row identities",
         )?;
-        let opened = open_region(table, seal, &mut work).await?;
+        let opened = open_region(dataset, seal, &mut work).await?;
         let mut accepted = Vec::new();
         let page = query_region(
             &opened,
@@ -1699,8 +1749,8 @@ mod tests {
             memory.live.load(Ordering::SeqCst) == 0,
             "completed query retained scratch memory",
         )?;
-        let reopened_table = connection.open_table("region").execute().await?;
-        let reopened = open_region(reopened_table, opened.seal.clone(), &mut work).await?;
+        let reopened_dataset = Arc::new(Dataset::open(&uri).await?);
+        let reopened = open_region(reopened_dataset, opened.seal.clone(), &mut work).await?;
         let mut reopened_accepted = Vec::new();
         let reopened_page = query_region(
             &reopened,
@@ -1752,9 +1802,7 @@ mod tests {
 
     async fn filtered_refill_body() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let connection = lancedb::connect(&root.path().to_string_lossy())
-            .execute()
-            .await?;
+        let uri = local_fixture_uri(root.path(), "refill")?;
         let recipe = Digest([9; 32]);
         // Strictly decreasing cosine to [1,0,0]; only the eighth row is eligible.
         let vectors = [
@@ -1774,9 +1822,17 @@ mod tests {
             .map(|(vector, id)| row(id, vector, recipe))
             .collect();
         let mut build = budget()?;
-        let (table, seal) =
-            build_region(&connection, "refill", &rows, recipe, 1, 3, &mut build).await?;
-        let opened = open_region(table, seal, &mut build).await?;
+        let (dataset, seal) = build_region_at(
+            &uri,
+            Arc::new(Session::default()),
+            &rows,
+            recipe,
+            1,
+            3,
+            &mut build,
+        )
+        .await?;
+        let opened = open_region(dataset, seal, &mut build).await?;
         let memory = Arc::new(MemoryCount::default());
         let mut work = budget()?;
         work.bind_memory_scope(Some(MemoryScope::new(Arc::new(CountedScope(

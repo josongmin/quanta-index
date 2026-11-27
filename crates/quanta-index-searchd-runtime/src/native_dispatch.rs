@@ -6,8 +6,7 @@ use quanta_index_contract::{
     index::{OperationStatus, SubmitOutcome},
     native_protocol::{
         NATIVE_DSL_PRODUCER_V1, NativeDslReplayBasisV1, NativeDslReplayV1, NativeIndexErrorCode,
-        NativeIndexRequest, NativeIndexResponse, NativeIndexWireError, native_dsl_context_v1,
-        native_dsl_sequence_v1,
+        NativeIndexRequest, NativeIndexResponse, NativeIndexWireError, NativeSealedDslSubmitV1,
     },
 };
 use quanta_index_core::{
@@ -28,11 +27,17 @@ impl NativeDispatcher {
         &self,
         input: NativeDslReplayV1,
         mut work: WorkBudget,
+        seal: Option<NativeSealedDslSubmitV1>,
     ) -> Result<NativeIndexResponse, IndexError> {
         if input.operation.producer != NATIVE_DSL_PRODUCER_V1 {
             return Err(IndexError::InvalidInput(
                 "Native DSL replay producer differs".into(),
             ));
+        }
+        if seal.is_some_and(|seal| seal.ingress.operation != input.operation
+            || !matches!(input.basis, NativeDslReplayBasisV1::Exact { .. }))
+        {
+            return Err(IndexError::DigestConflict);
         }
         let (status, stamp) = {
             let reservation = ReservationGuard::try_acquire(
@@ -42,34 +47,28 @@ impl NativeDispatcher {
             .ok_or_else(|| self.control_scheduler.denial())?;
             work.bind_memory_scope(reservation.memory_scope());
             let observed = self.catalog.projection_replay(input.operation, &mut work)?;
+            if observed.0 != OperationStatus::Unknown
+                && let Some(seal) = seal
+                && self.kernel.operation_request_identity_v1(input.operation, &mut work)?.request != seal.request_ref
+            {
+                return Err(IndexError::DigestConflict);
+            }
             work.bind_memory_scope(None);
             observed
         };
         if status == OperationStatus::Unknown {
+            let result = match seal {
+                Some(seal) => self.worker.submit_sealed_dsl_v1(Arc::clone(&self.kernel), seal, work),
+                None => Ok(SubmitOutcome::Unknown(input.operation)),
+            };
             return self.submitted_or_reconcile(
                 input.operation,
-                Ok(SubmitOutcome::Unknown(input.operation)),
+                result,
                 None,
             );
         }
         let stamp = stamp.ok_or(IndexError::DigestConflict)?;
-        let sequence = native_dsl_sequence_v1(stamp.context);
-        let same_base = match input.basis {
-            NativeDslReplayBasisV1::Exact {
-                view,
-                event_predecessor,
-            } => stamp.expected_view == view && event_predecessor.checked_add(1) == Some(sequence),
-            NativeDslReplayBasisV1::Source(source) => source == stamp.source,
-            NativeDslReplayBasisV1::SourceWithServingSequence {
-                source,
-                serving_event_sequence,
-            } => source == stamp.source && sequence <= serving_event_sequence,
-        };
-        if !same_base
-            || stamp.projection != input.projection
-            || sequence == 0
-            || stamp.context != native_dsl_context_v1(sequence, input.authority)
-        {
+        if !input.matches_stamp_v1(stamp) {
             return Err(IndexError::DigestConflict);
         }
         // Reuse the admitted row if recovery loses its acknowledgement.
@@ -94,7 +93,7 @@ impl NativeDispatcher {
         let slot = NativeReply::reserve_canonical(|bytes| {
             self.resources.reserve_response_memory(bytes).map(Some)
         })?;
-        produce().map(|payload| slot.finish(payload))
+        Ok(slot.finish(produce()?))
     }
 }
 
@@ -255,6 +254,17 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                     )
                 })
             }
+            NativeIndexRequest::SubmitStagedSourceV1 { request, receipt } => {
+                let key = request.operation;
+                let work = take_work();
+                self.canonical_response(|| {
+                    self.submitted_or_reconcile(
+                        key,
+                        self.worker.submit_staged_source_v1(Arc::clone(&self.kernel), request, receipt, work),
+                        None,
+                    )
+                })
+            }
             NativeIndexRequest::Resume(key) => {
                 let work = take_work();
                 self.canonical_response(|| {
@@ -267,7 +277,11 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             }
             NativeIndexRequest::ReplayDslV1(input) => {
                 let work = take_work();
-                self.canonical_response(|| self.replay_dsl(input, work))
+                self.canonical_response(|| self.replay_dsl(input, work, None))
+            }
+            NativeIndexRequest::SubmitSealedDslV1(input) => {
+                let work = take_work();
+                self.canonical_response(|| self.replay_dsl(input.replay, work, Some(input)))
             }
             NativeIndexRequest::LookupSourceOwners { selection, owners } => {
                 let mut work = take_work();
@@ -288,17 +302,11 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 })
             }
             NativeIndexRequest::ListProducerProjectionOwnersV1 {
-                view,
-                projection,
-                producer,
-                after,
-                limit,
+                view, projection, producer, after, limit,
             } => {
                 let mut work = take_work();
-                self.list_producer_projection_owners_v1(
-                    view, projection, producer, after, limit, &mut work,
-                )
-                .map(NativeReply::ProducerProjectionOwnersV1)
+                self.list_producer_projection_owners_v1(view, projection, producer, after, limit, &mut work)
+                    .map(NativeReply::ProducerProjectionOwnersV1)
             }
             NativeIndexRequest::DiffProjectionSourceOwners {
                 selection,
@@ -368,6 +376,13 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                     .map(NativeReply::RepositoryPath)
                 })
             }
+            NativeIndexRequest::TextMatches(request) => {
+                let mut work = take_work();
+                work.checkpoint().and_then(|()| {
+                    self.search_text_matches(request, &mut work)
+                        .map(NativeReply::TextMatches)
+                })
+            }
             NativeIndexRequest::SearchOverlayText(request) => {
                 crate::native_overlay_query::query(self, context, &request, budget)
                     .map(NativeReply::OverlayText)
@@ -430,9 +445,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             )),
             other @ (NativeIndexRequest::CreateWorkspace { .. }
             | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
-            | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 {
-                ..
-            }
+            | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 { .. }
             | NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 { .. }
             | NativeIndexRequest::BeginInput(_)
             | NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { .. }
@@ -442,18 +455,23 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             | NativeIndexRequest::StageProfile { .. }
             | NativeIndexRequest::StageProjectionOutput { .. }
             | NativeIndexRequest::StageImmutableObject { .. }
+            | NativeIndexRequest::SealStagedDslRequestV1 { .. }
+            | NativeIndexRequest::PreviewInitialHistoryCutV1 { .. }
             | NativeIndexRequest::StageProjectionOwner { .. }
             | NativeIndexRequest::StageProjectionCertificate { .. }
             | NativeIndexRequest::StageMutationPage { .. }
             | NativeIndexRequest::SealMutations { .. }
             | NativeIndexRequest::SealMutationsForReplayV1 { .. }
             | NativeIndexRequest::ReadSealedMutationsForReplayV1 { .. }
+            | NativeIndexRequest::ReadSealedDslV1(_)
             | NativeIndexRequest::DiscardInput(_)
             | NativeIndexRequest::ReadView(_)
             | NativeIndexRequest::ObserveRootView(_)
             | NativeIndexRequest::ObserveCandidateInstallationV1
             | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
             | NativeIndexRequest::PublishedViewMetadata(_)
+            | NativeIndexRequest::OperationRequestIdentityV1(_)
             | NativeIndexRequest::ReadProjection { .. }
             | NativeIndexRequest::Status(_)
             | NativeIndexRequest::ReadyWork { .. }
@@ -467,6 +485,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                         | NativeIndexRequest::ObserveRootView(_)
                         | NativeIndexRequest::ObserveCandidateInstallationV1
                         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+                        | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
                 );
                 let mut work = take_work();
                 let mut read_view_stage = ReadFailureStage::Checkpoint;
@@ -483,7 +502,9 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                     let control = matches!(
                         &other,
                         NativeIndexRequest::Status(_)
+                            | NativeIndexRequest::OperationRequestIdentityV1(_)
                             | NativeIndexRequest::ReadSealedMutationsForReplayV1 { .. }
+                            | NativeIndexRequest::ReadSealedDslV1(_)
                             | NativeIndexRequest::WorkStatus(_)
                             | NativeIndexRequest::RenewWork { .. }
                     );
@@ -625,6 +646,24 @@ mod tests {
             assert!(!request_authorized(IpcPlane::Ingest, peer, 1000, &request));
             assert!(!request_authorized(IpcPlane::Query, None, 1000, &request));
         }
+    }
+
+    #[test]
+    fn immutable_operation_request_identity_requires_control_owner() {
+        let NativeIndexRequest::PublishedViewMetadata(operation) = published_metadata_request()
+        else {
+            panic!("invalid operation fixture");
+        };
+        let request = NativeIndexRequest::OperationRequestIdentityV1(operation);
+        let observer = Some(PeerCredentials { uid: 1001, gid: 100, pid: None });
+        let owner = Some(PeerCredentials { uid: 1000, gid: 100, pid: None });
+        let root = Some(PeerCredentials { uid: 0, gid: 0, pid: None });
+        assert!(!request_authorized(IpcPlane::Query, owner, 1000, &request));
+        assert!(!request_authorized(IpcPlane::Ingest, owner, 1000, &request));
+        assert!(!request_authorized(IpcPlane::Control, observer, 1000, &request));
+        assert!(!request_authorized(IpcPlane::Control, None, 1000, &request));
+        assert!(request_authorized(IpcPlane::Control, owner, 1000, &request));
+        assert!(request_authorized(IpcPlane::Control, root, 1000, &request));
     }
 
     #[test]

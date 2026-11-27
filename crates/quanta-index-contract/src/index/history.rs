@@ -2,7 +2,10 @@
 mod native_restore;
 mod snapshot_checkpoint;
 mod source_input;
-use super::{Digest, IndexInstanceId, ObjectRef, SourceTransition};
+use super::{
+    Digest, GroupActivation, IndexInstanceId, IndexKind, InputDomain, InstanceSpec, ObjectRef,
+    PublicationGroupId, SchemaId, SourceTransition, StorageFormatId,
+};
 use crate::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 pub use native_restore::NativeHistoryRestoreInputV1;
 use sha2::{Digest as _, Sha256};
@@ -15,6 +18,34 @@ pub use source_input::{
     HistoryReplayFenceV1, HistoryReplayPublicationV1, HistorySourceInputV1,
     MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
 };
+
+pub const NATIVE_HISTORY_KIND_V1: IndexKind = IndexKind(*b"qidx.history.v1!");
+pub const NATIVE_HISTORY_FORMAT_V1: StorageFormatId = StorageFormatId(*b"qidx.hist.rows1!");
+pub const NATIVE_HISTORY_SCHEMA_V1: SchemaId = SchemaId(*b"qidx.hist.data1!");
+
+/// Canonical History recipe accepted by the Native builder.
+pub fn native_history_instance_v1(instance: IndexInstanceId, group: PublicationGroupId) -> InstanceSpec {
+    InstanceSpec {
+        instance,
+        kind: NATIVE_HISTORY_KIND_V1,
+        group,
+        activation: GroupActivation::CoreRequired,
+        input_domain: InputDomain::History,
+        schema: NATIVE_HISTORY_SCHEMA_V1,
+        policy: native_history_policy_v1(),
+        format: NATIVE_HISTORY_FORMAT_V1,
+    }
+}
+
+#[must_use]
+pub fn native_history_policy_v1() -> Digest {
+    let normalizer = quanta_index_lq_norm::TEXT_NORMALIZER_VERSION;
+    let mut hash = Sha256::new();
+    hash.update(b"qidx.native.history.rows.v1\0;hashed-row-keys;typed-json-rows;bound-source-input;canonical-history-values;commit+diff;exact-length-bm25:k1=1.2,b=.75;sha-path-total-order");
+    hash.update(normalizer.major.to_le_bytes());
+    hash.update(normalizer.minor.to_le_bytes());
+    Digest(hash.finalize().into())
+}
 
 /// The generation one auxiliary row belongs to. Core reexports this owner.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -170,6 +201,19 @@ crate::native_serde_struct!(SourceHistoryTransitionV1 {
     history: HistoryGenerationAdvanceV1
 });
 
+/// First required History member and Source advance in one Catalog publication.
+/// The History FULL precondition is enforced by the Kernel against the pinned
+/// base profile and member set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceHistoryBootstrapV1 {
+    pub source: SourceTransition,
+    pub history: HistoryTransition,
+}
+crate::native_serde_struct!(SourceHistoryBootstrapV1 {
+    source: SourceTransition,
+    history: HistoryTransition
+});
+
 /// Immutable source closure of a native History generation. Every present
 /// child is the childless canonical JSON for its existing ingest DTO.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,6 +221,38 @@ pub struct HistoryGenerationInputV1 {
     pub original: ObjectRef,
     pub repo_commit_recency: Option<ObjectRef>,
     pub file_contributor: Option<ObjectRef>,
+}
+
+/// First Native History FULL from producer outputs, without a Legacy replay
+/// fence, ACK, prior member, or manufactured predecessor cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeHistoryInitialInputV1 {
+    pub wire_version: u32,
+    pub original: ObjectRef,
+    pub repo_commit_recency: Option<ObjectRef>,
+    pub file_contributor: Option<ObjectRef>,
+}
+crate::native_serde_struct!(NativeHistoryInitialInputV1 {
+    wire_version: u32,
+    original: ObjectRef,
+    repo_commit_recency: Option<ObjectRef>,
+    file_contributor: Option<ObjectRef>
+});
+
+impl NativeHistoryInitialInputV1 {
+    pub const WIRE_VERSION: u32 = 4;
+
+    pub fn verify_children_v1(self, physical: &[ObjectRef]) -> Result<(), &'static str> {
+        if self.wire_version != Self::WIRE_VERSION {
+            return Err("Native History initial input version is invalid");
+        }
+        HistoryGenerationInputV1 {
+            original: self.original,
+            repo_commit_recency: self.repo_commit_recency,
+            file_contributor: self.file_contributor,
+        }
+        .verify_children_v1(physical)
+    }
 }
 crate::native_serde_struct!(HistoryGenerationInputV1 {
     original: ObjectRef,
@@ -207,5 +283,28 @@ impl HistoryGenerationInputV1 {
             return Err("History generation input child closure differs");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod native_initial_tests {
+    use super::*;
+
+    #[test]
+    fn initial_input_requires_exact_immutable_original_and_aux_closure() {
+        let original = ObjectRef(Digest([1; 32]));
+        let recency = ObjectRef(Digest([2; 32]));
+        let input = NativeHistoryInitialInputV1 {
+            wire_version: NativeHistoryInitialInputV1::WIRE_VERSION,
+            original,
+            repo_commit_recency: Some(recency),
+            file_contributor: None,
+        };
+        assert_eq!(input.verify_children_v1(&[original, recency]), Ok(()));
+        assert!(input.verify_children_v1(&[original]).is_err());
+        assert!(input.verify_children_v1(&[recency, original]).is_err());
+        assert!(input.verify_children_v1(&[original, original, recency]).is_err());
+        assert!(NativeHistoryInitialInputV1 { wire_version: 3, ..input }
+            .verify_children_v1(&[original, recency]).is_err());
     }
 }

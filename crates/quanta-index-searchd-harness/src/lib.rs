@@ -24,6 +24,7 @@ pub mod native_index;
 pub mod offered_load;
 pub mod open_loop_accounting;
 pub mod ops;
+pub mod product_xfs;
 pub mod relevance;
 #[path = "scale/diagnostic_span.rs"]
 mod scale_diagnostic_span;

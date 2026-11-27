@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use anyhow::{Result, ensure};
 use quanta_index_contract::index::{
     Digest, MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1, NativeSourceSnapshotExportFrameV1 as Frame,
-    RetiredProjectionIdentityV1, SourceTextAdmission,
+    SourceTextAdmission,
 };
 use quanta_index_contract::{RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision};
 use quanta_index_core::index::{
@@ -16,7 +16,7 @@ use quanta_index_core::index::{
 use quanta_index_storage::FileObjectReader;
 use sha2::{Digest as _, Sha256};
 
-use super::boot::retired_policy_profile_v1::old_repomap_identity_v1;
+use super::boot::retired_policy_profile_v1::collect_old_retired_projection_identities_v1;
 use super::{boot, write_frame};
 use crate::deployment_selection::DeploymentSelectionDocumentV1;
 
@@ -270,15 +270,16 @@ pub(super) fn export_v1(
         let mut retired_count = 0_u64;
         if let Some(route) = route {
             held.with_protected_routes_v1(budget, |routes, reader, budget| {
-                // The snapshot witness is derived from old Catalog rows; its objects
-                // are staged only in the candidate root, not read from this root.
-                let _witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
+                let witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
                     &held.selected_config_v1().state_root,
                     held.catalog_io_v1(),
                     selected,
                     routes,
                     budget,
                 )?;
+                for reference in witness.object_references_v1() {
+                    reader.verify_object(reference, budget)?;
+                }
                 for head in &routes.heads {
                     let file_count =
                         reader.source_file_count_v1(&head.source_publication.source, budget)?;
@@ -315,45 +316,8 @@ pub(super) fn export_v1(
                     inventory.update(census.0);
                     count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                 }
-                let retired_len = routes.repomap_heads.len();
-                let retired_bytes = retired_len
-                    .checked_mul(std::mem::size_of::<RetiredProjectionIdentityV1>())
-                    .and_then(|size| size.checked_add(retired_len.checked_mul(16)?))
-                    .and_then(|size| u64::try_from(size).ok())
-                    .ok_or(IndexError::ResourceLimited)?;
-                let _retired_memory = budget
-                    .reserve_memory(retired_bytes.max(1), MemoryLifetime::Temporary)?
-                    .ok_or(IndexError::ResourceLimited)?;
-                let mut identities = Vec::new();
-                identities
-                    .try_reserve_exact(retired_len)
-                    .map_err(|_| IndexError::ResourceLimited)?;
-                if identities.capacity() > retired_len {
-                    return Err(IndexError::ResourceLimited.into());
-                }
-                for head in &routes.repomap_heads {
-                    budget.checkpoint()?;
-                    identities.push(old_repomap_identity_v1(head, reader, budget)?);
-                }
-                identities.sort_unstable_by_key(|identity| identity.projection.0);
-                if identities.windows(2).any(|pair| {
-                    pair[0].projection == pair[1].projection && pair[0].instance != pair[1].instance
-                }) {
-                    return Err(IndexError::DigestConflict.into());
-                }
-                identities.dedup();
-                let mut instances = Vec::new();
-                instances
-                    .try_reserve_exact(identities.len())
-                    .map_err(|_| IndexError::ResourceLimited)?;
-                if instances.capacity() > identities.len() {
-                    return Err(IndexError::ResourceLimited.into());
-                }
-                instances.extend(identities.iter().map(|identity| identity.instance));
-                instances.sort_unstable_by_key(|instance| instance.0);
-                if instances.windows(2).any(|pair| pair[0] == pair[1]) {
-                    return Err(IndexError::DigestConflict.into());
-                }
+                let (identities, _retired_memory) =
+                    collect_old_retired_projection_identities_v1(selected, routes, reader, budget)?;
                 for identity in identities {
                     budget.checkpoint()?;
                     frame(

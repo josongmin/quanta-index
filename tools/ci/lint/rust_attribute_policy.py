@@ -6,6 +6,42 @@ import json
 import os
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib  # type: ignore[no-redef]
+
+
+def shared_workspace_source_roots(root: Path) -> tuple[Path, ...]:
+    """Resolve shared first-party workspace members from the root manifest."""
+    workspace_path = root / "Cargo.toml"
+    workspace = tomllib.loads(workspace_path.read_text(encoding="utf-8")).get("workspace")
+    if not isinstance(workspace, dict):
+        raise ValueError(f"{workspace_path}: missing workspace table")
+    members = workspace.get("members")
+    excluded = workspace.get("exclude", [])
+    if not isinstance(members, list) or not all(isinstance(item, str) for item in members):
+        raise ValueError(f"{workspace_path}: invalid workspace members")
+    if not isinstance(excluded, list) or not all(isinstance(item, str) for item in excluded):
+        raise ValueError(f"{workspace_path}: invalid workspace exclude")
+    excluded_paths = {path.resolve() for pattern in excluded for path in root.glob(pattern)}
+    shared: set[Path] = set()
+    for pattern in members:
+        matches = sorted(root.glob(pattern))
+        if not matches and Path(pattern).parts[:1] == ("shared",):
+            raise ValueError(f"{workspace_path}: missing shared workspace member {pattern}")
+        for member in matches:
+            if member.relative_to(root).parts[:1] != ("shared",):
+                continue
+            if member.resolve() in excluded_paths:
+                continue
+            if member.is_symlink():
+                raise ValueError(f"cannot certify symlinked Rust source directory: {member}")
+            if not (member / "Cargo.toml").is_file():
+                raise ValueError(f"{workspace_path}: shared member lacks manifest: {member}")
+            shared.add(member)
+    return tuple(sorted(shared))
+
 
 def rust_source_files(roots: tuple[Path, ...]) -> list[Path]:
     """Inventory owned sources without silently suppressing traversal failures."""
@@ -17,12 +53,17 @@ def rust_source_files(roots: tuple[Path, ...]) -> list[Path]:
     for root in roots:
         if not root.is_dir():
             raise ValueError(f"Rust source roots are missing: {root}")
+        root_is_package = (root / "Cargo.toml").is_file()
         for directory, directories, names in os.walk(root, onerror=fail):
             parts = Path(directory).relative_to(root).parts
             # Cargo output at package/target or package/fuzz/target is outside
-            # owned sources. A Rust module named target under src (or any other
-            # source area) is ordinary input and must remain in the inventory.
-            build_parent = len(parts) == 1 or (len(parts) == 2 and parts[-1] == "fuzz")
+            # owned sources, including when root itself is a package. A Rust
+            # module named target under src remains ordinary input.
+            build_parent = (
+                (not parts and root_is_package)
+                or len(parts) == 1
+                or (len(parts) == 2 and parts[-1] == "fuzz")
+            )
             source_area = any(
                 part in {"src", "tests", "fuzz_targets", "benches", "examples"} for part in parts
             )

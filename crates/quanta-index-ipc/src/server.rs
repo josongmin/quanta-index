@@ -1940,9 +1940,7 @@ where
         let repo_scope = RequestEnvelopeT::repo_scope(&request_payload);
         let queue_span = event_scope.enter(DiagnosticStageV1::QueueWait);
         let queue_wait = client_deadline.map_or(policy.queue_wait(), |deadline| {
-            policy
-                .queue_wait()
-                .min(deadline.saturating_duration_since(Instant::now()))
+            policy.queue_wait().min(deadline.saturating_duration_since(Instant::now()))
         });
         let permit = match slots.acquire(queue_wait, repo_scope.as_deref()) {
             Ok(permit) => {
@@ -2040,9 +2038,7 @@ where
         if let Some(deadline) = client_deadline {
             if deadline <= Instant::now() {
                 event_scope.finish(RequestEventStageV1::Aborted);
-                return ConnectionCloseReason::RequestDecodeFailed(
-                    IpcError::ClientIoDeadlineElapsed,
-                );
+                return ConnectionCloseReason::RequestDecodeFailed(IpcError::ClientIoDeadlineElapsed);
             }
             budget = budget.capped_at(deadline);
         }
@@ -2449,14 +2445,9 @@ fn read_exact_transport(reader: &mut impl Read, bytes: &mut [u8]) -> Result<(), 
     })
 }
 
-fn receive_request_deadline_v1(
-    reader: &mut IngressDeadlineReader<'_>,
-) -> Result<Instant, IpcError> {
+fn receive_request_deadline_v1(reader: &mut IngressDeadlineReader<'_>) -> Result<Instant, IpcError> {
     let anchor = Instant::now();
-    reader
-        .stream
-        .write_all(&REQUEST_DEADLINE_ACK_V1)
-        .map_err(IpcError::Io)?;
+    reader.stream.write_all(&REQUEST_DEADLINE_ACK_V1).map_err(IpcError::Io)?;
     let mut remaining = [0; 8];
     read_exact_transport(reader, &mut remaining)?;
     let deadline = anchor
@@ -2664,6 +2655,11 @@ fn encode_client_request_frame<T: serde::Serialize>(
 trait ClientResponseDecode {
     type Output;
 
+    #[cfg(feature = "native-send-observer-v1")]
+    fn response_loss_test_eligible_v1(&self) -> bool {
+        false
+    }
+
     /// The exact connected stream used for this request, before any write.
     /// Existing decoders preserve their behavior through the default no-op.
     fn connected(&self, _stream: &UnixStream) -> Result<(), IpcError> {
@@ -2745,10 +2741,7 @@ fn require_observed_peer_pid_v1(
 }
 
 impl ClientResponseDecode for PeerAdmittedRawClientResponse<'_> {
-    type Output = (
-        AdmittedClientResponseBody,
-        crate::KernelConnectedPeerProcessV1,
-    );
+    type Output = (AdmittedClientResponseBody, crate::KernelConnectedPeerProcessV1);
 
     fn connected(&self, stream: &UnixStream) -> Result<(), IpcError> {
         let peer = KernelPeerCredentials
@@ -2792,13 +2785,7 @@ pub fn send_request_body_with_budget_admitted_peer_v1<RequestEnvelopeT: serde::S
     request: &RequestEnvelopeT,
     budget: &RequestBudgetV1,
     memory: &MemoryScope,
-) -> Result<
-    (
-        AdmittedClientResponseBody,
-        crate::KernelConnectedPeerProcessV1,
-    ),
-    IpcError,
-> {
+) -> Result<(AdmittedClientResponseBody, crate::KernelConnectedPeerProcessV1), IpcError> {
     check_stream_budget(budget).map_err(IpcError::Io)?;
     let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
     send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
@@ -2852,9 +2839,13 @@ struct BoundPeerAdmittedRawClientResponse<'a> {
 impl ClientResponseDecode for BoundPeerAdmittedRawClientResponse<'_> {
     type Output = AdmittedClientResponseBody;
 
+    #[cfg(feature = "native-send-observer-v1")]
+    fn response_loss_test_eligible_v1(&self) -> bool {
+        true
+    }
+
     fn connected(&self, stream: &UnixStream) -> Result<(), IpcError> {
-        self.expected
-            .validate_connected_stream_v1(stream)
+        self.expected.validate_connected_stream_v1(stream)
             .map_err(IpcError::PeerBindingRefused)
     }
 
@@ -2937,20 +2928,9 @@ fn send_admitted_bound_peer_request<RequestEnvelopeT: serde::Serialize>(
     io_policy.admitted_multiframe = admitted_multiframe;
     io_policy.propagate_deadline = propagate_deadline;
     send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
-        socket,
-        request,
-        None,
-        io_policy,
-        None,
-        Some(budget),
-        Some(memory),
+        socket, request, None, io_policy, None, Some(budget), Some(memory),
         &BoundPeerAdmittedRawClientResponse {
-            raw: AdmittedRawClientResponse {
-                budget,
-                memory,
-                work: None,
-            },
-            expected,
+            raw: AdmittedRawClientResponse { budget, memory, work: None }, expected,
         },
     )
 }
@@ -3326,6 +3306,55 @@ where
     Ok((response, timing))
 }
 
+/// Observe one read-only request under its original deadline and cancellation.
+/// The optional peer lease is checked both before connecting and on the
+/// connected stream. Failed calls return no successful timing observation.
+pub fn send_request_with_budget_observed_v1<RequestEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    expected_peer: Option<&crate::KernelConnectedPeerProcessLeaseV1>,
+) -> Result<(ResponseEnvelopeT, ClientIpcTimingV1), IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    if let Some(expected) = expected_peer {
+        expected
+            .ensure_live_v1()
+            .map_err(IpcError::PeerBindingRefused)?;
+    }
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    let mut timing = ClientIpcTimingV1::default();
+    let response = match expected_peer {
+        Some(expected) => send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+            socket,
+            request,
+            None,
+            io_policy,
+            Some(&mut timing),
+            Some(budget),
+            None,
+            &BoundPeerTypedClientResponse::<ResponseEnvelopeT> {
+                expected,
+                response: TypedClientResponse(std::marker::PhantomData),
+            },
+        )?,
+        None => send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+            socket,
+            request,
+            None,
+            io_policy,
+            Some(&mut timing),
+            Some(budget),
+            None,
+            &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
+        )?,
+    };
+    Ok((response, timing))
+}
+
 pub fn send_request_observed_negotiated<RequestEnvelopeT, LinkedEnvelopeT, ResponseEnvelopeT>(
     socket: &Path,
     plain_request: &RequestEnvelopeT,
@@ -3350,6 +3379,40 @@ where
         &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
     )?;
     Ok((response, timing))
+}
+
+#[cfg(feature = "native-send-observer-v1")]
+fn wait_for_unread_response_v1(stream: &DeadlineStream) -> Result<(), IpcError> {
+    use rustix::net::{RecvFlags, recv};
+
+    let mut poll_fd = [PollFd::new(&stream.stream, PollFlags::IN | PollFlags::HUP)];
+    loop {
+        let remaining = stream.remaining().map_err(IpcError::Io)?;
+        let wait = remaining.min(Duration::from_millis(100));
+        let timeout = Timespec::try_from(wait)
+            .map_err(|reason| IpcError::Io(std::io::Error::new(ErrorKind::InvalidInput, reason)))?;
+        match poll(&mut poll_fd, Some(&timeout)) {
+            Ok(0) | Err(Errno::INTR) => continue,
+            Ok(_) => {
+                let mut byte = [0_u8; 1];
+                match recv(&stream.stream, &mut byte, RecvFlags::PEEK) {
+                    Ok((1, _)) => {
+                        let _remaining = stream.remaining().map_err(IpcError::Io)?;
+                        return Ok(());
+                    }
+                    Ok(_) => {
+                        return Err(IpcError::Io(std::io::Error::new(
+                            ErrorKind::UnexpectedEof,
+                            "selected peer closed before response bytes",
+                        )));
+                    }
+                    Err(Errno::INTR | Errno::AGAIN) => continue,
+                    Err(reason) => return Err(IpcError::Io(reason.into())),
+                }
+            }
+            Err(reason) => return Err(IpcError::Io(reason.into())),
+        }
+    }
 }
 
 fn send_request_inner<RequestEnvelopeT, LinkedEnvelopeT, Decode>(
@@ -3467,6 +3530,23 @@ where
     }
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), write_started) {
         timing.write = observed_ns(started.elapsed())?;
+    }
+    #[cfg(feature = "native-send-observer-v1")]
+    if decoder.response_loss_test_eligible_v1()
+        && crate::native_response_loss_test_support_v1::take_selected_v1(socket, frame.as_slice())
+    {
+        if let Err(error) = wait_for_unread_response_v1(&stream) {
+            crate::native_response_loss_test_support_v1::abort_selected_v1();
+            return Err(error);
+        }
+        // The genuine peer has written a response, but no client decoder reads
+        // one byte. Closing the same authenticated stream makes the ACK unknown.
+        drop(stream);
+        crate::native_response_loss_test_support_v1::mark_fired_v1();
+        return Err(IpcError::Io(std::io::Error::new(
+            ErrorKind::ConnectionReset,
+            "selected Native response withheld before client read",
+        )));
     }
     let decode_started = timing.as_ref().map(|_| Instant::now());
     let mut read_io = Duration::ZERO;
@@ -3668,22 +3748,14 @@ fn wait_for_connect(socket: &OwnedFd, deadline: Instant) -> std::io::Result<()> 
     }
 }
 
-fn send_request_deadline_v1(
-    stream: &mut DeadlineStream,
-    policy: ClientIoPolicy,
-) -> Result<(), IpcError> {
+fn send_request_deadline_v1(stream: &mut DeadlineStream, policy: ClientIoPolicy) -> Result<(), IpcError> {
     let write_error = |error| classify_client_io_error(error, IpcIoOperation::Write, policy);
-    stream
-        .write_all(&REQUEST_DEADLINE_PREFACE_V1)
-        .map_err(write_error)?;
+    stream.write_all(&REQUEST_DEADLINE_PREFACE_V1).map_err(write_error)?;
     let mut ack = [0; 4];
-    stream
-        .read_exact(&mut ack)
+    stream.read_exact(&mut ack)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Read, policy))?;
     if ack != REQUEST_DEADLINE_ACK_V1 {
-        return Err(IpcError::Decode(
-            "invalid request deadline acknowledgement".into(),
-        ));
+        return Err(IpcError::Decode("invalid request deadline acknowledgement".into()));
     }
     let remaining = stream.remaining().map_err(write_error)?;
     let nanos = u64::try_from(remaining.as_nanos()).unwrap_or(u64::MAX);

@@ -141,10 +141,11 @@ fn held_deep_preserves_independent_fast_and_foreground_control() -> TestResult {
     assert!(!fast_done.deep_delivered);
     assert_eq!(fast_done.reason, NativeEffortReason::ExplicitFast);
 
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(10), &budget())?;
-    client.report_interaction_activity(publisher, 1, &budget())?;
-    client.renew_interaction_publisher(publisher, 2, &budget())?;
-    client.end_interaction_publisher(publisher, 3, &budget())?;
+    // Foreground control commands stay admitted while Deep holds its charge.
+    let live = LivePublisher::begin(&client, Duration::from_secs(10))?;
+    live.activity()?;
+    live.renew()?;
+    live.end()?;
 
     // The second query may publish Fast, but its optional Deep must be
     // refused before invoking the provider while the first Deep holds charge.

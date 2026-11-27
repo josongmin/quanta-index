@@ -8,7 +8,7 @@
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
-use lance::session::Session;
+use lance::{Dataset, dataset::builder::DatasetBuilder, session::Session};
 use lance_io::object_store::{
     ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreProvider, ObjectStoreRegistry,
     providers::memory::MemoryStoreProvider,
@@ -22,13 +22,9 @@ use url::Url;
 
 use super::{
     ann_files::LoadedAnnFileSet,
+    ann_lance::{self, ANN_DATASET_URI, RegionRow, RegionSeal},
     ann_store::{AnnFile, AnnMemoryStore, AnnStoreLimits},
 };
-
-/// The authority and path are fixed across build and selected-ticket reopen.
-/// Each connection receives a distinct `Session` and provider instance.
-const ANN_URI: &str = "memory://native-ann/region";
-pub(super) const ANN_TABLE_NAME: &str = "region";
 
 #[derive(Debug)]
 struct AdmittedMemoryProvider {
@@ -46,10 +42,6 @@ impl ObjectStoreProvider for AdmittedMemoryProvider {
         let mut store = self.delegate.new_store(base_path, params).await?;
         store.inner = self.inner.clone();
         Ok(store)
-    }
-
-    fn requires_provider_path(&self) -> bool {
-        true
     }
 
     fn extract_path(&self, url: &Url) -> lance::Result<Path> {
@@ -101,16 +93,16 @@ impl AnnLanceSession {
     fn with_store(store: Arc<AnnMemoryStore>, budget: &WorkBudget) -> Result<Self, IndexError> {
         budget.checkpoint()?;
         let request = budget.request().clone();
-        // Lance's default cache capacities are separate memory allocations;
-        // disable them for this region instead of escaping the work grant.
-        let session = Arc::new(Session::new(0, 0, Arc::new(ObjectStoreRegistry::default())));
-        session.store_registry().insert(
+        let registry = ObjectStoreRegistry::empty();
+        registry.insert(
             "memory",
             Arc::new(AdmittedMemoryProvider {
                 inner: Arc::clone(&store),
                 delegate: MemoryStoreProvider,
             }),
         );
+        // Use only the request-owned store and disable Lance's separate caches.
+        let session = Arc::new(Session::new(0, 0, Arc::new(registry)));
         budget.checkpoint()?;
         Ok(Self {
             store,
@@ -133,17 +125,38 @@ impl AnnLanceSession {
         Arc::clone(&self.store)
     }
 
-    /// A connection uses this instance's registry, including on reopen.
-    pub(super) async fn connect(&self) -> Result<lancedb::Connection, IndexError> {
+    /// Create only the fixed dataset in this bounded session.
+    pub(super) async fn build_region(
+        &self,
+        rows: &[RegionRow<'_>],
+        recipe: quanta_index_core::index::Digest,
+        generation: u64,
+        dimension: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<(Arc<Dataset>, RegionSeal), IndexError> {
         self.checkpoint()?;
-        let connection = lancedb::connect(ANN_URI)
-            .session(Arc::clone(&self.session))
-            .execute()
+        ann_lance::build_region_direct(
+            Arc::clone(&self.session),
+            rows,
+            recipe,
+            generation,
+            dimension,
+            budget,
+        )
+        .await
+    }
+
+    pub(super) async fn open_dataset(&self) -> Result<Arc<Dataset>, IndexError> {
+        self.checkpoint()?;
+        let loaded = DatasetBuilder::from_uri(ANN_DATASET_URI)
+            .with_session(Arc::clone(&self.session))
+            .load()
             .await
-            .map_err(|error| IndexError::Storage(format!("ANN Lance connect: {error}")));
-        let connection = self.resolve(connection)?;
+            .map(Arc::new)
+            .map_err(|error| IndexError::Storage(format!("ANN selected table: {error}")));
+        let dataset = self.resolve(loaded)?;
         self.checkpoint()?;
-        Ok(connection)
+        Ok(dataset)
     }
 
     /// Vendor helpers can render store errors into strings. Consume the refusal
@@ -209,6 +222,75 @@ mod tests {
             &mut budget,
         )?;
         Ok((session, budget))
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the registry must return the exact bounded store owned by the ANN session"
+    )]
+    fn registry_uses_bounded_store_and_freeze_refuses_later_writes() -> Result<(), IndexError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| IndexError::Storage(format!("ANN test runtime: {error}")))?;
+        crate::run_blocking(&runtime, async {
+            let (session, _budget) = test_session()?;
+            let (other_session, _other_budget) = test_session()?;
+            let registry = session.session.store_registry();
+            assert!(registry.get_provider("file").is_none());
+            assert!(registry.get_provider("shared-memory").is_none());
+            let uri = Url::parse(ANN_DATASET_URI)
+                .map_err(|error| IndexError::Storage(format!("ANN test URI: {error}")))?;
+            let store = registry
+                .get_store(uri.clone(), &ObjectStoreParams::default())
+                .await
+                .map_err(|error| IndexError::Storage(format!("ANN registry store: {error}")))?;
+            let other_store = other_session
+                .session
+                .store_registry()
+                .get_store(uri, &ObjectStoreParams::default())
+                .await
+                .map_err(|error| {
+                    IndexError::Storage(format!("ANN other registry store: {error}"))
+                })?;
+            let path = Path::from("a");
+            let _written = store
+                .inner
+                .put(&path, PutPayload::from_static(b"x"))
+                .await
+                .map_err(super::super::ann_store::index_error)?;
+            // The registry wraps the injected store for tracing and I/O
+            // accounting, so compare its behavior and backing rather than
+            // the outer Arc pointer.
+            assert!(
+                store
+                    .inner
+                    .put(&Path::from("b"), PutPayload::from_static(b"x"))
+                    .await
+                    .is_err()
+            );
+            assert!(matches!(
+                session.store.take_denial(),
+                Some(IndexError::ResourceLimited)
+            ));
+            assert!(matches!(
+                other_store.inner.get(&path).await,
+                Err(object_store::Error::NotFound { .. })
+            ));
+            let files = session.freeze_and_snapshot().await?;
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].path, "a");
+            assert_eq!(files[0].bytes.as_ref(), b"x");
+            assert!(
+                store
+                    .inner
+                    .put(&path, PutPayload::from_static(b"y"))
+                    .await
+                    .is_err()
+            );
+            Ok(())
+        })
     }
 
     #[test]

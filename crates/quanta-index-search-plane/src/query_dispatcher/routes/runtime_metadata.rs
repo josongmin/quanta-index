@@ -709,12 +709,17 @@ fn lexical_candidate_from_chunk(pin: &GenerationPin, chunk: &ChunkRecord) -> Lex
         revision_id: pin.revision_id.clone(),
         manifest_generation: pin.manifest_generation,
         repo_relative_path: chunk.repo_relative_path.clone(),
-        start_line: chunk.start_line,
-        end_line: chunk.end_line,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: chunk.start_line,
+            end_line: chunk.end_line,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: chunk.derived_snippet().to_string(),
+            // A projected chunk carries no single lexical hit anchor.
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score: 1.0,
-        snippet: chunk.derived_snippet().to_string(),
-        // A projected chunk carries no single lexical hit anchor.
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }

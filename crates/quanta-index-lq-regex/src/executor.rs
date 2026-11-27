@@ -27,12 +27,17 @@
 //! interruption check between candidates and stops with
 //! [`RegexErrorCode::Interrupted`] when it answers `true`.
 
+use core::mem::size_of;
 use core::time::Duration;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use quanta_index_lq_trigram::{DocId, DocResolver, NecessaryGramExpr};
-use regex_automata::{MatchKind, meta};
-use regex_syntax::hir::{Hir, Look};
+use regex_automata::nfa::thompson::{State, WhichCaptures};
+use regex_automata::util::iter::Searcher;
+use regex_automata::util::primitives::StateID;
+use regex_automata::{Input, MatchKind, meta};
+use regex_syntax::hir::{Class, ClassBytesRange, ClassUnicodeRange, Hir, HirKind, Look};
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
 use crate::dialect_ast_walk::{classify_parse_failure, walk_for_inline_flag};
@@ -40,13 +45,163 @@ use crate::errors::{LimitDimension, RegexError, RegexErrorCode};
 use crate::estimator::estimate_nfa_states;
 use crate::literal_extract::extract_prefilter_literal_alternation;
 
-// Match the pinned regex 1.12.4 byte-engine defaults explicitly. These are
-// per-NFA and per-lazy-DFA-cache limits, not an aggregate allocation bound.
-const ENGINE_NFA_SIZE_LIMIT_BYTES: usize = 10 * (1 << 20);
-const ENGINE_DFA_CACHE_LIMIT_BYTES: usize = 2 * (1 << 20);
 // A hard input-size gate before the dialect AST parse and HIR translation.
 // This limits parser work per pattern, not aggregate compiler/cache memory.
 const MAX_REGEX_PATTERN_BYTES: usize = 64 * (1 << 10);
+
+/// Heap ceiling for each NFA the engine builds (`nfa_size_limit`).
+///
+/// Construction holds up to four of these at once (see
+/// [`engine_construction_bytes`]), so with the one-pass ceiling one engine's
+/// construction grant is 21 MiB, and four content engines with their search
+/// caches fit an interactive query's 64 MiB.
+pub const ENGINE_NFA_SIZE_LIMIT_BYTES: usize = 5 * (1 << 20);
+/// Cache capacity of each lazy DFA the engine builds (`hybrid_cache_capacity`).
+pub const ENGINE_DFA_CACHE_LIMIT_BYTES: usize = 2 * (1 << 20);
+/// Size ceiling of the one-pass DFA (`onepass_size_limit`).
+pub const ENGINE_ONEPASS_SIZE_LIMIT_BYTES: usize = 1 << 20;
+/// Lazy DFAs whose caches one meta regex can hold: the forward and reverse
+/// core DFAs, and the reverse DFA of the reverse-suffix and reverse-inner
+/// strategies.
+const LAZY_DFA_CACHES: usize = 3;
+/// One `PikeVM` NFA state in its cache: two active-state sets, each with a
+/// sparse and a dense state id and the implicit group's two slots.
+const PIKEVM_BYTES_PER_STATE: usize = 2 * (2 * size_of::<StateID>() + 2 * size_of::<usize>());
+/// One epsilon-closure frame: a state id or a capture slot with an optional
+/// offset, plus the enum tag and padding.
+const CLOSURE_FRAME_BYTES: usize = 3 * size_of::<usize>();
+/// One HIR node's boxed property record: two optional lengths, five look
+/// sets, flags and capture counts fit in sixteen words.
+const HIR_PROPERTIES_BYTES: usize = 16 * size_of::<usize>();
+
+/// The meta regex configuration, made explicit so its retained heap is
+/// bounded by these settings; see [`engine_retained_bytes`].
+///
+/// - No full DFA (`dfa(false)`) and no bounded backtracker (`backtrack(false)`):
+///   a backtracker's frame stack grows with its visited set, which its
+///   configuration does not bound.
+/// - Only the implicit whole-match group, so the one-pass and `PikeVM` caches
+///   carry no explicit capture slots.
+/// - Lazy DFAs that keep clearing their cache give up, and a Unicode word
+///   boundary over non-ASCII input makes them quit; the meta regex then
+///   reruns that search with an engine that cannot fail, so exhaustion never
+///   changes an answer.
+#[must_use]
+pub fn engine_config() -> meta::Config {
+    meta::Regex::config()
+        .match_kind(MatchKind::LeftmostFirst)
+        .utf8_empty(false)
+        .which_captures(WhichCaptures::Implicit)
+        .nfa_size_limit(Some(ENGINE_NFA_SIZE_LIMIT_BYTES))
+        .hybrid_cache_capacity(ENGINE_DFA_CACHE_LIMIT_BYTES)
+        .onepass_size_limit(Some(ENGINE_ONEPASS_SIZE_LIMIT_BYTES))
+        .dfa(false)
+        .backtrack(false)
+}
+
+/// The most a search cache of a meta regex built with [`engine_config`]
+/// can hold, given the regex's reported heap `engine_bytes`.
+///
+/// - Each lazy DFA cache is capped by its configured capacity.
+/// - The `PikeVM` cache holds [`PIKEVM_BYTES_PER_STATE`] per NFA state, and
+///   its closure stack at most one frame per state and per union alternate.
+///   Every state occupies `size_of::<State>()` and every alternate one state
+///   id of the reported heap, so both counts are bounded by `engine_bytes`.
+/// - The one-pass cache holds only explicit capture slots, of which there
+///   are none.
+fn search_cache_bound(engine_bytes: usize) -> Option<usize> {
+    let states = engine_bytes.checked_div(size_of::<State>())?;
+    let frames = states.checked_add(engine_bytes.checked_div(size_of::<StateID>())?)?;
+    LAZY_DFA_CACHES
+        .checked_mul(ENGINE_DFA_CACHE_LIMIT_BYTES)?
+        .checked_add(states.checked_mul(PIKEVM_BYTES_PER_STATE)?)?
+        .checked_add(frames.checked_mul(CLOSURE_FRAME_BYTES)?)
+}
+
+/// Peak NFA heap the configured meta builder can hold while it builds one
+/// regex, or `None` when `config` does not bound it.
+///
+/// It is derived from the NFAs `regex-automata` 0.4 builds for one pattern,
+/// each capped by `nfa_size_limit` (checked on the intermediate builder):
+/// - the forward core NFA, always;
+/// - the reverse core NFA, whenever a lazy or full DFA is enabled;
+/// - the reverse prefix NFA of the reverse-inner strategy, which the builder
+///   may choose under automatic prefilters, leftmost-first matching and a
+///   lazy or full DFA.
+///
+/// A build holds its intermediate builder and the NFA it emits at once,
+/// while every earlier NFA is retained, so the peak is one limit per earlier
+/// NFA and two for the last build, plus the one-pass DFA (built from the
+/// forward NFA, capped by `onepass_size_limit`). A full DFA's determinization
+/// is not bounded by these limits, so a config enabling it is `None`.
+#[must_use]
+pub fn engine_construction_bytes(config: &meta::Config) -> Option<usize> {
+    if config.get_dfa() {
+        return None;
+    }
+    let nfa = config.get_nfa_size_limit()?;
+    let reverse = config.get_hybrid();
+    let inner = reverse
+        && config.get_auto_prefilter()
+        && config.get_match_kind() == MatchKind::LeftmostFirst;
+    let builds = 1_usize
+        .checked_add(usize::from(reverse))?
+        .checked_add(usize::from(inner))?;
+    let onepass = if config.get_onepass() {
+        config.get_onepass_size_limit()?
+    } else {
+        0
+    };
+    builds
+        .checked_add(1)?
+        .checked_mul(nfa)?
+        .checked_add(onepass)
+}
+
+/// Every heap byte a meta regex built with [`engine_config`] can retain
+/// with one search cache: its reported heap `engine_bytes` plus the bound of
+/// that cache. `None` on overflow.
+#[must_use]
+pub fn engine_retained_bytes(engine_bytes: usize) -> Option<usize> {
+    search_cache_bound(engine_bytes)?.checked_add(engine_bytes)
+}
+
+/// Approximate heap of a HIR, measured from its own structure: each node's
+/// property record and child storage, literal bytes and class ranges.
+fn hir_heap_bytes(hir: &Hir) -> usize {
+    let mut total = 0_usize;
+    let mut pending = vec![hir];
+    while let Some(node) = pending.pop() {
+        let own = match node.kind() {
+            HirKind::Empty | HirKind::Look(_) => 0,
+            HirKind::Literal(literal) => literal.0.len(),
+            HirKind::Class(Class::Unicode(class)) => class
+                .ranges()
+                .len()
+                .saturating_mul(size_of::<ClassUnicodeRange>()),
+            HirKind::Class(Class::Bytes(class)) => class
+                .ranges()
+                .len()
+                .saturating_mul(size_of::<ClassBytesRange>()),
+            HirKind::Repetition(repetition) => {
+                pending.push(&repetition.sub);
+                size_of::<Hir>()
+            }
+            HirKind::Capture(capture) => {
+                pending.push(&capture.sub);
+                size_of::<Hir>().saturating_add(capture.name.as_ref().map_or(0, |name| name.len()))
+            }
+            HirKind::Concat(children) | HirKind::Alternation(children) => {
+                pending.extend(children.iter());
+                children.len().saturating_mul(size_of::<Hir>())
+            }
+        };
+        total = total
+            .saturating_add(HIR_PROPERTIES_BYTES)
+            .saturating_add(own);
+    }
+    total
+}
 
 /// Compiled regex paired with its HIR so callers can re-run
 /// literal extraction without re-parsing.
@@ -54,6 +209,10 @@ pub struct RegexExecutor {
     pattern: Box<str>,
     hir: Hir,
     compiled: meta::Regex,
+    /// The one search cache, so exactly one is ever allocated and charged.
+    cache: Mutex<meta::Cache>,
+    /// The regex's reported heap plus [`search_cache_bound`].
+    engine_bytes: usize,
 }
 
 /// Validated regex input before the engine allocates its automata.
@@ -85,6 +244,11 @@ impl RegexCompilationPlan {
             execution_hir,
             estimated_states,
         })
+    }
+
+    /// The HIR an engine executes: unobserved explicit captures removed.
+    pub(crate) fn execution_hir(&self) -> &Hir {
+        self.execution_hir.as_ref().unwrap_or(&self.hir)
     }
 
     /// The dialect estimator's state count, not an aggregate byte bound.
@@ -225,17 +389,11 @@ impl RegexExecutor {
 
     /// Compile an already validated plan without repeating dialect parsing.
     pub fn compile_prepared(plan: RegexCompilationPlan) -> Result<Self, RegexError> {
-        // Mirror regex 1.12.4's bytes builder configuration. Build from the
-        // already-validated HIR to avoid a second AST parse and translation.
+        // Build from the already-validated HIR to avoid a second AST parse
+        // and translation.
         let compiled = meta::Regex::builder()
-            .configure(
-                meta::Regex::config()
-                    .match_kind(MatchKind::LeftmostFirst)
-                    .utf8_empty(false)
-                    .nfa_size_limit(Some(ENGINE_NFA_SIZE_LIMIT_BYTES))
-                    .hybrid_cache_capacity(ENGINE_DFA_CACHE_LIMIT_BYTES),
-            )
-            .build_from_hir(plan.execution_hir.as_ref().unwrap_or(&plan.hir))
+            .configure(engine_config())
+            .build_from_hir(plan.execution_hir())
             .map_err(|e| {
                 e.size_limit().map_or_else(
                     || {
@@ -252,11 +410,40 @@ impl RegexExecutor {
                     },
                 )
             })?;
+        let engine_bytes = engine_retained_bytes(compiled.memory_usage()).ok_or_else(|| {
+            RegexError::plan_limit(
+                LimitDimension::CompiledBytes,
+                "compiled regex retained bytes overflow",
+            )
+        })?;
+        let cache = Mutex::new(compiled.create_cache());
         Ok(Self {
             pattern: plan.pattern,
             hir: plan.hir,
             compiled,
+            cache,
+            engine_bytes,
         })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, meta::Cache> {
+        // Every search resets the cache state it uses, so a cache left by a
+        // panicking holder is still valid scratch.
+        match self.cache.lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => PoisonError::into_inner(poisoned),
+        }
+    }
+
+    /// Every heap byte this executor retains: its pattern text, its HIR
+    /// (measured from its structure) and the compiled engine with the
+    /// configured bounds of its growing caches.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        self.pattern
+            .len()
+            .saturating_add(hir_heap_bytes(&self.hir))
+            .saturating_add(self.engine_bytes)
     }
 
     /// Borrow the source pattern.
@@ -289,7 +476,10 @@ impl RegexExecutor {
     /// Verify a single document's bytes against the compiled regex.
     #[must_use]
     pub fn verify(&self, doc_text: &[u8]) -> bool {
-        self.compiled.is_match(doc_text)
+        let mut cache = self.lock();
+        self.compiled
+            .search_half_with(&mut cache, &Input::new(doc_text).earliest(true))
+            .is_some()
     }
 
     /// Reconstruct ranges with the exact compiled matcher used by [`Self::verify`].
@@ -335,28 +525,35 @@ impl RegexExecutor {
             return Err(RegexRangeError::SourceByteLimit);
         }
         let mut ranges = Vec::new();
-        let mut matches = self.compiled.find_iter(doc_text);
-        while ranges.len() < max_ranges {
-            if interrupted() {
-                return Err(RegexRangeError::Interrupted);
-            }
-            let next = matches.next();
+        let mut exhausted = false;
+        if max_ranges == 0 || interrupted() {
+            return if max_ranges == 0 {
+                Ok(RegexRanges { ranges, exhausted })
+            } else {
+                Err(RegexRangeError::Interrupted)
+            };
+        }
+        let mut cache = self.lock();
+        let mut searcher = Searcher::new(Input::new(doc_text));
+        loop {
+            let next = searcher.advance(|input| Ok(self.compiled.search_with(&mut cache, input)));
             if interrupted() {
                 return Err(RegexRangeError::Interrupted);
             }
             let Some(found) = next else {
-                return Ok(RegexRanges {
-                    ranges,
-                    exhausted: true,
-                });
+                exhausted = true;
+                break;
             };
             reserve(&mut ranges)?;
             ranges.push(found.range());
+            if ranges.len() >= max_ranges {
+                break;
+            }
+            if interrupted() {
+                return Err(RegexRangeError::Interrupted);
+            }
         }
-        Ok(RegexRanges {
-            ranges,
-            exhausted: false,
-        })
+        Ok(RegexRanges { ranges, exhausted })
     }
 
     /// Iterate `candidates`, verify each via [`RegexExecutor::verify`],
@@ -576,11 +773,9 @@ fn span_slice<'a>(pattern: &'a str, span: &regex_syntax::ast::Span) -> &'a str {
     reason = "Result-returning range regressions propagate setup errors and assert byte-exact fixture oracles"
 )]
 mod tests {
-    use super::{
-        ENGINE_DFA_CACHE_LIMIT_BYTES, ENGINE_NFA_SIZE_LIMIT_BYTES, MAX_REGEX_PATTERN_BYTES,
-        RegexExecutor,
-    };
+    use super::{MAX_REGEX_PATTERN_BYTES, RegexExecutor};
     use crate::errors::{ForbiddenKind, LimitDimension, RegexErrorCode};
+    use crate::{ENGINE_DFA_CACHE_LIMIT_BYTES, ENGINE_NFA_SIZE_LIMIT_BYTES};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
 
@@ -1283,5 +1478,154 @@ mod tests {
             RegexExecutor::compile(&oversized).err().map(|e| e.code),
             Some(RegexErrorCode::PlanLimitExceeded)
         );
+    }
+
+    /// A fixed pseudo-random `a`/`b` haystack long enough to thrash a lazy DFA.
+    fn ab_haystack(len: usize) -> Vec<u8> {
+        let mut state = 0x2545_f491_u32;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                if state & 1 == 0 { b'a' } else { b'b' }
+            })
+            .collect()
+    }
+
+    /// Lazy DFAs that give up (cache thrash) or quit (Unicode `\b` over
+    /// non-ASCII) leave the answer equal to the reference regex.
+    #[test]
+    fn exhausted_or_quitting_lazy_dfas_keep_reference_answers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let thrash = "(?:a|b)*a(?:a|b){14}b";
+        let haystack = ab_haystack(1 << 20);
+        let boundary = r"\bcafé\b";
+        let text = "x café é café- écafé".as_bytes();
+        for (pattern, source) in [(thrash, haystack.as_slice()), (boundary, text)] {
+            let reference = regex::bytes::Regex::new(pattern)?;
+            let executor = RegexExecutor::compile(pattern)?;
+            let expected: Vec<_> = reference.find_iter(source).map(|m| m.range()).collect();
+            assert!(!expected.is_empty(), "{pattern:?}");
+            let actual =
+                executor.find_ranges_bounded(source, source.len(), usize::MAX, &|| false)?;
+            assert!(actual.exhausted, "{pattern:?}");
+            assert_eq!(actual.ranges, expected, "{pattern:?}");
+            assert_eq!(executor.verify(source), reference.is_match(source));
+        }
+        Ok(())
+    }
+
+    /// After heavy searches the one search cache stays within the bound
+    /// charged for it, and the charge covers the regex's reported heap.
+    #[test]
+    fn search_cache_stays_within_its_charged_bound() -> Result<(), Box<dyn std::error::Error>> {
+        use std::fmt::Write as _;
+        let thrash_haystack = ab_haystack(1 << 20);
+        let mut mixed = String::new();
+        for line in 0..20_000 {
+            writeln!(
+                mixed,
+                "pub fn step_{line}(budget: &mut WorkBudget) -> café_bytes {{ naïve_{line}ing }}"
+            )?;
+        }
+        for pattern in [
+            "WorkBudget",
+            r"\w+foo\w+",
+            r"\w+Budget\w+",
+            r"[a-z_]+_bytes",
+            "WorkBudget|café_bytes|naïve",
+            r"\b\w+ing\b",
+            r"(?m)^\s*pub fn",
+            "(?:a|b)*a(?:a|b){14}b",
+        ] {
+            let executor = RegexExecutor::compile(pattern)?;
+            for source in [thrash_haystack.as_slice(), mixed.as_bytes()] {
+                let _ranges =
+                    executor.find_ranges_bounded(source, source.len(), usize::MAX, &|| false)?;
+                let _verified = executor.verify(source);
+            }
+            let used = executor.lock().memory_usage();
+            let engine = executor.compiled.memory_usage();
+            let bound = super::search_cache_bound(engine).ok_or("bound overflow")?;
+            assert!(used <= bound, "{pattern:?}: cache {used} > bound {bound}");
+            if pattern == "(?:a|b)*a(?:a|b){14}b" {
+                // The thrash pattern must really fill a lazy DFA cache, or
+                // the bound above is checked against an idle cache.
+                assert!(
+                    used.saturating_mul(2) > ENGINE_DFA_CACHE_LIMIT_BYTES,
+                    "{pattern:?}: cache {used} never grew"
+                );
+            }
+            assert_eq!(executor.engine_bytes, engine + bound, "{pattern:?}");
+            assert!(
+                executor.retained_bytes() > executor.engine_bytes,
+                "{pattern:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Every NFA the configured engine builds for one regex is admitted.
+    ///
+    /// A regex whose meta strategy is reverse-inner retains a third NFA, the
+    /// reverse prefix before its inner literal, beside the forward and the
+    /// reverse core NFAs. Each build holds its builder and the NFA it emits
+    /// while every earlier NFA is retained, so the peak is one NFA size limit
+    /// per retained NFA, two for the build in flight, and the one-pass DFA.
+    #[test]
+    fn construction_bound_covers_every_nfa_the_engine_builds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::ENGINE_ONEPASS_SIZE_LIMIT_BYTES;
+        use regex_automata::meta;
+        use regex_automata::nfa::thompson::{self, WhichCaptures};
+        use regex_syntax::hir::Hir;
+        let config = super::engine_config();
+        let bound = super::engine_construction_bytes(&config).ok_or("unbounded construction")?;
+        let nfa = |hir: &Hir, reverse: bool| -> Result<usize, Box<dyn std::error::Error>> {
+            let built = thompson::Compiler::new()
+                .configure(
+                    thompson::Config::new()
+                        .utf8(false)
+                        .nfa_size_limit(Some(ENGINE_NFA_SIZE_LIMIT_BYTES))
+                        .shrink(false)
+                        .which_captures(if reverse {
+                            WhichCaptures::None
+                        } else {
+                            WhichCaptures::Implicit
+                        })
+                        .reverse(reverse),
+                )
+                .build_from_hir(hir)?;
+            Ok(built.memory_usage())
+        };
+        for (pattern, inner) in [
+            // A plain regex: the forward and reverse core NFAs.
+            (r"\p{Greek}{1000}", false),
+            // Reverse inner: the Greek prefix before `zqzqzq` is compiled
+            // again, in reverse, by the strategy itself.
+            (r"\p{Greek}{1000}zqzqzq\w", true),
+        ] {
+            let hir = regex_syntax::parse(pattern)?;
+            let regex = meta::Regex::builder()
+                .configure(config.clone())
+                .build_from_hir(&hir)?;
+            let core = nfa(&hir, false)?.saturating_add(nfa(&hir, true)?);
+            // Beyond the core NFAs a regex retains at most a one-pass DFA and
+            // a literal prefilter, unless it retains another NFA.
+            let extra = regex.memory_usage().saturating_sub(core);
+            let third = extra > ENGINE_ONEPASS_SIZE_LIMIT_BYTES.saturating_add(1 << 16);
+            assert_eq!(
+                third, inner,
+                "{pattern:?}: {extra} bytes beyond the core NFAs"
+            );
+            let builds = 2 + usize::from(third);
+            let peak = (builds + 1) * ENGINE_NFA_SIZE_LIMIT_BYTES + ENGINE_ONEPASS_SIZE_LIMIT_BYTES;
+            assert!(
+                bound >= peak,
+                "{pattern:?}: construction bound {bound} < {peak}"
+            );
+        }
+        Ok(())
     }
 }

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use quanta_index_contract::index::MapRoot;
 use quanta_index_core::index::ports::CatalogReadPort;
 use quanta_index_core::index::{
     CollectionId, IndexError, MemoryLease, MemoryLifetime, ReadSessionLease,
@@ -20,6 +21,7 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 use rustix::fs::{Mode, OFlags, open};
 
 use super::*;
+use crate::connection::AbandonedReadPin;
 
 pub(super) mod creation;
 mod read_attempt;
@@ -237,6 +239,105 @@ fn read_open_failpoint(phase: &str) {
         loop {
             std::thread::park_timeout(Duration::from_secs(1));
         }
+    }
+}
+
+/// Retry at most `limit` releases transferred by `abandon_ticket`, each pin
+/// independently.
+///
+/// Every examined pin gets exactly one attempt per round, oldest first. A
+/// committed delete, or an exact pin proven absent (`SnapshotUnavailable`:
+/// already deleted by an earlier commit whose acknowledgement was lost), ends
+/// custody. Any other release error is recorded on that pin, which moves to
+/// the back of the queue for a later round; it neither fails the round nor
+/// stops the other pins or the dead-session scan that follows. Only round
+/// budget, cancellation and custody-lock errors fail the round itself.
+/// Returns `(settled, deferred)`.
+fn settle_abandoned_pins(
+    catalog: &SqliteCatalog,
+    limit: u32,
+    budget: &mut WorkBudget,
+) -> Result<(u32, u32), IndexError> {
+    let lock = || {
+        catalog
+            .abandoned_read_pins
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))
+    };
+    let examined: Vec<AbandonedReadPin> = {
+        let pending = lock()?;
+        let count = pending
+            .len()
+            .min(usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?);
+        let mut examined = Vec::new();
+        examined
+            .try_reserve_exact(count)
+            .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+        examined.extend(pending.iter().take(count).cloned());
+        examined
+    };
+    let mut settled = 0_u32;
+    let mut deferred = 0_u32;
+    for pin in examined {
+        budget.checkpoint()?;
+        budget.charge(WorkUsage {
+            reads: 1,
+            mutations: 1,
+            ..WorkUsage::default()
+        })?;
+        let outcome = match catalog.release_ticket(pin.session.as_ref(), pin.ticket) {
+            Ok(()) | Err(IndexError::SnapshotUnavailable) => None,
+            Err(error) => Some(error),
+        };
+        let settled_now = {
+            let mut pending = lock()?;
+            let Some(index) = pending.iter().position(|held| held.ticket == pin.ticket) else {
+                continue;
+            };
+            let mut held = pending.remove(index);
+            match outcome {
+                Some(error) => {
+                    held.last_error = Some(error);
+                    pending.push(held);
+                    false
+                }
+                None => true,
+            }
+        };
+        if settled_now {
+            settled = settled.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        } else {
+            deferred = deferred.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+    }
+    if deferred > 0 {
+        // A deferred pin stays queued: keep the next round's read recovery due.
+        catalog.record_read_recovery_demand();
+    }
+    Ok((settled, deferred))
+}
+
+impl SqliteCatalog {
+    /// Observe pins this Catalog holds in settlement custody, oldest first,
+    /// with the error of each one's latest failed settlement attempt.
+    pub fn abandoned_read_pins(
+        &self,
+    ) -> Result<Vec<(ReadTicketLease, Option<IndexError>)>, IndexError> {
+        let pending = self
+            .abandoned_read_pins
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        let mut observed = Vec::new();
+        observed
+            .try_reserve_exact(pending.len())
+            .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+        observed.extend(
+            pending
+                .iter()
+                .map(|pin| (pin.ticket, pin.last_error.clone())),
+        );
+        drop(pending);
+        Ok(observed)
     }
 }
 
@@ -812,6 +913,12 @@ pub(super) fn checked_pin(
 // Both public reads and execution preparation use this original pin issuer.
 // The caller already authenticated the same live session and sampled its clock
 // inside the held transaction. No intermediate pin is committed by this helper.
+#[derive(Clone, Copy)]
+enum TicketAdmission {
+    Read,
+    SourceBodyScrub,
+}
+
 fn issue_ticket(
     catalog: &SqliteCatalog,
     tx: &rusqlite::Transaction<'_>,
@@ -820,7 +927,8 @@ fn issue_ticket(
     milliseconds: u64,
     now: u64,
     budget: &WorkBudget,
-) -> Result<TicketRecord, IndexError> {
+    admission: TicketAdmission,
+) -> Result<(TicketRecord, bool), IndexError> {
     let expiry = now
         .checked_add(milliseconds)
         .ok_or(IndexError::ResourceLimited)?;
@@ -880,14 +988,22 @@ fn issue_ticket(
         }
     };
     ensure_roots_with_budget(tx, &view, Some(budget))?;
-    view_quarantine::refuse_if_quarantined(
+    let quarantined = match view_quarantine::refuse_if_quarantined(
         catalog,
         tx,
         &workspace_blob,
         int(view.identity.epoch)?,
         int(view.identity.sequence)?,
         Some(budget),
-    )?;
+    ) {
+        Ok(()) => false,
+        Err(IndexError::CorruptObject(_))
+            if matches!(admission, TicketAdmission::SourceBodyScrub) =>
+        {
+            true
+        }
+        Err(error) => return Err(error),
+    };
     budget.checkpoint()?;
     let fence = next_fence(tx)?;
     let session_id = int(binding.id)?;
@@ -920,15 +1036,114 @@ fn issue_ticket(
         )
         .map_err(|error| sql(&error))?;
     exactly_one(changed, "seal read pin")?;
-    Ok(TicketRecord {
-        lease: ReadTicketLease {
-            id,
-            session: binding,
-            fence,
-            expires_at_ms: expiry,
+    Ok((
+        TicketRecord {
+            lease: ReadTicketLease {
+                id,
+                session: binding,
+                fence,
+                expires_at_ms: expiry,
+            },
+            view,
         },
-        view,
-    })
+        quarantined,
+    ))
+}
+
+// A maintenance pin has retention custody only. Its lease is never exposed as
+// a read ticket, so ordinary query validation still refuses quarantined views.
+struct SourceScrubPin<'a> {
+    catalog: &'a SqliteCatalog,
+    session: Arc<dyn ReadSessionLease>,
+    lease: Option<ReadTicketLease>,
+}
+
+impl SourceScrubPin<'_> {
+    fn finish<T>(
+        mut self,
+        result: Result<T, IndexError>,
+        budget: &WorkBudget,
+    ) -> Result<T, IndexError> {
+        let released = self
+            .catalog
+            .release_ticket(self.session.as_ref(), self.lease.expect("held scrub pin"));
+        if released.is_ok() {
+            self.lease = None;
+        }
+        match (result, released) {
+            (Err(primary), _) => Err(primary),
+            (Ok(_), Err(cleanup)) => Err(cleanup),
+            (Ok(value), Ok(())) => {
+                budget.checkpoint()?;
+                Ok(value)
+            }
+        }
+    }
+}
+
+impl Drop for SourceScrubPin<'_> {
+    fn drop(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        if self
+            .catalog
+            .release_ticket(self.session.as_ref(), lease)
+            .is_err()
+        {
+            // The Catalog retains the exact session and pin until its existing
+            // abandoned-pin recovery settles the failed release.
+            drop(
+                self.catalog
+                    .abandon_ticket(Arc::clone(&self.session), lease),
+            );
+        }
+    }
+}
+
+impl SqliteCatalog {
+    /// Hold an exact retained view while a bounded Source-body page is read.
+    /// The quarantine decision and pin insert share one Catalog transaction;
+    /// only this maintenance callback can enter a quarantined view.
+    pub fn with_source_body_scrub_pin<T>(
+        &self,
+        session: &Arc<dyn ReadSessionLease>,
+        lease: Duration,
+        view: ViewRef,
+        budget: &mut WorkBudget,
+        read_page: impl FnOnce(MapRoot, bool, &mut WorkBudget) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        budget.checkpoint()?;
+        let concrete = guard(self, session.as_ref())?;
+        let milliseconds = validate_read_ticket_lease(lease)?;
+        let mut connection = self.lock_native_budget(budget)?;
+        let tx = begin(&mut connection)?;
+        let session_row = checked_session(&tx, concrete.binding)?;
+        if (session_row.2, session_row.3) != concrete.inode {
+            return Err(IndexError::Storage("read session inode mismatch".into()));
+        }
+        let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
+        let (record, previously_quarantined) = issue_ticket(
+            self,
+            &tx,
+            concrete.binding,
+            ViewSelection::Exact(view),
+            milliseconds,
+            now,
+            budget,
+            TicketAdmission::SourceBodyScrub,
+        )?;
+        budget.checkpoint()?;
+        tx.commit().map_err(|error| sql(&error))?;
+        drop(connection);
+        let pin = SourceScrubPin {
+            catalog: self,
+            session: Arc::clone(session),
+            lease: Some(record.lease),
+        };
+        let result = read_page(record.view.source.owners, previously_quarantined, budget);
+        pin.finish(result, budget)
+    }
 }
 
 impl SqliteCatalog {
@@ -981,7 +1196,7 @@ impl SqliteCatalog {
                 "materialization request belongs to another workspace epoch".into(),
             ));
         }
-        let ticket = issue_ticket(
+        let (ticket, _) = issue_ticket(
             self,
             &tx,
             concrete.binding,
@@ -992,6 +1207,7 @@ impl SqliteCatalog {
             milliseconds,
             now,
             budget,
+            TicketAdmission::Read,
         )?;
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
@@ -1230,7 +1446,7 @@ impl CatalogReadPort for SqliteCatalog {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
-        let ticket = issue_ticket(
+        let (ticket, _) = issue_ticket(
             self,
             &tx,
             concrete.binding,
@@ -1238,6 +1454,7 @@ impl CatalogReadPort for SqliteCatalog {
             milliseconds,
             now,
             budget,
+            TicketAdmission::Read,
         )?;
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
@@ -1309,6 +1526,40 @@ impl CatalogReadPort for SqliteCatalog {
         exactly_one(changed, "release read pin")?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(connection);
+        self.record_released_pin(&pin.5, pin.6, pin.7);
+        Ok(())
+    }
+
+    fn abandon_ticket(
+        &self,
+        session: Arc<dyn ReadSessionLease>,
+        ticket: ReadTicketLease,
+    ) -> Result<(), IndexError> {
+        // Ownership is checked without I/O: the pin must belong to a session
+        // this Catalog issued, and the retry uses that same session lease.
+        let any: &dyn Any = session.as_ref();
+        let concrete = any.downcast_ref::<CatalogSessionLease>().ok_or_else(|| {
+            IndexError::InvalidInput("abandoned read session is not catalog owned".into())
+        })?;
+        if concrete.catalog_path != self.path || ticket.session != concrete.binding {
+            return Err(IndexError::InvalidInput(
+                "abandoned read pin belongs to another catalog or session".into(),
+            ));
+        }
+        let mut pending = self
+            .abandoned_read_pins
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        pending
+            .try_reserve(1)
+            .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+        pending.push(AbandonedReadPin {
+            session,
+            ticket,
+            last_error: None,
+        });
+        drop(pending);
+        self.record_read_recovery_demand();
         Ok(())
     }
 
@@ -1328,6 +1579,7 @@ impl CatalogReadPort for SqliteCatalog {
                 "invalid read recovery cursor".into(),
             ));
         }
+        let (abandoned_settled, abandoned_deferred) = settle_abandoned_pins(self, limit, budget)?;
         let directory = session_directory(self)?;
         let mut cursor = after;
         let mut cursor_id = after.map(|value| int(value.id)).transpose()?.unwrap_or(0);
@@ -1422,6 +1674,7 @@ impl CatalogReadPort for SqliteCatalog {
         let tx = begin(&mut connection)?;
         let open_intents_reaped = reap_open_intents(&tx, &open_intents, budget)?;
         let mut recovered = 0u32;
+        let mut released_views: Vec<(Vec<u8>, i64, i64)> = Vec::new();
         let mut pins_released = 0u32;
         let mut partial = false;
         for (row, dead_lock) in &page.rows {
@@ -1510,6 +1763,10 @@ impl CatalogReadPort for SqliteCatalog {
                     .execute("DELETE FROM native_pin_v1 WHERE ticket=?1", params![pin.0])
                     .map_err(|error| sql(&error))?;
                 exactly_one(changed, "retire dead read pin")?;
+                released_views
+                    .try_reserve(1)
+                    .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+                released_views.push((pin.5.clone(), pin.6, pin.7));
                 pins_released = pins_released
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?;
@@ -1567,6 +1824,9 @@ impl CatalogReadPort for SqliteCatalog {
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(connection);
+        for (workspace, epoch, sequence) in &released_views {
+            self.record_released_pin(workspace, *epoch, *sequence);
+        }
         drop(open_intents);
         drop(page);
         let more_locks = cleanup_retired(self, &directory, budget)?;
@@ -1576,6 +1836,8 @@ impl CatalogReadPort for SqliteCatalog {
             recovered,
             pins_released,
             open_intents_reaped,
+            abandoned_settled,
+            abandoned_deferred,
         })
     }
 }

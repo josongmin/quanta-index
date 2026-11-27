@@ -3,11 +3,19 @@
     clippy::expect_used,
     reason = "fixed fixture construction and wire field assertions"
 )]
+use quanta_index_contract_base::results::LexicalMatchExcerpt;
 use quanta_index_contract_base::{
     HighlightSpan, LexicalCandidate, ManifestGeneration, PreviewByteRange, PreviewKind,
     PreviewMetadata, PreviewUnavailableReason, RepoId, RepoRelativePath, RevisionId, SourceFileKey,
     SourceFileRevision,
 };
+
+/// The fixture row's Legacy match excerpt.
+fn excerpt(row: &mut LexicalCandidate) -> &mut LexicalMatchExcerpt {
+    row.excerpt
+        .as_mut()
+        .expect("the Legacy fixture row carries an excerpt")
+}
 
 fn candidate() -> LexicalCandidate {
     let source = SourceFileRevision {
@@ -36,12 +44,17 @@ fn candidate() -> LexicalCandidate {
         revision_id: RevisionId::new("snapshot").expect("revision"),
         manifest_generation: ManifestGeneration::new(1),
         repo_relative_path: RepoRelativePath::new("src/a.rs"),
-        start_line: 1,
-        end_line: 1,
+        lines: Some(quanta_index_contract_base::results::LexicalLineRange {
+            start_line: 1,
+            end_line: 1,
+        }),
+        excerpt: Some(quanta_index_contract_base::results::LexicalMatchExcerpt {
+            snippet: "é needle".into(),
+            snippet_hit_offset: Some(3),
+            highlights: vec![HighlightSpan { start: 3, len: 6 }],
+        }),
         score: 1.0,
-        snippet: "é needle".into(),
-        snippet_hit_offset: Some(3),
-        highlights: vec![HighlightSpan { start: 3, len: 6 }],
+        native_source: None,
     }
 }
 
@@ -102,13 +115,13 @@ fn l4_wire_rejects_text_claimed_as_unavailable() {
         PreviewUnavailableReason::WorkBudget,
         None,
     ));
-    row.snippet.clear();
-    row.snippet_hit_offset = None;
-    row.highlights.clear();
+    excerpt(&mut row).snippet.clear();
+    excerpt(&mut row).snippet_hit_offset = None;
+    excerpt(&mut row).highlights.clear();
     let mut wire = serde_json::to_value(&row).expect("unavailable");
     *wire.pointer_mut("/snippet").expect("snippet") = serde_json::json!("forged excerpt");
     assert!(serde_json::from_value::<LexicalCandidate>(wire).is_err());
-    row.snippet = "forged excerpt".into();
+    excerpt(&mut row).snippet = "forged excerpt".into();
     assert!(serde_json::to_value(&row).is_err());
 }
 
@@ -125,16 +138,18 @@ fn l4_wire_requires_primary_highlight_to_match_declared_focus() {
         *wire.pointer_mut("/snippet_hit_offset").expect("offset") = serde_json::json!(0);
         assert!(serde_json::from_value::<LexicalCandidate>(wire).is_err());
     }
-    row.highlights = vec![HighlightSpan { start: 0, len: 2 }];
-    row.snippet_hit_offset = Some(0);
+    excerpt(&mut row).highlights = vec![HighlightSpan { start: 0, len: 2 }];
+    excerpt(&mut row).snippet_hit_offset = Some(0);
     assert!(serde_json::to_value(&row).is_err());
 }
 
 #[test]
 fn l4_wire_preserves_overlaps_but_rejects_duplicate_or_reordered_highlights() {
     let mut row = candidate();
-    row.highlights.insert(0, HighlightSpan { start: 0, len: 9 });
-    row.snippet_hit_offset = Some(0);
+    excerpt(&mut row)
+        .highlights
+        .insert(0, HighlightSpan { start: 0, len: 9 });
+    excerpt(&mut row).snippet_hit_offset = Some(0);
     let preview = row.preview.as_mut().expect("preview");
     preview.original_focus = Some(PreviewByteRange { start: 10, end: 19 });
     preview.normalized_focus = Some(PreviewByteRange { start: 10, end: 19 });
@@ -143,10 +158,10 @@ fn l4_wire_preserves_overlaps_but_rejects_duplicate_or_reordered_highlights() {
         serde_json::from_value::<LexicalCandidate>(valid).expect("roundtrip"),
         row
     );
-    row.highlights.reverse();
+    excerpt(&mut row).highlights.reverse();
     assert!(serde_json::to_value(&row).is_err());
-    row.highlights = vec![HighlightSpan { start: 3, len: 6 }; 2];
-    row.snippet_hit_offset = Some(3);
+    excerpt(&mut row).highlights = vec![HighlightSpan { start: 3, len: 6 }; 2];
+    excerpt(&mut row).snippet_hit_offset = Some(3);
     assert!(serde_json::to_value(&row).is_err());
 }
 
@@ -159,9 +174,9 @@ fn l4_wire_path_labels_cannot_claim_other_text_or_chunk_coordinates() {
     preview.original_context = None;
     preview.original_focus = None;
     preview.normalized_focus = None;
-    row.snippet = "src/a.rs".into();
-    row.snippet_hit_offset = None;
-    row.highlights.clear();
+    excerpt(&mut row).snippet = "src/a.rs".into();
+    excerpt(&mut row).snippet_hit_offset = None;
+    excerpt(&mut row).highlights.clear();
     let valid = serde_json::to_value(&row).expect("path preview");
     assert_eq!(
         serde_json::from_value::<LexicalCandidate>(valid.clone()).expect("roundtrip"),
@@ -190,9 +205,9 @@ fn l4_wire_path_highlight_is_bound_to_emitted_path_bytes() {
     preview.original_context = None;
     preview.original_focus = None;
     preview.normalized_focus = None;
-    row.snippet = "src/a.rs".into();
-    row.snippet_hit_offset = Some(4);
-    row.highlights = vec![HighlightSpan { start: 4, len: 1 }];
+    excerpt(&mut row).snippet = "src/a.rs".into();
+    excerpt(&mut row).snippet_hit_offset = Some(4);
+    excerpt(&mut row).highlights = vec![HighlightSpan { start: 4, len: 1 }];
     let valid = serde_json::to_value(&row).expect("path hit span");
     assert_eq!(
         serde_json::from_value::<LexicalCandidate>(valid.clone()).expect("roundtrip"),

@@ -39,6 +39,16 @@ class RustFallbackTest(unittest.TestCase):
                 self.assertEqual(LINT.main(), 2)
             self.assertIn("Rust source roots are missing", error.getvalue())
 
+    def test_empty_source_roots_cannot_certify_zero_scoped_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "crates").mkdir()
+            (root / "benchmarks").mkdir()
+            error = io.StringIO()
+            with patch.object(LINT, "ROOT", root), redirect_stderr(error):
+                self.assertEqual(LINT.main(), 2)
+            self.assertIn("no Rust source files in policy scope", error.getvalue())
+
     def test_untracked_rust_source_is_scanned(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -222,13 +232,37 @@ class RustFallbackTest(unittest.TestCase):
         for source in (
             "fn f(r: Result<(), ()>) { passthrough!{ r.or_else(|_| Ok(())) } }",
             "fn f(r: Result<(), ()>) { choice!{ if r.is_ok() { a(); } else { b(); } } }",
+            "fn f(r: Result<(), ()>) { choice!{ if ((r.is_err())) { a(); } else { b(); } } }",
             "macro_rules! fallback { ($r:expr) => { $r.or_else(|_| Ok(())) }; }",
+            "macro_rules! cases { ($($r:expr),*) => { $(if $r.is_err() { a(); } else { b(); })* }; }",
         ):
             with (
                 self.subTest(source=source),
                 self.assertRaisesRegex(ValueError, "opaque Rust macro"),
             ):
                 scan(source)
+
+    def test_independent_macro_branches_do_not_form_a_result_fallback(self) -> None:
+        source = """fn f() {
+    tokio::select! {
+        first = rx.recv(), if ready => { while rx.try_recv().is_ok() {} }
+        second = other.recv() => { if let Some(value) = second { emit(value); } else { stop(); } }
+    }
+}
+"""
+        self.assertEqual(scan(source), [])
+
+    def test_cfg_test_fixtures_are_outside_production_scope(self) -> None:
+        source = """#[cfg(/* comment */ test)]
+#[doc = "fixture"]
+mod fixture {
+    use ciborium::value::Value;
+    fn run() { assert!(result.or_else(|_| Ok(())).is_ok()); }
+}
+#[cfg(any(test, feature = "production"))]
+fn mixed() { let _ = result.or_else(|_| Ok(())); }
+"""
+        self.assertEqual(scan(source, include_search_plane=True), [(8, LINT.RULE_OR_ELSE)])
 
     def test_macro_strings_and_assertions_are_not_blocked(self) -> None:
         source = """fn f(result: Result<(), ()>) {

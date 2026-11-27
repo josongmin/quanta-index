@@ -2419,9 +2419,8 @@ def _merge_validated_records(
     if any(run.get("span_accounting_version") == 1 for run in validated_runs):
         combined["span_accounting_version"] = 1
     if hybrid_file_evidence.ROUTE in provenance:
-        owners = [
-            run for run in validated_runs if hybrid_file_evidence.ROUTE in run["route_provenance"]
-        ]
+        owners = [run for run in validated_runs
+                  if hybrid_file_evidence.ROUTE in run["route_provenance"]]
         if len(owners) != 1:
             raise RunError("hybrid file cap has no unique source record")
         combined["file_top_k"] = owners[0]["file_top_k"]
@@ -2635,6 +2634,8 @@ SPEC_OPTIONAL = (
     "source_closure_reuse",
     "symbol_coverage_policy",
     "symbol_total_timeout_ms",
+    "symbol_candidate_manifest",
+    "symbol_candidate_manifest_sha256",
     "routes",
     "blinding",
     "suite_secret_root",
@@ -3422,6 +3423,27 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
         "allow-incomplete",
     ):
         raise RunError("unknown symbol coverage policy")
+    candidate_keys = {"symbol_candidate_manifest", "symbol_candidate_manifest_sha256"}
+    if candidate_keys & set(spec):
+        if not candidate_keys <= set(spec):
+            raise RunError("candidate symbol manifest requires its pinned SHA-256")
+        candidate_path = spec["symbol_candidate_manifest"]
+        candidate_sha = spec["symbol_candidate_manifest_sha256"]
+        if not isinstance(candidate_path, str) or not Path(candidate_path).is_absolute():
+            raise RunError("spec.symbol_candidate_manifest must be an absolute path")
+        if not _is_hex(candidate_sha, 64):
+            raise RunError("spec.symbol_candidate_manifest_sha256 must be a lowercase sha256")
+        if standalone_quanta and (
+            spec.get("scope", "exploratory") != "exploratory"
+            or any(spec.get("claims", {}).values())
+        ):
+            raise RunError("candidate symbol capture is standalone exploratory only without claims")
+        try:
+            symbol_coverage.candidate_grammar_identity(Path(candidate_path), candidate_sha)
+            if not standalone_quanta:
+                source_oracle.validate_candidate_manifest(Path(candidate_path), candidate_sha)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RunError(f"candidate symbol manifest is invalid: {exc}") from exc
     profiles = spec["execution_profiles"]
     if not isinstance(profiles, dict) or set(profiles) not in ({"quanta"}, {"quanta", "semble"}):
         raise RunError("spec.execution_profiles must contain quanta and optional semble")
@@ -3479,10 +3501,8 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
     _spec_int(spec, "top_k", 1)
     try:
         hybrid_file_evidence.validate_route_configuration(
-            quanta_profile["policy"],
-            spec.get("routes", ["lexical", "semantic", "hybrid"]),
-            spec["top_k"],
-            spec.get("file_top_k"),
+            quanta_profile["policy"], spec.get("routes", ["lexical", "semantic", "hybrid"]),
+            spec["top_k"], spec.get("file_top_k"),
         )
     except hybrid_file_evidence.HybridFileEvidenceError as exc:
         raise RunError(str(exc)) from exc
@@ -3718,6 +3738,84 @@ def probe_runner_capabilities(binary: Path) -> dict:
     return capabilities
 
 
+def _require_candidate_for_admitted_sources(spec: dict) -> None:
+    """An affected source needs the same pinned parser on both product and oracle sides."""
+    manifest = read_json(Path(spec["manifest"]))
+    suite = read_json(Path(spec["suite"]))
+    admitted = []
+    for payload, key in ((manifest, "files"), (suite, "file_universe")):
+        rows = payload.get(key, []) if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            admitted.extend(
+                row["path"] for row in rows
+                if isinstance(row, dict) and isinstance(row.get("path"), str)
+            )
+    affected = sorted(
+        name for name in admitted
+        if symbol_coverage.LANGUAGES.get(Path(name).suffix.removeprefix("."))
+        in {"go", "javascript", "typescript", "typescript_tsx"}
+    )
+    if affected and "symbol_candidate_manifest" not in spec:
+        raise RunError("affected symbol sources require a pinned candidate manifest")
+
+
+def _independent_candidate_census(spec: dict, suite: dict, source: SourceSnapshot) -> dict | None:
+    """Census every affected admitted file with the pinned Python oracle."""
+    manifest_commit, admitted_rows = _manifest_rows(Path(spec["manifest"]))
+    if manifest_commit != suite["repository_commit"]:
+        raise RunError("independent census corpus commit differs from validated suite")
+    affected = []
+    for path, expected_sha in admitted_rows:
+        language = symbol_coverage.LANGUAGES.get(Path(path).suffix.removeprefix("."))
+        if language in {"go", "javascript", "typescript", "typescript_tsx"}:
+            affected.append((path, expected_sha, language))
+    if not affected:
+        return None
+    if "symbol_candidate_manifest" not in spec:
+        raise RunError("affected symbol sources require a pinned candidate manifest")
+    manifest_path = Path(spec["symbol_candidate_manifest"])
+    manifest_sha = spec["symbol_candidate_manifest_sha256"]
+    parser_identity = source_oracle.census_parser_identity(
+        candidate_manifest_path=manifest_path, candidate_manifest_sha256=manifest_sha
+    )
+    groups: dict[str, list[tuple[str, str, str]]] = {}
+    for path, expected_sha, language in affected:
+        census_language = "typescript" if language == "typescript_tsx" else language
+        groups.setdefault(census_language, []).append((path, expected_sha, language))
+    files = []
+    for census_language in sorted(groups):
+        with source_oracle.declaration_census_session(
+            census_language,
+            candidate_manifest_path=manifest_path,
+            candidate_manifest_sha256=manifest_sha,
+        ) as census:
+            for path, expected_sha, language in sorted(groups[census_language]):
+                raw, _lines, observed_sha = source.file(path)
+                if observed_sha != expected_sha:
+                    raise RunError(f"independent census source bytes differ: {path}")
+                declarations = census(path, raw)
+                files.append({
+                    "path": path,
+                    "source_sha256": expected_sha,
+                    "language": language,
+                    "declaration_count": len(declarations),
+                    "declarations_sha256": digest(canonical_bytes(declarations)),
+                })
+    files.sort(key=lambda row: row["path"])
+    if not files or len(files) != len(affected) or len({row["path"] for row in files}) != len(files):
+        raise RunError("independent candidate census has an incomplete denominator")
+    if source_oracle.census_parser_identity(
+        candidate_manifest_path=manifest_path, candidate_manifest_sha256=manifest_sha
+    ) != parser_identity:
+        raise RunError("independent candidate census parser changed during capture")
+    return {
+        "schema": "symbol-independent-census-v1",
+        "candidate_manifest_sha256": manifest_sha,
+        "parser_identity": parser_identity,
+        "files": files,
+    }
+
+
 def preflight_capture(spec: dict) -> Path:
     """Refuse dirty/wrong-HEAD inputs, contract drift and unpinned binaries."""
     manifest = read_json(Path(spec["manifest"]))
@@ -3762,6 +3860,14 @@ def preflight_capture(spec: dict) -> Path:
     out_root = Path(spec["output_root"]).resolve()
     if out_root == repo or repo in out_root.parents:
         raise RunError("output root must be outside the frozen repository")
+    _require_candidate_for_admitted_sources(spec)
+    if "symbol_candidate_manifest" in spec:
+        try:
+            source_oracle.validate_candidate_manifest(
+                Path(spec["symbol_candidate_manifest"]), spec["symbol_candidate_manifest_sha256"]
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RunError(f"candidate symbol manifest is invalid: {exc}") from exc
     probe_runner_capabilities(Path(spec["runner_binary"]))
     return out_root
 
@@ -4136,9 +4242,13 @@ def _validate_explanation(
         )
         expected_touched = (["lexical"] if lexical else []) + (["semantic"] if dense else [])
         expected_strategy = (
-            ("hybrid_file_rrf" if hybrid_file else "rrf")
-            if hybrid_file or (lexical and dense)
-            else ("lexical_only" if lexical else "semantic_only" if dense else "empty")
+            "hybrid_file_rrf" if hybrid_file else "rrf"
+        ) if hybrid_file or (lexical and dense) else (
+            "lexical_only"
+            if lexical
+            else "semantic_only"
+            if dense
+            else "empty"
         )
         if (
             ("hybrid.dense_fetch" in counts) != ("hybrid.lexical_search" in counts)
@@ -4257,16 +4367,10 @@ def _validate_diagnostic_response_v3(
         if key[1] != hybrid_file_evidence.ROUTE or version != 9 or reference is None:
             raise RunError(f"{where} file response has no explicit route/record contract")
         detail = _exact_keys(response, {"lane_top_k", "file_top_k", "typed_response"}, where)
-        if (
-            reference.get("hybrid_file_evidence")
-            != {
-                "schema_version": 1,
-                "lane_top_k": detail["lane_top_k"],
-                "file_top_k": detail["file_top_k"],
-                "response": detail["typed_response"],
-            }
-            or detail["lane_top_k"] != top_k
-        ):
+        if reference.get("hybrid_file_evidence") != {
+            "schema_version": 1, "lane_top_k": detail["lane_top_k"],
+            "file_top_k": detail["file_top_k"], "response": detail["typed_response"],
+        } or detail["lane_top_k"] != top_k:
             raise RunError(f"{where} file evidence differs from runner record")
         typed = detail["typed_response"]
         if not isinstance(typed, dict):
@@ -4279,27 +4383,14 @@ def _validate_diagnostic_response_v3(
             _, _, observed = _typed_window(typed.get(lane + "_window"), f"{where}.{lane}")
             lanes.update(observed)
         raw_explanation = typed.get("explanation")
-        explanation_fields = {
-            "request_id",
-            "early_stop_reason",
-            "engines_executed",
-            "engines_touched",
-            "strategy",
-            "planner_trace",
-            "stage_timings",
-        }
+        explanation_fields = {"request_id", "early_stop_reason", "engines_executed",
+                              "engines_touched", "strategy", "planner_trace", "stage_timings"}
         if not isinstance(raw_explanation, dict) or not explanation_fields <= set(raw_explanation):
             raise RunError(f"{where} file explanation is incomplete")
         explanation = {field: raw_explanation[field] for field in explanation_fields}
-        _validate_explanation(
-            explanation,
-            f"{where}.explanation",
-            "hybrid",
-            version,
-            len(hits),
-            observation_policy,
-            hybrid_file=True,
-        )
+        _validate_explanation(explanation, f"{where}.explanation", "hybrid",
+                              version, len(hits), observation_policy,
+                              hybrid_file=True)
         observed_candidates = row.get("candidates")
         recorded_candidates = reference.get("candidates")
         scored_file_count = 0 if row.get("status") == "error" else len(hits)
@@ -4319,7 +4410,8 @@ def _validate_diagnostic_response_v3(
                 or not isinstance(witness, dict)
                 or not isinstance(witness.get("candidate"), dict)
                 or not isinstance(recorded.get("span_accounting"), dict)
-                or observed.get("candidate_id") != recorded["span_accounting"].get("unit_id")
+                or observed.get("candidate_id")
+                != recorded["span_accounting"].get("unit_id")
                 or observed.get("candidate_id") != witness["candidate"].get("candidate_id")
                 or not is_finite_json_number(observed.get("score"))
                 or not is_finite_json_number(recorded.get("score"))
@@ -4975,9 +5067,7 @@ def validate_retrieval_diagnostic(
         capture = record.get("captures", {}).get(capture_owner.get("capture_id"), {})
         try:
             hybrid_file_evidence.validate_result(
-                reference,
-                capture,
-                diagnostic["top_k"],
+                reference, capture, diagnostic["top_k"],
                 declared_file_top_k=record.get("file_top_k"),
             )
         except hybrid_file_evidence.HybridFileEvidenceError as exc:
@@ -5019,12 +5109,8 @@ def validate_retrieval_diagnostic(
                 )
             if key[1] == hybrid_file_evidence.ROUTE and row["response_kind"] == "returned_files":
                 explanation = row["response"]["typed_response"]["explanation"]
-                _validate_hybrid_initial_fetch(
-                    explanation["planner_trace"],
-                    diagnostic["top_k"],
-                    diagnostic["hybrid_fetch_policy"],
-                    prefix="hybrid_file",
-                )
+                _validate_hybrid_initial_fetch(explanation["planner_trace"], diagnostic["top_k"],
+                                               diagnostic["hybrid_fetch_policy"], prefix="hybrid_file")
                 request_id = explanation["request_id"]
                 if request_id in seen_request_ids:
                     raise RunError("retrieval diagnostic reuses a file transport request id")
@@ -5121,16 +5207,33 @@ def validate_retrieval_diagnostic(
 
 def _bind_record_file_cap_to_spec(spec: dict, routes: list[str], record: dict) -> None:
     if hybrid_file_evidence.ROUTE in routes:
-        if type(record.get("file_top_k")) is not int or record["file_top_k"] != spec["file_top_k"]:
+        if (type(record.get("file_top_k")) is not int
+                or record["file_top_k"] != spec["file_top_k"]):
             raise RunError("captured hybrid file cap differs from declared spec")
     elif "file_top_k" in record:
         raise RunError("captured file cap lacks the explicit hybrid_file route")
 
 
+def _candidate_symbol_identity(spec: dict) -> str | None:
+    manifest = spec.get("symbol_candidate_manifest")
+    if manifest is None:
+        return None
+    return symbol_coverage.candidate_grammar_identity(
+        Path(manifest), spec["symbol_candidate_manifest_sha256"]
+    )
+
+
 def run_quanta(spec: dict, _spec_dir: Path) -> int:
     """Run the Rust SDK runner once per strategy. Returns process exit code."""
+    if "symbol_candidate_manifest" in spec and not spec.get("_paired_capture", False) and (
+        spec.get("scope", "exploratory") != "exploratory"
+        or any(spec.get("claims", {}).values())
+        or "admission" in spec
+    ):
+        raise RunError("candidate symbol capture is standalone exploratory only without claims")
     if "_query_protocol" not in spec and _int(spec.get("repetitions", 1), "spec.repetitions") != 1:
         raise RunError("direct quanta capture supports one fresh root; use pair for repetitions")
+    candidate_identity = _candidate_symbol_identity(spec)
     out_root = preflight_capture(spec)
     if out_root.exists():
         raise RunError(f"output root already exists (refusing reuse): {out_root}")
@@ -5184,8 +5287,14 @@ def run_quanta(spec: dict, _spec_dir: Path) -> int:
         )
         if sha_file(Path(runner_bin)) != runner_binary_sha256:
             raise RunError("Rust runner binary changed during capture")
+    manifest = {"runs": runs}
+    if candidate_identity is not None:
+        if not spec.get("_paired_capture", False):
+            manifest["qualification"] = "diagnostic_unqualified"
+        manifest["symbol_candidate_grammar_identity"] = candidate_identity
+        manifest["symbol_candidate_manifest_sha256"] = spec["symbol_candidate_manifest_sha256"]
     (out_root / "quanta-manifest.json").write_text(
-        json.dumps({"runs": runs}, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(json.dumps({"runs": len(runs), "output_root": str(out_root)}, indent=2))
     return 0
@@ -5248,6 +5357,7 @@ def run_quanta_strategy(
     resource_path = (run_dir / "resource-metrics.json").resolve()
     refusal_path = (run_dir / "query-plan-refusal.json").resolve()
     preflight_path = (run_dir / "symbol-preflight.json").resolve()
+    candidate_identity = _candidate_symbol_identity(spec)
     command = [
         spec["runner_binary"],
         "run",
@@ -5343,6 +5453,13 @@ def run_quanta_strategy(
         command += ["--io-timeout-secs", str(spec["io_timeout_secs"])]
     if "symbol_total_timeout_ms" in spec:
         command += ["--symbol-total-timeout-ms", str(spec["symbol_total_timeout_ms"])]
+    if candidate_identity is not None:
+        command += [
+            "--symbol-candidate-manifest",
+            spec["symbol_candidate_manifest"],
+            "--symbol-candidate-manifest-sha256",
+            spec["symbol_candidate_manifest_sha256"],
+        ]
     materialized = spec.get("_materialized_corpus")
     if materialized is not None:
         command += ["--materialized-corpus-sha256", materialized["proof_sha256"]]
@@ -5441,7 +5558,13 @@ def run_quanta_strategy(
     ) != ingest_request_identity(spec):
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
-    phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
+    if _candidate_symbol_identity(spec) != candidate_identity:
+        raise RunError("candidate symbol manifest changed during capture")
+    phase = _validate_phase_metrics(
+        read_json(phase_path),
+        f"Rust runner phase metrics for {name}",
+        expected_grammar=candidate_identity,
+    )
     if phase["schema_version"] != 4:
         raise RunError("current Rust runner omitted SDK child clock phase schema v4")
     validate_completed_query_timing(
@@ -5461,6 +5584,8 @@ def run_quanta_strategy(
             phase_path,
             read_json(Path(spec["manifest"])),
             expected_timeout_total_ms=spec.get("symbol_total_timeout_ms", 120_000),
+            candidate_identity=candidate_identity,
+            candidate_manifest_sha256=spec.get("symbol_candidate_manifest_sha256"),
         )
     except (ValueError, OSError, KeyError, TypeError) as exc:
         raise RunError(f"Rust runner preflight evidence is invalid: {exc}") from exc
@@ -5612,9 +5737,22 @@ def _validate_manifest_shape(payload: object) -> dict:
         <= {"pair", "perf", "contract_suites", "sdk_path", "model_parity", "incremental"}
     ):
         raise RunError("run manifest evidence holds missing/unknown keys")
-    pair = _exact_keys(evidence["pair"], {"mapping_proof_digest"}, "manifest pair evidence")
+    pair_keys = {"mapping_proof_digest"}
+    if isinstance(evidence["pair"], dict) and "candidate_manifest_sha256" in evidence["pair"]:
+        pair_keys.add("candidate_manifest_sha256")
+    if isinstance(evidence["pair"], dict) and "independent_census_sha256" in evidence["pair"]:
+        pair_keys.add("independent_census_sha256")
+    pair = _exact_keys(evidence["pair"], pair_keys, "manifest pair evidence")
     if not _is_hex(pair["mapping_proof_digest"], 64):
         raise RunError("manifest pair mapping_proof_digest must be a lowercase sha256")
+    if "candidate_manifest_sha256" in pair and not _is_hex(pair["candidate_manifest_sha256"], 64):
+        raise RunError("manifest pair candidate_manifest_sha256 must be a lowercase sha256")
+    if "independent_census_sha256" in pair and not _is_hex(pair["independent_census_sha256"], 64):
+        raise RunError("manifest pair independent_census_sha256 must be a lowercase sha256")
+    if "independent_census_sha256" in pair and (
+        "candidate_manifest_sha256" not in pair or manifest["scope"] != "qualified"
+    ):
+        raise RunError("independent candidate census requires a qualified pinned candidate")
     perf = _exact_keys(
         evidence["perf"],
         {"observations_floor", "fresh_roots", "phase_boundaries", "resource_accounting"},
@@ -5726,7 +5864,7 @@ def _validate_manifest_shape(payload: object) -> dict:
     admission_artifacts = local_admission | disjoint_admission
     optional_artifacts = (
         set(RECEIPT_KEYS)
-        | {"isolation_proof", "host_timeline", "host_timeline_raw"}
+        | {"isolation_proof", "host_timeline", "host_timeline_raw", "symbol_candidate_manifest", "symbol_independent_census"}
         | admission_artifacts
     )
     if ("host_timeline" in artifacts) != ("host_timeline_raw" in artifacts):
@@ -5735,6 +5873,10 @@ def _validate_manifest_shape(payload: object) -> dict:
         raise RunError("manifest host timeline artifact and digest must be paired")
     if "driver_source_closure" not in artifacts:
         raise RunError("run manifest lacks the driver source closure")
+    if ("symbol_candidate_manifest" in artifacts) != ("candidate_manifest_sha256" in pair):
+        raise RunError("candidate manifest artifact and pinned digest must be paired")
+    if ("symbol_independent_census" in artifacts) != ("independent_census_sha256" in pair):
+        raise RunError("independent candidate census artifact and digest must be paired")
     if not required_artifacts <= set(artifacts) <= required_artifacts | optional_artifacts:
         raise RunError("run manifest artifacts hold missing/unknown keys")
     present_admission = set(artifacts).intersection(admission_artifacts)
@@ -6336,7 +6478,9 @@ def validate_completed_query_timing(
         raise RunError("completed-response timing observations differ from the complete schedule")
 
 
-def _validate_phase_metrics(payload: object, where: str) -> dict:
+def _validate_phase_metrics(
+    payload: object, where: str, *, expected_grammar: str | None = None
+) -> dict:
     if not isinstance(payload, dict):
         raise RunError(f"{where} must be an object")
     system = payload.get("system")
@@ -6512,7 +6656,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             raise RunError(f"{where} has invalid observed wrapped-call duration")
     if system == "quanta" and schema_version in (2, 3, 4):
         try:
-            symbol_coverage.validate_metrics(metrics, QUANTA_SYMBOL_GRAMMARS)
+            symbol_coverage.validate_metrics(metrics, expected_grammar or QUANTA_SYMBOL_GRAMMARS)
         except (ValueError, KeyError, TypeError) as exc:
             raise RunError(f"{where}: {exc}") from exc
     expected_layer = (
@@ -6936,7 +7080,8 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
 
 def _validate_resource_metrics(payload: object, where: str) -> dict:
     if isinstance(payload, dict) and (
-        payload.get("sampler") == "linux-process-owner-v1" or payload.get("schema_version") == 3
+        payload.get("sampler") == "linux-process-owner-v1"
+        or payload.get("schema_version") == 3
     ):
         return _validate_linux_resource_metrics(payload, where)
     keys = {
@@ -7543,6 +7688,25 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "protocol_lock",
     ):
         resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
+    candidate_manifest_sha = manifest["evidence"]["pair"].get("candidate_manifest_sha256")
+    candidate_manifest_path = None
+    candidate_identity = None
+    if candidate_manifest_sha is not None:
+        candidate_manifest_path = _resolve_artifact(
+            root, artifacts["symbol_candidate_manifest"], "artifacts.symbol_candidate_manifest"
+        )
+        try:
+            source_oracle.validate_candidate_manifest(candidate_manifest_path, candidate_manifest_sha)
+            candidate_identity = symbol_coverage.candidate_grammar_identity(
+                candidate_manifest_path, candidate_manifest_sha
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RunError(f"frozen candidate symbol manifest is invalid: {exc}") from exc
+    candidate_census_path = None
+    if "symbol_independent_census" in artifacts:
+        candidate_census_path = _resolve_artifact(
+            root, artifacts["symbol_independent_census"], "artifacts.symbol_independent_census"
+        )
     for key in (
         "records",
         "reports",
@@ -7645,9 +7809,39 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         suite_payload = read_json(resolved["suite"])
         if not isinstance(suite_payload, dict):
             raise RunError("frozen suite is not an object")
-        suite, pack, source = validate_suite(repo, suite_payload)
+        suite, pack, source = validate_suite(
+            repo,
+            suite_payload,
+            candidate_manifest_path=candidate_manifest_path,
+            candidate_manifest_sha256=candidate_manifest_sha,
+        )
     except ValueError as exc:
         raise RunError(f"suite unverifiable; refusing verdict: {exc}") from exc
+    if manifest["scope"] == "qualified":
+        census_spec = (
+            {
+                "manifest": str(resolved["corpus_manifest"]),
+                "symbol_candidate_manifest": str(candidate_manifest_path),
+                "symbol_candidate_manifest_sha256": candidate_manifest_sha,
+            }
+            if candidate_manifest_path is not None else {"manifest": str(resolved["corpus_manifest"])}
+        )
+        try:
+            census = _independent_candidate_census(census_spec, suite, source)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RunError(f"qualified independent candidate census failed: {exc}") from exc
+        if census is not None:
+            if candidate_census_path is None:
+                raise RunError("qualified affected corpus lacks independent candidate census")
+            raw_census = canonical_bytes(census) + b"\n"
+            if (
+                symbol_coverage.regular_bytes(candidate_census_path, max_bytes=64 * 1024 * 1024)
+                != raw_census
+                or digest(raw_census) != manifest["evidence"]["pair"]["independent_census_sha256"]
+            ):
+                raise RunError("independent candidate census differs from frozen replay")
+        elif candidate_census_path is not None:
+            raise RunError("independent candidate census has no affected source denominator")
     try:
         verify_repo(repo, suite["repository_commit"])
     except ValueError as exc:
@@ -8171,6 +8365,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         expected_timeout_total_ms=protocol_payload.get(
                             "symbol_total_timeout_ms", 120_000
                         ),
+                        candidate_identity=candidate_identity,
+                        candidate_manifest_sha256=candidate_manifest_sha,
                     ).resolve()
                 )
                 if metrics["symbol_coverage_policy"] != protocol_payload.get(
@@ -8368,6 +8564,17 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             pair_note("quanta_manifest_malformed", ("T12",))
             resource_ok = False
             continue
+        if candidate_identity is not None:
+            if (
+                content.get("symbol_candidate_grammar_identity") != candidate_identity
+                or content.get("symbol_candidate_manifest_sha256") != candidate_manifest_sha
+                or content.get("qualification") == "diagnostic_unqualified"
+            ):
+                pair_note("quanta_candidate_manifest_mismatch", ("T12",))
+                phase_ok = False
+        elif "symbol_candidate_grammar_identity" in content or "symbol_candidate_manifest_sha256" in content:
+            pair_note("unexpected_quanta_candidate_manifest", ("T12",))
+            phase_ok = False
         for run_entry in content["runs"]:
             if not isinstance(run_entry, dict):
                 pair_note("quanta_manifest_malformed", ("T12",))
@@ -9731,7 +9938,21 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     # index. Report-time validation here used to waste complete captures on
     # stale oracle contracts, then refuse the result after product execution.
     repo = source_repo
-    suite, pack, source = validate_suite(repo, read_json(Path(spec["suite"])))
+    suite, pack, source = validate_suite(
+        repo,
+        read_json(Path(spec["suite"])),
+        candidate_manifest_path=(
+            Path(spec["symbol_candidate_manifest"])
+            if "symbol_candidate_manifest" in spec else None
+        ),
+        candidate_manifest_sha256=spec.get("symbol_candidate_manifest_sha256"),
+    )
+    if scope == "qualified":
+        census = _independent_candidate_census(spec, suite, source)
+        if census is not None:
+            census_path = stage / "symbol-independent-census.json"
+            census_path.write_bytes(canonical_bytes(census) + b"\n")
+            spec["_candidate_census"] = str(census_path)
     if read_json(Path(spec["query_pack"])) != pack:
         raise RunError("frozen query pack differs from the validated suite")
     expected_routes = set(spec.get("routes", ["lexical", "semantic", "hybrid"])) | set(
@@ -9805,6 +10026,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
                     quanta_spec["output_root"] = str(quanta_out)
                     quanta_spec["run_id"] = f"{spec.get('run_id', 'run')}-r{rep}"
                     quanta_spec["_query_protocol"] = str(protocol_path)
+                    quanta_spec["_paired_capture"] = True
                     if run_quanta(quanta_spec, Path(".")) != 0:
                         raise RunError(f"quanta capture failed at rep {rep}")
                     quanta_manifest_path = quanta_out / "quanta-manifest.json"
@@ -11159,6 +11381,19 @@ def freeze_inputs(spec: dict, stage: Path) -> dict:
         if key == "host_profile":
             validate_host_profile(read_json(target))
         frozen[key] = str(target)
+    if "symbol_candidate_manifest" in spec:
+        source = Path(spec["symbol_candidate_manifest"])
+        expected_sha = spec["symbol_candidate_manifest_sha256"]
+        try:
+            raw = symbol_coverage.regular_bytes(source, max_bytes=1 << 20)
+            if digest(raw) != expected_sha:
+                raise RunError("candidate symbol manifest changed before freeze")
+            target = stage / "symbol-candidate-manifest.json"
+            target.write_bytes(raw)
+            source_oracle.validate_candidate_manifest(target, expected_sha)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RunError(f"cannot freeze candidate symbol manifest: {exc}") from exc
+        frozen["symbol_candidate_manifest"] = str(target)
     return frozen
 
 
@@ -11300,6 +11535,16 @@ def build_run_manifest(
     for name, expected in expected_inputs.items():
         if Path(spec[name]).resolve() != expected.resolve():
             raise RunError(f"spec.{name} must name the frozen stage copy")
+    if "symbol_candidate_manifest" in spec:
+        expected_candidate = out_root / "symbol-candidate-manifest.json"
+        if Path(spec["symbol_candidate_manifest"]).resolve() != expected_candidate.resolve():
+            raise RunError("candidate manifest must name the frozen stage copy")
+        if sha_file(expected_candidate) != spec["symbol_candidate_manifest_sha256"]:
+            raise RunError("frozen candidate manifest differs from pinned digest")
+    if "_candidate_census" in spec:
+        expected_census = out_root / "symbol-independent-census.json"
+        if Path(spec["_candidate_census"]).resolve() != expected_census.resolve():
+            raise RunError("independent candidate census must name the frozen stage artifact")
     host_start_path = out_root / "host-start.json"
     host_end_path = out_root / "host-end.json"
     host_timeline_path = out_root / "host-timeline.json"
@@ -11312,6 +11557,10 @@ def build_run_manifest(
             "resource_accounting": bool(resource_metrics),
         },
     }
+    if "symbol_candidate_manifest" in spec:
+        evidence["pair"]["candidate_manifest_sha256"] = spec["symbol_candidate_manifest_sha256"]
+    if "_candidate_census" in spec:
+        evidence["pair"]["independent_census_sha256"] = sha_file(Path(spec["_candidate_census"]))
     frozen = frozen_receipts or {}
     unknown_frozen = sorted(set(frozen) - set(RECEIPT_KEYS))
     if unknown_frozen:
@@ -11514,6 +11763,10 @@ def build_run_manifest(
         "resource_metrics": sorted(resource_metrics),
         "protocol_lock": "protocol-lock.json",
     }
+    if "symbol_candidate_manifest" in spec:
+        artifacts["symbol_candidate_manifest"] = relative(Path(spec["symbol_candidate_manifest"]))
+    if "_candidate_census" in spec:
+        artifacts["symbol_independent_census"] = relative(Path(spec["_candidate_census"]))
     if host_timeline_path.is_file():
         artifacts["host_timeline"] = relative(host_timeline_path)
         artifacts["host_timeline_raw"] = relative(host_timeline_path.with_suffix(".jsonl"))

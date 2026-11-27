@@ -43,6 +43,8 @@ class CoverageResult:
 
 def _relative_source_path(root: Path, raw_path: str) -> str | None:
     source = Path(raw_path)
+    if not source.is_absolute():
+        source = root / source
     try:
         relative = source.resolve().relative_to(root.resolve())
     except ValueError:

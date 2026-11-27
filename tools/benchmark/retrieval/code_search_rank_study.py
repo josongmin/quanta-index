@@ -14,6 +14,7 @@ import json
 import math
 import re
 from pathlib import Path
+from typing import Any
 
 try:
     from tools.benchmark.retrieval import evaluator as ev
@@ -154,6 +155,7 @@ def _pool(row: dict, original: dict) -> list[dict]:
     candidates: list[dict] = []
     ids: set[str] = set()
     paths: set[str] = set()
+    cursors: set[str] = set()
     total: int | None = None
     for index, page in enumerate(pages):
         require(
@@ -186,11 +188,24 @@ def _pool(row: dict, original: dict) -> list[dict]:
             and _count(details, "returned_files") == page["window"]["returned"] == returned,
             "page counts disagree with full pool",
         )
-        if index:
+        outcome = page["window"]["outcome"]
+        cursor = page.get("next_cursor")
+        if index == len(pages) - 1:
             require(
-                pages[index - 1].get("next_cursor") is not None,
-                "paging continued without native cursor",
+                outcome["kind"] == "exact_exhausted" and cursor is None and returned == eligible,
+                "false complete-pool exhaustion",
             )
+        else:
+            require(
+                outcome["kind"] == "lower_bound"
+                and outcome.get("continuation") is True
+                and 0 < returned < eligible
+                and isinstance(cursor, str)
+                and bool(cursor)
+                and cursor not in cursors,
+                "page lacks an observed, progressing continuation",
+            )
+            cursors.add(cursor)
         for candidate in page["results"]:
             _authority(candidate, row["generation"])
             require(
@@ -205,14 +220,6 @@ def _pool(row: dict, original: dict) -> list[dict]:
             ids.add(candidate["candidate_id"])
             paths.add(candidate["repo_relative_path"])
             candidates.append(candidate)
-    if collection["pool_complete"]:
-        last = pages[-1]
-        require(
-            last["window"]["outcome"]["kind"] == "exact_exhausted"
-            and last.get("next_cursor") is None
-            and total == len(candidates),
-            "false complete-pool exhaustion",
-        )
     return candidates
 
 
@@ -629,20 +636,28 @@ def compose(suite: dict, rows: dict[str, dict]) -> dict:
     }
 
 
+def _read_input(path: Path) -> tuple[Any, dict[str, str]]:
+    path = path.resolve()
+    raw, payload = ev.read_json_with_bytes(path)
+    return payload, {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ("repo", "suite", "record", "study", "out"):
         parser.add_argument(f"--{flag}", type=Path, required=True)
     args = parser.parse_args()
-    suite, pack, record = ev.load_evidence(args.repo, args.suite, args.record)
-    artifact = ev.read_json(args.study)
-    rows = validate_artifact(
-        artifact, record, hashlib.sha256(args.record.read_bytes()).hexdigest(), pack
-    )
+    suite_input, suite_evidence = _read_input(args.suite)
+    suite, pack, source = ev.validate_suite(args.repo, suite_input)
+    record_input, record_evidence = _read_input(args.record)
+    record = ev.validate_evidence_against_suite(args.repo, suite, pack, source, record_input)
+    artifact, study_evidence = _read_input(args.study)
+    rows = validate_artifact(artifact, record, record_evidence["sha256"], pack)
     report = compose(suite, rows)
     report["inputs"] = {
-        name: {"path": str(path.resolve()), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        for name, path in (("suite", args.suite), ("record", args.record), ("study", args.study))
+        "suite": suite_evidence,
+        "record": record_evidence,
+        "study": study_evidence,
     }
     report["source"] = {
         "repository_commit": suite["repository_commit"],

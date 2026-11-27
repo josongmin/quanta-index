@@ -8,6 +8,10 @@ Root는 E01/E02의 실제 committed Source/owner/path를 기존 parser certifica
 
 후속 IDE 명령은 자체 genuine Current/Original과 현재 bytes/binding을 검증한다. FULL의 deadline/권한을 재사용하지 않고 source owner guard 아래 전체 edits를 원자 적용한다. selected row 교체·late result·foreign/revision mismatch는 잘못된 위치 적용으로 성공시키지 않는다.
 
+Stub 인증은 실제 parser/grammar policy, stable symbol identity와 exact SourceRecord를 결속한다. `binding.source`는 SourceRecord identity다. Source ACK 전에 durable queue에 Source/V5를 인계하고 별도 Original에서 AST를 생산한다. Bound 뒤에는 operation/event와 canonical request bytes를 유지하고, 재시작은 저장된 요청을 복원해 동일 SQL claim과 실제 publication을 대조한다. `saved_frontier`는 최초 save receipt와 같은 workspace/epoch의 비퇴행 projection view를 연결하며 exact owner→SourceRecord와 SourceCut/policy를 재검증한다.
+
+Projection contribution의 owner는 AST producer에 속하며 기존 source owner와 SourceRecord ref를 함께 보존한다. 요청의 최대 128 item과 prepare/preflight는 하나의 bounded attestation session과 backing을 공유한다. 실제 수용은 Semantica buffer owner의 all-edit CAS, duplicate name/overload identity, grammar-policy 교체, Unicode/CRLF 및 stale/foreign/overlap의 partial apply 0을 고정 oracle로 확인한다.
+
 ## Auto and replaceable logic
 
 기존 signal→estimator/policy proposal→고정 governor→scheduler permit→dispatch/completion 재검증 경계를 유지한다. Fast/Deep/Auto 전환은 같은 intent의 absolute deadline/ledger와 immutable policy/source binding을 공유한다. missing/stale/unknown 신호를 여유 자원0비용으로 해석하지 않는다.
@@ -23,4 +27,4 @@ Root는 E01/E02의 실제 committed Source/owner/path를 기존 parser certifica
 - [ ] [UX01–UX12](../../rfc/oct-10-native-incremental-vnext.md#136-adaptive-ide-adversarial-verification-matrix)와 [AUTO01–AUTO10](../../rfc/oct-10-native-incremental-vnext.md#137-auto-policy-substitution-and-governor-conformance)의 필수 기능 및 conformance를 충족.
 - [ ] 실제 navigation/completion/definition/references/rename 등 [RFC 6.7절](../../rfc/oct-10-native-incremental-vnext.md#67-ide-usability-is-an-integrated-release-requirement)의 지원 workflow·언어·독립 symbol/edit/ranking gold를 E08 비교 입력으로 전달.
 
-조건부 model evaluator/live reload/production shadow를 새 필수 기능으로 만들지 않는다. 명시된 absent capability의 하위 사례만 근거 있는 N/A로 처리하며, baseline admission/invalid-proposal/identity·test-only 정책 교체는 실행한다. AUTO10 개선 주장은 실제 고정 비교가 필요하다. 기존 Stub 세부 계약은 [보존 사양](../../history/oct-22-finalizing/oct-17-index-closeout/tickets/W2-16-stub-authority.md)에 있다.
+조건부 model evaluator/live reload/production shadow를 새 필수 기능으로 만들지 않는다. 명시된 absent capability의 하위 사례만 근거 있는 N/A로 처리하며, baseline admission/invalid-proposal/identity·test-only 정책 교체는 실행한다. AUTO10 개선 주장은 실제 고정 비교가 필요하다. W2-16 원문은 [복구 색인](../../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages)에서 찾을 수 있다.

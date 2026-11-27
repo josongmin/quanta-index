@@ -1,4 +1,10 @@
 //! Real-reader Hybrid with publication paused between Text and dense execution.
+//!
+//! The paused provider and the threads that drive it hand off through
+//! channels with no timeout: every wait ends when its peer sends, or when the
+//! peer's side is dropped because that peer failed or never ran. A query that
+//! returns without entering the provider takes its gate back and drops it,
+//! which disconnects the entry sender and ends the waiting thread.
 
 use super::*;
 use quanta_index_contract::{index::CoverageStatus, native_protocol::NativeSemanticTraversal};
@@ -52,13 +58,9 @@ impl TextEmbeddingProvider for InterleavedProvider {
                     entered.send(()).map_err(|error| {
                         CoreError::InvalidContract(format!("{phase}: provider entry: {error}"))
                     })?;
-                    release
-                        .recv_timeout(Duration::from_secs(5))
-                        .map_err(|error| {
-                            CoreError::InvalidContract(format!(
-                                "{phase}: physical release: {error}"
-                            ))
-                        })?;
+                    release.recv().map_err(|error| {
+                        CoreError::InvalidContract(format!("{phase}: physical release: {error}"))
+                    })?;
                     let vectors = NativeFixedTextProvider { calls: None }
                         .embed_batch(&["query"])?
                         .into_unscoped()?;
@@ -430,9 +432,7 @@ fn hybrid_dense_only_original_view_partial_coverage_and_provider_refusal_keep_on
         let publish_socket = socket.clone();
         let publisher = std::thread::spawn(
             move || -> Result<quanta_index_contract::index::ViewRef, String> {
-                entered_rx
-                    .recv_timeout(Duration::from_secs(5))
-                    .map_err(|error| error.to_string())?;
+                entered_rx.recv().map_err(|error| error.to_string())?;
                 let result = NativeUdsClient::new(publish_socket)
                     .submit(later_update, &budget())
                     .map_err(|error| error.to_string())
@@ -455,6 +455,7 @@ fn hybrid_dense_only_original_view_partial_coverage_and_provider_refusal_keep_on
             2,
             &budget(),
         );
+        drop(barrier.lock().map_err(|error| error.to_string())?.take());
         let published = publisher
             .join()
             .map_err(|_panic| "Hybrid publisher panicked")?;
@@ -648,9 +649,7 @@ fn hybrid_dense_only_original_view_partial_coverage_and_provider_refusal_keep_on
         *barrier.lock().map_err(|error| error.to_string())? =
             Some(("client-cancellation", entered_tx, release_rx));
         let interrupter = std::thread::spawn(move || -> Result<mpsc::SyncSender<()>, String> {
-            entered_rx
-                .recv_timeout(Duration::from_secs(5))
-                .map_err(|error| error.to_string())?;
+            entered_rx.recv().map_err(|error| error.to_string())?;
             cancel.cancel();
             Ok(release_tx)
         });
@@ -663,6 +662,7 @@ fn hybrid_dense_only_original_view_partial_coverage_and_provider_refusal_keep_on
             2,
             &cancelled_budget,
         );
+        drop(barrier.lock().map_err(|error| error.to_string())?.take());
         let physical_release = interrupter
             .join()
             .map_err(|_panic| "Hybrid canceller panicked")??;
@@ -687,15 +687,23 @@ fn hybrid_dense_only_original_view_partial_coverage_and_provider_refusal_keep_on
         assert_eq!(running.resources.observe()?.reserved.provider_units, 0);
         assert_eq!(view_pin_count(root.path(), complete.sequence)?, pins);
         let deadline_budget = RequestBudgetV1::for_duration(Duration::from_millis(200));
+        // The provider is released only once the request deadline itself has
+        // passed, measured from the budget, not by a fixed margin.
+        let expires_at = Instant::now()
+            .checked_add(deadline_budget.remaining())
+            .ok_or("original-deadline instant overflow")?;
         let (entered_tx, entered_rx) = mpsc::sync_channel(1);
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         *barrier.lock().map_err(|error| error.to_string())? =
             Some(("original-deadline", entered_tx, release_rx));
         let delayed = std::thread::spawn(move || -> Result<(), String> {
-            entered_rx
-                .recv_timeout(Duration::from_secs(5))
-                .map_err(|error| error.to_string())?;
-            std::thread::sleep(Duration::from_millis(250));
+            // A deadline that passes before the query reaches the provider
+            // leaves nothing to release: the query takes its gate back and
+            // the entry sender disconnects.
+            let Ok(()) = entered_rx.recv() else {
+                return Ok(());
+            };
+            std::thread::sleep(expires_at.saturating_duration_since(Instant::now()));
             release_tx.send(()).map_err(|error| error.to_string())
         });
         let expired = client.search_hybrid_file_in_read_session(
@@ -707,6 +715,7 @@ fn hybrid_dense_only_original_view_partial_coverage_and_provider_refusal_keep_on
             2,
             &deadline_budget,
         );
+        drop(barrier.lock().map_err(|error| error.to_string())?.take());
         delayed
             .join()
             .map_err(|_panic| "Hybrid deadline gate panicked")??;

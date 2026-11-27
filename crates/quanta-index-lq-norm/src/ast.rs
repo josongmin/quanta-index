@@ -373,7 +373,7 @@ impl LqExpr {
             Self::Leaf(LqLeaf::Keyword(keyword)) if pattern_type != LqPatternType::Regexp => {
                 Some(keyword.as_str())
             }
-            _ => None,
+            Self::Empty | Self::Leaf(_) | Self::Not(_) | Self::All(_) | Self::Any(_) => None,
         }
     }
 }

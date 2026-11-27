@@ -2,13 +2,13 @@
 
 > 실행 SSOT: [Wave2 잔여 작업](../plans/oct-22-finalizing/README.md). 이 RFC는 요구 ID·IR·계약·설계 의존성을 소유한다. 날짜별 구현 현황/진척률/담당/TODO는 당시 기록이며 현재 배정·작업 상태의 권위가 아니다. 실행 결과는 [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md)에 기록한다.
 
-새 실행 현황·분업·체크포인트를 이 RFC에 추가하지 않는다. 현재 상태는 SSOT의 기존 행, 실행 판정은 VALIDATION의 해당 scope에만 반영한다. 이전 action register·진척률·배정 본문은 [보존 이력](../history/oct-10-index-closeout/RFC-DELIVERY-CHECKPOINTS.md)으로 이전했다.
+새 실행 현황·분업·체크포인트를 이 RFC에 추가하지 않는다. 현재 상태는 SSOT의 기존 행, 실행 판정은 VALIDATION의 해당 scope에만 반영한다. 이전 action register·진척률·배정 본문은 [보존 이력](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages)으로 이전했다.
 
 - Date: 2026-10-10
 - Document maintenance: 2026-11-17 (source-map reconciliation only). Dated implementation checkpoints are
-  [historical records](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md),
+  [historical records](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages),
   not current task assignments. Dated implementation rechecks from sections
-  17.2.3–17.2.4 and 22 are [preserved separately](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md).
+  17.2.3–17.2.4 and 22 are [preserved separately](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
   The SSOT owns all current status; technical requirements keep their original dates.
 - Decision: Replace coupled lifecycle/storage contracts inside the existing
   quanta-index workspace. Reuse suitable components; do not create a second product
@@ -105,12 +105,13 @@ The concrete implementation direction, rather than an unselected backend list, i
 | Native physical data and persistent maps | FileObjectStore immutable content-addressed files plus COW compressed radix maps, behind core object/map ports | Section 8.3.1 permits a focused pack/KV alternative only for a failed contract, material measured cost or explicit comparative claim; RocksDB is not a current dependency or required implementation |
 | Preparation scratch | Disposable SQLite sorting/staging under service-owned scratch allocation; one map edit with a key of at most 64 bytes may use bounded request-owned resident staging with the same radix codec and durable installer | Staging is not a search engine or publication authority; resident nodes/wires retain original memory admission, and relaxed disposable synchronization does not apply to the durable Catalog or immutable objects |
 | Native lexical | R14 NativeLiteral and R15 NativeTextIndex owner postings, live statistics and query semantics; reuse normalization/planner/oracle primitives | The October R15 direction implements BM25 itself. The later accepted Nov-12 single-engine shipping decision selects Native and requires Tantivy code/dependency retirement in the final candidate; backend-independent correctness laws still apply |
-| Legacy comparison/recovery lexical | Explicit Legacy Tantivy plus its paged Native/File authorities; ordinary SDK/CLI select Native | R35/R36 retain the original default-switch and lifetime gates. The later Nov-12 retirement plan additionally requires zero Tantivy code, workspace Cargo/lock/vendor references and shipping bundle entries; their presence in current source is open removal work |
+| Legacy comparison/recovery lexical | A pinned old-Q release owns Legacy Tantivy and its paged Native/File authorities; ordinary SDK/CLI select Native | R35/R36 retain the original default-switch and lifetime gates. The Native cutover requires zero Tantivy code, workspace Cargo/lock/vendor references and shipping bundle entries on the final candidate. |
 
 Native correctness laws are backend-independent. The shipped backend choice is
-now fixed by the [Nov-12 retirement decision](../plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md):
-Native is the selected product path, and Tantivy/Lance removal has separate source
-and product gates. Backend changes must satisfy the same contracts; no alternative
+now fixed by the [Nov-12 retirement decision](../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement):
+Native is the selected product path. Tantivy source and shipping retirement have
+separate acceptance, and the Lance fork transition has its [own execution plan](../plans/nov-23-vendor-retirement/10-execution-work-breakdown.md#lance).
+Backend changes must satisfy the same contracts; no alternative
 comparison is an unconditional W0/W1 prerequisite.
 The full promised IDE/Auto/large-Semantic product remains in scope; a narrower
 native experiment cannot close the full ledger. Default switch gates are in
@@ -188,7 +189,7 @@ the pair representation must preserve these laws and test the real boundary.
 
 ### 2.2 Known costs, unresolved attribution and repair ownership
 
-The [static RCA](../history/oct-10-index-closeout/LEXICAL-QUERY-PLAN.md)
+The [static RCA](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages)
 sections 10.29–10.31 own the detailed historical observations. These values are
 from the recorded XL captures, not measurements of this proposal and not promised
 savings. Each cost has a separate hypothesis and acceptance gate.
@@ -203,14 +204,14 @@ savings. Each cost has a separate hypothesis and acceptance gate.
 The decision-time Legacy/source-family anchors were
 [retention history](../../crates/quanta-index-search-plane/src/readiness/search_corpus_history.rs)
 `record_sealed_search_corpus`,
-[Lexical measurement](../../crates/quanta-index-lexical/src/adapter_lifecycle.rs)
+[Lexical measurement](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/adapter_lifecycle.rs)
 `measure_sealed_generations`,
-[closure census](../../crates/quanta-index-lexical/src/lexical_gc.rs)
+[closure census](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/lexical_gc.rs)
 `measure_unique_closure_bytes`,
-[adoption storage](../../crates/quanta-index-lexical/src/lexical_store/store.rs),
-[Native compaction](../../crates/quanta-index-lexical/src/text_authority/paged_writer.rs)
+[adoption storage](https://github.com/josongmin/quanta-index/blob/cf1d92a1af132052fd4d7883e6cf25fb3467340c/crates/quanta-index-lexical/src/lexical_store/store.rs),
+[Native compaction](https://github.com/josongmin/quanta-index/blob/03e2cead64537121a056b3d23cb1877b0d7d4dca/crates/quanta-index-lexical/src/text_authority/paged_writer.rs)
 `compact_due_segments` and
-[File compaction](../../crates/quanta-index-lexical/src/file_authority/paged/producer.rs)
+[File compaction](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/file_authority/paged/producer.rs)
 `compact_segment`. Native body rederivation and File posting/mask work differ;
 do not assume identical compaction algorithms or costs.
 
@@ -2315,10 +2316,10 @@ initial construction, large imports, semantic materialization and sustained
 maintenance. No speedup is inferred from the architecture alone.
 
 There is already a disk-backed Native bulk path:
-[NativeBootstrapMaps](../../crates/quanta-index-lexical/src/text_authority/paged_bootstrap.rs)
+[NativeBootstrapMaps](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/text_authority/paged_bootstrap.rs)
 stages keyed rows in private SQLite scratch and feeds sorted rows to
 `ObjectStore::map_bootstrap`. The
-[File producer](../../crates/quanta-index-lexical/src/file_authority/paged/producer.rs)
+[File producer](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/file_authority/paged/producer.rs)
 also distinguishes bootstrap from map updates. Treat these as implementations to
 profile/reuse, not evidence that all construction phases are efficient or that
 there is no existing bulk builder. Replacing SQLite scratch with sorted runs is
@@ -2462,17 +2463,17 @@ construction work by evidence; a confirmed call path is not a measured bottlenec
 
 Source anchors for the newly inspected paths:
 
-- [Physical object installation](../../crates/quanta-index-lexical/src/lexical_store/store.rs):
+- [Physical object installation](https://github.com/josongmin/quanta-index/blob/cf1d92a1af132052fd4d7883e6cf25fb3467340c/crates/quanta-index-lexical/src/lexical_store/store.rs):
   `flush_adoption_batch_locked`, `AtomicSync::BatchedPoolData`,
   `pool_data_file_posix` and `pool_data_shard_posix`. Current macOS batching is
   already a durability optimization; replacing its barrier with a weaker flush
   is not an acceptable benchmark improvement.
-- [Native segment construction](../../crates/quanta-index-lexical/src/text_authority/paged_segment.rs):
+- [Native segment construction](https://github.com/josongmin/quanta-index/blob/03e2cead64537121a056b3d23cb1877b0d7d4dca/crates/quanta-index-lexical/src/text_authority/paged_segment.rs):
   `BuiltSegment::build` and `independent_term_members`;
-  [independent verifier](../../crates/quanta-index-lexical/src/text_authority/shard.rs):
+  [independent verifier](https://github.com/josongmin/quanta-index/blob/03e2cead64537121a056b3d23cb1877b0d7d4dca/crates/quanta-index-lexical/src/text_authority/shard.rs):
   `ShardBody::verify_semantics`, `verify_positions`, `ShardBuilders::upsert`;
-  [sequential cohort owner](../../crates/quanta-index-lexical/src/text_authority/paged_writer.rs).
-- [Native scratch builder](../../crates/quanta-index-lexical/src/text_authority/paged_bootstrap.rs):
+  [sequential cohort owner](https://github.com/josongmin/quanta-index/blob/03e2cead64537121a056b3d23cb1877b0d7d4dca/crates/quanta-index-lexical/src/text_authority/paged_writer.rs).
+- [Native scratch builder](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/text_authority/paged_bootstrap.rs):
   `new`, `stage`, `finish`, `bootstrap_map`. The five surface transactions and
   reference serialization are confirmed work, not yet a material cost finding.
 - [Semantic stream consumer](../../crates/quanta-index-semantic/src/build.rs):
@@ -2846,9 +2847,9 @@ Stage timers are nested consistently so total time does not double-count childre
 Instrumentation must expose all required paths, not only successful adapter calls.
 
 The [current diagnostics owner](../plans/oct-22-finalizing/E07-performance-operations.md)
-uses the common context, bounded recorder and exporter from the
-[original waterfall design](../history/oct-10-index-closeout/TRACE-WATERFALL-PLAN.md)
-and [execution packet specifications](../history/oct-10-index-closeout/TRACE-EXECUTION-PACKETS.md).
+uses the common context, bounded recorder and exporter under the [capture and clock ADR](../adr/OCT-05-002-native-capture-clock-and-index-scope.md).
+The initial trace designs and execution packets are recorded in the
+[recovery index](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
 Extend the existing path; do not create
 a second tracing pipeline for this RFC. Bind capture events to actual attempts,
 retain explicit incomplete/lost states after failure, and separate observer work
@@ -3027,8 +3028,8 @@ linked; no execution result is asserted here.
 | Extension | fourth typed adapter; two same-kind instances; missing input; incompatible format | Descriptor/profile conformance fixtures |
 | Bootstrap | source changes during build; replay gap/floor; refetch needed; cutover conflict | Complete source log and independently rebuilt target |
 
-Existing [map tests](../../crates/quanta-index-lexical/src/lexical_store/tests.rs),
-[Unicode goldens](../../crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs)
+Existing [map tests](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/lexical_store/tests.rs),
+[Unicode goldens](https://github.com/josongmin/quanta-index/blob/03e2cead64537121a056b3d23cb1877b0d7d4dca/crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs)
 and [SDK publication tests](../../crates/quanta-index-sdk/tests/l2_daemon_publication.rs)
 are assets to migrate. A test expecting an obsolete O(N) verification algorithm
 must be replaced with separate logical/corruption/cost assertions, while preserving
@@ -3199,12 +3200,12 @@ not the first time the daemon gets called.
 A **foundation checkpoint** is not the full **W1 exit**. In particular, the
 reserve/install/CAS and pinned-read paths alone do not satisfy W1's GC requirement
 or R10. Physical queued reclaim and service-owned retirement composition now exist;
-[Historical sections 23.56–23.57](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2356--service-owned-retention-code-checkpoint-2026-10-12) record their scoped acceptance. Sustained load, long pins and
+[Historical sections 23.56–23.57](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages) record their scoped acceptance. Sustained load, long pins and
 the complete operating fault matrix remain open. Independently owned W2 code
 and isolated tests may use frozen, tested W1 seams, but their existence does not
 close W1 or authorize a default product switch. Each stage's acceptance still
 requires its listed exits; checkpoint results are recorded separately in the
-[historical section 23 records](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md).
+[historical section 23 records](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
 
 W0-A failure must not block W1/W2-L/W2-H/W2-S-core. It still blocks any large Semantic
 release claim and overall completion where that feature was promised. First
@@ -3509,7 +3510,7 @@ Source anchors for the extra ownership findings:
 | Finding | Current source | Consequence |
 |---|---|---|
 | Filesystem lifecycle and SQLite are assembled independently | [Runtime assembly](../../crates/quanta-index-searchd-runtime/src/lib.rs), [lifecycle](../../crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs) | Replace both owners in one cutover |
-| Lexical COW store also owns journal/adoption/GC | [Store](../../crates/quanta-index-lexical/src/lexical_store/store.rs), [codec](../../crates/quanta-index-lexical/src/lexical_store/codec.rs), [GC](../../crates/quanta-index-lexical/src/lexical_gc.rs) | Data-path extraction is not a whole-file move |
+| Lexical COW store also owns journal/adoption/GC | [Store](https://github.com/josongmin/quanta-index/blob/cf1d92a1af132052fd4d7883e6cf25fb3467340c/crates/quanta-index-lexical/src/lexical_store/store.rs), [codec](https://github.com/josongmin/quanta-index/blob/857aa3e7a3ffe01ddfe96e5a9922d6d1e20547ac/crates/quanta-index-lexical/src/lexical_store/codec.rs), [GC](https://github.com/josongmin/quanta-index/blob/adc35b4e1e235ec08f810f9f19888ed1dd3de5df/crates/quanta-index-lexical/src/lexical_gc.rs) | Data-path extraction is not a whole-file move |
 | RepoMap has independent candidate/active/pin state | [Catalog candidate](../../crates/quanta-index-catalog/src/candidate.rs), [RepoMap store](../../crates/quanta-index-repomap/src/store.rs) | Participating RepoMap roots use CatalogView publication and Kernel leases |
 | RepoMap delta currently preserves a whole bundle | [Delta](../../crates/quanta-index-repomap/src/delta.rs), [materializer](../../crates/quanta-index-repomap/src/materializer.rs) | Implement owner contributions/reverse membership; do not label the existing wrapper native incremental |
 | Pair assumptions reach query and boot paths | [Read view](../../crates/quanta-index-search-plane/src/query_dispatcher/read_view/view.rs), [daemon runtime](../../crates/quanta-index-searchd/src/app/runtime.rs) | Update every participating route and boot recovery, not just submit |
@@ -3741,7 +3742,7 @@ replacement, full-suite, performance or release gates.
 ### 17.2.3 Bounded remediation plan from the implemented paths
 
 Historical implementation observations and dated repair/test records are preserved
-in [the implementation history](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md#1723-bounded-remediation-plan-from-the-implemented-paths).
+in [the implementation history](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
 They are not current assignments. Use the [SSOT](../plans/oct-22-finalizing/README.md)
 for status and owners, and [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md)
 for source-scoped results. The original technical details remain in that history;
@@ -3749,7 +3750,7 @@ requirements and acceptance thresholds are unchanged.
 
 ### 17.2.4 Current-source recheck and minimum remaining boundaries (2026-10-13)
 
-[Historical recheck](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md#1724-current-source-recheck-and-minimum-remaining-boundaries-2026-10-13).
+[Historical recheck](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
 
 <details>
 <summary>Preserved historical fragment IDs</summary>
@@ -3921,14 +3922,12 @@ correctness change requires edits. One canonical internal IR remains required.
 <a id="175-existing-file-change-and-retirement-map"></a>
 ### 17.5 Current implementation and pending retirement
 
-Module delivery and shipped Legacy retirement are separate. Ordinary SDK profiles
-and supported ordinary CLI commands now use Native. Lexical and Runtime have empty
-default feature lists. Explicit Legacy builds, workspace/lock/vendor cleanup
-and the retained Semantic Lance/LanceDB dependencies still require the
-[engine-retirement contract](../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement)
-and [current retirement plan](../plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md).
-Native module delivery or an empty default feature list does not establish
-whole-workspace or shipped-candidate retirement.
+Ordinary SDK profiles and supported ordinary CLI commands use Native. The
+[engine-retirement ADR](../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement)
+records Legacy engine, Cargo, lock and vendor removal. The
+[shipping retirement gate](../plans/nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md#검증)
+requires compiler, bundle and signed installation evidence from the same release
+candidate. Legacy comparisons use the separately pinned old-Q release.
 
 | Existing boundary | Gate retained from the original retirement map |
 | --- | --- |
@@ -4018,7 +4017,7 @@ the replacement passed them. New test filenames below are proposed target files.
 | Operational qualification | capacity/causal-cost and existing retrieval harness | Fixed delta with independently scaled corpus/objects/history, mixed load, cold/warm, sustained churn, long pins, space pressure, launcher switch and independent-process recovery; final searchable freshness and quality |
 | CLI/state format | current migration/doctor tests | Offline/live-owner refusal; nonterminal operation backup refusal; Published-before-ACK backup/restore; original receipt/frontier reconciliation; old-root and old-ticket refusal |
 
-Existing [runtime suite](../../crates/quanta-index-searchd-runtime/tests/runtime_risk_suite.rs)
+Existing [runtime suite](https://github.com/josongmin/quanta-index/blob/48666a746de698c248561730de40c64ea31cd6af/crates/quanta-index-searchd-runtime/tests/runtime_risk_suite.rs)
 wires GC/replay/snapshot/RepoMap scenarios, but its expected pair semantics must
 be revised. Existing live Watchman cases use ignore/environment/daemon gating;
 their source presence or a default-green run does not establish their execution.
@@ -4124,10 +4123,10 @@ do not reproduce or quantitatively explain the historical 94-second result.
 
 | ID | Evidence / counterexample | Normative repair incorporated | Decisive implementation gate |
 |---|---|---|---|
-| F01 | [BM25 statistics](../../crates/quanta-index-lexical/src/sealed_generation/live_bm25.rs) scans changed segment document IDs and visits segment statistics; [verify](../../crates/quanta-index-lexical/src/sealed_generation/verify.rs) decodes the flat sidecar | Section 9.1: persistent census/live term statistics, touched deletion blocks, statistics-bound scoring/pruning; file map extended | One small delete across increasing segment size/count: seal, cold open and fixed query counters plus independent rank oracle |
+| F01 | [BM25 statistics](https://github.com/josongmin/quanta-index/blob/03e2cead64537121a056b3d23cb1877b0d7d4dca/crates/quanta-index-lexical/src/sealed_generation/live_bm25.rs) scans changed segment document IDs and visits segment statistics; [verify](https://github.com/josongmin/quanta-index/blob/c32cd191554031b9a7d04207ffa3410e8fc201ba/crates/quanta-index-lexical/src/sealed_generation/verify.rs) decodes the flat sidecar | Section 9.1: persistent census/live term statistics, touched deletion blocks, statistics-bound scoring/pruning; file map extended | One small delete across increasing segment size/count: seal, cold open and fixed query counters plus independent rank oracle |
 | F02 | [Semantic open/refill](../../crates/quanta-index-semantic/src/search.rs) retains full-base commitment and count/exact completion paths | Section 9.2: indexed historical open and explicit filtered-ANN/refill work semantics | Growing N, fixed query/filter, deletion churn and old pin; no hidden recount or false exhaustive result |
 | F03 | [Runtime capture](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/coordination/change_event_recompute_invalidator/change_event_aggregate_input_v3.rs) materializes workspace paths; [scoped issuance](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-source-authority-wire/src/serving_source_closure_issuance_v1.rs) still scans provider aliases | Section 9.4 / 17.6: sparse capture and indexed alias projection under existing canonical source custody; separate affected-set completeness | Fixed one-file delta/growing workspace and alias map; producer reads/allocations, unchanged-byte dependent B and delete-only/empty transitions |
-| F04 | [RepoMap ranking](../../crates/quanta-index-repomap/src/query.rs) uses folded substring containment; token-equality indexing would lose infix hits | Section 9.3: sound substring candidates plus exact verification, fanout budget and explicit query classes | Infix/Unicode/CJK/focus fanout and prefix-budget parity |
+| F04 | [RepoMap ranking](https://github.com/josongmin/quanta-index/blob/90a0ec340388400828c193809e533de2b1fb9001/crates/quanta-index-repomap/src/query.rs) uses folded substring containment; token-equality indexing would lose infix hits | Section 9.3: sound substring candidates plus exact verification, fanout budget and explicit query classes | Infix/Unicode/CJK/focus fanout and prefix-budget parity |
 | C01 | Child C is Reclaiming while new parent P registers P->C | Section 8.3: atomic direct-child validation/reference acquisition, child-first DAG registration and ordered gates | Race parent registration with child permit/unlink; crash/retry and forward-edge rejection |
 | C02 | Coverage-only CAS conflict releases e42's operation; e43 or a changed e42 could incorrectly advance source | Section 8.2: immutable event identity and atomic claim release, exact predecessor rebind by a new operation | o7 Conflict, o8 same event, queued e43, lost ACK, original receipt replay |
 | C03 | Stable A repeatedly loses global-view CAS to unrelated B; releasing its attempt roots can let GC delete reusable prepared output | Sections 5.3 / 8.2: atomic transfer to bounded retry custody, then fair slot before freezing/revalidating a new operation | A becomes searchable within eligible queue turns while B continues; Conflict/GC/retry/expiry/crash races |
@@ -4386,7 +4385,7 @@ operational-performance proof gaps.
 ## 22. Executable native slice: implementation and checkpoint boundary
 
 Historical implementation observations and dated repair/test records are preserved
-in [the implementation history](../history/oct-10-index-closeout/RFC-IMPLEMENTATION-CHECKPOINTS-2026-10-21.md#22-executable-native-slice-implementation-and-checkpoint-boundary).
+in [the implementation history](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
 They are not current assignments. Use the [SSOT](../plans/oct-22-finalizing/README.md)
 for status and owners, and [VALIDATION](../plans/oct-22-finalizing/VALIDATION.md)
 for source-scoped results. The original technical details remain in that history;
@@ -4465,11 +4464,11 @@ Partial rows do not become complete by splitting ownership or adding tests.
 
 The former section 23 status table, source observations, F01–F09 scopes, test
 results, repair proposals and dated sections 23.1–23.90 are preserved in
-[the checkpoint history](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md).
+[the checkpoint history](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages).
 Technical constraints in those records remain available under their original
 headings. Current acceptance must use the active tickets and actual source;
 a historical pending claim, failure or pass does not issue a new task or qualification.
-The earlier [delivery-register history](../history/oct-10-index-closeout/RFC-DELIVERY-CHECKPOINTS.md)
+The earlier [delivery-register history](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages)
 retains the previously retired section bodies.
 
 <details>

@@ -220,7 +220,10 @@ fn expect_paths(
             candidate.candidate_id
         );
         ensure!(
-            candidate.snippet.contains(token),
+            candidate
+                .excerpt
+                .as_ref()
+                .is_some_and(|excerpt| excerpt.snippet.contains(token)),
             "freshness: {token} candidate {} has no matching snippet",
             candidate.candidate_id
         );

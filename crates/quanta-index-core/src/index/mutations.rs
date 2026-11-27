@@ -108,6 +108,16 @@ impl OwnerMutationDigest {
     }
 }
 
+/// True exactly for the canonical empty owner mutation set.
+///
+/// That set has no page root, no items, and the digest of the empty item
+/// stream. A frontier-only Source advance carries it; any other set must be
+/// replayed by its consumer.
+#[must_use]
+pub fn is_canonical_empty_mutation_set(set: OwnerMutationSet) -> bool {
+    set.count == 0 && set.root.0.is_none() && set.digest == OwnerMutationDigest::default().finish()
+}
+
 /// The owner is already authenticated by the map key. Only next is a real
 /// physical edge; expected is historical CAS data, including an all-zero digest.
 pub fn owner_mutation_value(mutation: &OwnerMutation) -> Result<MapValue, IndexError> {

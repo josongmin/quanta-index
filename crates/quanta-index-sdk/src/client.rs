@@ -10,7 +10,6 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
 };
-use quanta_index_ipc::ClientIpcTimingV1;
 
 use crate::DiagnosticAttemptSourceV1;
 
@@ -20,9 +19,10 @@ use crate::binding::{
 };
 use crate::{
     ClientProfile, ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
-    ObservabilityNamespace, QuarantineNamespace, QueryTransport, RuntimeNamespace, SdkError,
-    SearchCorpusNamespace, SearchNamespace, SemanticNamespace, StructuralNamespace,
-    SymbolNamespace, UdsControlTransport, UdsIngestTransport, UdsQueryTransport,
+    ObservabilityNamespace, QuarantineNamespace, QueryTransport,
+    RuntimeNamespace, SdkError, SearchCorpusNamespace, SearchNamespace, SemanticNamespace,
+    StructuralNamespace, SymbolNamespace, UdsControlTransport, UdsIngestTransport,
+    UdsQueryTransport,
 };
 use crate::{ControlTransport, IngestTransport};
 
@@ -34,6 +34,8 @@ enum ClientTransports {
         selection: quanta_index_contract::index::ViewSelection,
         profile: ClientProfile,
         io_policy: quanta_index_ipc::ClientIoPolicy,
+        text_instance: Option<quanta_index_contract::index::IndexInstanceId>,
+        view_sessions: crate::native_code_search::NativeViewSessions,
     },
     Uds {
         query: UdsQueryTransport,
@@ -98,24 +100,11 @@ pub struct QuantaIndexClientPayloadV1 {
     diagnostic_attempt_source: Option<Arc<dyn DiagnosticAttemptSourceV1>>,
 }
 
-/// The query-plane RPC made during one observed lexical SDK call.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClientQueryRpcKindV1 {
-    ResolveActiveGeneration,
-    ResolveLexicalGeneration,
-    Text,
-}
+pub use crate::client_observation::{
+    ClientLexicalQueryObservationV1, ClientQueryRpcKindV1, ClientQueryRpcObservationV1,
+};
 
 impl ClientQueryRpcKindV1 {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ResolveActiveGeneration => "query.resolve_active",
-            Self::ResolveLexicalGeneration => "query.resolve_lexical",
-            Self::Text => "query.text",
-        }
-    }
-
     fn from_request(request: &SearchPlaneQueryIpcRequest) -> Result<Self, SdkError> {
         match request {
             SearchPlaneQueryIpcRequest::ResolveActiveGeneration(_) => {
@@ -135,26 +124,13 @@ impl ClientQueryRpcKindV1 {
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
+
             | SearchPlaneQueryIpcRequest::Explain(_)
             | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Err(SdkError::Protocol(
                 "lexical client observation reached a non-lexical RPC".to_string(),
             )),
         }
     }
-}
-
-/// Request-ID-bound transport intervals for one successful query-plane RPC.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ClientQueryRpcObservationV1 {
-    pub kind: ClientQueryRpcKindV1,
-    pub request_id: u64,
-    pub ipc: ClientIpcTimingV1,
-}
-
-/// Successful RPCs in the execution order of one lexical SDK query.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ClientLexicalQueryObservationV1 {
-    pub rpcs: Vec<ClientQueryRpcObservationV1>,
 }
 
 #[derive(Clone)]
@@ -197,6 +173,21 @@ impl QuantaIndex {
     pub fn connect(options: ConnectOptions) -> Result<Self, SdkError> {
         let resolved = options.resolve()?;
         Ok(Self::from_resolved(resolved))
+    }
+
+    /// Settle this Native client's read leases before a short-lived caller
+    /// exits. The client must have no other handles or in-flight queries.
+    /// A failed release remains available for the normal drop-time retry.
+    pub fn close_native_read_sessions(&mut self) -> Result<(), SdkError> {
+        let inner = Arc::get_mut(&mut self.inner).ok_or_else(|| {
+            SdkError::Usage("Native read sessions require exclusive client ownership".into())
+        })?;
+        match &mut inner.transports {
+            ClientTransports::Native { view_sessions, .. } => view_sessions.release_now(),
+            _ => Err(SdkError::Usage(
+                "Native read sessions require a Native connection".into(),
+            )),
+        }
     }
 
     /// Connect with an explicit source of one local diagnostic span per IPC send.
@@ -439,6 +430,32 @@ impl QuantaIndexClientPayloadV1 {
         crate::namespace::NamespaceHandle::new(self)
     }
 
+    /// The Native route of the default `.text()` code search and of text
+    /// matches, if connected to a Native endpoint.
+    pub(crate) fn native_text_route(
+        &self,
+    ) -> Option<crate::native_code_search::NativeTextRoute<'_>> {
+        match &self.transports {
+            ClientTransports::Native {
+                query,
+                selection,
+                io_policy,
+                text_instance,
+                view_sessions,
+                ..
+            } => Some(crate::native_code_search::NativeTextRoute {
+                client: query,
+                selection: *selection,
+                io_policy: *io_policy,
+                text_instance: *text_instance,
+                sessions: view_sessions,
+            }),
+            ClientTransports::Uds { .. } => None,
+            #[cfg(test)]
+            ClientTransports::Injected { .. } => None,
+        }
+    }
+
     /// Check the query contract before an SDK builder validates Legacy-specific inputs.
     pub(super) fn admit_legacy_query_v1(
         &self,
@@ -540,6 +557,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::Structural(_)
+
             | SearchPlaneQueryIpcResponse::Explain(_)
             | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => Ok(payload),
@@ -607,6 +625,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcRequest::History(_)
             | SearchPlaneQueryIpcRequest::RuntimeMetadata(_)
             | SearchPlaneQueryIpcRequest::Structural(_)
+
             | SearchPlaneQueryIpcRequest::Explain(_)
             | SearchPlaneQueryIpcRequest::ClusterMembershipRead(_) => Ok(()),
         }
@@ -645,6 +664,8 @@ impl QuantaIndexClientPayloadV1 {
             payload @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -868,6 +889,7 @@ impl QuantaIndexClientPayloadV1 {
                 selection,
                 resolved.profile,
                 resolved.io_policy,
+                resolved.native_text_instance,
             );
         }
         Self::from_socket_paths_v1(
@@ -883,13 +905,19 @@ impl QuantaIndexClientPayloadV1 {
         selection: quanta_index_contract::index::ViewSelection,
         profile: ClientProfile,
         io_policy: quanta_index_ipc::ClientIoPolicy,
+        text_instance: Option<quanta_index_contract::index::IndexInstanceId>,
     ) -> Self {
         Self {
             transports: ClientTransports::Native {
+                view_sessions: crate::native_code_search::NativeViewSessions::new(
+                    crate::native_uds::NativeUdsClient::new(socket.clone()),
+                    io_policy,
+                ),
                 query: crate::native_uds::NativeUdsClient::new(socket),
                 selection,
                 profile,
                 io_policy,
+                text_instance,
             },
             next_request_id: AtomicU64::new(1),
             diagnostic_attempt_source: None,
@@ -1074,6 +1102,7 @@ impl<'a> ReaderClient<'a> {
     ) -> Result<quanta_index_contract::SearchPlaneStructuralQueryResponse, SdkError> {
         self.client.structural().query_request(request)
     }
+
 }
 
 #[derive(Clone, Copy)]
@@ -1183,6 +1212,7 @@ impl<'a> ProducerClient<'a> {
     ) -> Result<crate::BatchReceipt, SdkError> {
         self.client.structural().publish(batch)
     }
+
 }
 
 #[derive(Clone, Copy)]
@@ -1220,6 +1250,7 @@ impl<'a> ControlClient<'a> {
     ) -> Result<quanta_index_contract::GenerationStatusReport, SdkError> {
         self.client.generations().status(repo_id, revision_id)
     }
+
 
     /// The daemon's metrics snapshot (QI-BB-015).
     pub fn metrics_snapshot(&self) -> Result<quanta_index_contract::MetricsSnapshotV1, SdkError> {

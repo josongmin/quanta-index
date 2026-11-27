@@ -29,11 +29,14 @@ use quanta_index_kernel::Kernel;
 use quanta_index_storage::FileObjectStore;
 
 use crate::{
+    native_progress_observation::{CloseOnExit, NativeProgressClose as _},
     native_reclaim_driver::{
         NativeReclaimConfig, NativeReclaimDriver, NativeReclaimRound, reclaim_one_attempt,
     },
+    native_reclaim_observation::NativeReclaimObservation,
     native_resources::{NativeClassScheduler, NativeResourceLedger, NativeResourceSnapshot},
     native_retention::{NativeRetentionConfig, NativeRetentionDriver},
+    native_retention_observation::NativeRetentionObservation,
     native_scratch_io::NativeScratchIo,
     native_wal_reclaim::NativeWalReclaimSchedule,
     native_worker::{
@@ -55,6 +58,8 @@ pub(super) struct NativePumpServices {
     pub control_need: ResourceNeed,
     pub io: Arc<NativeScratchIo>,
     pub diagnostic_context: Option<DiagnosticContextV1>,
+    pub reclaim_observation: Arc<crate::native_reclaim_observation::NativeReclaimObservation>,
+    pub retention_observation: Arc<crate::native_retention_observation::NativeRetentionObservation>,
 }
 
 /// Observations keep missing/stale worker signals intact. A policy cannot
@@ -458,6 +463,57 @@ impl Drop for ActiveReclaimGuard {
     }
 }
 
+/// The pump's maintenance drivers and the guards that close their
+/// observations when the pump exits.
+struct PumpMaintenance<'observation> {
+    reclaim: Option<(
+        NativeReclaimDriver,
+        NativeReclaimConfig,
+        NativeWalReclaimSchedule,
+    )>,
+    retention: Option<(NativeRetentionDriver, Instant)>,
+    _close_reclaim: CloseOnExit<'observation>,
+    _close_retention: CloseOnExit<'observation>,
+}
+
+/// Build the maintenance drivers. An observation whose driver is absent is
+/// closed at once; both are closed when the result, or a failed build, is
+/// dropped.
+fn start_maintenance<'observation>(
+    reclaim_observation: &'observation NativeReclaimObservation,
+    retention_observation: &'observation NativeRetentionObservation,
+    reclaim: Option<NativeReclaimConfig>,
+    retention: Option<NativeRetentionConfig>,
+) -> Result<PumpMaintenance<'observation>, IndexError> {
+    // Both observations close when the pump exits by any path, including a
+    // failed driver constructor below, so no waiter outlives the pump.
+    let close_reclaim = CloseOnExit(reclaim_observation);
+    let close_retention = CloseOnExit(retention_observation);
+    if reclaim.is_none() {
+        reclaim_observation.close();
+    }
+    if retention.is_none() {
+        retention_observation.close();
+    }
+    let reclaim = reclaim
+        .map(|config| {
+            let now = Instant::now();
+            let driver = NativeReclaimDriver::new(config, now)?;
+            let wal = NativeWalReclaimSchedule::new(config.wal_reclaim, now)?;
+            Ok::<_, IndexError>((driver, config, wal))
+        })
+        .transpose()?;
+    let retention = retention
+        .map(|config| NativeRetentionDriver::new(config).map(|driver| (driver, Instant::now())))
+        .transpose()?;
+    Ok(PumpMaintenance {
+        reclaim,
+        retention,
+        _close_reclaim: close_reclaim,
+        _close_retention: close_retention,
+    })
+}
+
 fn pump_loop(
     dispatcher: &Arc<NativePumpServices>,
     config: Option<&NativePumpConfig>,
@@ -466,6 +522,17 @@ fn pump_loop(
     stop: &Arc<AtomicBool>,
     active_reclaim: &Arc<Mutex<Option<CancelHandleV1>>>,
 ) -> Result<(), IndexError> {
+    let PumpMaintenance {
+        mut reclaim,
+        mut retention,
+        _close_reclaim,
+        _close_retention,
+    } = start_maintenance(
+        &dispatcher.reclaim_observation,
+        &dispatcher.retention_observation,
+        reclaim,
+        retention,
+    )?;
     let mut scopes: VecDeque<NativePumpScope> = config
         .into_iter()
         .flat_map(|config| config.scopes.iter().copied())
@@ -477,17 +544,6 @@ fn pump_loop(
         usize::try_from(config.max_in_flight)
             .map_err(|error| IndexError::InvalidInput(format!("native pump concurrency: {error}")))
     })?;
-    let mut reclaim = reclaim
-        .map(|config| {
-            let now = Instant::now();
-            let driver = NativeReclaimDriver::new(config, now)?;
-            let wal = NativeWalReclaimSchedule::new(config.wal_reclaim, now)?;
-            Ok::<_, IndexError>((driver, config, wal))
-        })
-        .transpose()?;
-    let mut retention = retention
-        .map(|config| NativeRetentionDriver::new(config).map(|driver| (driver, Instant::now())))
-        .transpose()?;
     let read_session_limits = reclaim.as_ref().map(|(_, config, _)| config.work_limits);
     let mut next_read_sweep = Instant::now();
     let mut runs = ActiveRuns::new(Arc::clone(stop));
@@ -505,9 +561,21 @@ fn pump_loop(
             )?;
             runs.prune_expired_retries(Instant::now());
             let completed = runs.reap()?;
+            schedule_maintenance_demand(
+                dispatcher.catalog.as_ref(),
+                retention.as_mut().map(|(driver, _)| driver),
+                reclaim.as_mut().map(|(driver, _, _)| driver),
+            )?;
             if let Some((driver, next_due)) = &mut retention {
                 run_retention_due(dispatcher, driver, next_due, stop, active_reclaim)?;
             }
+            // Retention may have just retired views; hand that demand to the
+            // reclaim driver before its round instead of one iteration later.
+            schedule_maintenance_demand(
+                dispatcher.catalog.as_ref(),
+                retention.as_mut().map(|(driver, _)| driver),
+                reclaim.as_mut().map(|(driver, _, _)| driver),
+            )?;
             if let Some((driver, config, wal)) = &mut reclaim {
                 run_reclaim_due(dispatcher, driver, *config, stop, active_reclaim, wal)?;
             }
@@ -708,6 +776,32 @@ fn finish_maintenance_round<T>(
     }
 }
 
+/// Hand committed Catalog maintenance demand to the drivers.
+///
+/// Rounds keep their configured cadence. Demand selects the released view
+/// ranges, abandoned pins and reclaim queue head they revisit. A released
+/// range may span several retention pages.
+fn schedule_maintenance_demand(
+    catalog: &SqliteCatalog,
+    retention: Option<&mut NativeRetentionDriver>,
+    reclaim: Option<&mut NativeReclaimDriver>,
+) -> Result<(), IndexError> {
+    let demand = match catalog.take_maintenance_demand() {
+        Ok(demand) => demand,
+        // The Catalog keeps the demand until a drain succeeds. Retry at the
+        // next pump iteration while letting already scheduled rounds progress.
+        Err(IndexError::ResourceLimited) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if let Some(driver) = retention {
+        driver.schedule(&demand);
+    }
+    if let Some(driver) = reclaim {
+        driver.schedule(&demand);
+    }
+    Ok(())
+}
+
 fn run_retention_due(
     dispatcher: &Arc<NativePumpServices>,
     driver: &mut NativeRetentionDriver,
@@ -729,6 +823,7 @@ fn run_retention_due(
         Arc::clone(&dispatcher.maintenance_scheduler),
         dispatcher.control_need,
     ) else {
+        // A refused round runs no turn: it is not recorded as one.
         driver.record_admission_refusal();
         let denial = dispatcher.maintenance_scheduler.denial();
         return if denial == IndexError::ResourceLimited {
@@ -752,12 +847,52 @@ fn run_retention_due(
         }
     };
     let round = driver.run_round(dispatcher.catalog.as_ref(), &mut budget);
+    dispatcher
+        .retention_observation
+        .record_round(&driver.last_round());
     finish_maintenance_round(span, &round);
     match round {
         Ok(()) | Err(IndexError::ResourceLimited | IndexError::SnapshotUnavailable) => Ok(()),
         Err(IndexError::Cancelled) if stop.load(Ordering::Acquire) => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// One reclaim round's Catalog and object work.
+///
+/// Runs under the caller's original reservation and budget: a due
+/// read-recovery page (dead sessions and abandoned pins) followed by the
+/// driver's bounded reclaim steps.
+fn reclaim_round(
+    catalog: &SqliteCatalog,
+    objects: &FileObjectStore,
+    driver: &mut NativeReclaimDriver,
+    now: Instant,
+    budget: &mut WorkBudget,
+    stop: &AtomicBool,
+) -> Result<NativeReclaimRound, IndexError> {
+    let recover_sessions = driver.read_recovery_due();
+    let recovery_after = driver.read_recovery_after();
+    let mut recovery_page = None;
+    let round = driver.run_attempt_round(now, budget, |after, child_limit, budget| {
+        if stop.load(Ordering::Acquire) {
+            budget.request().cancel_handle().cancel();
+        }
+        budget.checkpoint()?;
+        // One bounded page shares this round's reservation, deadline and held
+        // physical parent. The driver schedules cadence before this work.
+        if recover_sessions && recovery_page.is_none() {
+            recovery_page =
+                Some(catalog.recover_read_sessions(recovery_after, child_limit, budget)?);
+        }
+        reclaim_one_attempt(catalog, objects, after, child_limit, budget)
+    });
+    if let Some(page) = recovery_page {
+        // A successful recovery page committed independently even if the
+        // following object step failed; retain its authoritative cursor.
+        driver.record_read_recovery(page);
+    }
+    round
 }
 
 fn run_reclaim_due(
@@ -798,35 +933,16 @@ fn run_reclaim_due(
             return failed;
         }
     };
-    let recover_sessions = driver.read_recovery_due();
-    let recovery_after = driver.read_recovery_after();
-    let mut recovery_page = None;
-    let round = driver.run_attempt_round(now, &mut budget, |after, child_limit, budget| {
-        if stop.load(Ordering::Acquire) {
-            budget.request().cancel_handle().cancel();
-        }
-        budget.checkpoint()?;
-        // One bounded page shares this round's reservation, deadline and held
-        // physical parent. The driver schedules cadence before this work.
-        if recover_sessions && recovery_page.is_none() {
-            recovery_page = Some(dispatcher.catalog.recover_read_sessions(
-                recovery_after,
-                child_limit,
-                budget,
-            )?);
-        }
-        reclaim_one_attempt(
-            &dispatcher.catalog,
-            &dispatcher.objects,
-            after,
-            child_limit,
-            budget,
-        )
-    });
-    if let Some(page) = recovery_page {
-        // A successful recovery page committed independently even if the
-        // following object step failed; retain its authoritative cursor.
-        driver.record_read_recovery(page);
+    let round = reclaim_round(
+        &dispatcher.catalog,
+        &dispatcher.objects,
+        driver,
+        now,
+        &mut budget,
+        stop,
+    );
+    if let Ok(round) = &round {
+        dispatcher.reclaim_observation.record_round(round);
     }
     let wal_result: Result<(), IndexError> = (|| {
         // GC goes first. A physical refusal may leave enough original budget
@@ -1124,6 +1240,7 @@ fn await_run(
         UpdateKind::Materialize { .. } => {}
         UpdateKind::SourceAdvance(_)
         | UpdateKind::SourceHistoryAdvance(_)
+        | UpdateKind::SourceHistoryBootstrap(_)
         | UpdateKind::SourceResync { .. }
         | UpdateKind::SourceHistoryResync { .. }
         | UpdateKind::ProjectionAdvance(_)
@@ -1397,6 +1514,73 @@ fn classify_result(
 #[cfg(test)]
 mod renewal_tests {
     use super::*;
+
+    /// A driver constructor that fails still closes both observations, so a
+    /// waiter on either one ends with `Stopped` instead of blocking.
+    #[test]
+    fn a_failed_maintenance_build_stops_both_observation_waits() {
+        use crate::native_progress_observation::NativeProgressWaitError;
+        use crate::native_retention::NativeRetentionScope;
+        use quanta_index_contract::index::{CollectionId, SlotId, TenantId, WorktreeId};
+        let reclaim_observation = NativeReclaimObservation::default();
+        let retention_observation = NativeRetentionObservation::default();
+        let (reclaim_mark, retention_mark) =
+            (reclaim_observation.mark(), retention_observation.mark());
+        let work_limits = WorkLimits {
+            reads: 1 << 20,
+            writes: 1 << 20,
+            bytes: 1 << 40,
+            mutations: 1 << 20,
+        };
+        // The reclaim driver constructor refuses a WAL cadence beyond the clock.
+        let reclaim = NativeReclaimConfig {
+            interval: Duration::from_millis(20),
+            wal_reclaim: crate::native_wal_reclaim::NativeWalReclaimPolicy {
+                trigger_bytes: 1 << 20,
+                min_interval: Duration::MAX,
+            },
+            max_steps_per_round: 8,
+            child_limit: 32,
+            work_limits,
+            round_timeout: Duration::from_secs(2),
+            head_probe_every: 64,
+        };
+        let retention = NativeRetentionConfig {
+            scopes: vec![NativeRetentionScope {
+                workspace: quanta_index_contract::index::WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+            }],
+            sequence_window: 1,
+            page_limit: 1,
+            custody_page_limit: 1,
+            interval: Duration::from_millis(20),
+            round_timeout: Duration::from_secs(2),
+            work_limits,
+            head_probe_every: 2,
+        };
+        let started = start_maintenance(
+            &reclaim_observation,
+            &retention_observation,
+            Some(reclaim),
+            Some(retention),
+        );
+        assert!(started.is_err());
+        let stopped = Some(Err(NativeProgressWaitError::Stopped));
+        assert_eq!(reclaim_observation.outcome_after(reclaim_mark), stopped);
+        assert_eq!(
+            retention_observation.completed_outcome_after(retention_mark),
+            stopped
+        );
+        assert_eq!(
+            retention_observation.released_outcome_after(retention_mark),
+            stopped
+        );
+    }
     use crate::native_reclaim_driver::{NativeReclaimStep, ReclaimAttempt};
     use quanta_index_contract::index::{CollectionId, Digest, SlotId, TenantId, WorktreeId};
     use quanta_index_core::index::{ObjectRef, WorkBudgetDenial, WorkLimits, WorkUsage};
@@ -2493,3 +2677,7 @@ mod maintenance_diagnostic_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "native_pump/release_cadence_tests.rs"]
+mod release_cadence_tests;

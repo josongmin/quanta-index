@@ -15,8 +15,8 @@ pub struct ScratchRequest {
     pub max_bytes: u64,
 }
 
-/// Local operation custody for the explicitly installed scratch file driver.
-/// Backend codes are interpreted only by their producing driver and operation.
+/// Local operation custody for the selected scratch SQLite VFS.
+/// Backend codes are interpreted only by their producing binding and operation.
 pub trait ScratchIoScope {
     fn is_capacity_refusal(&self, backend_error_code: i32) -> bool;
 }
@@ -27,10 +27,23 @@ pub trait ScratchNamespaceLease: Debug + Send + Sync {
     fn namespace_identity(&self) -> crate::publication_capacity::InodeKey;
 }
 
-/// The physical owner of a managed scratch namespace and its file driver.
+/// Explicit SQLite VFS selection for a managed scratch connection. This does
+/// not change the binding's admission or namespace lifetime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScratchSqliteVfs<'a> {
+    Named(&'a str),
+    Stock,
+}
+
+/// The physical owner of a managed scratch namespace and its SQLite selection.
 /// No database handle, publication authority or execution grant crosses this port.
 pub trait ScratchIoBinding: Debug + Send + Sync {
     fn driver_name(&self) -> &str;
+    /// Existing bindings retain their named-driver behavior. A binding can
+    /// explicitly select the stock VFS while keeping the same I/O scopes.
+    fn sqlite_vfs(&self) -> ScratchSqliteVfs<'_> {
+        ScratchSqliteVfs::Named(self.driver_name())
+    }
     /// Observe only this synchronous operation under its current caller.
     /// None denotes lifecycle cleanup or an explicitly unobserved operation.
     /// Diagnostic context grants no I/O or publication authority.
@@ -70,6 +83,12 @@ pub trait ScratchAllocation: Send {
     /// Absence explicitly leaves backend I/O unqualified. A managed physical
     /// profile must supply the same owner used for namespace preparation/cleanup.
     fn io_binding(&self) -> Option<Arc<dyn ScratchIoBinding>> {
+        None
+    }
+    /// Keep the namespace owner alive independently of this allocation. A
+    /// managed stock-VFS connection requires this lease before SQLite open
+    /// and releases it only after a confirmed SQLite close.
+    fn retain_namespace(&self) -> Option<Arc<dyn Send + Sync>> {
         None
     }
 }

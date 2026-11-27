@@ -6,8 +6,7 @@ must obey the full inheritance and dependency policy:
 
   1. First-party `[package]` fields inherit `version`, `edition`, `license`,
      `publish` from the workspace (either dotted or table form). The shared
-     signed-artifact crate and the upstream vendored CBOR crate retain their
-     own exact published package metadata.
+     signed-artifact crate retains its own exact published package metadata.
   2. `[lints]` inherits from workspace. (Cross-checked here, primary enforcement
      remains `scripts/check_workspace_lints.py`.)
   3. Every first-party external dependency (anything not named `quanta-index-*`)
@@ -20,9 +19,7 @@ must obey the full inheritance and dependency policy:
      `{ version = "...", path = "../quanta-index-..." }` form. No bare path,
      no workspace-true on internal deps.
   5. No `git = "..."` source.
-  6. No `path = "..."` deps to anything outside `crates/`. The upstream
-     ciborium manifest retains its own inline dependency metadata, but may
-     not introduce a git or path dependency.
+  6. No `path = "..."` deps to anything outside `crates/`.
 
 Failure modes this catches in practice:
   - copy-pasted manifest ad-hoc adds (`serde = "1.0"`) that fork the version
@@ -54,9 +51,7 @@ REQUIRED_PACKAGE_INHERITS: tuple[str, ...] = (
     "publish",
 )
 
-# These packages are workspace members for dependency and lint unification,
-# but their original edition/license (and ciborium's version) differ from this
-# product workspace. Pin the exceptions rather than rewriting their identity.
+# This shared package is a workspace member with its original edition/license.
 PACKAGE_METADATA_EXCEPTIONS: dict[str, dict[str, object]] = {
     "shared/quanta-installed-artifact-trust/Cargo.toml": {
         "name": "quanta-installed-artifact-trust",
@@ -65,15 +60,7 @@ PACKAGE_METADATA_EXCEPTIONS: dict[str, dict[str, object]] = {
         "license": "MIT OR Apache-2.0",
         "publish": False,
     },
-    "vendor/ciborium-0.2.2/Cargo.toml": {
-        "name": "ciborium",
-        "version": "0.2.2",
-        "edition": "2021",
-        "license": "Apache-2.0",
-        "publish": None,
-    },
 }
-VENDORED_CIBORIUM = "vendor/ciborium-0.2.2/Cargo.toml"
 
 DEP_SECTIONS: tuple[str, ...] = (
     "dependencies",
@@ -88,8 +75,9 @@ class Violation:
     message: str
 
 
-def workspace_members() -> list[Path]:
-    data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
+def workspace_members(data: dict | None = None) -> list[Path]:
+    if data is None:
+        data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
     members = data.get("workspace", {}).get("members", [])
     return [ROOT / member / "Cargo.toml" for member in members]
 
@@ -178,16 +166,26 @@ def check_dependencies(cargo_toml: Path, data: dict) -> list[Violation]:
     return violations
 
 
-def check_vendored_dependency_sources(cargo_toml: Path, data: dict) -> list[Violation]:
-    """Keep upstream's inline versions/features while banning source escapes."""
-    violations: list[Violation] = []
-    for section, block in dependency_sections(data):
-        for name, value in block.items():
-            if isinstance(value, dict) and ("git" in value or "path" in value):
-                violations.append(
-                    Violation(cargo_toml, f"[{section}] vendored dep {name!r} changes source")
-                )
-    return violations
+def check_root_git_sources(data: dict) -> list[Violation]:
+    """Root source declarations must obey the same no-git rule as members."""
+    sections = dependency_sections(data)
+    workspace_deps = data.get("workspace", {}).get("dependencies", {})
+    if isinstance(workspace_deps, dict):
+        sections.append(("workspace.dependencies", workspace_deps))
+    patches = data.get("patch", {})
+    if isinstance(patches, dict):
+        for source, block in patches.items():
+            if isinstance(block, dict):
+                sections.append((f"patch.{source}", block))
+    replacements = data.get("replace", {})
+    if isinstance(replacements, dict):
+        sections.append(("replace", replacements))
+    return [
+        Violation(WORKSPACE_TOML, f"[{section}] dep {name!r} uses git source")
+        for section, block in sections
+        for name, value in block.items()
+        if isinstance(value, dict) and "git" in value
+    ]
 
 
 def check_single_dep(
@@ -239,7 +237,6 @@ def check_single_dep(
 
     has_workspace_true = value.get("workspace") is True
     has_path = "path" in value
-    has_inline_version = "version" in value and not has_workspace_true
 
     if internal:
         if has_workspace_true:
@@ -249,6 +246,20 @@ def check_single_dep(
                     f"[{section}] internal dep {name!r} must use path form, "
                     "not `workspace = true`. Workspace.dependencies is reserved for "
                     "external crates.",
+                )
+            )
+        if "package" in value and value["package"] != name:
+            violations.append(
+                Violation(
+                    cargo_toml,
+                    f"[{section}] internal dep {name!r} uses package rename {value['package']!r}",
+                )
+            )
+        if "version" not in value:
+            violations.append(
+                Violation(
+                    cargo_toml,
+                    f"[{section}] internal dep {name!r} must specify `version` with `path`",
                 )
             )
         if not has_path:
@@ -262,13 +273,24 @@ def check_single_dep(
             path_value = value["path"]
             if isinstance(path_value, str):
                 resolved = (cargo_toml.parent / path_value).resolve()
-                if not str(resolved).startswith(str(CRATES_DIR.resolve())):
+                try:
+                    resolved.relative_to(CRATES_DIR.resolve())
+                except ValueError:
                     violations.append(
                         Violation(
                             cargo_toml,
                             f"[{section}] dep {name!r} path escapes crates/ (resolved: {resolved})",
                         )
                     )
+                else:
+                    expected = (CRATES_DIR / name).resolve()
+                    if resolved != expected:
+                        violations.append(
+                            Violation(
+                                cargo_toml,
+                                f"[{section}] internal dep {name!r} path must target {expected}",
+                            )
+                        )
     else:
         if not has_workspace_true:
             violations.append(
@@ -283,16 +305,16 @@ def check_single_dep(
             violations.append(
                 Violation(
                     cargo_toml,
-                    f"[{section}] external dep {name!r} declares a path. "
-                    "External deps must come from the registry via workspace.dependencies.",
+                    f"[{section}] external dep {name!r} declares a path in the member manifest. "
+                    "Declare its source in workspace.dependencies.",
                 )
             )
-        if has_inline_version:
+        if "version" in value:
             violations.append(
                 Violation(
                     cargo_toml,
-                    f"[{section}] external dep {name!r} pins an inline version "
-                    "alongside `workspace = true`. Move the pin to workspace.dependencies.",
+                    f"[{section}] external dep {name!r} declares an inline version. "
+                    "Pin its version in workspace.dependencies.",
                 )
             )
 
@@ -306,18 +328,14 @@ def audit_crate(cargo_toml: Path) -> list[Violation]:
     package_and_lints = check_package_metadata(cargo_toml, data) + check_lints_inherits(
         cargo_toml, data
     )
-    try:
-        relative = cargo_toml.relative_to(ROOT).as_posix()
-    except ValueError:
-        relative = ""
-    if relative == VENDORED_CIBORIUM:
-        return package_and_lints + check_vendored_dependency_sources(cargo_toml, data)
     return package_and_lints + check_dependencies(cargo_toml, data)
 
 
 def main() -> int:
-    violations: list[Violation] = []
-    for cargo_toml in workspace_members():
+    root_data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
+    members = workspace_members(root_data)
+    violations = check_root_git_sources(root_data)
+    for cargo_toml in members:
         violations.extend(audit_crate(cargo_toml))
 
     if violations:
@@ -327,7 +345,7 @@ def main() -> int:
             print(f"  - {rel}: {v.message}", file=sys.stderr)
         return 1
 
-    print(f"All {len(workspace_members())} workspace crates pass Cargo.toml hygiene.")
+    print(f"All {len(members)} workspace crates pass Cargo.toml hygiene.")
     return 0
 
 

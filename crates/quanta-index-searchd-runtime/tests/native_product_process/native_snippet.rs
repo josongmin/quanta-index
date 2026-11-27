@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn product_native_snippet_report_passes_four_fixed_queries_after_cold_reopen() -> TestResult {
-    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"));
     let report = quanta_index_searchd_harness::snippet::run_native_snippet_report(binary)?;
     let expected = [
         ("snip.phrase.brown_fox", "src/snippet/phrase.rs"),

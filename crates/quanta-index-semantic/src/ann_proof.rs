@@ -402,7 +402,15 @@ fn verified_rows<'a>(
             .as_object()
             .ok_or_else(|| invalid("stored row is not object"))?
         {
-            if expected.get(key) != Some(value) {
+            let expected_cell = match key.as_str() {
+                crate::layout::COLUMN_SOURCE_REPO_ID | crate::layout::COLUMN_REPO_RELATIVE_PATH => {
+                    expected
+                        .get("source_file")
+                        .and_then(|source| source.get(key))
+                }
+                _ => expected.get(key),
+            };
+            if expected_cell != Some(value) {
                 return Err(invalid(format!("stored full row differs: {id}/{key}")));
             }
         }
@@ -463,9 +471,18 @@ fn served_output(
             || hit.authority_digest != record.authority_digest.as_ref()
             || hit.candidate.repo_relative_path != record.source_file.repo_relative_path
             || hit.candidate.source_repo_id != record.source_file.source_repo_id
-            || hit.candidate.start_line != record.start_line
-            || hit.candidate.end_line != record.end_line
-            || hit.candidate.snippet != record.snippet.as_ref()
+            || hit.candidate.lines
+                != Some(quanta_index_contract::LexicalLineRange {
+                    start_line: record.start_line,
+                    end_line: record.end_line,
+                })
+            || hit.candidate.excerpt.as_ref().is_none_or(|excerpt| {
+                // A semantic row carries the record's snippet and no lexical
+                // hit anchor or highlight.
+                excerpt.snippet != record.snippet.as_ref()
+                    || excerpt.snippet_hit_offset.is_some()
+                    || !excerpt.highlights.is_empty()
+            })
             || hit.candidate.repo_id != batch.repo_id
             || hit.candidate.revision_id != batch.revision_id
             || hit.candidate.manifest_generation != batch.generation
@@ -649,7 +666,8 @@ mod tests {
     }
     #[test]
     fn ann_proof_full_row_oracle_refuses_missing_and_forged_payload() {
-        let plan = parse(&serde_json::to_vec(&fixture()).expect("JSON")).expect("plan");
+        let input = serde_json::to_vec(&fixture()).expect("JSON");
+        let plan = parse(&input).expect("plan");
         let record = plan
             .batch
             .replace_scopes
@@ -658,23 +676,18 @@ mod tests {
             .embeddings
             .first()
             .expect("record");
-        let serialized = serde_json::to_value(record).expect("record JSON");
-        let schema = crate::layout::semantic_schema(2);
-        let row = Value::Object(
-            schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    (
-                        field.name().clone(),
-                        serialized.get(field.name()).expect("column").clone(),
-                    )
-                })
-                .collect(),
-        );
-        let stored = serde_json::json!({"semantic":{"count":1,"rows":[row]}});
+        let root = tempfile::tempdir().expect("external proof root");
+        let proof = exact_vs_served_v1(&input, &root.path().join("state")).expect("proof result");
+        let proof: Value = serde_json::from_slice(&proof).expect("proof JSON");
+        let stored = proof.get("stored_corpus").expect("stored corpus").clone();
         assert!(verified_rows(&[record], &stored).is_ok());
-        for field in ["snippet", "vector", "authority_digest"] {
+        for field in [
+            "snippet",
+            "vector",
+            "authority_digest",
+            "source_repo_id",
+            "repo_relative_path",
+        ] {
             let mut changed = stored.clone();
             let row = changed
                 .get_mut("semantic")
@@ -690,20 +703,22 @@ mod tests {
             assert!(row.remove(field).is_some());
             assert!(verified_rows(&[record], &changed).is_err());
         }
-        let mut forged = stored;
-        let row = forged
-            .get_mut("semantic")
-            .expect("semantic")
-            .get_mut("rows")
-            .expect("rows")
-            .as_array_mut()
-            .expect("array")
-            .first_mut()
-            .expect("row")
-            .as_object_mut()
-            .expect("object");
-        let _previous = row.insert("snippet".into(), Value::from("forged snippet"));
-        assert!(verified_rows(&[record], &forged).is_err());
+        for field in ["snippet", "source_repo_id", "repo_relative_path"] {
+            let mut forged = stored.clone();
+            let row = forged
+                .get_mut("semantic")
+                .expect("semantic")
+                .get_mut("rows")
+                .expect("rows")
+                .as_array_mut()
+                .expect("array")
+                .first_mut()
+                .expect("row")
+                .as_object_mut()
+                .expect("object");
+            let _previous = row.insert(field.into(), Value::from("forged cell"));
+            assert!(verified_rows(&[record], &forged).is_err());
+        }
     }
     #[test]
     fn ann_proof_state_is_external_and_exclusive() {

@@ -21,6 +21,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[3]
 POLICY_PATH = Path(__file__).with_name("semantic-outcome-policy.json")
 EXCLUDED_PARTS = frozenset({"tests", "benches", "examples", "fuzz"})
+RESULT_OK_PATHS = frozenset(
+    {"Ok", "Result::Ok", "std::result::Result::Ok", "core::result::Result::Ok"}
+)
 
 
 @dataclass(frozen=True)
@@ -249,7 +252,9 @@ def is_test_attribute(source: bytes, node: Any) -> bool:
     return match is not None and cfg_implies_test(match.group(1))
 
 
-def production_nodes(node: Any, source: bytes) -> Iterator[Any]:
+def production_nodes(
+    node: Any, source: bytes, *, stop_at: frozenset[str] = frozenset()
+) -> Iterator[Any]:
     attributes: list[Any] = []
     for child in node.named_children:
         if child.type == "attribute_item":
@@ -257,10 +262,10 @@ def production_nodes(node: Any, source: bytes) -> Iterator[Any]:
             continue
         test_only = any(is_test_attribute(source, attribute) for attribute in attributes)
         attributes.clear()
-        if test_only:
+        if test_only or child.type in stop_at:
             continue
         yield child
-        yield from production_nodes(child, source)
+        yield from production_nodes(child, source, stop_at=stop_at)
 
 
 def enclosing_impl_type(node: Any, source: bytes) -> str | None:
@@ -338,6 +343,38 @@ def terminal_expression(node: Any) -> Any:
     return current
 
 
+def readiness_return_after_failed_result(
+    node: Any, path: Path, source: bytes, families: dict[str, EnumFamily]
+) -> Iterator[Finding]:
+    alternative = node.child_by_field_name("alternative")
+    pattern = node.child_by_field_name("pattern")
+    if alternative is None or pattern is None or pattern.type != "tuple_struct_pattern":
+        return
+    constructor = pattern.child_by_field_name("type")
+    if constructor is None:
+        return
+    constructor_name = canonical_path_text(re.sub(r"\s+", "", node_text(source, constructor)))
+    if constructor_name not in RESULT_OK_PATHS:
+        return
+
+    bindings = use_bindings_for(node, source, families)
+    return_boundaries = frozenset({"closure_expression", "function_item", "async_block"})
+    for candidate in production_nodes(alternative, source, stop_at=return_boundaries):
+        if candidate.type != "return_expression":
+            continue
+        value = terminal_expression(candidate)
+        if value.type not in {"identifier", "scoped_identifier", "scoped_type_identifier"}:
+            continue
+        for family, variant in sorted(variant_refs(value, source, families, bindings)):
+            if family == "StructuralReadiness" and variant in families[family].positive:
+                yield Finding(
+                    path,
+                    candidate.start_point[0] + 1,
+                    "SO-05",
+                    f"failed Result prerequisite returns {family}::{variant}",
+                )
+
+
 def fail_closed_wildcard(
     value: Any, source: bytes, families: dict[str, EnumFamily], bindings: UseBindings
 ) -> bool:
@@ -369,8 +406,7 @@ def contains_success(
     if any(
         node.type == "call_expression"
         and (function := node.child_by_field_name("function")) is not None
-        and canonical_path_text(node_text(source, function))
-        in {"Ok", "Result::Ok", "std::result::Result::Ok", "core::result::Result::Ok"}
+        and canonical_path_text(node_text(source, function)) in RESULT_OK_PATHS
         for node in walk(value)
     ):
         return True
@@ -489,6 +525,8 @@ def findings_for_source(
     findings: list[Finding] = []
     definitions: dict[str, set[str]] = {}
     for node in production_nodes(root, source):
+        if node.type == "let_declaration":
+            findings.extend(readiness_return_after_failed_result(node, path, source, families))
         if node.type == "enum_item":
             name_node = node.child_by_field_name("name")
             name = rust_name(node_text(source, name_node)) if name_node is not None else ""

@@ -125,6 +125,9 @@ fn repository_path_aliases_and_scalar_file_matchers_gate_the_source_repository()
 
 #[test]
 fn legacy_repo_metadata_and_repo_surface_are_explicitly_unavailable_on_native_text() -> TestResult {
+    // `repo:<pattern>` is an executable Native filter over authenticated
+    // Source repository metadata (09.1c). The other Legacy repository
+    // surfaces have no Native producer and stay explicit refusals.
     let root = private_root()?;
     let socket = root.path().join("native.sock");
     let running = NativeServiceGuard::start(read_session_service(
@@ -139,7 +142,6 @@ fn legacy_repo_metadata_and_repo_surface_are_explicitly_unavailable_on_native_te
         let view = publish_repo_owner(&client, configured, 2, 1, &repo, "src/lib.rs", "needle")?;
         let session = client.open_read_session(ViewSelection::Exact(view), [85; 32], &budget())?;
         for query in [
-            "needle repo:corp-a",
             "needle fork:only",
             "needle archived:no",
             "needle visibility:private",
@@ -170,15 +172,45 @@ fn legacy_repo_metadata_and_repo_surface_are_explicitly_unavailable_on_native_te
                 None,
                 &budget(),
             );
+            // The Native content grammar admits only its listed predicates;
+            // any other predicate is a typed unsupported combination.
             assert!(
                 matches!(&result, Err(NativeUdsError::QueryRejected { code, .. })
-                    if *code == SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::ParseFail)),
+                    if *code == SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::UnsupportedCombo)),
                 "Native SDK must reject the unsupported repository predicate {query}: {result:?}"
             );
         }
         assert_eq!(
             matching_owners(&client, &session, "needle")?,
             [StableOwnerId([1; 16])]
+        );
+        // The repository filter applies to the record's own repository.
+        assert_eq!(
+            matching_owners(&client, &session, "needle repo:corp-a")?,
+            [StableOwnerId([1; 16])]
+        );
+        assert!(matching_owners(&client, &session, "needle repo:corp-b")?.is_empty());
+        let (released, _) = client.release_read_session(&session, &budget())?;
+        assert_eq!(released.state, NativeReadSessionState::Released);
+
+        // A selected Source record without repository metadata cannot prove
+        // it is outside the requested repository: refused, never dropped.
+        let (legacy, _) =
+            publish_text_owner(&client, view, 3, 2, "src/legacy.rs", "needle legacy")?;
+        let session =
+            client.open_read_session(ViewSelection::Exact(legacy), [86; 32], &budget())?;
+        let result = client.search_text_page_in_read_session(
+            &session,
+            native_text_spec().instance,
+            native_text_request("needle repo:corp-a", 10),
+            None,
+            &budget(),
+        );
+        assert!(
+            matches!(&result, Err(NativeUdsError::Refused(error))
+                if error.code == NativeIndexErrorCode::InvalidInput
+                    && error.message.contains("repository metadata")),
+            "a record without repository metadata must refuse repo:: {result:?}"
         );
         let (released, _) = client.release_read_session(&session, &budget())?;
         assert_eq!(released.state, NativeReadSessionState::Released);

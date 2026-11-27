@@ -4,6 +4,8 @@
 mod ann_quality;
 #[path = "native_product_process/ann_regions.rs"]
 mod ann_regions;
+#[path = "common/interaction_lease.rs"]
+mod interaction_lease;
 #[path = "native_product_process/large_restart.rs"]
 mod large_restart;
 #[path = "common/legacy_searchd_binary.rs"]
@@ -18,10 +20,14 @@ mod native_physical_profile;
 mod native_release;
 #[path = "native_product_process/native_snippet.rs"]
 mod native_snippet;
+#[path = "common/publication_settle.rs"]
+mod publication_settle;
 #[path = "support/read_view_daemon_witness.rs"]
 mod read_view_daemon_witness;
 #[path = "native_product_process/read_view_lifetime.rs"]
 mod read_view_lifetime;
+#[path = "native_product_process/retired_repomap_wire.rs"]
+mod retired_repomap_wire;
 #[path = "native_product_process/segmented_layered.rs"]
 mod segmented_layered;
 #[path = "native_product_process/text_shard_contract.rs"]
@@ -46,6 +52,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use interaction_lease::LivePublisher;
 use quanta_index_contract::{
     QueryConstraintSetV1, SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
     index::{
@@ -73,8 +80,143 @@ use quanta_index_sdk::native_uds::{
 use quanta_index_searchd_harness::source_fixture as scale_source_fixture;
 use quanta_index_semantic::native::TextEmbeddingBridge;
 use quanta_index_storage::FileObjectStore;
+use sha2::{Digest as _, Sha256};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+const CARGOW_AUTO_SEARCHD_PIN: &str = "QIDX_CARGOW_AUTO_SEARCHD_PIN";
+
+struct SelectedTestDaemonBinary {
+    path: std::path::PathBuf,
+    product: bool,
+}
+
+fn product_test_intent(supplied: bool, witness: bool, auto_pin: bool) -> bool {
+    witness || (supplied && !auto_pin)
+}
+
+fn require_product_writer_role(candidate: &Path) -> TestResult {
+    let diagnostic = if cfg!(target_os = "linux") {
+        "Native SQLite writer requires state_root_quota"
+    } else {
+        "Native SQLite writer requires Linux XFS StateRoot quota"
+    };
+    require_writer_preflight_refusal(candidate, diagnostic)
+}
+
+fn require_writer_preflight_refusal(candidate: &Path, expected: &str) -> TestResult {
+    require(
+        fs::metadata(candidate)?.is_file(),
+        "writer preflight executable must be a regular file",
+    )?;
+    let absent = |path: &Path| -> TestResult<bool> {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    };
+    let control = quanta_index_searchd_harness::private_tempdir()?;
+    let root = control.path().join("role-probe-state");
+    let socket = control.path().join("role-probe.sock");
+    let pinned_config = control.path().join("role-probe.json");
+    let bytes = serde_json::to_vec(&config(&root, &socket))?;
+    fs::write(&pinned_config, &bytes)?;
+    let mut stderr = tempfile::tempfile_in(control.path())?;
+    let mut child = Command::new(candidate)
+        .arg("preflight-native-writer")
+        .arg("--config")
+        .arg(&pinned_config)
+        .arg("--config-digest")
+        .arg(format!("{:x}", Sha256::digest(&bytes)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr.try_clone()?))
+        .spawn()?;
+    let deadline = daemon_phase_deadline(NATIVE_STARTUP_LIMIT, None)?;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _killed = child.kill();
+                let _reaped = child.wait();
+                return Err("writer preflight refusal probe exceeded its process deadline".into());
+            }
+            Err(error) => {
+                let _killed = child.kill();
+                let _reaped = child.wait();
+                return Err(error.into());
+            }
+        }
+    };
+    let _rewound = std::io::Seek::seek(&mut stderr, std::io::SeekFrom::Start(0))?;
+    let mut diagnostic = Vec::new();
+    let _read = stderr
+        .take(STDERR_OBSERVATION_BYTES)
+        .read_to_end(&mut diagnostic)?;
+    require(
+        absent(&root)? && absent(&socket)?,
+        "product writer role probe created a StateRoot or service socket",
+    )?;
+    require(
+        !status.success() && String::from_utf8_lossy(&diagnostic).contains(expected),
+        format!(
+            "writer preflight did not refuse with {expected:?} (exit {status}): {}",
+            String::from_utf8_lossy(&diagnostic)
+        ),
+    )
+}
+
+fn selected_test_daemon_binary(
+    missing_witness_binary: &'static str,
+    invalid_path: &'static str,
+) -> TestResult<SelectedTestDaemonBinary> {
+    let supplied = std::env::var_os("QUANTA_INDEX_SEARCHD_BIN");
+    let witness = std::env::var_os("QUANTA_PROOF_DAEMON_WITNESS_DIR").is_some();
+    let auto_pin = match std::env::var_os(CARGOW_AUTO_SEARCHD_PIN) {
+        None => false,
+        Some(value) if value.as_os_str() == std::ffi::OsStr::new("1") => true,
+        Some(_) => return Err("invalid QIDX_CARGOW_AUTO_SEARCHD_PIN marker".into()),
+    };
+    if witness && supplied.is_none() {
+        return Err(missing_witness_binary.into());
+    }
+    let product = product_test_intent(supplied.is_some(), witness, auto_pin);
+    let path = if product {
+        std::path::PathBuf::from(supplied.ok_or(missing_witness_binary)?)
+    } else {
+        std::path::PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
+    };
+    require(path.is_absolute(), invalid_path)?;
+    Ok(SelectedTestDaemonBinary { path, product })
+}
+
+#[test]
+fn native_test_binary_selection_preserves_release_intent_and_ordinary_auto_pin() {
+    assert!(!product_test_intent(false, false, false));
+    assert!(!product_test_intent(true, false, true));
+    assert!(product_test_intent(true, false, false));
+    assert!(product_test_intent(true, true, true));
+}
+
+#[test]
+fn copied_fixture_cannot_run_product_writer_preflight() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let copied_fixture = temp.path().join("renamed-product");
+    let _copied = fs::copy(
+        env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"),
+        &copied_fixture,
+    )?;
+    fs::set_permissions(&copied_fixture, fs::Permissions::from_mode(0o700))?;
+    require_writer_preflight_refusal(
+        &copied_fixture,
+        "Native writer preflight requires the product daemon",
+    )?;
+    require(
+        require_product_writer_role(&copied_fixture).is_err(),
+        "copied fixture passed the product writer role probe",
+    )
+}
 // A functional process watchdog includes platform executable assessment. The
 // config-preflight refusal deadline below measures only the entered phase.
 const NATIVE_STARTUP_LIMIT: Duration = Duration::from_secs(30);
@@ -116,6 +258,22 @@ fn set_fixture_json(
         .ok_or_else(|| format!("missing config fixture field {pointer}"))?;
     *target = replacement;
     Ok(())
+}
+
+/// Size automatic reclaim so one round reaches every root a retired view
+/// queues (seven steps and their round allowance), as product validation
+/// requires whenever retention is configured.
+fn release_bounded_maintenance(value: &mut serde_json::Value) -> TestResult {
+    set_fixture_json(
+        value,
+        "/maintenance/max_steps_per_round",
+        serde_json::json!(7),
+    )?;
+    set_fixture_json(
+        value,
+        "/maintenance/work_limits/bytes",
+        serde_json::json!(939_524_096_u64),
+    )
 }
 
 fn parse_native_trace_max_output_bytes(raw: Option<&std::ffi::OsStr>) -> TestResult<Option<u64>> {
@@ -232,7 +390,7 @@ impl Daemon {
         watchdog: Option<Instant>,
     ) -> TestResult<Self> {
         Self::start_binary_before(
-            Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
+            Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture")),
             config,
             socket,
             api_key,
@@ -259,6 +417,24 @@ impl Daemon {
         trace: Option<&Path>,
         watchdog: Option<Instant>,
     ) -> TestResult<Self> {
+        Self::start_command_before(
+            Command::new(binary),
+            config,
+            socket,
+            api_key,
+            trace,
+            watchdog,
+        )
+    }
+
+    fn start_command_before(
+        mut command: Command,
+        config: &Path,
+        socket: &Path,
+        api_key: Option<&str>,
+        trace: Option<&Path>,
+        watchdog: Option<Instant>,
+    ) -> TestResult<Self> {
         let deadline = daemon_phase_deadline(NATIVE_STARTUP_LIMIT, watchdog)?;
         let startup_timeout = if watchdog == Some(deadline) {
             "ANN quality watchdog expired during native daemon startup"
@@ -279,7 +455,6 @@ impl Daemon {
                 .parent()
                 .ok_or("native config has no parent directory")?,
         )?;
-        let mut command = Command::new(binary);
         let _args = command
             .arg("serve-native")
             .arg("--config")
@@ -302,10 +477,10 @@ impl Daemon {
             }
         }
         require(Instant::now() < deadline, startup_timeout)?;
+        let executable = command.get_program().to_string_lossy().into_owned();
         let child = command.spawn()?;
         let mut daemon = Self(child, Some(stderr_log));
         loop {
-            require(Instant::now() < deadline, startup_timeout)?;
             if let Some(status) = daemon.0.try_wait()? {
                 let mut stderr = String::new();
                 let _stderr_bytes = daemon
@@ -313,6 +488,38 @@ impl Daemon {
                     .take(64 * 1024)
                     .read_to_string(&mut stderr)?;
                 return Err(format!("native daemon exited {status}: {stderr}").into());
+            }
+            if Instant::now() >= deadline {
+                let mut stderr = Vec::new();
+                let _stderr_bytes = daemon
+                    .stderr_reader()?
+                    .take(64 * 1024)
+                    .read_to_end(&mut stderr)?;
+                let process_status = Command::new("/bin/ps")
+                    .args([
+                        "-p",
+                        &daemon.0.id().to_string(),
+                        "-o",
+                        "stat=,etime=,command=",
+                    ])
+                    .output()
+                    .ok()
+                    .map(|output| {
+                        String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(4096)])
+                            .into_owned()
+                    })
+                    .unwrap_or_default();
+                return Err(format!(
+                    "{startup_timeout}; executable={executable}; live pid={}, socket path={} ({} bytes, exists={}); config exists={}; process: {}; stderr: {}",
+                    daemon.0.id(),
+                    socket.display(),
+                    socket.as_os_str().as_encoded_bytes().len(),
+                    socket.symlink_metadata().is_ok(),
+                    config.is_file(),
+                    process_status.trim(),
+                    String::from_utf8_lossy(&stderr),
+                )
+                .into());
             }
             if daemon_socket_ready(&address)? {
                 require(Instant::now() < deadline, startup_timeout)?;
@@ -1123,6 +1330,21 @@ fn operation(sequence: u64) -> OperationKey {
     }
 }
 
+/// Matches the `literal` descriptor of the serve config; the product
+/// requires it beside every Text instance.
+fn literal_spec() -> InstanceSpec {
+    InstanceSpec {
+        instance: IndexInstanceId([7; 16]),
+        kind: IndexKind([8; 16]),
+        group: PublicationGroupId([9; 16]),
+        activation: GroupActivation::CoreRequired,
+        input_domain: InputDomain::SourceLocal,
+        schema: SchemaId([10; 16]),
+        policy: Digest([11; 32]),
+        format: StorageFormatId([12; 16]),
+    }
+}
+
 fn file_spec() -> InstanceSpec {
     InstanceSpec {
         instance: IndexInstanceId([17; 16]),
@@ -1172,6 +1394,14 @@ fn published(outcome: &SubmitOutcome) -> TestResult<quanta_index_contract::index
         return Err(format!("expected published view, got {outcome:?}").into());
     };
     Ok(*view)
+}
+
+/// Settle one publish through the shared operation-protocol helper.
+fn submit_and_settle(
+    client: &NativeUdsClient,
+    request: &UpdateRequest,
+) -> TestResult<quanta_index_contract::index::ViewRef> {
+    publication_settle::submit_and_settle(client, request, budget)
 }
 
 fn config(root: &Path, socket: &Path) -> serde_json::Value {
@@ -1434,10 +1664,26 @@ fn expect_native_config_refusal(
     path: &Path,
     expected: &str,
 ) -> TestResult {
+    expect_native_config_refusal_with_binary(
+        env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"),
+        root,
+        socket,
+        path,
+        expected,
+    )
+}
+
+fn expect_native_config_refusal_with_binary(
+    binary: &str,
+    root: &Path,
+    socket: &Path,
+    path: &Path,
+    expected: &str,
+) -> TestResult {
     let stderr_path = path.with_extension("stderr");
     let stderr_file = fs::File::create(&stderr_path)?;
     let mut daemon = Daemon(
-        Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        Command::new(binary)
             .arg("serve-native")
             .arg("--config")
             .arg(path)
@@ -1732,7 +1978,7 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec(), semantic.clone()],
+            instances: vec![literal_spec(), text_spec(), semantic.clone()],
         },
         &budget(),
     )?;
@@ -2123,19 +2369,21 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
         &calls_before_auto,
         "Auto without IDE activity provider calls",
     )?;
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(10), &budget())?;
-    require(
-        matches!(client.begin_interaction_publisher(Duration::from_secs(10), &budget()),
-            Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict),
-        "a second foreground publisher replaced the live session",
-    )?;
-    client.report_interaction_activity(publisher, 1, &budget())?;
-    require(
-        matches!(client.report_interaction_activity(publisher, 1, &budget()),
-            Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict),
-        "replayed activity sequence was accepted",
-    )?;
-    client.renew_interaction_publisher(publisher, 2, &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(10))?;
+    let publisher = live.id();
+    // A second publisher is refused while the first is live (it renews after).
+    live.refused(
+        client.begin_interaction_publisher(Duration::from_secs(10), &budget()),
+        NativeIndexErrorCode::Conflict,
+    )
+    .map_err(|cause| format!("a second foreground publisher replaced the live session: {cause}"))?;
+    live.activity()?;
+    // Sequence 1 is already consumed by the renewal above: a replay, not a lapse.
+    live.refused(
+        client.report_interaction_activity(publisher, 1, &budget()),
+        NativeIndexErrorCode::Conflict,
+    )
+    .map_err(|cause| format!("replayed activity sequence was accepted: {cause}"))?;
     require_equal(
         &stub.observed_inputs()?.len(),
         &calls_before_auto,
@@ -2145,6 +2393,7 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
         .checked_add(Duration::from_secs(8))
         .ok_or("product Auto refinement deadline overflow")?;
     loop {
+        live.renew()?;
         stages.clear();
         let completed = client.query_effort_stream(
             NativeEffortStreamQuery {
@@ -2195,7 +2444,7 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
         "product Auto performed exactly one optional provider request",
     )?;
     let calls_after_auto = stub.observed_inputs()?.len();
-    client.end_interaction_publisher(publisher, 3, &budget())?;
+    live.end()?;
     stages.clear();
     let ended = client.query_effort_stream(
         NativeEffortStreamQuery {
@@ -2232,9 +2481,12 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
         &calls_after_auto,
         "ended Auto provider calls",
     )?;
+    // A fresh sequence after End is refused because of that End event.
     require(
-        matches!(client.report_interaction_activity(publisher, 4, &budget()),
-            Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict),
+        live.activity().is_err_and(|cause| {
+            matches!(cause.downcast_ref::<NativeUdsError>(),
+                Some(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::Conflict)
+        }),
         "ended publisher activity revived the session",
     )?;
     let expiring = client.begin_interaction_publisher(Duration::from_millis(20), &budget())?;
@@ -2276,7 +2528,7 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
     let outside_profile = client.stage_profile(
         outside_ingress,
         IndexProfile {
-            instances: vec![text_spec(), semantic.clone()],
+            instances: vec![literal_spec(), text_spec(), semantic.clone()],
         },
         &budget(),
     )?;
@@ -2565,7 +2817,7 @@ fn native_reclaim_config_refuses_invalid_policy_and_capacity_before_state_creati
         let stderr_path = temp.path().join(format!("stderr-{case}.log"));
         let stderr_file = fs::File::create(&stderr_path)?;
         let mut daemon = Daemon(
-            Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+            Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
                 .arg("serve-native")
                 .arg("--config")
                 .arg(&path)
@@ -2632,6 +2884,87 @@ fn native_config_refuses_semantic_without_a_configured_provider() -> TestResult 
     let config_path = temp.path().join("missing-semantic-provider.json");
     fs::write(&config_path, serde_json::to_vec(&value)?)?;
     expect_native_config_refusal(&root, &socket, &config_path, "missing field `provider`")
+}
+
+#[test]
+fn native_config_refuses_a_text_member_outside_the_product_text_kind() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let root = temp.path().join("state");
+    let socket = temp.path().join("native.sock");
+    let mut value = config(&root, &socket);
+    *value
+        .pointer_mut("/text/descriptor/kind")
+        .ok_or("native Text descriptor fixture is absent")? = serde_json::json!(vec![73_u8; 16]);
+    let config_path = temp.path().join("foreign-text-kind.json");
+    fs::write(&config_path, serde_json::to_vec(&value)?)?;
+    expect_native_config_refusal(
+        &root,
+        &socket,
+        &config_path,
+        "native Text kind must be NATIVE_TEXT_KIND",
+    )
+}
+
+#[test]
+fn native_read_session_rank_share_obeys_interactive_memory_at_boot() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let root = temp.path().join("state");
+    let socket = temp.path().join("native.sock");
+    let mut value = config_with_reclaim(&root, &socket)?;
+    let interactive_bytes = value
+        .pointer("/resources/execution/interactive/memory_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("native fixture Interactive memory is missing")?;
+    // Leave enough total headroom. The rank share fits the Interactive cap
+    // alone, but its required read-session registry makes the sum too large.
+    set_fixture_json(
+        &mut value,
+        "/resources/execution/capacity/memory_bytes",
+        serde_json::json!(536_870_912_u64),
+    )?;
+    let _previous = value
+        .as_object_mut()
+        .ok_or("native config fixture is not an object")?
+        .insert(
+            "read_sessions".into(),
+            serde_json::json!({
+                "global_limit": 1024,
+                "per_uid_limit": 1,
+                "terminal_ttl_millis": 60_000,
+                "sweep_limit": 1,
+                "text_order_memory_bytes": interactive_bytes
+            }),
+        );
+    let path = temp.path().join("read-session-rank-share.json");
+    fs::write(&path, serde_json::to_vec(&value)?)?;
+    expect_native_config_refusal(
+        &root,
+        &socket,
+        &path,
+        "native read-session retained buffers exceed Interactive memory envelope",
+    )?;
+
+    set_fixture_json(
+        &mut value,
+        "/read_sessions/text_order_memory_bytes",
+        serde_json::json!(quanta_index_lexical::native::MAX_TEXT_RANK_ORDER_BYTES),
+    )?;
+    fs::write(&path, serde_json::to_vec(&value)?)?;
+    let daemon = Daemon::start(&path, &socket)?;
+    let created = NativeUdsClient::new(&socket).request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?;
+    require(
+        matches!(created, NativeIndexResponse::Created(_)),
+        "daemon with funded read-session rank share did not create a workspace",
+    )?;
+    daemon.stop()
 }
 
 #[test]
@@ -3054,6 +3387,8 @@ fn native_retention_and_owned_work_config_refuse_before_creating_state() -> Test
         "duplicate_scope",
         "insufficient_retention_budget",
         "owned_work_without_semantic",
+        "release_cadence_exceeds_deadline",
+        "reclaim_round_below_view_roots",
     ] {
         let temp = tempfile::tempdir()?;
         fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
@@ -3096,12 +3431,33 @@ fn native_retention_and_owned_work_config_refuse_before_creating_state() -> Test
         } else {
             let _previous = object.insert("retention".into(), retention);
         }
+        if case == "release_cadence_exceeds_deadline" {
+            // 2 * 20 ms retention + 2 * 30 s reclaim exceeds the 60 s deadline.
+            release_bounded_maintenance(&mut value)?;
+            set_fixture_json(
+                &mut value,
+                "/maintenance/interval_ms",
+                serde_json::json!(30_000),
+            )?;
+        }
+        if case == "reclaim_round_below_view_roots" {
+            set_fixture_json(
+                &mut value,
+                "/maintenance/max_steps_per_round",
+                serde_json::json!(6),
+            )?;
+            set_fixture_json(
+                &mut value,
+                "/maintenance/work_limits/bytes",
+                serde_json::json!(805_306_368_u64),
+            )?;
+        }
         let path = temp.path().join("refused-native-config.json");
         fs::write(&path, serde_json::to_vec(&value)?)?;
         let stderr_path = temp.path().join("refused-native.stderr");
         let stderr_file = fs::File::create(&stderr_path)?;
         let mut daemon = Daemon(
-            Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+            Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
                 .arg("serve-native")
                 .arg("--config")
                 .arg(path)
@@ -3131,6 +3487,8 @@ fn native_retention_and_owned_work_config_refuse_before_creating_state() -> Test
             "owned_work_without_semantic" => {
                 "owned work requires a configured Semantic owner adapter"
             }
+            "release_cadence_exceeds_deadline" => "release reclaim cadence exceeds the deadline",
+            "reclaim_round_below_view_roots" => "cannot reach a retired view's roots",
             _ => return Err("unknown native policy refusal case".into()),
         };
         let stderr = String::from_utf8(stderr_prefix(&stderr_path)?)?;
@@ -3192,7 +3550,7 @@ fn invalid_native_config_has_no_state_root_or_socket_side_effects() -> TestResul
         }
         let path = temp.path().join(format!("config-{case}.json"));
         fs::write(&path, serde_json::to_vec(&value)?)?;
-        let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
             .arg("serve-native")
             .arg("--config")
             .arg(&path)
@@ -3219,7 +3577,7 @@ fn fifo_native_config_is_refused_without_blocking_or_creating_state() -> TestRes
     let stderr_file = fs::File::create(&stderr_path)?;
     let launch_started = Instant::now();
     let mut daemon = Daemon(
-        Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
             .arg("serve-native")
             .arg("--config")
             .arg(&config_path)
@@ -3246,7 +3604,7 @@ fn fifo_native_config_is_refused_without_blocking_or_creating_state() -> TestRes
             );
             return Err(format!(
                 "FIFO config daemon did not reach config preflight within thirty seconds: binary={}, pid={child_pid}, stderr_bytes={}, stderr_preview={preview:?}",
-                env!("CARGO_BIN_EXE_quanta-index-searchd"),
+                env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"),
                 stderr_bytes.len()
             )
             .into());
@@ -3281,7 +3639,7 @@ fn fifo_native_config_is_refused_without_blocking_or_creating_state() -> TestRes
             );
             return Err(format!(
                 "FIFO config blocked after config preflight for three seconds: binary={}, pid={child_pid}, stderr_bytes={}, stderr_preview={preview:?}",
-                env!("CARGO_BIN_EXE_quanta-index-searchd"),
+                env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"),
                 stderr_bytes.len()
             )
             .into());
@@ -3302,7 +3660,7 @@ fn occupied_native_socket_is_preserved_and_initialized_root_reopens() -> TestRes
     let foreign_inode = fs::metadata(&socket)?.ino();
     let config_path = temp.path().join("native-config.json");
     fs::write(&config_path, serde_json::to_vec(&config(&root, &socket))?)?;
-    let refused = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+    let refused = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))
         .arg("serve-native")
         .arg("--config")
         .arg(&config_path)

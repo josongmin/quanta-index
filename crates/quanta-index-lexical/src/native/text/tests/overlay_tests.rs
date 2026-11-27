@@ -6,7 +6,7 @@ use super::super::super::text_reader::{
     NativeTextReader, PlannedTextRead, TextOverlayReadDocument, TextReadResult,
 };
 use super::*;
-use quanta_index_contract::{LqCase, LqCountBound, LqExpr, LqLeaf, LqQuery, LqSpan};
+use quanta_index_contract::{LqCase, LqCountBound, LqExpr, LqLeaf, LqQuery, LqSpan, RepoId};
 use quanta_index_core::index::FiniteScore;
 use quanta_index_core::index::{IndexQueryPort, QueryReadContext, effort::ResourceNeed};
 
@@ -84,24 +84,32 @@ fn overlay_sources(
             revision: 7,
             path: "a",
             body: "one three",
+            repository: None,
+            language: None,
         },
         TextOverlaySource {
             owner: added,
             revision: 9,
             path: "c",
             body: "one one",
+            repository: None,
+            language: None,
         },
         TextOverlaySource {
             owner: empty_a,
             revision: 10,
             path: "d",
             body: "",
+            repository: None,
+            language: None,
         },
         TextOverlaySource {
             owner: empty_b,
             revision: 11,
             path: "e",
             body: "",
+            repository: None,
+            language: None,
         },
     ]
 }
@@ -658,6 +666,24 @@ fn reader_overlay_after(
     top_k: u32,
     after: Option<(FiniteScore, OwnerKey)>,
 ) -> Result<TextReadResult, IndexError> {
+    reader_overlay_plan(
+        fixture,
+        plan(keyword("one"), None)?,
+        documents,
+        constraints,
+        (top_k, after),
+        budget()?,
+    )
+}
+
+fn reader_overlay_plan(
+    fixture: &VisitorFixture,
+    plan: crate::plan::LexicalPlan,
+    documents: Vec<TextOverlayReadDocument>,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
+    (top_k, after): (u32, Option<(FiniteScore, OwnerKey)>),
+    mut budget: WorkBudget,
+) -> Result<TextReadResult, IndexError> {
     let reader = NativeTextReader::new(
         fixture.recipe,
         Bm25Policy { k1: 1.2, b: 0.75 },
@@ -668,14 +694,9 @@ fn reader_overlay_after(
             provider_units: 0,
         },
     )?;
-    let request = PlannedTextRead::new(
-        plan(keyword("one"), None)?,
-        top_k,
-        constraints,
-        |_bytes, _lifetime| Ok(None),
-    )?
-    .with_overlay(documents, None)
-    .with_rank_after(after);
+    let request = PlannedTextRead::new(plan, top_k, constraints, |_bytes, _lifetime| Ok(None))?
+        .with_overlay(documents, None)
+        .with_rank_after(after);
     let instance = context(fixture.recipe, fixture.ticket.view.source.owners).instance;
     let outcome = reader.query(
         &request,
@@ -684,7 +705,7 @@ fn reader_overlay_after(
             instance: &instance,
             objects: &fixture.objects,
             maps: &fixture.maps,
-            budget: &mut budget()?,
+            budget: &mut budget,
         },
     )?;
     if outcome.view() != fixture.ticket.view.identity || !outcome.exhaustive() {
@@ -705,12 +726,40 @@ pub(super) fn captured_overlay(
         revision: 19,
         path: path.map(Arc::<str>::from),
         text: text.map(Arc::<str>::from),
+        repository_witness: None,
+    }
+}
+
+/// Publish the visitor fixture owner's `a` path so it can act as an
+/// authenticated repository witness (the unscoped repository slot).
+fn witness_ready_visitor_fixture() -> Result<VisitorFixture, IndexError> {
+    let mut fixture = visitor_fixture()?;
+    let paths = MapRoot(Some(reference(80)));
+    fixture.maps.add(
+        paths,
+        b"path\0a".to_vec(),
+        quanta_index_core::index::path_owner_map_value(fixture.owner)?,
+    )?;
+    fixture.ticket.view.source.paths = paths;
+    Ok(fixture)
+}
+
+/// A new-file row whose repository is established by a durable witness.
+fn witnessed_overlay(
+    owner: OwnerKey,
+    path: &str,
+    text: &str,
+    witness: OwnerKey,
+) -> TextOverlayReadDocument {
+    TextOverlayReadDocument {
+        repository_witness: Some(witness),
+        ..captured_overlay(owner, Some(path), Some(text))
     }
 }
 
 #[test]
 fn reader_keeps_producer_identity_in_equal_score_file_ties() -> Result<(), IndexError> {
-    let fixture = visitor_fixture()?;
+    let fixture = witness_ready_visitor_fixture()?;
     let low = OwnerKey {
         producer: ProducerId([10; 16]),
         stable_id: StableOwnerId([44; 16]),
@@ -721,8 +770,8 @@ fn reader_keeps_producer_identity_in_equal_score_file_ties() -> Result<(), Index
     };
     let documents = || {
         vec![
-            captured_overlay(low, Some("left/shared.rs"), Some("one")),
-            captured_overlay(high, Some("right/shared.rs"), Some("one")),
+            witnessed_overlay(low, "left/shared.rs", "one", fixture.owner),
+            witnessed_overlay(high, "right/shared.rs", "one", fixture.owner),
             captured_overlay(fixture.owner, None, None),
         ]
     };
@@ -782,7 +831,7 @@ fn reader_keeps_producer_identity_in_equal_score_file_ties() -> Result<(), Index
 
 #[test]
 fn reader_refuses_two_producers_claiming_one_selected_file_path() -> Result<(), IndexError> {
-    let fixture = visitor_fixture()?;
+    let fixture = witness_ready_visitor_fixture()?;
     let low = OwnerKey {
         producer: ProducerId([10; 16]),
         stable_id: StableOwnerId([44; 16]),
@@ -792,8 +841,8 @@ fn reader_refuses_two_producers_claiming_one_selected_file_path() -> Result<(), 
         stable_id: low.stable_id,
     };
     let documents = vec![
-        captured_overlay(low, Some("shared.rs"), Some("one")),
-        captured_overlay(high, Some("shared.rs"), Some("one")),
+        witnessed_overlay(low, "shared.rs", "one", fixture.owner),
+        witnessed_overlay(high, "shared.rs", "one", fixture.owner),
     ];
     if !matches!(
         reader_overlay(
@@ -851,6 +900,518 @@ fn reader_rename_filters_current_path_without_mutating_durable_source() -> Resul
         return Err(IndexError::BackendViolation(
             "overlay rename mutated the selected durable source".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Durable owner A is `corp-a:shared.rs` (Rust) and durable owner B is
+/// `corp-b:shared.rs` (Python); both durable bodies contain `one`.
+fn two_repository_fixture() -> Result<(VisitorFixture, OwnerKey), IndexError> {
+    use quanta_index_core::index::{SourcePathOwners, SourcePathRepositoryKey};
+
+    let (mut fixture, second) = two_owner_phrase_fixture()?;
+    let paths = MapRoot(Some(reference(80)));
+    let bucket = MapRoot(Some(reference(81)));
+    for (owner, source, repo, language) in [
+        (fixture.owner, fixture.source_ref, "corp-a", "rust"),
+        (second, reference(71), "corp-b", "python"),
+    ] {
+        let stored = fixture
+            .objects
+            .stored
+            .get(&source)
+            .ok_or_else(|| IndexError::CorruptObject("fixture source missing".into()))?;
+        let mut record: SourceRecord = decode(&stored.payload)?;
+        record.path = "shared.rs".into();
+        record.source_repo_id =
+            Some(RepoId::new(repo).map_err(|error| IndexError::InvalidInput(error.to_string()))?);
+        record.language = Some(
+            quanta_index_contract::lex::LanguageCode::new(language)
+                .map_err(|error| IndexError::InvalidInput(error.to_string()))?,
+        );
+        let key = SourcePathRepositoryKey::new(record.source_repo_id.as_ref())?;
+        fixture.maps.add(
+            bucket,
+            key.as_slice()?.to_vec(),
+            quanta_index_core::index::path_owner_map_value(owner)?,
+        )?;
+        fixture
+            .objects
+            .add(source, encode(&record)?, vec![record.bytes])?;
+    }
+    fixture.maps.add(
+        paths,
+        b"path\0shared.rs".to_vec(),
+        SourcePathOwners::Repositories(reference(81)).encode()?,
+    )?;
+    fixture.ticket.view.source.paths = paths;
+    Ok((fixture, second))
+}
+
+fn new_owner(fixture: &VisitorFixture, id: u8) -> OwnerKey {
+    OwnerKey {
+        producer: fixture.owner.producer,
+        stable_id: StableOwnerId([id; 16]),
+    }
+}
+
+/// Every hit of an exhaustive keyword read as `(owner, origin,
+/// "repository:path")`, ordered by owner; the unscoped slot is empty.
+fn owner_hits(
+    fixture: &VisitorFixture,
+    documents: Vec<TextOverlayReadDocument>,
+) -> Result<Vec<(OwnerKey, NativeTextHitSource, String)>, IndexError> {
+    owner_hits_planned(fixture, documents, plan(keyword("one"), None)?, budget()?)
+}
+
+/// `owner_hits` for a parsed native content query such as `one repo:x`.
+fn query_hits(
+    fixture: &VisitorFixture,
+    documents: Vec<TextOverlayReadDocument>,
+    query: &str,
+) -> Result<Vec<(OwnerKey, NativeTextHitSource, String)>, IndexError> {
+    let parsed = quanta_index_contract::parse_native_content_query(query)
+        .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+    let plan = crate::planner::LexicalPlanner::plan(&parsed)
+        .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+    // Compiled `repo:` engines need more byte budget than a keyword read.
+    let budget = WorkBudget::new(
+        WorkLimits {
+            reads: 10_000,
+            writes: 100,
+            bytes: 256 * 1024 * 1024,
+            mutations: 100,
+        },
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .ok_or(IndexError::ResourceLimited)?,
+    );
+    owner_hits_planned(fixture, documents, plan, budget)
+}
+
+fn owner_hits_planned(
+    fixture: &VisitorFixture,
+    documents: Vec<TextOverlayReadDocument>,
+    plan: crate::plan::LexicalPlan,
+    budget: WorkBudget,
+) -> Result<Vec<(OwnerKey, NativeTextHitSource, String)>, IndexError> {
+    let result = reader_overlay_plan(
+        fixture,
+        plan,
+        documents,
+        &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        (8, None),
+        budget,
+    )?;
+    if usize::try_from(result.matched).ok() != Some(result.hits.len()) {
+        return Err(IndexError::BackendViolation(
+            "repository overlay gold expects an exhaustive first page".into(),
+        ));
+    }
+    let mut hits = Vec::new();
+    for mut hit in result.hits {
+        // Overlay reads project every hit's authenticated repository.
+        let (repository, _memory) = hit.take_overlay_repository().ok_or_else(|| {
+            IndexError::BackendViolation("overlay hit lacks its repository".into())
+        })?;
+        let repository = repository.as_ref().map_or("", RepoId::as_str);
+        hits.push((hit.owner, hit.source, format!("{repository}:{}", hit.path)));
+    }
+    hits.sort_by_key(|(owner, _, _)| *owner);
+    Ok(hits)
+}
+
+fn expect_hits(
+    actual: Vec<(OwnerKey, NativeTextHitSource, String)>,
+    expected: &[(OwnerKey, NativeTextHitSource, &str)],
+    message: &str,
+) -> Result<(), IndexError> {
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|(owner, source, path)| (*owner, *source, (*path).to_owned()))
+        .collect();
+    if actual != expected {
+        return Err(IndexError::BackendViolation(format!(
+            "{message}: {actual:?} != {expected:?}"
+        )));
+    }
+    Ok(())
+}
+
+const UNSAVED: NativeTextHitSource = NativeTextHitSource::Overlay { revision: 19 };
+
+#[test]
+fn unsaved_modify_of_a_shared_path_masks_only_its_repository() -> Result<(), IndexError> {
+    let (fixture, second) = two_repository_fixture()?;
+    let durable_a = NativeTextHitSource::Durable(fixture.source_ref);
+    let durable_b = NativeTextHitSource::Durable(reference(71));
+    expect_hits(
+        owner_hits(&fixture, Vec::new())?,
+        &[
+            (fixture.owner, durable_a, "corp-a:shared.rs"),
+            (second, durable_b, "corp-b:shared.rs"),
+        ],
+        "durable two-repository gold",
+    )?;
+    expect_hits(
+        owner_hits(
+            &fixture,
+            vec![captured_overlay(fixture.owner, None, Some("one"))],
+        )?,
+        &[
+            (fixture.owner, UNSAVED, "corp-a:shared.rs"),
+            (second, durable_b, "corp-b:shared.rs"),
+        ],
+        "corp-a modify masked another repository",
+    )?;
+    expect_hits(
+        owner_hits(&fixture, vec![captured_overlay(second, None, Some("one"))])?,
+        &[
+            (fixture.owner, durable_a, "corp-a:shared.rs"),
+            (second, UNSAVED, "corp-b:shared.rs"),
+        ],
+        "corp-b modify masked another repository",
+    )?;
+    expect_hits(
+        owner_hits(
+            &fixture,
+            vec![
+                captured_overlay(fixture.owner, None, Some("one")),
+                captured_overlay(second, None, Some("one")),
+            ],
+        )?,
+        &[
+            (fixture.owner, UNSAVED, "corp-a:shared.rs"),
+            (second, UNSAVED, "corp-b:shared.rs"),
+        ],
+        "same relative path edited in both repositories",
+    )
+}
+
+#[test]
+fn unsaved_delete_of_a_shared_path_masks_only_its_repository() -> Result<(), IndexError> {
+    let (fixture, second) = two_repository_fixture()?;
+    expect_hits(
+        owner_hits(&fixture, vec![captured_overlay(fixture.owner, None, None)])?,
+        &[(
+            second,
+            NativeTextHitSource::Durable(reference(71)),
+            "corp-b:shared.rs",
+        )],
+        "corp-a delete removed another repository",
+    )?;
+    expect_hits(
+        owner_hits(&fixture, vec![captured_overlay(second, None, None)])?,
+        &[(
+            fixture.owner,
+            NativeTextHitSource::Durable(fixture.source_ref),
+            "corp-a:shared.rs",
+        )],
+        "corp-b delete removed another repository",
+    )
+}
+
+#[test]
+fn unsaved_create_takes_the_witness_repository_for_path_identity() -> Result<(), IndexError> {
+    let (fixture, second) = two_repository_fixture()?;
+    let durable_a = NativeTextHitSource::Durable(fixture.source_ref);
+    let durable_b = NativeTextHitSource::Durable(reference(71));
+    let (first_new, second_new) = (new_owner(&fixture, 40), new_owner(&fixture, 41));
+    // One new relative path created unsaved in each repository.
+    expect_hits(
+        owner_hits(
+            &fixture,
+            vec![
+                witnessed_overlay(first_new, "fresh.rs", "one", fixture.owner),
+                witnessed_overlay(second_new, "fresh.rs", "one", second),
+            ],
+        )?,
+        &[
+            (fixture.owner, durable_a, "corp-a:shared.rs"),
+            (second, durable_b, "corp-b:shared.rs"),
+            (first_new, UNSAVED, "corp-a:fresh.rs"),
+            (second_new, UNSAVED, "corp-b:fresh.rs"),
+        ],
+        "same new path in two repositories",
+    )?;
+    // Recreating corp-a's deleted path keeps corp-b's durable file.
+    expect_hits(
+        owner_hits(
+            &fixture,
+            vec![
+                captured_overlay(fixture.owner, None, None),
+                witnessed_overlay(first_new, "shared.rs", "one", fixture.owner),
+            ],
+        )?,
+        &[
+            (second, durable_b, "corp-b:shared.rs"),
+            (first_new, UNSAVED, "corp-a:shared.rs"),
+        ],
+        "corp-a replacement masked corp-b",
+    )?;
+    // The durable owner of the witness repository's path is still live.
+    for (deleted, witness) in [(fixture.owner, second), (second, fixture.owner)] {
+        let refused = reader_overlay(
+            &fixture,
+            vec![
+                captured_overlay(deleted, None, None),
+                witnessed_overlay(first_new, "shared.rs", "one", witness),
+            ],
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            8,
+        );
+        if !matches!(refused, Err(IndexError::Conflict)) {
+            return Err(IndexError::BackendViolation(
+                "new file claimed a live durable path in its witness repository".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_unsaved_rows_conflict_only_within_one_repository() -> Result<(), IndexError> {
+    let (fixture, second) = two_repository_fixture()?;
+    let (first_new, second_new) = (new_owner(&fixture, 40), new_owner(&fixture, 41));
+    for documents in [
+        vec![
+            witnessed_overlay(first_new, "fresh.rs", "one", fixture.owner),
+            witnessed_overlay(second_new, "fresh.rs", "one", fixture.owner),
+        ],
+        vec![
+            witnessed_overlay(first_new, "fresh.rs", "one", second),
+            witnessed_overlay(second_new, "fresh.rs", "one", second),
+        ],
+        // A durable rename keeps its own repository.
+        vec![
+            captured_overlay(second, Some("fresh.rs"), Some("one")),
+            witnessed_overlay(first_new, "fresh.rs", "one", second),
+        ],
+    ] {
+        let refused = reader_overlay(
+            &fixture,
+            documents,
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            8,
+        );
+        if !matches!(refused, Err(IndexError::Conflict)) {
+            return Err(IndexError::BackendViolation(
+                "duplicate repository/path overlay rows were not refused".into(),
+            ));
+        }
+    }
+    expect_hits(
+        owner_hits(
+            &fixture,
+            vec![
+                captured_overlay(second, Some("fresh.rs"), Some("one")),
+                witnessed_overlay(first_new, "fresh.rs", "one", fixture.owner),
+            ],
+        )?,
+        &[
+            (
+                fixture.owner,
+                NativeTextHitSource::Durable(fixture.source_ref),
+                "corp-a:shared.rs",
+            ),
+            (second, UNSAVED, "corp-b:fresh.rs"),
+            (first_new, UNSAVED, "corp-a:fresh.rs"),
+        ],
+        "corp-b rename conflicted with a corp-a new file",
+    )
+}
+
+#[test]
+fn overlay_repo_filter_selects_rows_by_their_authenticated_repository() -> Result<(), IndexError> {
+    let (fixture, second) = two_repository_fixture()?;
+    let created = new_owner(&fixture, 40);
+    // Both repositories edit `shared.rs` unsaved; corp-b also creates a file.
+    let documents = || {
+        vec![
+            captured_overlay(fixture.owner, None, Some("one")),
+            captured_overlay(second, None, Some("one")),
+            witnessed_overlay(created, "fresh.rs", "one", second),
+        ]
+    };
+    expect_hits(
+        query_hits(&fixture, documents(), "one case:yes repo:corp-b")?,
+        &[
+            (second, UNSAVED, "corp-b:shared.rs"),
+            (created, UNSAVED, "corp-b:fresh.rs"),
+        ],
+        "repo:corp-b over overlay rows",
+    )?;
+    expect_hits(
+        query_hits(&fixture, documents(), "one case:yes repo:corp-a")?,
+        &[(fixture.owner, UNSAVED, "corp-a:shared.rs")],
+        "repo:corp-a over overlay rows",
+    )?;
+    expect_hits(
+        query_hits(
+            &fixture,
+            documents(),
+            "one case:yes repo:corp-a repo:corp-b",
+        )?,
+        &[],
+        "every repo: filter must match",
+    )
+}
+
+#[test]
+fn overlay_lang_filter_uses_the_durable_owner_record_language() -> Result<(), IndexError> {
+    let (fixture, second) = two_repository_fixture()?;
+    let durable_b = NativeTextHitSource::Durable(reference(71));
+    let documents = || vec![captured_overlay(fixture.owner, None, Some("one"))];
+    expect_hits(
+        query_hits(&fixture, documents(), "one case:yes lang:rust")?,
+        &[(fixture.owner, UNSAVED, "corp-a:shared.rs")],
+        "lang:rust over a durable-owner overlay row",
+    )?;
+    expect_hits(
+        query_hits(&fixture, documents(), "one case:yes lang:python")?,
+        &[(second, durable_b, "corp-b:shared.rs")],
+        "lang:python excludes the Rust overlay row",
+    )?;
+    // A rename keeps the durable record's language.
+    expect_hits(
+        query_hits(
+            &fixture,
+            vec![captured_overlay(
+                fixture.owner,
+                Some("renamed.py"),
+                Some("one"),
+            )],
+            "one case:yes lang:rust",
+        )?,
+        &[(fixture.owner, UNSAVED, "corp-a:renamed.py")],
+        "renamed durable-owner row",
+    )
+}
+
+#[test]
+fn overlay_lang_filter_refuses_new_file_rows() -> Result<(), IndexError> {
+    let (fixture, _second) = two_repository_fixture()?;
+    let created = new_owner(&fixture, 40);
+    let documents = || vec![witnessed_overlay(created, "fresh.rs", "one", fixture.owner)];
+    // The witness lends its repository, never its language.
+    for query in [
+        "one case:yes lang:rust",
+        "one case:yes repo:corp-a lang:rust",
+    ] {
+        let refused = query_hits(&fixture, documents(), query);
+        if !matches!(&refused, Err(IndexError::InvalidInput(message)) if message.contains("language"))
+        {
+            return Err(IndexError::BackendViolation(format!(
+                "{query} admitted a new-file row without language: {refused:?}"
+            )));
+        }
+    }
+    expect_hits(
+        query_hits(&fixture, documents(), "one case:yes repo:corp-a")?,
+        &[
+            (
+                fixture.owner,
+                NativeTextHitSource::Durable(fixture.source_ref),
+                "corp-a:shared.rs",
+            ),
+            (created, UNSAVED, "corp-a:fresh.rs"),
+        ],
+        "repo: still applies to a new-file row",
+    )
+}
+
+#[test]
+fn overlay_repository_must_be_an_authenticated_member_of_the_view() -> Result<(), IndexError> {
+    let (fixture, second) = two_repository_fixture()?;
+    let created = new_owner(&fixture, 40);
+    let outside = new_owner(&fixture, 99);
+    let deletion_with_witness = TextOverlayReadDocument {
+        repository_witness: Some(second),
+        ..captured_overlay(created, None, None)
+    };
+    for documents in [
+        // The witness has no durable record in the selected view.
+        vec![witnessed_overlay(created, "fresh.rs", "one", outside)],
+        // A new file without a witness has no authenticated repository.
+        vec![captured_overlay(created, Some("fresh.rs"), Some("one"))],
+        // A durable owner cannot be moved to another repository.
+        vec![TextOverlayReadDocument {
+            repository_witness: Some(second),
+            ..captured_overlay(fixture.owner, None, Some("one"))
+        }],
+        vec![deletion_with_witness],
+    ] {
+        let refused = reader_overlay(
+            &fixture,
+            documents,
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            8,
+        );
+        if !matches!(refused, Err(IndexError::InvalidInput(_))) {
+            return Err(IndexError::BackendViolation(format!(
+                "unauthenticated overlay repository was admitted: {refused:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn overlay_hits_project_the_unscoped_repository_slot() -> Result<(), IndexError> {
+    let fixture = witness_ready_visitor_fixture()?;
+    let created = new_owner(&fixture, 40);
+    expect_hits(
+        owner_hits(
+            &fixture,
+            vec![witnessed_overlay(created, "left.rs", "one", fixture.owner)],
+        )?,
+        &[
+            (
+                fixture.owner,
+                NativeTextHitSource::Durable(fixture.source_ref),
+                ":a",
+            ),
+            (created, UNSAVED, ":left.rs"),
+        ],
+        "unscoped durable or overlay hit gained a repository",
+    )
+}
+
+/// Overlay reads project file hits with their repository. Path grouping and
+/// previews are durable-only contracts, refused even for an empty corpus.
+#[test]
+fn overlay_reads_refuse_path_projection_and_preview_explicitly() -> Result<(), IndexError> {
+    let fixture = witness_ready_visitor_fixture()?;
+    let reader = NativeTextReader::new(
+        fixture.recipe,
+        Bm25Policy { k1: 1.2, b: 0.75 },
+        ResourceNeed {
+            cpu_units: 1,
+            io_bytes: 64 * 1024,
+            memory_bytes: 4 * 1024 * 1024,
+            provider_units: 0,
+        },
+    )?;
+    let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+    for (path_surface, preview) in [(true, false), (false, true)] {
+        let mut plan = plan(keyword("one"), None)?;
+        if path_surface {
+            plan.filters.surface = crate::symbol::ResultSurface::Path;
+        }
+        let mut request =
+            PlannedTextRead::new(plan, 4, &constraints, |_bytes, _lifetime| Ok(None))?
+                .with_overlay(Vec::new(), None);
+        if preview {
+            request = request.with_preview();
+        }
+        if !matches!(
+            reader.reservation(&request),
+            Err(IndexError::InvalidInput(_))
+        ) {
+            return Err(IndexError::BackendViolation(format!(
+                "overlay read admitted path={path_surface} preview={preview}"
+            )));
+        }
     }
     Ok(())
 }

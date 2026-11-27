@@ -34,6 +34,25 @@ fn closed_peer_probe_reads_eof_without_reconfiguring_socket_timeout() -> TestRes
     Ok(())
 }
 
+#[cfg(feature = "native-send-observer-v1")]
+#[test]
+fn response_loss_probe_requires_unread_bytes_and_preserves_them_v1() -> TestResult {
+    let (client, mut peer) = UnixStream::pair()?;
+    let stream = DeadlineStream::new(client, Instant::now() + Duration::from_secs(3));
+    peer.write_all(b"reply")?;
+    wait_for_unread_response_v1(&stream)?;
+    let mut bytes = [0_u8; 5];
+    let mut client = stream.stream;
+    client.read_exact(&mut bytes)?;
+    assert_eq!(&bytes, b"reply");
+    drop(peer);
+    let stream = DeadlineStream::new(client, Instant::now() + Duration::from_secs(3));
+    assert!(
+        matches!(wait_for_unread_response_v1(&stream), Err(IpcError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof)
+    );
+    Ok(())
+}
+
 #[test]
 fn missing_or_zero_kernel_pid_is_typed_unsupported() {
     for pid in [None, Some(0)] {
@@ -161,7 +180,9 @@ fn actual_peer_child_v1(
             .spawn()?,
     );
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
+    let listening = socket.with_extension("listening");
+    let child_pid = child.0.id().to_string();
+    while std::fs::read_to_string(&listening).ok().as_deref() != Some(child_pid.as_str()) {
         if child.0.try_wait()?.is_some() {
             return Err("peer child exited before listen".into());
         }
@@ -200,11 +221,15 @@ fn actual_peer_process_child_v1() -> TestResult {
         std::env::var_os("QUANTA_IPC_PEER_TEST_SOCKET_V1").ok_or("child socket missing")?;
     let listener = UnixListener::bind(Path::new(&socket))?;
     let connections = std::env::var("QUANTA_IPC_PEER_TEST_CONNECTIONS_V1")?.parse::<u8>()?;
-    if std::env::var("QUANTA_IPC_PEER_TEST_PROBE_V1")?.as_str() == "1" {
-        std::fs::write(Path::new(&socket).with_extension("ready"), b"listening")?;
-    }
     if !(1..=2).contains(&connections) {
         return Err("invalid child connection count".into());
+    }
+    std::fs::write(
+        Path::new(&socket).with_extension("listening"),
+        std::process::id().to_string(),
+    )?;
+    if std::env::var("QUANTA_IPC_PEER_TEST_PROBE_V1")?.as_str() == "1" {
+        std::fs::write(Path::new(&socket).with_extension("ready"), b"listening")?;
     }
     for _ in 0..connections {
         let (mut stream, _) = listener.accept()?;
@@ -422,6 +447,52 @@ fn bound_admitted_request_reuses_actual_child_and_last_process_grant_v1() -> Tes
     wait_actual_peer_child_v1(&mut child)
 }
 
+#[cfg(all(target_os = "linux", feature = "native-send-observer-v1"))]
+#[test]
+fn bound_admitted_response_loss_waits_for_real_peer_bytes_without_decoding_v1() -> TestResult {
+    fn select_seven_v1(socket: &Path, frame: &[u8]) -> bool {
+        socket
+            .file_name()
+            .is_some_and(|name| name == "bound-response-loss.sock")
+            && matches!(
+                crate::decode_request::<u64, _>(&mut std::io::Cursor::new(frame)),
+                Ok(7)
+            )
+    }
+
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("bound-response-loss.sock");
+    let mut child = actual_peer_child_v1(&socket, 2, false)?;
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let (memory, active) = scope(false);
+    let (body, peer) =
+        send_request_body_with_budget_admitted_peer_v1(&socket, &7_u64, &budget, &memory)?;
+    let lease = peer.share_lease_v1();
+    drop(body);
+    drop(peer);
+    assert!(crate::native_response_loss_test_support_v1::try_arm_v1(
+        select_seven_v1
+    ));
+    assert!(
+        !crate::native_response_loss_test_support_v1::take_selected_v1(
+            &socket,
+            &crate::encode_request(&8_u64)?,
+        )
+    );
+    let lost = send_request_body_with_budget_admitted_bound_peer_v1(
+        &socket, &7_u64, &budget, &memory, &lease,
+    );
+    assert!(matches!(lost, Err(IpcError::Io(error)) if error.kind() == ErrorKind::ConnectionReset));
+    assert!(crate::native_response_loss_test_support_v1::fired_v1());
+    assert!(crate::native_response_loss_test_support_v1::disarm_v1());
+    assert_eq!(lease.credentials_v1().pid, Some(child.0.id()));
+    assert!(active.load(Ordering::SeqCst) > 0);
+    drop(lease);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    std::fs::write(socket.with_extension("release"), b"observed")?;
+    wait_actual_peer_child_v1(&mut child)
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn bound_typed_read_reuses_actual_child_and_process_grant_v1() -> TestResult {
@@ -527,8 +598,13 @@ fn exited_original_process_refuses_before_reconnect_v1() -> TestResult {
     std::fs::remove_file(&socket)?;
     let replacement = UnixListener::bind(&socket)?;
     replacement.set_nonblocking(true)?;
+    let after_exit_budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
     let result = send_request_body_with_budget_admitted_bound_peer_v1(
-        &socket, &7_u64, &budget, &memory, &lease,
+        &socket,
+        &7_u64,
+        &after_exit_budget,
+        &memory,
+        &lease,
     );
     assert!(matches!(
         result,
@@ -596,8 +672,13 @@ fn same_process_exec_image_change_gets_zero_request_bytes_v1() -> TestResult {
         !policy_called.get(),
         "another image cannot replace the retained image at installed-policy admission"
     );
+    let after_exec_budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
     let result = send_request_body_with_budget_admitted_bound_peer_v1(
-        &socket, &7_u64, &budget, &memory, &lease,
+        &socket,
+        &7_u64,
+        &after_exec_budget,
+        &memory,
+        &lease,
     );
     assert!(matches!(
         result,

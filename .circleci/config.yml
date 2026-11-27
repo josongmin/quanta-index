@@ -40,7 +40,8 @@ jobs:
           command: |
             set -euo pipefail
             sudo apt-get update
-            sudo apt-get install -y build-essential pkg-config libssl-dev protobuf-compiler python3-venv ripgrep zsh
+            sudo apt-get install -y build-essential pkg-config libssl-dev protobuf-compiler libprotobuf-dev python3-venv ripgrep zsh
+            test -s /usr/include/google/protobuf/empty.proto
             if ! command -v rustup >/dev/null 2>&1; then
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
                 sh -s -- -y --profile minimal --default-toolchain none
@@ -113,7 +114,7 @@ jobs:
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
-            ./scripts/run-rustfmt-owned.sh -- --check
+            just fmt-check
             ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run:
           name: Rust dependency and MSRV checks
@@ -269,13 +270,6 @@ jobs:
           path: artifacts/test-authority
           destination: test-authority
       - run:
-          name: ciborium no-default integration
-          no_output_timeout: 20m
-          command: |
-            set -euo pipefail
-            unset BASH_ENV ENV
-            ./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked
-      - run:
           name: registry ciborium no-default consumer
           no_output_timeout: 20m
           command: |
@@ -283,6 +277,29 @@ jobs:
             unset BASH_ENV ENV
             ./scripts/cargow --lane test-ciborium-no-default-lane nextest run --manifest-path tools/ci/ciborium-no-default-consumer/Cargo.toml --locked --lib --no-tests fail
             python3 tools/ci/verify_ciborium_no_default.py
+      - run:
+          name: isolated registry grammar candidate
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow --lane test-workspace-lane nextest run --manifest-path tools/ci/tree-sitter-registry-consumer/Cargo.toml --locked --lib --no-tests fail
+      - run:
+          name: upstream SQLite WAL oracle
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow --lane sqlite-oracle-lane fetch --manifest-path tools/sqlite-upstream-oracle/Cargo.toml --locked
+            uv run --frozen --extra dev python tools/ci/verify_sqlite_upstream_oracle.py
+            just rust-test-sqlite-upstream-oracle
+      - run:
+          name: upstream Lance provider oracle
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow --lane lance-oracle-lane fetch --manifest-path tools/lance-upstream-oracle/Cargo.toml --locked
+            just rust-test-lance-upstream-oracle
       - run:
           name: explicit descriptor custody
           no_output_timeout: 20m
@@ -455,9 +472,13 @@ jobs:
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
+            projection_report="$(mktemp)"
+            trap 'rm -f "$projection_report"' EXIT
             uv run --frozen --extra dev python -m pytest tools -q \
               --ignore=tools/ci/tests/test_semgrep_policy.py \
-              --ignore=tools/ci/tests/test_check_rust_fallbacks.py -x -vv
+              --ignore=tools/ci/tests/test_check_rust_fallbacks.py -x -vv \
+              --junitxml="$projection_report"
+            uv run --frozen --extra dev python tools/ci/verify_parser_projection_ci.py "$projection_report"
             uv run --frozen --extra dev python tools/prompt-manager/pm.py lint
             uv run --frozen --extra dev python -m ruff check .
             uv run --frozen --extra dev python -m ruff format --check .
@@ -608,11 +629,12 @@ jobs:
             git fetch --no-tags origin "$CI_PR_BASE_SHA"
             git cat-file -e "${CI_PR_BASE_SHA}^{commit}"
             uv run --frozen --extra dev python -m pytest tools/ci/tests/test_check_changed_line_coverage.py -q
-            if [[ "$(git rev-parse HEAD)" != "$CIRCLE_SHA1" ]]; then
-              echo "PR coverage requires the checked-out CircleCI SHA" >&2
-              exit 2
-            fi
-            just rust-coverage-changed "$CI_PR_BASE_SHA" 90
+            ./scripts/cargow --lane coverage-lane llvm-cov nextest \
+              --workspace --all-features --locked --lcov \
+              --output-path /tmp/quanta-index-coverage.lcov
+            uv run --frozen --extra dev python tools/ci/lint/check-changed-line-coverage.py \
+              --lcov /tmp/quanta-index-coverage.lcov \
+              --base "$CI_PR_BASE_SHA" --minimum-percent 90
       - run: *verify_unchanged_worker_source
       - store_artifacts:
           path: artifacts/test-authority
@@ -675,6 +697,13 @@ jobs:
       - store_artifacts:
           path: artifacts/test-authority
           destination: test-authority
+      - run:
+          name: Catalog checked-close integration
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            just rust-test-catalog-checked-close
       - run:
           name: Pinned Legacy F15 without default features
           no_output_timeout: 30m

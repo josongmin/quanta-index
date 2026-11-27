@@ -2083,7 +2083,7 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
         let profile = client.stage_profile(
             ingress,
             IndexProfile {
-                instances: vec![text_spec(), semantic.clone()],
+                instances: vec![literal_spec(), text_spec(), semantic.clone()],
             },
             &budget(),
         )?;
@@ -2336,13 +2336,10 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
         check_delta_provider_inputs(delta_inputs)?;
 
         phase.set("unsaved overlay setup");
-        let publisher = restored.begin_interaction_publisher(
-            Duration::from_secs(60),
-            &budget().capped_at(changed_deadline),
-        )?;
+        let live = LivePublisher::begin(&restored, Duration::from_secs(60))?;
         let session = NativeOverlaySession {
             workspace: workspace(),
-            publisher,
+            publisher: live.id(),
             epoch: 1,
         };
         require_equal(
@@ -2357,6 +2354,7 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
             session,
             owner: quality_owner(0, &config)?,
         };
+        live.renew()?;
         require_equal(
             &restored.update_overlay_at_path(
                 document,
@@ -2364,6 +2362,7 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
                 1,
                 Some("row-0".into()),
                 Some(OVERLAY_REPLACEMENT_PATH.into()),
+                None,
                 &budget().capped_at(changed_deadline),
             )?,
             &NativeOverlayReply::Updated {
@@ -2376,11 +2375,13 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
             session,
             owner: quality_owner(1, &config)?,
         };
+        live.renew()?;
         require_equal(
             &restored.update_overlay_at_path(
                 tombstone,
                 None,
                 1,
+                None,
                 None,
                 None,
                 &budget().capped_at(changed_deadline),
@@ -2404,8 +2405,9 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
             "ANN overlay independent eligible row count",
         )?;
         phase.set("unsaved overlay selected ANN quality sweep");
-        let (overlay_corpus, publisher_sequence) = overlay_quality_sweep(
+        let overlay_corpus = overlay_quality_sweep(
             &restored,
+            &live,
             changed_view,
             semantic.instance,
             session,
@@ -2429,6 +2431,7 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
             "ANN overlay provider input text differs from the unsaved row",
         )?;
         check_latest_view(&restored, changed_view, changed_deadline)?;
+        live.renew()?;
         require_equal(
             &restored.overlay(
                 NativeOverlayRequest::Close { session },
@@ -2438,13 +2441,7 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
             "ANN overlay session close",
         )?;
         phase.set("closed overlay corpus refusal");
-        restored.renew_interaction_publisher(
-            session.publisher,
-            publisher_sequence
-                .checked_add(1)
-                .ok_or("ANN closed overlay publisher sequence overflow")?,
-            &budget().capped_at(changed_deadline),
-        )?;
+        live.renew()?;
         let closed = restored.search_overlay_text(
             NativeOverlayTextQuery {
                 selection: ViewSelection::Exact(changed_view),
@@ -2463,14 +2460,12 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
             },
             &budget().capped_at(changed_deadline),
         );
-        require(
-            matches!(
-                &closed,
-                Err(NativeUdsError::Refused(refusal))
-                    if refusal.code == NativeIndexErrorCode::Conflict
-            ),
-            format!("ANN closed overlay did not refuse its former corpus: {closed:?}"),
-        )?;
+        // The lease is still renewable afterwards, so the session close is
+        // the attributed cause of this refusal.
+        live.refused(closed, NativeIndexErrorCode::Conflict)
+            .map_err(|cause| {
+                format!("ANN closed overlay did not refuse its former corpus: {cause}")
+            })?;
         phase.set("durable ANN query after overlay close");
         check_latest_view(&restored, changed_view, changed_deadline)?;
         let durable_result = restored.search_semantic(

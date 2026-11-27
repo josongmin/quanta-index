@@ -1,10 +1,10 @@
 # 4K SourceAdvance 경로 인덱스 작업 패킷
 
-**목표**는 4,096개 파일을 한 번의 `SourceAdvance`로 게시하고, 같은 제품 프로필의 100만 논리 읽기·1,200초 안에 오버레이 종료와 두 번째 재시작까지 검증하는 것이다. 원 ANN4K의 필터별 검색 품질도 같은 후보에서 확인한다. **07.5의 B는 이 채팅**(`01a1cbf6-46b6-7590-8550-c818539e9f2d`)이다. [실패 RCA](../../bugbash/nov-20/findings.md#L121) · [공식 채팅 배정표](../nov-20-native-cutover-closeout/tickets/LANES.md#11월-21일-작업-채팅-배정) · [기존 제품 수용 티켓 07.5](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann과-hybrid)
+**목표**는 4,096개 파일을 한 번의 `SourceAdvance`로 게시하고, 같은 제품 프로필의 100만 논리 읽기·1,200초 안에 오버레이 종료와 두 번째 재시작까지 검증하는 것이다. 원 ANN4K의 필터별 검색 품질도 같은 후보에서 확인한다. **07.5의 두 본문은 기존 Native 전환 B 단일 큐**가 맡는다. [실패별 후속 판정](04-product-acceptance.md#실패별-후속-작업) · [11월 20일 감사 원문](../../ARCHIVE-INDEX.md#nov-20-ann-audit-preimage) · [공식 채팅 배정표](../nov-20-native-cutover-closeout/tickets/LANES.md#11월-21일-작업-채팅-배정) · [기존 제품 수용 티켓 07.5](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann과-hybrid)
 
 ## 현재 인계점
 
-초기 SourceAdvance의 4,096개 게시와 prefix 128개 완료를 확인했다. 이전 ANN4K는 1 PASS, 마지막 제품은 materialization watchdog에서 1 FAIL이다. Catalog 집중 회귀 7/7 이후 immutable operation 조회 기한을 연결했고 후기 trace에는 점유 전용 판독을 추가했다. 새 후기 Record 한 건은 admission 대기 중 디스크가 가득 차 본문 전에 종료됐다. [현재 상태와 코드 단위 검증](04-product-acceptance.md#현재-코드와-실행-판정). 02·03은 초기 게시 실패가 재현되고 경로 비용이 원인으로 확인될 때 다시 검토한다.
+**11월 26일.** B의 다음 작업은 기존 Record 한 건으로 첫 실패 경계를 확인하는 것이다. 현재 Record와 Off 실행 상태는 [04의 최신 판정](04-product-acceptance.md#현재-코드와-실행-판정), 수정 착수 조건과 공용 Contract·TEXT·Root/F 경계는 [00의 작업과 종료 조건](00-final-audit.md#작업과-종료-조건)에 둔다.
 
 ## 채팅별 실행권과 재사용 범위
 
@@ -12,7 +12,7 @@
 
 | 실제 채팅 | 확인한 작업 | 이 패킷에서의 처리 |
 | --- | --- | --- |
-| **Native 전환 B · 자체 ANN·파일 신원** (이 채팅) | 07.5의 prefix·ANN4K·제품 4K와 독립 exact oracle. 확인 시 prefix·ANN의 기록 PID는 종료, 제품 continuation은 실행 중이고 제품 본문은 미시작 | **이 채팅에 남김.** 00의 실행기 판독·입력 결합, 01의 기존 대기 복구·계측 판독, 04의 두 본문 및 필요한 Semantic 수리를 한 큐가 소유한다. 동일 selector 또는 캐시 디렉터리를 인수해 실행하는 다른 채팅은 확인되지 않았다. |
+| **Native 전환 B · 자체 ANN·파일 신원** | 07.5의 prefix·후기 Record·ANN4K·제품 4K와 독립 exact oracle을 기존 B가 소유한다. RepoMap 출하표의 B 후속은 같은 실행 결과와 Semantic codec을 인수한다. [B 후속 배정](../nov-23-repomap-retirement/04-integration-acceptance.md#2026-11-24-채팅-배정) | 기존 단일 큐에서만 실행한다. selector와 공통 입력 판정은 07.5에 한 번 기록한다. |
 | **Tantivy 퇴역 · Native Text SDK60 TDD** (`01a1d915-3719-76b0-8d1d-dcf3213cba72`) | 07.3·07.4 Caddy·etcd SDK와 Text Large. 동결 Main Large는 4,096파일·두 재시작 **1/1 PASS, 172.802초**. 후속 quiet Off·출하 후보 검증은 이 채팅 담당. [07.3·07.4 기록](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#sdk60와-large) | Large terminal을 slow PASS 판독 회귀에 재사용한다. 기존 TEXT 테스트를 07.5 큐에서 다시 실행하지 않는다. 02의 파일 간 배치나 03의 경로 블록 구현을 현재 맡아 진행 중이라는 증거는 없으며 둘 다 **보류**한다. 필요해지면 기존 TEXT 작성 경로 한 곳만 사용한다. |
 | **Tantivy 퇴역 · Lexical 유지 회귀 이관** / **F15 세션 검증과 로컬 핀 보완** | NoFeatures의 파일 검증, scrub 격리, 세션·재시작과 기존 F15 증거. [04 유지 회귀](../nov-20-native-cutover-closeout/tickets/04-maintained-test-migration.md) | F15 결과가 필요할 때 두 채팅의 기존 fixture·terminal을 인수한다. 같은 Lexical crate를 사용해도 이번 `PathWrites` 쓰기 배치나 ANN 제품 큐의 작업은 별도다. |
 | **증분** 및 기존 Store·SDK·E02 채팅 | Source V2 변경 증명, 세대별 본문 CAS, DELTA 게시·ACK, 단일 편집 비용과 Q Literal seal. [증분 배정표](../../bugbash/nov-20-native-delta-cost/tickets/README.md) | 해당 DELTA·Literal 회귀는 기존 큐에 둔다. 01의 대상은 4,096개 파일을 최초 FULL로 게시하는 B operation이다. |
@@ -47,7 +47,7 @@ TEXT와 Root/F의 기존 채팅으로 각각 한 번 전달했다. TEXT가 계�
 
 | 범위 | 판정과 확인된 사실 |
 | --- | --- |
-| 제품 4K | **FAILED**. 초기 게시 전에 999,999회 사용 후 4회 읽기 청구가 거절됐다. 기한은 1,147.861초 남았다. 과거 다른 실행은 초기 게시까지 성공했다. [실패 구분](../../bugbash/nov-20/findings.md#L123) |
+| 제품 4K | **FAILED**. 초기 게시 전에 999,999회 사용 후 4회 읽기 청구가 거절됐다. 기한은 1,147.861초 남았다. 과거 다른 실행은 초기 게시까지 성공했다. [현재 실패 분기](04-product-acceptance.md#가장-먼저-실패한-경계로-분기) |
 | 경로 Tree | 빈 루트용 nested packing은 이미 구현됐다. 최신 제품 입력에서의 효과는 **NOT_RUN**. 기존 구현을 02·03에서 다시 만들지 않는다. [패킹 선택](../../../crates/quanta-index-lexical/src/native/text_path.rs#L575) |
-| ANN4K | 이전 후보의 6개 비어 있지 않은 구간은 각각 640/640이었다. 후속 LanceDB 실행은 `correlated_gt10pct`에서 raw 8/10, 파일 506/640으로 **FAILED**. 수정 후보의 전체 ANN4K는 **NOT_RUN**. [이전 결과](../nov-12-native-cutover/tickets/NC-B-semantic.md#L620) · [원본 로그 위치](04-product-acceptance.md) |
+| ANN4K | 이전 후보의 6개 비어 있지 않은 구간은 각각 640/640이었다. 후속 LanceDB 실행은 `correlated_gt10pct`에서 raw 8/10, 파일 506/640으로 **FAILED**. 수정 후보의 전체 ANN4K는 **NOT_RUN**. [이전 결과](../nov-12-native-cutover/tickets/NC-B-semantic.md#b143--4k-product-watchdog-attribution) · [원본 로그 위치](04-product-acceptance.md) |
 | 실행 복구 | prefix controller가 `ENOSPC`로 preflight와 상태 쓰기에 실패했다. 확인 당시 prefix·ANN 대기 PID는 종료됐고 prefix trace는 비어 있었다. 제품 continuation은 살아 있었다. 01에서 다시 확인한다. |

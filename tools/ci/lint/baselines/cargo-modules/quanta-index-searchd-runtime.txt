@@ -525,42 +525,6 @@ crate quanta_index_searchd_runtime
 │   └── struct PublicationLexicalLifetime: pub
 ├── mod publication_sidecar: pub #[cfg(unix)]
 │   └── struct SidecarOutputPermit: pub(self)
-├── mod publication_sqlite_vfs: pub #[cfg(unix)]
-│   ├── struct Adapter: pub(self)
-│   ├── struct AdapterState: pub(self)
-│   ├── struct CatalogSqliteScope: pub(self)
-│   ├── struct CatalogVerificationScope: pub(self)
-│   ├── struct CurrentFunding: pub(self)
-│   ├── struct FundedScopeGuard: pub(self)
-│   ├── enum FundingPolicy: pub(self)
-│   ├── struct Handle: pub(self)
-│   ├── struct Router: pub(self)
-│   ├── struct RouterCallback: pub(self)
-│   ├── struct ScopedAdapter: pub(self)
-│   ├── struct ScratchSqliteScope: pub(self)
-│   ├── struct ShmHandle: pub(self)
-│   ├── struct SqliteCapacityVfs: pub
-│   ├── mod diagnostic: pub(self)
-│   │   ├── struct Active: pub(self)
-│   │   ├── struct Backfill: pub(self)
-│   │   ├── enum MutationClass: pub(super)
-│   │   ├── struct Scope: pub(super)
-│   │   ├── struct WriteAggregate: pub(self)
-│   │   ├── enum WriteStart: pub(self)
-│   │   └── mod write_timing: pub(super)
-│   │       ├── struct Callback: pub(self)
-│   │       ├── struct CallbackTiming: pub(in crate::publication_sqlite_vfs)
-│   │       ├── struct Pending: pub(self)
-│   │       ├── struct Totals: pub(super)
-│   │       └── enum WriteKind: pub(self)
-│   ├── mod refusal_diagnostic: pub(self)
-│   │   ├── struct Callback: pub(self)
-│   │   └── struct Frame: pub(super)
-│   └── mod service: pub(self)
-│       └── struct ServiceFundedCatalogIo: pub
-├── mod repomap_file_admission: pub #[cfg(unix)]
-│   ├── struct CanonicalRepoMapFileAdmission: pub
-│   └── struct RepoMapReader: pub(self)
 ├── mod semantic_file_factory: pub #[cfg(unix)]
 │   ├── struct CanonicalSemanticFileAdmissionFactory: pub
 │   └── struct CanonicalSemanticMaintenanceFileFactory: pub

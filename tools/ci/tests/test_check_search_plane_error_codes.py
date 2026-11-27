@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "tools/ci/check-search-plane-error-codes.py"
 
 
-def _load_module():
-    spec = importlib.util.spec_from_file_location("check_search_plane_error_codes", SCRIPT)
+def _load_module(script: Path = SCRIPT):
+    spec = importlib.util.spec_from_file_location(script.stem, script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -48,6 +48,10 @@ def test_source_table_is_sorted_unique_and_contains_mandatory_codes() -> None:
     } - set(codes) == {"BAD_REQUEST"}
 
 
+def test_committed_error_code_table_matches_current_sources() -> None:
+    _load_module().check_table(ROOT)
+
+
 def test_enum_source_digest_uses_frozen_domain_and_payload_framing() -> None:
     module = _load_module()
     relative = module.ENUM_SOURCE.as_posix().encode()
@@ -75,3 +79,51 @@ def test_committed_table_check_rejects_stale_content(tmp_path: Path) -> None:
     table_path.write_text(json.dumps(table), encoding="utf-8")
     with pytest.raises(module.TableError, match="differs"):
         module.check_table(root)
+
+
+@pytest.mark.parametrize(
+    ("relative", "active_code"),
+    [
+        ("crates/quanta-index-contract/src/ipc/error.rs", "PROTOCOL_VERSION_UNSUPPORTED"),
+        ("crates/quanta-index-contract/src/lex/error_code.rs", "STR_PARSE_FAIL"),
+        ("crates/quanta-index-contract-base/src/query/top_k.rs", "QUERY_TOP_K_OUT_OF_RANGE"),
+    ],
+)
+def test_generator_refuses_retired_wire_code(
+    tmp_path: Path, relative: str, active_code: str
+) -> None:
+    module = _load_module()
+    root = _copy_inputs(tmp_path)
+    path = root / relative
+    text = path.read_text(encoding="utf-8")
+    assert f'"{active_code}"' in text
+    path.write_text(text.replace(f'"{active_code}"', '"BAD_REQUEST"', 1), encoding="utf-8")
+
+    with pytest.raises(module.TableError, match="BAD_REQUEST"):
+        module.write_table(root)
+    assert not (root / module.TABLE).exists()
+
+
+def test_closed_gate_allows_retired_code_in_examples(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_module()
+    root = _copy_inputs(tmp_path)
+    enum = root / module.ENUM_SOURCE
+    with enum.open("a", encoding="utf-8") as stream:
+        stream.write(
+            '\n// For example, "BAD_REQUEST" is obsolete.\n'
+            '#[cfg(test)]\nconst RETIRED: &str = "BAD_REQUEST";\n'
+        )
+    for relative in (
+        "crates/quanta-index-core/src/error.rs",
+        "crates/quanta-index-sdk/src/error.rs",
+    ):
+        target = root / relative
+        target.parent.mkdir(parents=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    module.write_table(root)
+
+    closure = _load_module(ROOT / "tools/ci/check-error-authority-closure.py")
+    monkeypatch.setattr(closure, "ROOT", root)
+    assert closure.main() == 0

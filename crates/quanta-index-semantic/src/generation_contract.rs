@@ -11,12 +11,16 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
-use quanta_index_contract::{
-    BatchIngestMode, EmbeddingDistanceMetric, EmbeddingNormalization, ManifestGeneration,
-};
-use quanta_index_core::{CoreError, SemanticGenerationContractV1};
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use quanta_index_contract::EmbeddingDistanceMetric;
+use quanta_index_contract::{BatchIngestMode, EmbeddingNormalization, ManifestGeneration};
+use quanta_index_core::CoreError;
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use quanta_index_core::SemanticGenerationContractV1;
 
-use crate::codec::{self, cbor_serde, decode_current_format, format_unsupported};
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use crate::codec;
+use crate::codec::{cbor_serde, decode_current_format, format_unsupported};
 
 /// Version 5 requires source-file identity on semantic rows and scopes.
 pub(crate) const GENERATION_CONTRACT_VERSION: u32 = 5;
@@ -69,6 +73,7 @@ cbor_serde!(GenerationContract {
 });
 
 impl GenerationContract {
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn from_batch(batch: &SemanticGenerationContractV1) -> Self {
         Self {
             format_version: GENERATION_CONTRACT_VERSION,
@@ -98,6 +103,7 @@ impl GenerationContract {
         }
     }
 
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
         let bytes = codec::encode(self, "semantic generation contract")?;
         crate::legacy::limits::ensure_bounded(
@@ -117,6 +123,7 @@ impl GenerationContract {
         )
     }
 
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn validate_batch_shape(
         batch: &SemanticGenerationContractV1,
     ) -> Result<(), CoreError> {
@@ -133,6 +140,7 @@ impl GenerationContract {
         }
     }
 
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn merge_batch(
         &self,
         batch: &SemanticGenerationContractV1,
@@ -244,6 +252,7 @@ impl GenerationContract {
 }
 
 #[must_use]
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) fn distance_metric_token(metric: EmbeddingDistanceMetric) -> &'static str {
     match metric {
         EmbeddingDistanceMetric::Cosine => "cosine",

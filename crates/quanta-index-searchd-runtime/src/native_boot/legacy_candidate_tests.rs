@@ -152,6 +152,16 @@ fn retained_tree_v20_registry(config: &ValidatedConfig) -> TestResult<AdapterReg
     })?;
     Ok(registry)
 }
+fn current_text_only_registry(config: &ValidatedConfig) -> TestResult<AdapterRegistry> {
+    let mut registry = AdapterRegistry::new();
+    registry.register(
+        config.text,
+        NativeTextIndex::new(config.text_recipe),
+        |delta| Ok(delta.clone()),
+    )?;
+    Ok(registry)
+}
+
 fn require(condition: bool, message: &str) -> TestResult {
     if condition {
         Ok(())
@@ -203,6 +213,20 @@ fn operation(sequence: u64) -> OperationKey {
         sequence,
     }
 }
+/// Matches the `literal` descriptor of the fixture config; the product
+/// requires it beside every Text instance.
+fn literal_spec() -> InstanceSpec {
+    InstanceSpec {
+        instance: IndexInstanceId([7; 16]),
+        kind: IndexKind([8; 16]),
+        group: PublicationGroupId([9; 16]),
+        activation: GroupActivation::CoreRequired,
+        input_domain: InputDomain::SourceLocal,
+        schema: SchemaId([10; 16]),
+        policy: Digest([11; 32]),
+        format: StorageFormatId([12; 16]),
+    }
+}
 fn text_spec() -> InstanceSpec {
     InstanceSpec {
         instance: IndexInstanceId([71; 16]),
@@ -218,7 +242,7 @@ fn text_spec() -> InstanceSpec {
 fn published(outcome: SubmitOutcome) -> TestResult<ViewRef> {
     match outcome {
         SubmitOutcome::Terminal(OperationStatus::Published(view)) => Ok(view),
-        outcome => Err(format!("actual fixture publication failed: {outcome:?}").into()),
+        _ => Err("actual fixture publication failed".into()),
     }
 }
 fn sha_file(path: &Path) -> TestResult<Digest> {
@@ -283,17 +307,72 @@ struct PreparedNativeFixture {
     record: quanta_index_contract::index::ObjectRef,
 }
 fn prepare_native_fixture() -> TestResult<PreparedNativeFixture> {
-    prepare_native_fixture_with_tree(false, false)
+    prepare_native_fixture_in(tempfile::tempdir()?, |_, _| Ok(()))
+}
+
+#[derive(Clone, Copy)]
+enum FixtureTextLayout {
+    Tree,
+    SegmentedFull,
+    SegmentedLayered,
+}
+
+#[derive(Clone, Copy)]
+enum FixtureTextProfile {
+    Ordinary,
+    HistoricalTreeV20,
+    CurrentWithoutLiteral(FixtureTextLayout),
 }
 
 fn prepare_native_fixture_with_tree(
     historical_tree: bool,
     excluded_text: bool,
 ) -> TestResult<PreparedNativeFixture> {
+    let profile = if historical_tree {
+        FixtureTextProfile::HistoricalTreeV20
+    } else {
+        FixtureTextProfile::Ordinary
+    };
+    prepare_native_fixture_in_with_profile(
+        tempfile::tempdir()?,
+        |_, _| Ok(()),
+        profile,
+        excluded_text,
+    )
+}
+
+fn prepare_native_fixture_current_text_only(
+    layout: FixtureTextLayout,
+) -> TestResult<PreparedNativeFixture> {
+    prepare_native_fixture_in_with_profile(
+        tempfile::tempdir()?,
+        |_, _| Ok(()),
+        FixtureTextProfile::CurrentWithoutLiteral(layout),
+        false,
+    )
+}
+
+fn prepare_native_fixture_in(
+    temp: tempfile::TempDir,
+    configure_storage: impl FnOnce(&Path, &mut serde_json::Value) -> TestResult,
+) -> TestResult<PreparedNativeFixture> {
+    prepare_native_fixture_in_with_profile(
+        temp,
+        configure_storage,
+        FixtureTextProfile::Ordinary,
+        false,
+    )
+}
+
+fn prepare_native_fixture_in_with_profile(
+    temp: tempfile::TempDir,
+    configure_storage: impl FnOnce(&Path, &mut serde_json::Value) -> TestResult,
+    profile: FixtureTextProfile,
+    excluded_text: bool,
+) -> TestResult<PreparedNativeFixture> {
     // This in-process harness bypasses run_command_inner. Match its real
     // daemon entry condition before any adapter creates Catalog inputs.
     let _inherited_umask = quanta_index_searchd::app::harden_umask();
-    let temp = tempfile::tempdir()?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let base = temp.path().canonicalize()?;
     let root = base.join("native");
@@ -304,6 +383,22 @@ fn prepare_native_fixture_with_tree(
     let binary = std::env::current_exe()?.canonicalize()?;
     let binary_digest = sha_file(&binary)?;
     let mut configuration = config(&root, &socket);
+    configure_storage(&root, &mut configuration)?;
+    if let FixtureTextProfile::CurrentWithoutLiteral(layout) = profile {
+        let layout = match layout {
+            FixtureTextLayout::Tree => None,
+            FixtureTextLayout::SegmentedFull => {
+                Some(("segmented-full-v1", StorageFormatId([76; 16])))
+            }
+            FixtureTextLayout::SegmentedLayered => {
+                Some(("segmented-layered-v2", StorageFormatId([77; 16])))
+            }
+        };
+        if let Some((name, format)) = layout {
+            configuration["text"]["layout"] = serde_json::json!(name);
+            configuration["text"]["descriptor"]["format"] = serde_json::to_value(format)?;
+        }
+    }
     // A declared fixture IO envelope for three exact-image reads. This test
     // is not an SDK60 benchmark and changes no production or benchmark cap.
     let binary_bytes = fs::metadata(&binary)?.len();
@@ -321,16 +416,27 @@ fn prepare_native_fixture_with_tree(
     fs::write(&config_path, &config_bytes)?;
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
     let config_digest = Digest(Sha256::digest(&config_bytes).into());
-    let mut config = read_config_checked(&config_path, Some(config_digest))?;
-    let current_tree_recipe = config.text_recipe;
+    let config = read_config_checked(&config_path, Some(config_digest))?;
     let mut composition = compose(&config)?;
-    if historical_tree {
-        composition.capabilities.builders = retained_tree_v20_registry(&config)?;
-        // The fixture writes a v20 root before the current runtime reads it.
-        config.text_recipe = TextRecipe::previous_tree(Digest([31; 32]));
+    match profile {
+        FixtureTextProfile::HistoricalTreeV20 => {
+            composition.capabilities.builders = retained_tree_v20_registry(&config)?;
+        }
+        FixtureTextProfile::CurrentWithoutLiteral(_) => {
+            composition.capabilities.builders = current_text_only_registry(&config)?;
+        }
+        FixtureTextProfile::Ordinary => {}
     }
-    let service = bind(&config, config_digest, composition, None, &request(), false)?;
-    config.text_recipe = current_tree_recipe;
+    let authority = prepare_unselected_authority(&config, &request())?;
+    boot::refuse_plain_serve_on_selected_boot_v2(&authority, &config, &request())?;
+    let service = bind(
+        &config,
+        config_digest,
+        composition,
+        authority,
+        &request(),
+        false,
+    )?;
     let shutdown = service.shutdown_handle();
     let running = RunningFixture {
         shutdown,
@@ -352,17 +458,23 @@ fn prepare_native_fixture_with_tree(
         return Err("fixture workspace was not created".into());
     };
     let input = client.begin_input(operation(1), &request())?;
-    let mut tree = text_spec();
-    if historical_tree {
-        tree.policy = config
+    let mut text = text_spec();
+    text.policy = match profile {
+        FixtureTextProfile::HistoricalTreeV20 => config
             .text_recipe
             .retained_source_tree_policy_v20()
-            .ok_or("fixture requires Tree layout")?;
-    }
+            .ok_or("fixture requires Tree layout")?,
+        _ => config.text_recipe.output_policy(),
+    };
+    text.format = config.text.format;
     let profile = client.stage_profile(
         input,
         IndexProfile {
-            instances: vec![tree],
+            instances: match profile {
+                FixtureTextProfile::Ordinary => vec![literal_spec(), text],
+                FixtureTextProfile::HistoricalTreeV20
+                | FixtureTextProfile::CurrentWithoutLiteral(_) => vec![text],
+            },
         },
         &request(),
     )?;
@@ -595,9 +707,9 @@ fn q_owned_native_full_cannot_authorize_an_empty_legacy_candidate() -> TestResul
     )?;
     match result {
         Err(DeploymentSelectionErrorV1::RefusedBeforeRename(error)) => {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let expected = error.is::<boot::MissingLegacyPublicationInputV1>();
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             let expected = matches!(
                 error.downcast_ref::<quanta_index_core::index::existing_file::ExistingFileReadFailureV1>(),
                 Some(quanta_index_core::index::existing_file::ExistingFileReadFailureV1::Canonical(

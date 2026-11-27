@@ -49,4 +49,9 @@ pub struct ReadSessionRecoveryPage {
     pub pins_released: u32,
     /// Unfinished session creations retired or confirmed absent under custody.
     pub open_intents_reaped: u32,
+    /// Abandoned pins (transferred by `abandon_ticket`) settled this round.
+    pub abandoned_settled: u32,
+    /// Abandoned pins whose release failed this round. Each stays queued in
+    /// its issuing Catalog with that error recorded and is retried later.
+    pub abandoned_deferred: u32,
 }

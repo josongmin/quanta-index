@@ -10,11 +10,13 @@
 )]
 
 use std::error::Error;
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 use std::path::Path;
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::CoreError;
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) fn fs_err(action: &str, path: &Path, err: &std::io::Error) -> CoreError {
     if let Some(typed) = admitted_cause(err) {
         return typed;
@@ -24,7 +26,7 @@ pub(crate) fn fs_err(action: &str, path: &Path, err: &std::io::Error) -> CoreErr
 
 /// Preserve typed capacity and filesystem causes in the real source chain.
 /// OS ENOSPC and string lookalikes never become capacity refusals.
-fn admitted_cause(err: &(dyn Error + 'static)) -> Option<CoreError> {
+pub(crate) fn admitted_cause(err: &(dyn Error + 'static)) -> Option<CoreError> {
     let mut source: Option<&(dyn Error + 'static)> = Some(err);
     while let Some(error) = source {
         if let Some(typed) = error.downcast_ref::<CoreError>()
@@ -49,6 +51,7 @@ fn admitted_cause(err: &(dyn Error + 'static)) -> Option<CoreError> {
     None
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) fn lancedb_err(action: &str, err: impl Error + 'static) -> CoreError {
     if let Some(typed) = admitted_cause(&err) {
         return typed;
@@ -56,6 +59,7 @@ pub(crate) fn lancedb_err(action: &str, err: impl Error + 'static) -> CoreError 
     CoreError::Storage(format!("semantic: lancedb {action}: {err}"))
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) fn admitted_fs_err(action: &str, err: impl Error + 'static) -> CoreError {
     if let Some(typed) = admitted_cause(&err) {
         return typed;
@@ -63,6 +67,7 @@ pub(crate) fn admitted_fs_err(action: &str, err: impl Error + 'static) -> CoreEr
     CoreError::Storage(format!("semantic: admitted fs {action}: {err}"))
 }
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) fn arrow_err(action: &str, err: impl core::fmt::Display) -> CoreError {
     CoreError::Storage(format!("semantic: arrow {action}: {err}"))
 }

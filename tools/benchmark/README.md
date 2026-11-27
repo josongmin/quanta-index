@@ -331,9 +331,10 @@ just benchmark-policy-local
 python3 tools/benchmark/sourcegraph_parity.py --write --check
 ```
 
-`rust-verify-hellgate-all` runs the fast and broad functional checks before the
-DSL authority refresh. The refresh validates the committed baseline pair and
-checkout before starting the timed producers.
+The fast and broad functional checks validate `QUANTA_INDEX_LEGACY_SEARCHD_BIN`
+and `QUANTA_INDEX_LEGACY_SEARCHD_SHA256` before compiling. `rust-verify-hellgate-all`
+runs both checks before the DSL authority refresh. The refresh validates the
+committed baseline pair and checkout before starting the timed producers.
 
 Sourcegraph coverage output is [the generated reference](../../docs/reference/sourcegraph-filter-parity.md).
 The recorded scan-vs-index experiment can be reproduced using the binary

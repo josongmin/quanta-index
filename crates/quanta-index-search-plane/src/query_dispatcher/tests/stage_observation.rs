@@ -157,7 +157,10 @@ fn lexical_stage_policy_preserves_byte_capped_page_and_cursor() -> TestResult {
     let rows = (0..5)
         .map(|index| {
             let mut row = candidate(&format!("lex-{index}"), 1.0);
-            row.snippet = "x".repeat(900);
+            row.excerpt
+                .as_mut()
+                .expect("fixture row carries a match excerpt")
+                .snippet = "x".repeat(900);
             row
         })
         .collect::<Vec<_>>();

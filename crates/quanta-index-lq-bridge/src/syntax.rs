@@ -635,10 +635,10 @@ pub fn sourcegraph_query_backing_bytes(input_bytes: usize) -> Option<u64> {
         .checked_add(1)?
         .checked_mul(slot_bytes)?
         .checked_add(input_bytes.checked_mul(16)?)?;
-    match u64::try_from(bytes) {
-        Ok(bytes) => Some(bytes),
-        Err(_) => None,
-    }
+    let Ok(bytes) = u64::try_from(bytes) else {
+        return None;
+    };
+    Some(bytes)
 }
 
 /// Parse a v1 Sourcegraph query string into [`SgQuery`].

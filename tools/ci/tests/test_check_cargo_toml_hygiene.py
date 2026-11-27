@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-cargo-toml-hygiene.py"
 
@@ -86,29 +88,6 @@ def test_shared_package_exception_preserves_its_actual_license_and_edition():
     assert "license" in MODULE.check_package_metadata(path, data)[0].message
 
 
-def test_vendored_ciborium_exception_keeps_version_and_rejects_source_changes():
-    path = REPO_ROOT / "vendor/ciborium-0.2.2/Cargo.toml"
-    data = _toml(
-        """
-        [package]
-        name = "ciborium"
-        version = "0.2.2"
-        edition = "2021"
-        license = "Apache-2.0"
-
-        [dependencies.ciborium-io]
-        version = "0.2.2"
-        features = ["alloc"]
-        """
-    )
-    assert MODULE.check_package_metadata(path, data) == []
-    assert MODULE.check_vendored_dependency_sources(path, data) == []
-    data["package"]["version"] = "0.1.0"
-    assert "version" in MODULE.check_package_metadata(path, data)[0].message
-    data["dependencies"]["ciborium-io"]["git"] = "https://example.com/mirror"
-    assert "changes source" in MODULE.check_vendored_dependency_sources(path, data)[0].message
-
-
 def test_external_dep_must_use_workspace_form(tmp_path: Path):
     findings = MODULE.check_single_dep(
         tmp_path / "Cargo.toml", "dependencies", "serde", "1.0", internal=False
@@ -126,6 +105,19 @@ def test_external_dep_with_workspace_true_passes(tmp_path: Path):
         internal=False,
     )
     assert findings == []
+
+
+def test_inherited_external_dep_rejects_ignored_inline_version(tmp_path: Path):
+    findings = MODULE.check_single_dep(
+        tmp_path / "Cargo.toml",
+        "dependencies",
+        "serde",
+        {"workspace": True, "version": "2.0", "features": ["derive"]},
+        internal=False,
+    )
+    assert len(findings) == 1
+    assert "inline version" in findings[0].message
+    assert "workspace.dependencies" in findings[0].message
 
 
 def test_external_dep_with_inline_path_rejected(tmp_path: Path):
@@ -163,6 +155,60 @@ def test_internal_dep_with_path_passes(tmp_path: Path):
         internal=True,
     )
     assert findings == []
+
+
+def test_internal_dep_requires_version_with_path():
+    manifest = REPO_ROOT / "crates" / "quanta-index-lexical" / "Cargo.toml"
+    findings = MODULE.check_single_dep(
+        manifest,
+        "dependencies",
+        "quanta-index-core",
+        {"path": "../quanta-index-core"},
+        internal=True,
+    )
+    assert any("must specify `version`" in finding.message for finding in findings)
+
+
+def test_internal_dep_rejects_package_rename(tmp_path: Path, monkeypatch):
+    crates = tmp_path / "crates"
+    monkeypatch.setattr(MODULE, "CRATES_DIR", crates)
+    manifest = crates / "quanta-index-lexical" / "Cargo.toml"
+    findings = MODULE.check_single_dep(
+        manifest,
+        "dependencies",
+        "quanta-index-core",
+        {"package": "serde", "version": "1.0", "path": "../serde"},
+        internal=True,
+    )
+    assert any("package rename" in finding.message for finding in findings)
+
+
+def test_internal_dep_rejects_other_crate_path(tmp_path: Path, monkeypatch):
+    crates = tmp_path / "crates"
+    monkeypatch.setattr(MODULE, "CRATES_DIR", crates)
+    manifest = crates / "quanta-index-lexical" / "Cargo.toml"
+    findings = MODULE.check_single_dep(
+        manifest,
+        "dependencies",
+        "quanta-index-core",
+        {"version": "0.1.0", "path": "../quanta-index-other"},
+        internal=True,
+    )
+    assert any("path must target" in finding.message for finding in findings)
+
+
+def test_internal_dep_rejects_sibling_with_crates_prefix(tmp_path: Path, monkeypatch):
+    crates = tmp_path / "crates"
+    monkeypatch.setattr(MODULE, "CRATES_DIR", crates)
+    manifest = crates / "quanta-index-source" / "Cargo.toml"
+    findings = MODULE.check_single_dep(
+        manifest,
+        "dependencies",
+        "quanta-index-evader",
+        {"version": "0.1.0", "path": "../../crates-escape/quanta-index-evader"},
+        internal=True,
+    )
+    assert any("path escapes crates/" in finding.message for finding in findings)
 
 
 def test_git_dep_is_rejected(tmp_path: Path):
@@ -212,3 +258,35 @@ def test_target_specific_workspace_dependency_passes(tmp_path: Path):
         """
     )
     assert MODULE.check_dependencies(tmp_path / "Cargo.toml", toml) == []
+
+
+@pytest.mark.parametrize(
+    "root_source",
+    [
+        '[workspace.dependencies]\nserde = { git = "https://example.com/serde.git" }',
+        '[patch.crates-io]\nserde = { git = "https://example.com/serde.git" }',
+        '[replace]\n"serde:1.0.0" = { git = "https://example.com/serde.git" }',
+    ],
+)
+def test_main_rejects_git_sources_from_root_manifest(
+    tmp_path: Path, monkeypatch, capsys, root_source: str
+):
+    root_manifest = tmp_path / "Cargo.toml"
+    root_manifest.write_text(
+        '[workspace]\nmembers = ["crates/member"]\n'
+        '[workspace.package]\nversion = "0.1.0"\nedition = "2021"\n'
+        'license = "MIT"\npublish = false\n' + root_source + "\n"
+    )
+    member = tmp_path / "crates" / "member" / "Cargo.toml"
+    member.parent.mkdir(parents=True)
+    member.write_text(
+        '[package]\nname = "member"\nversion.workspace = true\n'
+        "edition.workspace = true\nlicense.workspace = true\n"
+        "publish.workspace = true\n[lints]\nworkspace = true\n"
+    )
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    monkeypatch.setattr(MODULE, "WORKSPACE_TOML", root_manifest)
+    monkeypatch.setattr(MODULE, "CRATES_DIR", tmp_path / "crates")
+
+    assert MODULE.main() == 1
+    assert "git source" in capsys.readouterr().err

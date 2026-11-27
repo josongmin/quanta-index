@@ -1,7 +1,6 @@
-//! Scratch uses the same file authority and named VFS as the durable Catalog.
+//! Scratch and Catalog share a publication file authority.
 
 use std::{
-    ffi::CString,
     fmt,
     fs::{File, OpenOptions, TryLockError},
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
@@ -10,22 +9,26 @@ use std::{
 };
 
 use crate::owned_fd_close::close_owned_file;
-use quanta_index_catalog::{CatalogIoAdmission, CatalogIoScope, CatalogReadOnlyIoAdmission};
+use quanta_index_catalog::{
+    CatalogIoAdmission, CatalogIoScope, CatalogReadOnlyIoAdmission, CatalogWriterCachePolicy,
+    SqliteCatalog,
+};
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::publication_admission::CatalogPublicationFundingScope;
 use quanta_index_core::publication_capacity::PublicationAllowance;
 use quanta_index_core::{
     CoreError,
     index::{
-        IndexError, ScratchIoBinding, ScratchIoScope, ScratchNamespaceLease, WorkBudget, WorkUsage,
+        IndexError, MemoryLease, ScratchIoBinding, ScratchIoScope, ScratchNamespaceLease,
+        ScratchSqliteVfs, WorkBudget, WorkUsage,
     },
     publication_capacity::InodeKey,
 };
 use rustix::fs::OFlags;
 
 use crate::{
+    catalog_lock_files::{self, CatalogFileFunding},
     publication_file_capacity::{InodeObservation, NativeReaderLease, PublicationFileCapacity},
-    publication_sqlite_vfs::SqliteCapacityVfs,
 };
 
 fn index_error(error: &CoreError) -> IndexError {
@@ -125,20 +128,35 @@ impl Drop for NamespaceLease {
 
 /// Registration constructs both facets from one authenticated common authority.
 pub struct NativeScratchIo {
-    vfs: SqliteCapacityVfs,
     common: Arc<PublicationFileCapacity>,
+    catalog_file_funding: CatalogFileFunding,
     maintenance: Option<MaintenanceFunding>,
+    global_sqlite_handles: u32,
 }
 
 struct MaintenanceFunding {
     parent: Arc<PublicationAllowance>,
 }
 
+struct StockSqliteScope;
+
+impl CatalogIoScope for StockSqliteScope {
+    fn is_capacity_refusal(&self, _error: &rusqlite::Error) -> bool {
+        false
+    }
+}
+
+impl ScratchIoScope for StockSqliteScope {
+    fn is_capacity_refusal(&self, _backend_error_code: i32) -> bool {
+        false
+    }
+}
+
 impl fmt::Debug for NativeScratchIo {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("NativeScratchIo")
-            .field("driver", &self.vfs.name())
+            .field("driver", &ScratchIoBinding::driver_name(self))
             .finish_non_exhaustive()
     }
 }
@@ -148,58 +166,49 @@ impl NativeScratchIo {
         &self,
         saved_global_ceiling: u32,
     ) -> Result<usize, IndexError> {
-        self.vfs
-            .recovery_reader_handle_ceiling_v1(saved_global_ceiling)
+        let actual = self.global_sqlite_handles;
+        if actual == 0 || actual > saved_global_ceiling {
+            return Err(IndexError::ResourceLimited);
+        }
+        usize::try_from(actual).map_err(|_| IndexError::ResourceLimited)
     }
-    pub(crate) fn recovery_sibling_allocation_bytes_v1(
-        &self,
-        entries: u64,
-        max_path: usize,
-    ) -> Result<u64, CoreError> {
-        self.vfs
-            .recovery_sibling_allocation_bytes_v1(entries, max_path)
-    }
-    pub(crate) fn register_recovery_sibling_v1(
-        &self,
-        common: Arc<PublicationFileCapacity>,
-        saved_global_ceiling: u32,
-        budget: &mut WorkBudget,
-    ) -> Result<SqliteCapacityVfs, IndexError> {
-        self.vfs
-            .register_recovery_sibling_v1(common, saved_global_ceiling, budget)
-    }
-
-    pub fn register(
-        common: Arc<PublicationFileCapacity>,
-        name: CString,
-        max_open_handles: u32,
-    ) -> Result<Arc<Self>, CoreError> {
-        let vfs = SqliteCapacityVfs::register(Arc::clone(&common), name, max_open_handles)?;
-        Ok(Arc::new(Self {
-            vfs,
-            common,
-            maintenance: None,
-        }))
-    }
-
     pub(crate) fn register_with_maintenance(
         common: Arc<PublicationFileCapacity>,
-        name: CString,
         max_open_handles: u32,
     ) -> Result<Arc<Self>, CoreError> {
         let parent = common
             .maintenance_parent()?
             .ok_or_else(|| CoreError::InvalidContract("maintenance reserve is absent".into()))?;
-        let vfs = SqliteCapacityVfs::register_with_optional_funding(
-            Arc::clone(&common),
-            name,
-            max_open_handles,
-        )?;
+        let max_handles = usize::try_from(max_open_handles).map_err(|_error| {
+            CoreError::InvalidContract("SQLite handle ceiling exceeds usize".into())
+        })?;
+        if max_handles == 0 || max_handles < common.max_open_handles() {
+            return Err(CoreError::InvalidContract(
+                "global SQLite handle ceiling below root ceiling".into(),
+            ));
+        }
+        let catalog_file_funding = CatalogFileFunding::allocate()?;
         Ok(Arc::new(Self {
-            vfs,
+            catalog_file_funding,
             common,
             maintenance: Some(MaintenanceFunding { parent }),
+            global_sqlite_handles: max_open_handles,
         }))
+    }
+
+    pub(crate) fn open_catalog_writer(
+        self: &Arc<Self>,
+        busy_timeout: std::time::Duration,
+        policy: CatalogWriterCachePolicy,
+        memory: MemoryLease,
+    ) -> Result<SqliteCatalog, CoreError> {
+        SqliteCatalog::open_with_stock_vfs_and_io_admission_and_writer_cache(
+            self.common.state_root(),
+            busy_timeout,
+            self.clone(),
+            policy,
+            memory,
+        )
     }
 
     pub(crate) fn enter_maintenance_scope(
@@ -213,9 +222,11 @@ impl NativeScratchIo {
         self.common
             .refill_maintenance_reserve()
             .map_err(|error| index_error(&error))?;
-        self.vfs
-            .enter_funded_scope(Arc::clone(&funding.parent))
-            .map_err(|error| index_error(&error))
+        let parent = Arc::clone(&funding.parent);
+        self.common
+            .validate_held_allowance(&parent)
+            .map_err(|error| index_error(&error))?;
+        Ok(Box::new(self.catalog_file_funding.bind(parent)))
     }
 
     pub(crate) fn prepare_lock(&self, path: &Path) -> Result<(), CoreError> {
@@ -223,12 +234,12 @@ impl NativeScratchIo {
     }
 
     pub(crate) fn drain_retirements(&self) -> Result<(), CoreError> {
-        self.vfs.drain_retirements()
+        self.common.sweep_retired()
     }
 
-    /// Finish the named `SQLite` scope only after every native handle retires.
+    /// Finish the SQLite scope after the connection owner has checked close.
     pub(crate) fn retire_checked(&self) -> Result<(), CoreError> {
-        self.vfs.retire_checked()
+        self.common.sweep_retired()
     }
 
     fn acquire_lock(&self, path: &Path) -> Result<Box<dyn ScratchNamespaceLease>, IndexError> {
@@ -295,60 +306,67 @@ impl NativeScratchIo {
 
 impl CatalogIoAdmission for NativeScratchIo {
     fn vfs_name(&self) -> &str {
-        self.vfs.name()
+        "unix"
     }
     fn enter_scope(
         &self,
-        diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+        _diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Box<dyn CatalogIoScope> {
-        self.vfs.enter_scope(diagnostics)
+        Box::new(StockSqliteScope)
     }
     fn enter_close_scope(&self) -> Box<dyn CatalogIoScope> {
-        self.maintenance.as_ref().map_or_else(
-            || self.vfs.enter_close_scope(),
-            |funding| {
-                self.vfs
-                    .close_scope_with_parent(Arc::clone(&funding.parent))
-            },
-        )
+        Box::new(StockSqliteScope)
     }
     fn open_lock_file(
         &self,
         path: &Path,
         create_new: bool,
     ) -> Result<Box<dyn quanta_index_core::index::ObjectReadFile>, IndexError> {
-        self.vfs.open_lock_file(path, create_new)
+        self.catalog_file_funding
+            .open(Arc::clone(&self.common), path, create_new)
     }
     fn unlink_lock_file(&self, path: &Path, held: &File) -> Result<(), IndexError> {
-        self.vfs.unlink_lock_file(path, held)
+        catalog_lock_files::unlink(&self.common, path, held)
     }
 }
 
 impl CatalogReadOnlyIoAdmission for NativeScratchIo {
-    fn read_only_vfs_name(&self) -> &str {
-        self.vfs.read_only_vfs_name()
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn with_protected_catalog_directory_v1(
+        &self,
+        directory: &Path,
+        request: &quanta_index_core::RequestBudgetV1,
+        needs_wal: bool,
+        visit: &mut dyn FnMut(&File),
+    ) -> Result<bool, IndexError> {
+        CatalogReadOnlyIoAdmission::with_protected_catalog_directory_v1(
+            self.common.as_ref(),
+            directory,
+            request,
+            needs_wal,
+            visit,
+        )
     }
 
-    fn enter_read_only_scope(
-        &self,
-        request: &quanta_index_core::RequestBudgetV1,
-        main_bytes: u64,
-        wal_bytes: u64,
-    ) -> Box<dyn CatalogIoScope> {
-        self.vfs
-            .enter_read_only_scope(request, main_bytes, wal_bytes)
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn poison_protected_catalog_close_v1(&self) {
+        self.common.mark_close_unwitnessed();
     }
 }
 
 impl ScratchIoBinding for NativeScratchIo {
     fn driver_name(&self) -> &str {
-        self.vfs.name()
+        "unix"
+    }
+
+    fn sqlite_vfs(&self) -> ScratchSqliteVfs<'_> {
+        ScratchSqliteVfs::Stock
     }
     fn enter_scope(
         &self,
-        diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
+        _diagnostics: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Box<dyn ScratchIoScope> {
-        self.vfs.enter_scratch_scope(diagnostics)
+        Box::new(StockSqliteScope)
     }
     fn acquire_namespace(&self, path: &Path) -> Result<Box<dyn ScratchNamespaceLease>, IndexError> {
         self.acquire_lock(&path.join(".lease"))
@@ -361,8 +379,7 @@ impl ScratchIoBinding for NativeScratchIo {
         if let Some(budget) = budget.as_deref_mut() {
             budget.checkpoint()?;
         }
-        self.vfs
-            .drain_retirements()
+        self.drain_retirements()
             .map_err(|error| index_error(&error))?;
         self.common
             .discard_retired_native_pending_children(path, &mut || {
@@ -412,31 +429,20 @@ impl ScratchIoBinding for NativeScratchIo {
 }
 
 #[cfg(test)]
-mod tests {
-    mod diagnostic_context;
-    use super::*;
-    use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
-    use quanta_index_core::{
-        RequestBudgetV1,
-        index::{ScratchRequest, ScratchSpacePort, WorkBudget, WorkLimits},
-    };
-    use quanta_index_scratch_sqlite::ScratchConnection;
-    use quanta_index_searchd::app::runtime::StateRootLease;
-    use quanta_index_storage::FileScratchSpace;
-    use std::{
-        os::unix::fs::PermissionsExt as _,
-        time::{Duration, Instant},
-    };
+mod scratch_test_support {
+    use super::{IndexError, WorkBudget};
+    use quanta_index_core::index::WorkLimits;
+    use std::time::{Duration, Instant};
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-    fn require(value: bool, message: &str) -> TestResult {
+    pub(super) type TestResult = Result<(), Box<dyn std::error::Error>>;
+    pub(super) fn require(value: bool, message: &str) -> TestResult {
         if value {
             Ok(())
         } else {
             Err(std::io::Error::other(message).into())
         }
     }
-    fn budget() -> Result<WorkBudget, IndexError> {
+    pub(super) fn budget() -> Result<WorkBudget, IndexError> {
         Ok(WorkBudget::new(
             WorkLimits {
                 reads: 1000,
@@ -449,16 +455,31 @@ mod tests {
                 .ok_or(IndexError::ResourceLimited)?,
         ))
     }
+}
 
-    type Fixture = (
+#[cfg(test)]
+mod stock_profile_tests {
+    use super::scratch_test_support::{TestResult, budget, require};
+    use super::*;
+    use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
+    use quanta_index_core::{
+        RequestBudgetV1,
+        index::{ScratchRequest, ScratchSpacePort},
+        publication_capacity::PublicationCapacity,
+    };
+    use quanta_index_scratch_sqlite::ScratchConnection;
+    use quanta_index_searchd::app::runtime::StateRootLease;
+    use quanta_index_storage::FileScratchSpace;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    type StockRoot = (
         tempfile::TempDir,
         std::path::PathBuf,
-        quanta_index_core::publication_capacity::PublicationCapacity,
+        PublicationCapacity,
         Arc<PublicationFileCapacity>,
-        Arc<NativeScratchIo>,
-        FileScratchSpace,
     );
-    fn disposal_fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+
+    fn stock_root() -> Result<StockRoot, Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let lease = StateRootLease::acquire(&directory.path().join("state"))?;
         let root = lease.state_root_identity_v1().to_path_buf();
@@ -476,123 +497,129 @@ mod tests {
             &[],
             &RequestBudgetV1::unbounded(),
         )?;
-        let common = PublicationFileCapacity::new(lease, authority.clone(), 32, 256, 256)?;
-        let io = NativeScratchIo::register(
-            Arc::clone(&common),
-            CString::new("quanta-publication-capacity")?,
-            512,
+        let common = PublicationFileCapacity::new_with_maintenance(
+            lease,
+            authority.clone(),
+            32,
+            256,
+            256,
+            4,
+            2,
         )?;
-        let binding: Arc<dyn ScratchIoBinding> = io.clone();
-        let space =
-            FileScratchSpace::open_managed_with_io(root.join("scratch"), 8 * 1024 * 1024, binding)?;
-        Ok((directory, root, authority, common, io, space))
+        Ok((directory, root, authority, common))
     }
 
     #[test]
-    fn budgeted_disposal_preserves_remaining_custody_for_allocation_drop() -> TestResult {
-        let (_directory, _root, authority, _common, io, space) = disposal_fixture()?;
-        let baseline = authority.snapshot()?;
-        let allocation = space.allocate(
-            ScratchRequest {
-                initial_bytes: 256 * 1024,
-                max_bytes: 2 * 1024 * 1024,
-            },
-            &mut budget()?,
-        )?;
-        let path = allocation.path().to_path_buf();
-        for name in ["a.sqlite", "b.sqlite"] {
-            let connection =
-                ScratchConnection::open(&path.join(name), allocation.as_ref(), &budget()?)?;
-            {
-                let db = connection.scoped(&budget()?)?;
-                db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE t(v); INSERT INTO t VALUES(42);")?;
-            }
-            drop(connection);
+    fn stock_sqlite_uses_common_funding() -> TestResult {
+        let (_directory, root, _authority, common) = stock_root()?;
+        // Stock registration accepts the process-wide handle ceiling.
+        let io = NativeScratchIo::register_with_maintenance(Arc::clone(&common), 96)?;
+        (io.sqlite_vfs() == ScratchSqliteVfs::Stock)
+            .then_some(())
+            .ok_or("stock profile selected another scratch driver")?;
+        let path = root.join("stock-catalog-retained");
+        {
+            let _scope = io.enter_maintenance_scope()?;
+            let held = io.open_lock_file(&path, true)?;
+            (common.maintenance_available()? == (4, 1))
+                .then_some(())
+                .ok_or("stock Catalog lock did not use held maintenance funding")?;
+            io.unlink_lock_file(&path, held.file()?)?;
         }
-        io.vfs.drain_retirements()?;
-        let charged = authority.snapshot()?;
-        let original = std::fs::read(path.join("b.sqlite"))?;
-        let request = RequestBudgetV1::for_duration(Duration::from_secs(30));
-        let mut cancelled = WorkBudget::with_request(
-            WorkLimits {
-                reads: 100,
-                writes: 100,
-                bytes: 0,
-                mutations: 100,
-            },
-            request.clone(),
-        );
-        request.cancel_handle().cancel();
-        require(
-            io.retire_namespace(&path, Some(&mut cancelled)) == Err(IndexError::Cancelled),
-            "cancelled request mutated scratch",
-        )?;
-        require(
-            authority.snapshot()? == charged && std::fs::read(path.join("b.sqlite"))? == original,
-            "pre-cancel changed bytes or charges",
-        )?;
-        require(
-            cancelled.usage() == WorkUsage::default(),
-            "pre-cancel spent work",
-        )?;
-
-        let mut prefix = WorkBudget::with_request(
-            WorkLimits {
-                reads: 100,
-                writes: 1,
-                bytes: 0,
-                mutations: 1,
-            },
-            RequestBudgetV1::for_duration(Duration::from_secs(30)),
-        );
-        require(
-            io.retire_namespace(&path, Some(&mut prefix)) == Err(IndexError::ResourceLimited),
-            "one-child budget did not stop disposal",
-        )?;
-        require(
-            !path.join("a.sqlite").exists() && path.join("b.sqlite").exists(),
-            "bounded prefix did not preserve remaining file",
-        )?;
-        require(
-            std::fs::read(path.join("b.sqlite"))? == original,
-            "budget refusal changed remaining bytes",
-        )?;
-        require(
-            prefix.usage().writes == 1 && prefix.usage().mutations == 1,
-            "physical prefix escaped original work ledger",
-        )?;
-        require(
-            authority.snapshot()?.uncertain_pending == 1,
-            "remaining pending charge was lost",
-        )?;
-
-        // Lifecycle cleanup owns the remaining allocation. Do not erase its
-        // directory behind the allocation and then mistake a failed Drop for
-        // a successful release of the separate logical scratch reservation.
-        drop(allocation);
-        require(
-            !path.exists() && authority.snapshot()? == baseline,
-            "allocation Drop did not settle exact remaining custody",
-        )?;
-        let full = space.allocate(
-            ScratchRequest {
-                initial_bytes: 8 * 1024 * 1024,
-                max_bytes: 8 * 1024 * 1024,
-            },
-            &mut budget()?,
-        )?;
-        drop(full);
-        require(
-            authority.snapshot()? == baseline,
-            "logical reservation release changed physical capacity",
-        )?;
+        io.retire_checked()?;
+        common.require_quiescent("stock test")?;
         Ok(())
     }
 
     #[test]
-    fn disposal_refuses_live_replaced_hardlinked_and_unsafe_scratch_before_unlink() -> TestResult {
+    fn stock_scratch_releases_namespace_and_reservation_after_sqlite_closes() -> TestResult {
+        let (_directory, root, authority, common) = stock_root()?;
+        let io = NativeScratchIo::register_with_maintenance(Arc::clone(&common), 96)?;
+        let binding: Arc<dyn ScratchIoBinding> = io.clone();
+        let space =
+            FileScratchSpace::open_managed_with_io(root.join("scratch"), 8 * 1024 * 1024, binding)?
+                .into_quota_managed_stock()?;
+        let baseline = authority.snapshot()?;
+        let request = ScratchRequest {
+            initial_bytes: 256 * 1024,
+            max_bytes: 256 * 1024,
+        };
+        let release_probe = ScratchRequest {
+            initial_bytes: 8 * 1024 * 1024,
+            max_bytes: 8 * 1024 * 1024,
+        };
+        let mut work = budget()?;
+        let allocation = space.allocate(request, &mut work)?;
+        let path = allocation.path().to_path_buf();
+        let foreign = path.with_file_name("foreign.sqlite");
+        require(
+            matches!(
+                ScratchConnection::open(&foreign, allocation.as_ref(), &work),
+                Err(IndexError::InvalidInput(_))
+            ) && !foreign.exists(),
+            "stock SQLite opened outside its allocation",
+        )?;
+        let database = path.join("scratch.sqlite");
+        let connection = ScratchConnection::open(&database, allocation.as_ref(), &work)?;
+        {
+            let db = connection.scoped(&work)?;
+            quanta_index_scratch_sqlite::configure(&db, allocation.as_ref())?;
+            db.execute_batch("CREATE TABLE gold (value INTEGER); INSERT INTO gold VALUES (37)")?;
+        }
+        let binding = allocation
+            .io_binding()
+            .ok_or_else(|| std::io::Error::other("stock scratch allocation lost its binding"))?;
+        require(
+            matches!(
+                binding.retire_namespace(&path, None),
+                Err(IndexError::InvalidInput(_))
+            ),
+            "a caller retired stock scratch outside allocation ownership",
+        )?;
+        drop(allocation);
+        require(database.is_file(), "live stock SQLite lost its namespace")?;
+        require(
+            matches!(
+                space.allocate(release_probe, &mut work),
+                Err(IndexError::ResourceLimited)
+            ),
+            "live stock SQLite returned its allocation reservation",
+        )?;
+        let value: i64 =
+            connection
+                .scoped(&work)?
+                .query_row("SELECT value FROM gold", [], |row| row.get(0))?;
+        require(
+            value == 37,
+            "live stock SQLite could not read admitted data",
+        )?;
+        connection
+            .close_checked()
+            .map_err(|(_connection, error)| error)?;
+        require(!path.exists(), "stock SQLite allocation was not reclaimed")?;
+        drop(space.allocate(release_probe, &mut work)?);
+        require(
+            authority.snapshot()? == baseline,
+            "stock scratch changed durable ledger",
+        )?;
+        drop(space);
+        io.retire_checked()?;
+        common.require_quiescent("stock scratch test")?;
+        Ok(())
+    }
+
+    #[test]
+    fn stock_disposal_refuses_live_replaced_hardlinked_and_unsafe_scratch() -> TestResult {
         for mode in 0..4 {
-            let (_directory, _root, authority, _common, io, space) = disposal_fixture()?;
+            let (_directory, root, authority, common) = stock_root()?;
+            let io = NativeScratchIo::register_with_maintenance(Arc::clone(&common), 96)?;
+            let binding: Arc<dyn ScratchIoBinding> = io.clone();
+            let space = FileScratchSpace::open_managed_with_io(
+                root.join("scratch"),
+                8 * 1024 * 1024,
+                binding,
+            )?
+            .into_quota_managed_stock()?;
             let baseline = authority.snapshot()?;
             let allocation = space.allocate(
                 ScratchRequest {
@@ -613,291 +640,92 @@ mod tests {
                 let original = std::fs::read(&database)?;
                 require(
                     io.retire_namespace(&path, None).is_err(),
-                    "live scratch accepted disposal",
+                    "live stock scratch accepted disposal",
                 )?;
                 require(
                     std::fs::read(&database)? == original && authority.snapshot()? == charged,
                     "live refusal changed bytes or charge",
                 )?;
-                drop(connection);
-                // No explicit fixture retirement drain: production cleanup owns it.
+                connection.close_checked().map_err(|(_, error)| error)?;
                 drop(allocation);
                 require(
                     !path.exists() && authority.snapshot()? == baseline,
-                    "actual close did not enable exact scratch cleanup",
+                    "stock close did not enable exact scratch cleanup",
                 )?;
-            } else if mode == 3 {
-                drop(connection);
-                io.vfs.drain_retirements()?;
+                continue;
+            }
+            connection.close_checked().map_err(|(_, error)| error)?;
+            io.drain_retirements()?;
+            let original = std::fs::read(&database)?;
+            let alternate = if mode == 1 {
+                let retired = path.with_file_name("retired-allocation");
+                std::fs::rename(&path, &retired)?;
+                std::fs::create_dir(&path)?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+                std::fs::write(&database, b"replacement")?;
+                std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600))?;
+                retired.join("rows.sqlite")
+            } else if mode == 2 {
+                let alternate = path.join("retained.sqlite");
+                std::fs::hard_link(&database, &alternate)?;
+                alternate
+            } else {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777))?;
-                let original = std::fs::read(&database)?;
-                let charged = authority.snapshot()?;
-                require(
-                    io.retire_namespace(&path, None).is_err(),
-                    "unsafe namespace accepted disposal",
-                )?;
+                database.clone()
+            };
+            let charged = authority.snapshot()?;
+            require(
+                io.retire_namespace(&path, None).is_err(),
+                "changed stock scratch accepted disposal",
+            )?;
+            require(
+                authority.snapshot()? == charged,
+                "changed stock scratch refunded custody",
+            )?;
+            if mode == 3 {
                 drop(allocation);
                 require(
                     std::fs::read(&database)? == original && authority.snapshot()? == charged,
-                    "unsafe namespace cleanup changed bytes or charge",
+                    "unsafe stock scratch cleanup changed bytes or charge",
                 )?;
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
             } else {
-                drop(connection);
-                io.vfs.drain_retirements()?;
-                let original = std::fs::read(&database)?;
-                let alternate = path.join("retained.sqlite");
-                if mode == 1 {
-                    std::fs::rename(&database, &alternate)?;
-                    std::fs::write(&database, b"replacement")?;
-                    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600))?;
-                } else {
-                    std::fs::hard_link(&database, &alternate)?;
-                }
-                let charged = authority.snapshot()?;
                 require(
-                    io.retire_namespace(&path, None).is_err(),
-                    "changed scratch accepted disposal",
+                    std::fs::read(&alternate)? == original,
+                    "changed stock scratch unlinked original bytes",
                 )?;
-                require(
-                    std::fs::read(&alternate)? == original && authority.snapshot()? == charged,
-                    "changed-file refusal unlinked bytes or refunded custody",
-                )?;
-                let current = std::fs::read(&database)?;
+                drop(allocation);
                 let expected = if mode == 1 {
                     b"replacement".as_slice()
                 } else {
                     original.as_slice()
                 };
                 require(
-                    current.as_slice() == expected,
-                    "changed-file refusal altered current name",
-                )?;
-                drop(allocation);
-                require(
-                    path.exists() && authority.snapshot()? == charged,
-                    "allocation Drop bypassed refused disposal",
+                    path.exists()
+                        && std::fs::read(&database)? == expected
+                        && authority.snapshot()? == charged,
+                    "stock allocation Drop bypassed refused disposal",
                 )?;
             }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn synced_then_unsynced_resize_refunds_only_after_actual_retirement_and_unlink() -> TestResult {
-        let (_directory, _root, authority, common, _io, space) = disposal_fixture()?;
-        let baseline = authority.snapshot()?;
-        let allocation = space.allocate(
-            ScratchRequest {
-                initial_bytes: 256 * 1024,
-                max_bytes: 2 * 1024 * 1024,
-            },
-            &mut budget()?,
-        )?;
-        let path = allocation.path().to_path_buf();
-        let connection =
-            ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref(), &budget()?)?;
-        {
-            let db = connection.scoped(&budget()?)?;
-            db.execute_batch(
-                "PRAGMA journal_mode=OFF; PRAGMA synchronous=FULL; CREATE TABLE t(v BLOB);",
-            )?;
-            let synced = authority.snapshot()?;
-            require(
-                synced.used_bytes > baseline.used_bytes && synced.active_tickets == 0,
-                "first sync did not settle the native file",
-            )?;
-            db.execute_batch("PRAGMA synchronous=OFF; INSERT INTO t VALUES(zeroblob(32768));")?;
-            let length: i64 = db.query_row("SELECT length(v) FROM t", [], |row| row.get(0))?;
-            require(length == 32768, "unsynced resize changed fixed query gold")?;
-        }
-        drop(connection);
-        drop(allocation);
-        require(
-            !path.exists() && authority.snapshot()? == baseline,
-            "retired resize did not refund exactly its base and growth",
-        )?;
-        drop(space);
-        require(
-            common.is_quiescent()?,
-            "retired resize retained a pin or mutation",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn actual_scratch_driver_accounts_growth_and_refunds_only_after_close_and_delete() -> TestResult
-    {
-        let directory = tempfile::tempdir()?;
-        let lease = StateRootLease::acquire(&directory.path().join("state"))?;
-        let root = lease.state_root_identity_v1().to_path_buf();
-        let authority = seed_publication_capacity(
-            &lease,
-            &root,
-            PublicationBootInventoryLimits {
-                max_bytes: 8 * 1024 * 1024,
-                max_files: 64,
-                max_pending: 128,
-                max_entries: 256,
-                max_depth: 8,
-                max_pending_frames: 16,
-            },
-            &[],
-            &RequestBudgetV1::unbounded(),
-        )?;
-        let common = PublicationFileCapacity::new(lease, authority.clone(), 32, 256, 256)?;
-        let io = NativeScratchIo::register(
-            Arc::clone(&common),
-            CString::new("quanta-publication-capacity")?,
-            512,
-        )?;
-        let binding: Arc<dyn ScratchIoBinding> = io.clone();
-        let space =
-            FileScratchSpace::open_managed_with_io(root.join("scratch"), 8 * 1024 * 1024, binding)?;
-        let baseline = authority.snapshot()?;
-        let allocation = space.allocate(
-            ScratchRequest {
-                initial_bytes: 256 * 1024,
-                max_bytes: 2 * 1024 * 1024,
-            },
-            &mut budget()?,
-        )?;
-        let path = allocation.path().to_path_buf();
-        let connection =
-            ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref(), &budget()?)?;
-        {
-            let db = connection.scoped(&budget()?)?;
-            db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE; CREATE TABLE t(v BLOB); INSERT INTO t VALUES(zeroblob(32768));")?;
-            let length: i64 = db.query_row("SELECT length(v) FROM t", [], |row| row.get(0))?;
-            require(length == 32768, "scratch data golden differs")?;
-        }
-        require(
-            authority.snapshot()?.used_bytes > baseline.used_bytes,
-            "scratch growth was uncharged",
-        )?;
-        drop(connection);
-        io.vfs.drain_retirements()?;
-        require(
-            !common.is_quiescent()?,
-            "namespace lock retired before its space and allocations",
-        )?;
-        drop(allocation);
-        let after = authority.snapshot()?;
-        require(
-            !path.exists(),
-            "scratch namespace survived confirmed deletion",
-        )?;
-        require(
-            after.used_bytes == baseline.used_bytes
-                && after.used_files == baseline.used_files
-                && after.active_tickets == 0
-                && after.active_allowances == 0,
-            "scratch cleanup did not refund exact baseline",
-        )?;
-        drop(space);
-        require(
-            common.is_quiescent()?,
-            "last scratch owner retained a live FD",
-        )?;
-        drop(io);
-        drop(common);
-        drop(authority);
-        let reacquired = StateRootLease::acquire(&root)?;
-        drop(reacquired);
-        Ok(())
-    }
-
-    #[test]
-    fn actual_scratch_capacity_refusal_is_distinct_from_raw_full_and_cleanup_refunds() -> TestResult
-    {
-        let directory = tempfile::tempdir()?;
-        let lease = StateRootLease::acquire(&directory.path().join("state"))?;
-        let root = lease.state_root_identity_v1().to_path_buf();
-        let maximum = 128 * 1024;
-        let authority = seed_publication_capacity(
-            &lease,
-            &root,
-            PublicationBootInventoryLimits {
-                max_bytes: maximum,
-                max_files: 64,
-                max_pending: 128,
-                max_entries: 256,
-                max_depth: 8,
-                max_pending_frames: 16,
-            },
-            &[],
-            &RequestBudgetV1::unbounded(),
-        )?;
-        let common = PublicationFileCapacity::new(lease, authority.clone(), 32, 256, 256)?;
-        let io = NativeScratchIo::register(
-            Arc::clone(&common),
-            CString::new("quanta-publication-capacity")?,
-            512,
-        )?;
-        let binding: Arc<dyn ScratchIoBinding> = io.clone();
-        let space =
-            FileScratchSpace::open_managed_with_io(root.join("scratch"), 8 * 1024 * 1024, binding)?;
-        let baseline = authority.snapshot()?;
-        let allocation = space.allocate(
-            ScratchRequest {
-                initial_bytes: 2 * 1024 * 1024,
-                max_bytes: 2 * 1024 * 1024,
-            },
-            &mut budget()?,
-        )?;
-        let path = allocation.path().to_path_buf();
-        let connection =
-            ScratchConnection::open(&path.join("rows.sqlite"), allocation.as_ref(), &budget()?)?;
-        {
-            let db = connection.scoped(&budget()?)?;
-            db.execute_batch(
-                "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; CREATE TABLE t(v BLOB);",
-            )?;
-            quanta_index_scratch_sqlite::configure(&db, allocation.as_ref())?;
-            let error = db
-                .execute("INSERT INTO t VALUES(zeroblob(1048576))", [])
-                .err()
-                .ok_or("aggregate capacity did not refuse scratch growth")?;
             require(
                 matches!(
-                    quanta_index_scratch_sqlite::storage_error(&error, "actual scratch"),
-                    IndexError::ResourceLimited
+                    space.allocate(
+                        ScratchRequest {
+                            initial_bytes: 8 * 1024 * 1024,
+                            max_bytes: 8 * 1024 * 1024,
+                        },
+                        &mut budget()?,
+                    ),
+                    Err(IndexError::ResourceLimited)
                 ),
-                "actual scoped capacity witness was lost",
-            )?;
-            let raw = rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
-                None,
-            );
-            require(
-                matches!(
-                    quanta_index_scratch_sqlite::storage_error(&raw, "raw engine full"),
-                    IndexError::Storage(_)
-                ),
-                "raw FULL inherited a preceding capacity witness",
-            )?;
-            require(
-                authority.snapshot()?.used_bytes <= maximum,
-                "aggregate file lengths exceeded cap",
+                "refused stock retirement refunded the logical reservation",
             )?;
         }
-        drop(connection);
-        io.vfs.drain_retirements()?;
-        drop(allocation);
-        let after = authority.snapshot()?;
-        require(
-            !path.exists()
-                && after.used_bytes == baseline.used_bytes
-                && after.used_files == baseline.used_files
-                && after.active_tickets == 0
-                && after.active_allowances == 0,
-            "failed scratch growth leaked its confirmed cleanup charge",
-        )?;
         Ok(())
     }
 
     #[test]
-    fn namespace_lock_charges_handle_until_last_space_or_allocation_owner() -> TestResult {
+    fn stock_namespace_lock_charges_handle_until_last_owner() -> TestResult {
         let directory = tempfile::tempdir()?;
         let lease = StateRootLease::acquire(&directory.path().join("state"))?;
         let root = lease.state_root_identity_v1().to_path_buf();
@@ -915,15 +743,20 @@ mod tests {
             &[],
             &RequestBudgetV1::unbounded(),
         )?;
-        let common = PublicationFileCapacity::new(lease, authority.clone(), 1, 256, 256)?;
-        let io = NativeScratchIo::register(
-            Arc::clone(&common),
-            CString::new("quanta-publication-capacity")?,
-            512,
+        let common = PublicationFileCapacity::new_with_maintenance(
+            lease,
+            authority.clone(),
+            1,
+            256,
+            256,
+            4,
+            2,
         )?;
+        let io = NativeScratchIo::register_with_maintenance(Arc::clone(&common), 96)?;
         let binding: Arc<dyn ScratchIoBinding> = io.clone();
         let space =
-            FileScratchSpace::open_managed_with_io(root.join("scratch"), 1024 * 1024, binding)?;
+            FileScratchSpace::open_managed_with_io(root.join("scratch"), 1024 * 1024, binding)?
+                .into_quota_managed_stock()?;
         let lock_path = root.join("scratch/.lease");
         require(
             matches!(
@@ -939,7 +772,7 @@ mod tests {
                     ..
                 })
             ),
-            "live namespace lock did not refuse both reader paths before open",
+            "live stock namespace lock did not refuse reader paths",
         )?;
         let cloned_space = space.clone();
         let allocation = space.allocate(
@@ -959,13 +792,13 @@ mod tests {
         drop(allocation);
         require(
             common.is_quiescent()?,
-            "last owner did not retire actual lock FD",
+            "last owner did not retire stock lock FD",
         )?;
         let opening = common.begin_native_reader_open(&lock_path)?;
         drop(opening);
         require(
             common.is_quiescent()?,
-            "reader refusal leaked an open reservation",
+            "reader refusal leaked open reservation",
         )?;
         drop(io);
         drop(common);

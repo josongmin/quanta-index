@@ -67,13 +67,27 @@ fn stage_sources(
 }
 
 fn layered_config(root: &Path, socket: &Path) -> TestResult<serde_json::Value> {
-    let mut configuration = config(root, socket);
+    layered_text_config(config(root, socket))
+}
+
+fn layered_text_config(mut configuration: serde_json::Value) -> TestResult<serde_json::Value> {
     configuration["text"]["layout"] = serde_json::json!("segmented-layered-v2");
     set_fixture_json(
         &mut configuration,
         "/text/descriptor/format",
         serde_json::to_value(layered_text_spec().format)?,
     )?;
+    Ok(configuration)
+}
+
+fn layered_session_config(root: &Path, socket: &Path) -> TestResult<serde_json::Value> {
+    let mut configuration = layered_text_config(config_with_reclaim(root, socket)?)?;
+    configuration["read_sessions"] = serde_json::json!({
+        "global_limit": 1,
+        "per_uid_limit": 1,
+        "terminal_ttl_millis": 300_000_u64,
+        "sweep_limit": 1
+    });
     Ok(configuration)
 }
 
@@ -92,7 +106,7 @@ fn configure_layered(client: &NativeUdsClient) -> TestResult<ViewRef> {
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![file_spec(), layered_text_spec()],
+            instances: vec![literal_spec(), file_spec(), layered_text_spec()],
         },
         &budget(),
     )?;
@@ -113,7 +127,7 @@ fn advance(
     mutations: impl IntoIterator<Item = OwnerMutation>,
 ) -> TestResult<ViewRef> {
     let request = prepare_advance(client, ingress, prior, mutations)?;
-    published(&client.submit(request, &budget())?)
+    submit_and_settle(client, &request)
 }
 
 fn prepare_advance(
@@ -273,12 +287,14 @@ fn layered_root_parts(
     let object = reader.get(artifact, work)?;
     let payload = object.payload.as_slice();
     require(
-        payload.starts_with(b"QTXROOT3"),
+        payload.starts_with(b"QTXROOT4"),
         "dense artifact is not a layered root",
     )?;
     let mut offset = 8 + 32;
     let mut prefix_children = 0;
-    for _ in 0..4 {
+    // Two optional TextCut refs (Source owners, paths), then the optional
+    // path posting root. Source frontiers are not part of a layered root.
+    for _ in 0..3 {
         let tag = *payload
             .get(offset)
             .ok_or("dense root optional tag absent")?;
@@ -353,7 +369,6 @@ fn prepare_posting_fixture_append(
 }
 
 fn posting_fault_fixture(temp: &Path, layers: u16) -> TestResult<PostingFaultFixture> {
-    fs::set_permissions(temp, fs::Permissions::from_mode(0o700))?;
     let root = temp.join("state");
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -472,7 +487,7 @@ fn selected_native_text_posting_page_faults_are_typed() -> TestResult {
     }
 
     for fault in [Fault::Modified, Fault::Missing, Fault::Symlink] {
-        let temp = tempfile::tempdir()?;
+        let temp = quanta_index_searchd_harness::private_tempdir()?;
         let PostingFaultFixture {
             daemon,
             client,
@@ -516,7 +531,7 @@ fn selected_native_text_posting_page_faults_are_typed() -> TestResult {
 fn layered_text_delta_refuses_a_corrupt_selected_base_posting_page() -> TestResult {
     // Appending to 15 one-owner layers forces the writer to replay the last
     // prior layer's postings when it merges the final two live layers.
-    let temp = tempfile::tempdir()?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let PostingFaultFixture {
         daemon,
         client,
@@ -612,17 +627,14 @@ fn layered_text_delta_refuses_a_corrupt_selected_base_posting_page() -> TestResu
 fn layered_text_full_patch_pinned_views_and_restart() -> TestResult {
     const OLD_PATH: &str = "oldroute/OLDROUTE.rs";
     const NEW_PATH: &str = "Renamed.rs";
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let root = temp.path().join("state");
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let socket = temp.path().join("native.sock");
     let config_path = temp.path().join("native-config.json");
-    fs::write(
-        &config_path,
-        serde_json::to_vec(&layered_config(&root, &socket)?)?,
-    )?;
+    let configuration = layered_session_config(&root, &socket)?;
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
     let daemon = Daemon::start(&config_path, &socket)?;
     let client = NativeUdsClient::new(socket.clone());
     let configured = configure_layered(&client)?;
@@ -747,6 +759,61 @@ fn layered_text_full_patch_pinned_views_and_restart() -> TestResult {
     )?;
 
     let verify = |reader: &NativeUdsClient| -> TestResult {
+        let session = reader.open_read_session(ViewSelection::Exact(old), [0x64; 32], &budget())?;
+        let term = TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "phrase".into(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: None,
+            generation_selector: None,
+            top_k: 1,
+            cursor: None,
+        };
+        let paged = (|| -> TestResult {
+            let mut after = None;
+            for (index, &(id, reference)) in
+                [(1, *alpha), (2, *beta), (3, *gamma)].iter().enumerate()
+            {
+                let page = reader.search_text_page_in_read_session(
+                    &session,
+                    layered_text_spec().instance,
+                    term.clone(),
+                    after,
+                    &budget(),
+                )?;
+                let [hit] = page.hits.as_slice() else {
+                    return Err("layered common term lost its top-1 result".into());
+                };
+                require_equal(&page.matched, &3, "layered common term matched")?;
+                require_equal(
+                    &page.remaining,
+                    &(3 - index as u64),
+                    "layered common term remaining",
+                )?;
+                require_equal(&hit.owner, &owner(id), "layered common term tie order")?;
+                require_equal(&hit.source, &reference, "layered common term pinned source")?;
+                require(
+                    (hit.score.get() - (0.5_f64 / 3.5).ln_1p()).abs() < 1e-14,
+                    "layered common term BM25",
+                )?;
+                after = page.after;
+                require(
+                    after.is_some() == (index != 2),
+                    "layered common term continuation",
+                )?;
+            }
+            Ok(())
+        })();
+        let released = reader.release_read_session(&session, &budget());
+        paged?;
+        let (released, _) = released?;
+        require(
+            matches!(
+                released.state,
+                quanta_index_contract::native_protocol::NativeReadSessionState::Released
+            ),
+            "layered common term session did not release",
+        )?;
         verify_paths(
             reader,
             old,
@@ -825,10 +892,326 @@ fn layered_text_full_patch_pinned_views_and_restart() -> TestResult {
 }
 
 #[test]
+fn layered_text_last_pin_releases_old_segment_and_posting_files() -> TestResult {
+    use quanta_index_contract::native_protocol::NativeReadSettlementState;
+
+    fn at<T, E: std::fmt::Display>(stage: &str, result: Result<T, E>) -> TestResult<T> {
+        result.map_err(|error| format!("layered last-pin {stage}: {error}").into())
+    }
+
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
+    let root = temp.path().join("state");
+    fs::create_dir(&root)?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    let socket = temp.path().join("native.sock");
+    let config_path = temp.path().join("native-config.json");
+    let mut configuration = layered_session_config(&root, &socket)?;
+    release_bounded_maintenance(&mut configuration)?;
+    let options = configuration
+        .as_object_mut()
+        .ok_or("invalid layered retention config")?;
+    let _previous = options.insert(
+        "retention".into(),
+        serde_json::json!({
+            "scopes": [{ "workspace": workspace(), "epoch": 1 }],
+            "sequence_window": 2,
+            "page_limit": 1,
+            "interval_ms": 20,
+            "round_timeout_ms": 2_000,
+            "head_probe_every": 2,
+            "work_limits": {
+                "reads": 1_000_000,
+                "writes": 1_000_000,
+                "bytes": 536_870_912,
+                "mutations": 1_000_000
+            }
+        }),
+    );
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    let daemon = at("start daemon", Daemon::start(&config_path, &socket))?;
+    let client = NativeUdsClient::new(socket.clone());
+    let configured = at("configure", configure_layered(&client))?;
+
+    let ingress = at("begin first", client.begin_input(operation(2), &budget()))?;
+    let sources = at(
+        "stage first",
+        stage_sources(&client, ingress, vec![source("first.rs", b"firstonly")]),
+    )?;
+    let [first] = sources.as_slice() else {
+        return Err("first layered source count differs".into());
+    };
+    let first = *first;
+    let first_view = at(
+        "publish first",
+        advance(
+            &client,
+            ingress,
+            configured,
+            [OwnerMutation {
+                owner: owner(1),
+                expected: None,
+                next: Some(first),
+            }],
+        ),
+    )?;
+    let ingress = at("begin second", client.begin_input(operation(3), &budget()))?;
+    let sources = at(
+        "stage second",
+        stage_sources(&client, ingress, vec![source("second.rs", b"secondonly")]),
+    )?;
+    let [second] = sources.as_slice() else {
+        return Err("second layered source count differs".into());
+    };
+    let second = *second;
+    let old = at(
+        "publish second",
+        advance(
+            &client,
+            ingress,
+            first_view,
+            [OwnerMutation {
+                owner: owner(2),
+                expected: None,
+                next: Some(second),
+            }],
+        ),
+    )?;
+
+    // Two separate advances produce one manifest with two immutable segments.
+    // Track the exact old root, partition, segments and posting pages.
+    let artifact = at(
+        "read old artifact",
+        layered_artifact(&client, old, "firstonly"),
+    )?;
+    at("stop daemon for offline object inspection", daemon.stop())?;
+    let mut read_work = WorkBudget::with_request(
+        WorkLimits {
+            reads: 1_000_000,
+            writes: 0,
+            bytes: 536_870_912,
+            mutations: 0,
+        },
+        budget(),
+    );
+    let reader = at(
+        "open old objects",
+        large_restart::open_test_object_reader(&root, &mut read_work),
+    )?;
+    let parts = at(
+        "read old root",
+        layered_root_parts(&reader, artifact, &mut read_work),
+    )?;
+    let [partition] = parts.as_slice() else {
+        return Err("old layered root must have one partition".into());
+    };
+    let manifest = at("read old manifest", reader.get(*partition, &mut read_work))?;
+    require(
+        manifest.payload.starts_with(b"QTXPART2"),
+        "old layered partition is not a manifest",
+    )?;
+    let [first_segment, second_segment] = manifest.registration.children.as_slice() else {
+        return Err("old layered manifest must have two segments".into());
+    };
+    let first_object = at(
+        "read first segment",
+        reader.get(*first_segment, &mut read_work),
+    )?;
+    let second_object = at(
+        "read second segment",
+        reader.get(*second_segment, &mut read_work),
+    )?;
+    let [first_page] = first_object.registration.children.as_slice() else {
+        return Err("first segment must have one posting page".into());
+    };
+    let [second_page] = second_object.registration.children.as_slice() else {
+        return Err("second segment must have one posting page".into());
+    };
+    let tracked = [
+        artifact,
+        *partition,
+        *first_segment,
+        *second_segment,
+        *first_page,
+        *second_page,
+    ];
+    let files = tracked
+        .into_iter()
+        .map(|reference| native_object_file(&root, reference))
+        .collect::<TestResult<Vec<_>>>()?;
+    require(
+        files.iter().all(|path| path.is_file()),
+        "old layered object graph is missing before retirement",
+    )?;
+    drop(reader);
+
+    let daemon = at("reopen daemon", Daemon::start(&config_path, &socket))?;
+    let client = NativeUdsClient::new(socket.clone());
+
+    let sdk = at(
+        "connect SDK",
+        quanta_index_sdk::QuantaIndex::connect_query_only(
+            quanta_index_sdk::ConnectOptions::from_native_socket(
+                &socket,
+                ViewSelection::Exact(old),
+            ),
+        ),
+    )?;
+    let sdk_reader = at("select SDK reader", sdk.reader().native())?;
+    let mut held = at("open old session", sdk_reader.open([93; 32], &budget()))?;
+    let _profile = at("load old profile", held.load_profile(&budget()))?;
+    let query = TextQueryRequest {
+        syntax: TextQuerySyntax::Native,
+        query_text: "firstonly".into(),
+        constraints: QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k: 2,
+        cursor: None,
+    };
+    let pinned_result = at(
+        "read old session",
+        held.text(&layered_text_spec(), query.clone(), &budget()),
+    )?;
+    require_equal(&pinned_result.matched, &1, "old pinned Text match")?;
+
+    let ingress = at(
+        "begin replacement",
+        client.begin_input(operation(4), &budget()),
+    )?;
+    let sources = at(
+        "stage replacement",
+        stage_sources(&client, ingress, vec![source("current.rs", b"currentonly")]),
+    )?;
+    let [replacement] = sources.as_slice() else {
+        return Err("replacement layered source count differs".into());
+    };
+    let replacement = *replacement;
+    let successor = at(
+        "publish replacement",
+        advance(
+            &client,
+            ingress,
+            old,
+            [
+                OwnerMutation {
+                    owner: owner(1),
+                    expected: Some(first),
+                    next: None,
+                },
+                OwnerMutation {
+                    owner: owner(2),
+                    expected: Some(second),
+                    next: None,
+                },
+                OwnerMutation {
+                    owner: owner(3),
+                    expected: None,
+                    next: Some(replacement),
+                },
+            ],
+        ),
+    )?;
+    let ingress = at("begin later", client.begin_input(operation(5), &budget()))?;
+    let sources = at(
+        "stage later",
+        stage_sources(&client, ingress, vec![source("later.rs", b"lateronly")]),
+    )?;
+    let [later] = sources.as_slice() else {
+        return Err("later layered source count differs".into());
+    };
+    let later = *later;
+    let current = at(
+        "publish later",
+        advance(
+            &client,
+            ingress,
+            successor,
+            [OwnerMutation {
+                owner: owner(4),
+                expected: None,
+                next: Some(later),
+            }],
+        ),
+    )?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(12))
+        .ok_or("layered retention deadline overflow")?;
+    loop {
+        match client.read_view(ViewSelection::Exact(old), &budget()) {
+            Err(NativeUdsError::Refused(error))
+                if error.code == NativeIndexErrorCode::SnapshotUnavailable =>
+            {
+                break;
+            }
+            Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            Ok(_) => return Err("layered retention did not advance past old view".into()),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    require_equal(
+        &at(
+            "read held old after floor",
+            held.text(&layered_text_spec(), query, &budget()),
+        )?,
+        &pinned_result,
+        "held old Text after Exact admission retirement",
+    )?;
+    require(
+        files.iter().all(|path| path.is_file()),
+        "GC deleted a held layered root, partition, segment or posting page",
+    )?;
+    require(
+        !at("release old session", held.release(&budget()))?,
+        "old layered view retained another pin",
+    )?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(12))
+        .ok_or("layered settlement deadline overflow")?;
+    loop {
+        if at("settle old session", held.settlement(&budget()))?.state
+            == NativeReadSettlementState::SettledAtSnapshot
+        {
+            break;
+        }
+        require(Instant::now() < deadline, "old layered view did not settle")?;
+        thread::sleep(Duration::from_millis(20));
+    }
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(20))
+        .ok_or("layered reclaim deadline overflow")?;
+    while files.iter().any(|path| path.exists()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    for path in &files {
+        require(
+            !path.exists(),
+            format!(
+                "retired layered object was not reclaimed: {}",
+                path.display()
+            ),
+        )?;
+    }
+    verify_text(
+        &client,
+        current,
+        "currentonly",
+        Some(("current.rs", owner(3), replacement)),
+    )?;
+    daemon.stop()?;
+    let reopened = Daemon::start(&config_path, &socket)?;
+    verify_text(
+        &NativeUdsClient::new(socket),
+        current,
+        "lateronly",
+        Some(("later.rs", owner(4), later)),
+    )?;
+    reopened.stop()
+}
+
+#[test]
 fn layered_text_sixteen_live_layers_compact_without_losing_owners() -> TestResult {
     const OWNERS: usize = 16;
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let root = temp.path().join("state");
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -1268,8 +1651,7 @@ fn layered_text_dense_layers_split_one_partition_and_survive_restart() -> TestRe
         DELTA_OWNERS * 2 > 128 && BASE_OWNERS + DELTA_OWNERS > 128,
         "dense adjacent layers fit one segment",
     )?;
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let root = temp.path().join("state");
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -1524,8 +1906,7 @@ fn layered_text_excluded_sources_keep_paths_without_body_partitions() -> TestRes
 
     const BINARY_PATH: &str = "src/binarystable.dat";
     const UTF8_PATH: &str = "src/utf8stable.dat";
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let root = temp.path().join("state");
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;

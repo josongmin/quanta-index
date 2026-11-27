@@ -1338,12 +1338,13 @@ pub fn result_value(
                         .ok_or_else(|| BenchError::Protocol("hybrid file rank overflow".into()))?;
                     if let (Some(_), Some(dense)) = (&file_hit.lexical, &file_hit.dense) {
                         let dense = &dense.candidate;
+                        let (dense_lines, dense_excerpt) = row_excerpt(dense)?;
                         let binding = bind_published_hit(
                             &dense.candidate_id,
                             dense.repo_relative_path.as_str(),
-                            dense.start_line,
-                            dense.end_line,
-                            &dense.snippet,
+                            dense_lines.start_line,
+                            dense_lines.end_line,
+                            &dense_excerpt.snippet,
                             files,
                             units,
                         )?;
@@ -1353,12 +1354,13 @@ pub fn result_value(
                             ));
                         }
                     }
+                    let (candidate_lines, candidate_excerpt) = row_excerpt(candidate)?;
                     let chunk_hit = RankedHit {
                         candidate_id: candidate.candidate_id.clone(),
                         path: candidate.repo_relative_path.as_str().to_string(),
-                        start_line: candidate.start_line,
-                        end_line: candidate.end_line,
-                        snippet: candidate.snippet.clone(),
+                        start_line: candidate_lines.start_line,
+                        end_line: candidate_lines.end_line,
+                        snippet: candidate_excerpt.snippet.clone(),
                         score: f64::from(candidate.score),
                         file_authority: None,
                         contributions: Vec::new(),
@@ -1828,6 +1830,26 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
     Ok(record)
 }
 
+/// The published chunk position a benchmark row is bound by; a row whose
+/// producer reports no lines or excerpt cannot be bound to a published unit.
+fn row_excerpt(
+    candidate: &quanta_index_contract::LexicalCandidate,
+) -> Result<
+    (
+        quanta_index_contract::LexicalLineRange,
+        &quanta_index_contract::LexicalMatchExcerpt,
+    ),
+    BenchError,
+> {
+    match (candidate.lines, candidate.excerpt.as_ref()) {
+        (Some(lines), Some(excerpt)) => Ok((lines, excerpt)),
+        _ => Err(BenchError::Protocol(format!(
+            "benchmark row {} carries no chunk lines and excerpt to bind",
+            candidate.candidate_id
+        ))),
+    }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,
@@ -2054,18 +2076,23 @@ mod tests {
         let candidate = LexicalCandidate {
             source_repo_id: pin.repo_id.clone(),
             source: None,
+            native_source: None,
             preview: None,
             candidate_id: hit.candidate_id.clone(),
             repo_id: pin.repo_id.clone(),
             revision_id: pin.revision_id.clone(),
             manifest_generation: pin.manifest_generation,
             repo_relative_path: RepoRelativePath::new(hit.path.clone()),
-            start_line: hit.start_line,
-            end_line: hit.end_line,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: hit.start_line,
+                end_line: hit.end_line,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: hit.snippet,
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 1.0,
-            snippet: hit.snippet.clone(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
         };
         let pool_digest =
             hybrid_file_candidate_pool_sha256_v1(&pin, std::slice::from_ref(&candidate))
@@ -2143,8 +2170,16 @@ mod tests {
             .expect("dense witness")
             .candidate;
         dense.candidate_id = "chunk-id".to_string();
-        dense.start_line = 2;
-        dense.end_line = 2;
+        dense
+            .lines
+            .as_mut()
+            .expect("fixture row carries match lines")
+            .start_line = 2;
+        dense
+            .lines
+            .as_mut()
+            .expect("fixture row carries match lines")
+            .end_line = 2;
         assert!(response.validate_v1().is_ok(), "typed ranks remain valid");
         assert!(
             record(response.clone())
@@ -2158,9 +2193,21 @@ mod tests {
             .as_mut()
             .expect("dense witness")
             .candidate;
-        dense.start_line = 0;
-        dense.end_line = 0;
-        dense.snippet = "not the published chunk".to_string();
+        dense
+            .lines
+            .as_mut()
+            .expect("fixture row carries match lines")
+            .start_line = 0;
+        dense
+            .lines
+            .as_mut()
+            .expect("fixture row carries match lines")
+            .end_line = 0;
+        dense
+            .excerpt
+            .as_mut()
+            .expect("fixture row carries a match excerpt")
+            .snippet = "not the published chunk".to_string();
         assert!(response.validate_v1().is_ok(), "typed ranks remain valid");
         assert!(
             record(response)

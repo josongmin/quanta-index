@@ -16,6 +16,3 @@ path = "src/lib.rs"
 ciborium-io = { workspace = true }
 ciborium-ll = { workspace = true }
 serde = { workspace = true }
-
-[dev-dependencies]
-serde = { workspace = true, features = ["derive"] }

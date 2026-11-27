@@ -207,6 +207,10 @@ impl SegmentSpill {
             return Ok(());
         }
         let result = (|| {
+            let next_inserted = self
+                .inserted
+                .checked_add(width(self.rows.len())?)
+                .ok_or(IndexError::ResourceLimited)?;
             let mut demands = [0u64; BATCH];
             for (slot, row) in self.rows.iter().enumerate() {
                 demands[slot] = u64::from(row.len)
@@ -291,20 +295,21 @@ impl SegmentSpill {
                 budget.checkpoint()
             })();
             insert.clear_bindings();
-            result
+            result?;
+            Ok(next_inserted)
         })();
-        match &result {
-            Err(_) => self.poisoned = true,
-            Ok(()) => {
-                self.inserted = self
-                    .inserted
-                    .checked_add(width(self.rows.len())?)
-                    .ok_or(IndexError::ResourceLimited)?;
+        match result {
+            Ok(inserted) => {
+                self.inserted = inserted;
                 self.arena.clear();
                 self.rows.clear();
+                Ok(())
+            }
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
             }
         }
-        result
     }
 
     /// Emit positions followed by their document fence, then finish each term.
@@ -418,5 +423,95 @@ impl SegmentSpill {
             visit(SpillEvent::EndTerm, budget)?;
         }
         budget.checkpoint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_index_core::index::WorkLimits;
+    use std::time::{Duration, Instant};
+
+    struct TestScratch;
+    struct TestAllocation(tempfile::TempDir);
+
+    impl ScratchAllocation for TestAllocation {
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
+        }
+
+        fn max_bytes(&self) -> u64 {
+            MAX_BYTES
+        }
+
+        fn reserved_bytes(&self) -> Result<u64, IndexError> {
+            Ok(MAX_BYTES)
+        }
+
+        fn reserve_at_least(&self, bytes: u64, budget: &mut WorkBudget) -> Result<(), IndexError> {
+            budget.checkpoint()?;
+            if bytes > MAX_BYTES {
+                return Err(IndexError::ResourceLimited);
+            }
+            Ok(())
+        }
+    }
+
+    impl ScratchSpacePort for TestScratch {
+        fn allocate(
+            &self,
+            _request: ScratchRequest,
+            budget: &mut WorkBudget,
+        ) -> Result<Box<dyn ScratchAllocation>, IndexError> {
+            budget.checkpoint()?;
+            let directory = tempfile::tempdir().map_err(|error| {
+                IndexError::Storage(format!("text segment spill test scratch: {error}"))
+            })?;
+            Ok(Box::new(TestAllocation(directory)))
+        }
+    }
+
+    #[test]
+    fn counter_overflow_poisoned_before_sql_write() -> Result<(), IndexError> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: u64::MAX,
+                writes: u64::MAX,
+                bytes: u64::MAX,
+                mutations: u64::MAX,
+            },
+            deadline,
+        );
+        let mut spill = SegmentSpill::new(&TestScratch, &mut budget)?;
+        spill.inserted = u64::MAX;
+        spill.arena.push(0);
+        spill.rows.push(Pending {
+            start: 0,
+            len: 1,
+            doc: 0,
+            position: 0,
+        });
+
+        assert!(matches!(
+            spill.flush(&mut budget),
+            Err(IndexError::ResourceLimited)
+        ));
+        assert!(spill.poisoned);
+        assert_eq!(spill.inserted, u64::MAX);
+        assert_eq!(spill.rows.len(), 1);
+        let rows: i64 = spill
+            .db
+            .scoped(&budget)?
+            .query_row("SELECT COUNT(*) FROM tokens", [], |row| row.get(0))
+            .map_err(|error| sql(&error))?;
+        assert_eq!(rows, 0);
+        assert!(matches!(
+            spill.flush(&mut budget),
+            Err(IndexError::BackendViolation(_))
+        ));
+        Ok(())
     }
 }

@@ -116,6 +116,33 @@ def inventory():
     }
 
 
+@pytest.mark.parametrize(
+    ("kind", "valid_id", "invalid_id"),
+    [
+        ("test", "demo::checks", "demo::checks-alias"),
+        ("lib", "demo", "demo::checks"),
+        ("proc-macro", "demo", "demo::checks"),
+        ("bin", "demo::bin/checks", "demo::example/checks"),
+        ("example", "demo::example/checks", "demo::checks"),
+    ],
+)
+def test_inventory_suite_id_is_bound_to_declared_target(kind, valid_id, invalid_id):
+    collected = inventory()
+    suite = collected["rust-suites"]["demo::checks"]
+    suite["kind"] = kind
+    suite["binary-id"] = valid_id
+    collected["rust-suites"] = {valid_id: suite}
+    assert len(parse_nextest_inventory_bytes(json.dumps(collected).encode())) == 2
+
+    suite["binary-id"] = invalid_id
+    with pytest.raises(NextestEvidenceError, match="suite identity"):
+        parse_nextest_inventory_bytes(json.dumps(collected).encode())
+
+    collected["rust-suites"] = {invalid_id: suite}
+    with pytest.raises(NextestEvidenceError, match="suite identity"):
+        parse_nextest_inventory_bytes(json.dumps(collected).encode())
+
+
 def start():
     return {"type": "suite", "event": "started", "test_count": 3, "nextest": SUITE}
 

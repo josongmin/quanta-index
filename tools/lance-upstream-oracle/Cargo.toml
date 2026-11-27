@@ -1,0 +1,20 @@
+[package]
+name = "quanta-index-lance-upstream-oracle"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Keep the upstream comparison graph independent of the product graph.
+[workspace]
+
+[dev-dependencies]
+async-trait = "0.1"
+futures-util = "0.3"
+lance = { version = "=7.0.0", default-features = false }
+lance-io = { version = "=7.0.0", default-features = false }
+lancedb = { version = "=0.30.0", default-features = false }
+libc = "0.2"
+object_store = { version = "=0.13.2", default-features = false }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+url = "2"

@@ -5,7 +5,6 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lance_io::object_store::file_admission::FileAdmission as _;
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchCorpusIngestBatch};
 use quanta_index_core::publication_admission::{
     PublicationAdmissionRequest, PublicationBuildWork, PublicationOutputClass,
@@ -24,7 +23,6 @@ use super::{CanonicalPublicationAdmission, PublicationAllowanceLimit};
 use crate::publication_file_capacity::PublicationFileCapacity;
 use crate::publication_file_deletions::PublicationFileDeletions;
 use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
-use crate::publication_lance_io::PublicationLanceAdmission;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -202,24 +200,6 @@ fn control_only_owned_child_retains_parent_without_work_authority() -> TestResul
     check_eq!(authority.snapshot()?, baseline);
     check!(binder.is_quiescent()?);
     Ok(())
-}
-
-fn contains_budget_cause(error: &(dyn Error + 'static)) -> bool {
-    let mut source = Some(error);
-    while let Some(current) = source {
-        if matches!(
-            current.downcast_ref::<CoreError>(),
-            Some(CoreError::Typed { code, .. }) if *code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
-        ) {
-            return true;
-        }
-        source = current
-            .downcast_ref::<io::Error>()
-            .and_then(io::Error::get_ref)
-            .map(|inner| -> &(dyn Error + 'static) { inner })
-            .or_else(|| current.source());
-    }
-    false
 }
 
 #[test]
@@ -430,14 +410,14 @@ fn output_class_and_growth_stay_within_the_held_parent() -> TestResult {
     let parent = work
         .held_file_allowance()?
         .ok_or("work allowance missing")?;
-    let deletions = Arc::new(PublicationFileDeletions::new(binder));
-    let lance = PublicationLanceAdmission::for_work(deletions, parent)?;
-    let target = root.join("bounded-lance");
-    let mut writer = lance.begin_create(&target)?;
-    check!(matches!(writer.reserve_end(5), Err(error) if contains_budget_cause(&error)));
+    let target = root.join("bounded-output");
+    let mut writer = binder.begin_create_with_allowance(&target, 1, parent)?;
+    check!(
+        matches!(writer.reserve_end(5), Err(CoreError::Typed { code, .. })
+        if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE)
+    );
     check!(!target.exists());
     drop(writer);
-    drop(lance);
     drop(work);
     drop(control);
     check_eq!(authority.snapshot()?, baseline);

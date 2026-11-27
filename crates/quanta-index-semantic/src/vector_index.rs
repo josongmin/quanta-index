@@ -37,30 +37,148 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
+use lance::Dataset;
 use lance::index::DatasetIndexExt as _;
-use lancedb::DistanceType;
-use lancedb::index::vector::IvfHnswSqIndexBuilder;
-use lancedb::index::{Index, IndexConfig, IndexStatistics, IndexType};
-use lancedb::query::VectorQuery;
-use lancedb::table::{OptimizeAction, OptimizeOptions};
+use lance::index::vector::VectorIndexParams;
+use lance_index::IndexType as LanceIndexType;
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use lance_index::optimize::OptimizeOptions;
+use lance_index::vector::{
+    hnsw::builder::HnswBuildParams, ivf::IvfBuildParams, sq::builder::SQBuildParams,
+};
+use lance_linalg::distance::MetricType;
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::semantic::{
     DenseIndexBuildV1, DenseIndexEffortV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1,
     DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1,
 };
+use serde::Deserialize;
 
+use crate::COLUMN_VECTOR;
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 use crate::budget::DenseLaneKindV1;
-use crate::errors::lancedb_err;
-use crate::layout::COLUMN_VECTOR;
 use crate::manifest::{
     AnnIndexLineageV1, AnnIndexSealV1, AnnIndexSegmentSealV1, VECTOR_INDEX_MODE_EXACT,
     VECTOR_INDEX_MODE_IVF_HNSW_SQ, VectorIndexSealV1,
 };
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 use crate::semantic_row_integrity_v1::SemanticRowFingerprintV1;
 
-/// The library that builds and serves the index, as recorded in every seal.
+// Lance's statistics JSON accepts the canonical spellings and historical aliases.
+macro_rules! lance_statistics_enum {
+    ($name:ident { $($variant:ident => [$($spelling:literal),+]),+ $(,)? }) => {
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                const VARIANTS: &[&str] = &[$($($spelling,)+)+];
+                struct Variant;
+                impl<'de> serde::de::Visitor<'de> for Variant {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        formatter.write_str(concat!("enum ", stringify!($name)))
+                    }
+
+                    fn visit_enum<A: serde::de::EnumAccess<'de>>(
+                        self,
+                        data: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        use serde::de::VariantAccess as _;
+
+                        let (name, value) = data.variant::<String>()?;
+                        let variant = match name.as_str() {
+                            $($($spelling)|+ => $name::$variant,)+
+                            _ => return Err(serde::de::Error::unknown_variant(&name, VARIANTS)),
+                        };
+                        value.unit_variant()?;
+                        Ok(variant)
+                    }
+                }
+
+                deserializer.deserialize_enum(stringify!($name), VARIANTS, Variant)
+            }
+        }
+    };
+}
+
+/// The policy sees one index-statistics vocabulary regardless of whether a
+/// Legacy Table or a Native Dataset supplied it. These values are internal;
+/// persisted seal spelling remains in `manifest::VectorIndexSealV1`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum IndexType {
+    IvfFlat,
+    IvfSq,
+    IvfPq,
+    IvfRq,
+    IvfHnswPq,
+    IvfHnswSq,
+    IvfHnswFlat,
+    BTree,
+    Bitmap,
+    LabelList,
+    Fts,
+}
+
+lance_statistics_enum!(IndexType {
+    IvfFlat => ["IVF_FLAT", "IvfFlat"],
+    IvfSq => ["IVF_SQ", "IvfSq"],
+    IvfPq => ["IVF_PQ", "IvfPq"],
+    IvfRq => ["IVF_RQ", "IvfRq"],
+    IvfHnswPq => ["IVF_HNSW_PQ", "IvfHnswPq"],
+    IvfHnswSq => ["IVF_HNSW_SQ", "IvfHnswSq"],
+    IvfHnswFlat => ["IVF_HNSW_FLAT", "IvfHnswFlat"],
+    BTree => ["BTREE", "BTree"],
+    Bitmap => ["BITMAP", "Bitmap"],
+    LabelList => ["LABEL_LIST", "LabelList"],
+    Fts => ["FTS", "Fts", "INVERTED", "Inverted"],
+});
+
+impl std::str::FromStr for IndexType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_uppercase().as_str() {
+            "IVF_FLAT" => Ok(Self::IvfFlat),
+            "IVF_SQ" => Ok(Self::IvfSq),
+            "IVF_PQ" => Ok(Self::IvfPq),
+            "IVF_RQ" => Ok(Self::IvfRq),
+            "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
+            "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
+            "IVF_HNSW_FLAT" => Ok(Self::IvfHnswFlat),
+            "BTREE" => Ok(Self::BTree),
+            "BITMAP" => Ok(Self::Bitmap),
+            "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
+            "FTS" | "INVERTED" => Ok(Self::Fts),
+            _ => Err(format!("the input value {value} is not a valid IndexType")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DistanceType {
+    L2,
+    Cosine,
+    Dot,
+    Hamming,
+}
+
+lance_statistics_enum!(DistanceType {
+    L2 => ["l2"],
+    Cosine => ["cosine"],
+    Dot => ["dot"],
+    Hamming => ["hamming"],
+});
+
+#[derive(Clone, Debug)]
+struct IndexConfig {
+    name: String,
+    index_type: IndexType,
+    columns: Vec<String>,
+}
+
+/// The existing seal compatibility identity. Native's direct Lance path
+/// preserves this value while it builds the same physical index recipe.
 pub(crate) const ANN_LIBRARY: &str = "lancedb";
-/// Its version; `tests` pin this to the workspace lock file.
+/// Persisted version of that identity. The current builder is Lance 7.
 pub(crate) const ANN_LIBRARY_VERSION: &str = "0.30.0";
 
 /// Row-count floor below which the lane is exact.
@@ -139,6 +257,7 @@ pub(crate) const ANN_APPEND_ROWS_MAX: u64 = 1 << 18;
 pub(crate) const ANN_APPEND_SEGMENTS_MAX: u32 = 8;
 
 /// What the seal knows about the generation it seals.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VectorIndexSealInputV1<'a> {
     /// The generation being sealed; a train records it as the lineage's
@@ -221,12 +340,12 @@ fn index_type_token(index_type: &IndexType) -> &'static str {
         IndexType::BTree => "btree",
         IndexType::Bitmap => "bitmap",
         IndexType::LabelList => "label_list",
-        IndexType::FTS => "fts",
+        IndexType::Fts => "fts",
     }
 }
 
-fn index_segments_u32(statistics: &IndexStatistics) -> Result<u32, CoreError> {
-    statistics.num_indices.ok_or_else(|| {
+fn index_segments_u32(segments: Option<u32>) -> Result<u32, CoreError> {
+    segments.ok_or_else(|| {
         CoreError::Storage(
             "semantic: index statistics report no segment count for the vector index".to_string(),
         )
@@ -254,19 +373,25 @@ struct IndexReportV1 {
 
 /// Read the policy index's statistics and refuse a report whose type or
 /// distance is not the policy's.
-async fn read_index_report_v1(
-    table: &lancedb::Table,
+async fn read_index_report_from_dataset_v1(
+    dataset: &Dataset,
     when: &str,
 ) -> Result<IndexReportV1, CoreError> {
-    let statistics = table
+    let statistics = IndexVerificationSourceV1::Dataset(dataset)
         .index_stats(VECTOR_INDEX_NAME)
-        .await
-        .map_err(|err| lancedb_err(&format!("index_stats {when}"), err))?
+        .await?
         .ok_or_else(|| {
             seal_refused(&format!(
                 "the vector index `{VECTOR_INDEX_NAME}` reports no statistics {when}"
             ))
         })?;
+    report_from_statistics_v1(&statistics, when)
+}
+
+fn report_from_statistics_v1(
+    statistics: &ObservedIndexStatisticsV1,
+    when: &str,
+) -> Result<IndexReportV1, CoreError> {
     if statistics.index_type != IndexType::IvfHnswSq
         || statistics.distance_type != Some(DistanceType::Cosine)
     {
@@ -279,7 +404,7 @@ async fn read_index_report_v1(
     Ok(IndexReportV1 {
         indexed_rows: rows_u64(statistics.num_indexed_rows, "indexed row count")?,
         unindexed_rows: rows_u64(statistics.num_unindexed_rows, "unindexed row count")?,
-        segments: index_segments_u32(&statistics)?,
+        segments: index_segments_u32(statistics.num_indices)?,
     })
 }
 
@@ -291,21 +416,11 @@ async fn read_index_report_v1(
 /// adapter learns what an appended segment was really built with, so a
 /// report without a segment identity or a graph parameter is a refusal,
 /// never a guess.
-async fn read_index_segments_v1(
-    table: &lancedb::Table,
+async fn read_index_segments_from_dataset_v1(
+    dataset: &Dataset,
     index_name: &str,
     when: &str,
 ) -> Result<Vec<AnnIndexSegmentSealV1>, CoreError> {
-    let dataset = table
-        .dataset()
-        .ok_or_else(|| {
-            CoreError::Storage(format!(
-                "semantic: the table is not a local dataset; its index segments cannot be read {when}"
-            ))
-        })?
-        .get()
-        .await
-        .map_err(|err| lancedb_err(&format!("open dataset for index segments {when}"), err))?;
     let statistics = dataset.index_statistics(index_name).await.map_err(|err| {
         CoreError::Storage(format!(
             "semantic: read index segment statistics {when}: {err}"
@@ -361,6 +476,7 @@ async fn read_index_segments_v1(
 ///
 /// Byte-identical scope replacement still replaces Lance native row IDs.
 /// An in-place payload change under one physical ID is a custody violation.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 fn row_change_counts_v1(
     base: &[SemanticRowFingerprintV1],
     current: &[SemanticRowFingerprintV1],
@@ -458,6 +574,7 @@ fn row_change_counts_v1(
 ///
 /// Index loss with unchanged rows cannot masquerade as a delete, and newly
 /// inserted or replaced rows must be exactly the rows the index calls pending.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 fn verify_contraction_row_changes_v1(
     ann: &AnnIndexSealV1,
     report: IndexReportV1,
@@ -506,8 +623,9 @@ fn verify_contraction_row_changes_v1(
 /// The remaining segment identities and parameters must be an ordered subset
 /// of the base's exact record. A changed or newly introduced segment is a
 /// disagreement with the base, not a deletion-only contraction.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) async fn inherited_index_contracted_v1(
-    table: &lancedb::Table,
+    dataset: &Dataset,
     inherited: &VectorIndexSealV1,
     row_count: u64,
     base_rows: &[SemanticRowFingerprintV1],
@@ -522,15 +640,14 @@ pub(crate) async fn inherited_index_contracted_v1(
     ) {
         return Ok(false);
     }
-    let report = read_index_report_v1(table, "before contracted-index seal").await?;
+    let report = read_index_report_from_dataset_v1(dataset, "before contracted-index seal").await?;
     if report.segments >= ann.index_segments {
         return Ok(false);
     }
     verify_contraction_row_changes_v1(ann, report, row_count, base_rows, current_rows)?;
-    let present = table
+    let present = IndexVerificationSourceV1::Dataset(dataset)
         .list_indices()
-        .await
-        .map_err(|err| lancedb_err("list_indices before contracted-index seal", err))?;
+        .await?;
     let present = vector_indices(&present)?;
     if present.len() != 1
         || present.first().is_none_or(|index| {
@@ -541,8 +658,12 @@ pub(crate) async fn inherited_index_contracted_v1(
             "the contracted dataset does not carry exactly the inherited vector index",
         ));
     }
-    let segments =
-        read_index_segments_v1(table, VECTOR_INDEX_NAME, "before contracted-index seal").await?;
+    let segments = read_index_segments_from_dataset_v1(
+        dataset,
+        VECTOR_INDEX_NAME,
+        "before contracted-index seal",
+    )
+    .await?;
     let segment_count = u32::try_from(segments.len())
         .map_err(|error| seal_refused(&format!("contracted segment count overflows: {error}")))?;
     if segment_count != report.segments {
@@ -609,6 +730,7 @@ const fn trained_lineage_v1(generation: u64, rows: u64) -> AnnIndexLineageV1 {
 
 /// Whether an inherited index is the one this policy would have built for
 /// `num_partitions` partitions, by the library this policy runs.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 fn inherited_matches_policy_v1(
     inherited: &VectorIndexSealV1,
     ann: &AnnIndexSealV1,
@@ -626,6 +748,7 @@ fn inherited_matches_policy_v1(
 }
 
 /// An append the policy admits: what to add and what the record becomes.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AppendPlanV1 {
     num_partitions: u32,
@@ -646,8 +769,9 @@ struct AppendPlanV1 {
 /// outright when the dataset disagrees with the inherited contract,
 /// because the seal would then be recording a lineage for an index it
 /// cannot vouch for.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 async fn append_plan_v1(
-    table: &lancedb::Table,
+    dataset: &Dataset,
     input: VectorIndexSealInputV1<'_>,
     present: &[VectorIndexListingV1],
     num_partitions: u32,
@@ -679,7 +803,7 @@ async fn append_plan_v1(
             ann.index_name
         )));
     }
-    let before = read_index_report_v1(table, "before the append").await?;
+    let before = read_index_report_from_dataset_v1(dataset, "before the append").await?;
     if before.segments != ann.index_segments {
         return Err(seal_refused(&format!(
             "the inherited index has {} segments, the base generation sealed {}",
@@ -687,7 +811,8 @@ async fn append_plan_v1(
         )));
     }
     let inherited_segments =
-        read_index_segments_v1(table, VECTOR_INDEX_NAME, "before the append").await?;
+        read_index_segments_from_dataset_v1(dataset, VECTOR_INDEX_NAME, "before the append")
+            .await?;
     if inherited_segments != ann.segments {
         return Err(seal_refused(&format!(
             "the inherited index segments {inherited_segments:?} differ from the base seal {:?}",
@@ -756,19 +881,26 @@ async fn append_plan_v1(
 /// version so a bump retrains under this policy's parameters rather than
 /// appending under changed ones. A seal with nothing pending changes
 /// nothing in the dataset and only advances the deletion counter.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 async fn append_to_inherited_v1(
-    table: &lancedb::Table,
+    dataset: &mut Dataset,
     plan: AppendPlanV1,
 ) -> Result<VectorIndexSealV1, CoreError> {
     if plan.pending_rows > 0 {
-        let _stats = table
-            .optimize(OptimizeAction::Index(
-                OptimizeOptions::append().index_names(vec![VECTOR_INDEX_NAME.to_string()]),
-            ))
+        dataset
+            .optimize_indices(
+                &OptimizeOptions::append().index_names(vec![VECTOR_INDEX_NAME.to_string()]),
+            )
             .await
-            .map_err(|err| lancedb_err("optimize Index(append) IvfHnswSq(cosine)", err))?;
+            .map_err(|err| {
+                crate::errors::admitted_cause(&err).unwrap_or_else(|| {
+                    CoreError::Storage(format!(
+                        "semantic: optimize Index(append) IvfHnswSq(cosine): {err}"
+                    ))
+                })
+            })?;
     }
-    let after = read_index_report_v1(table, "after the append").await?;
+    let after = read_index_report_from_dataset_v1(dataset, "after the append").await?;
     if after.indexed_rows != plan.row_count || after.unindexed_rows != 0 {
         return Err(seal_refused(&format!(
             "the appended index covers {} of {} rows ({} unindexed)",
@@ -788,7 +920,8 @@ async fn append_to_inherited_v1(
             after.segments, plan.expected_segments
         )));
     }
-    let segments = read_index_segments_v1(table, VECTOR_INDEX_NAME, "after the append").await?;
+    let segments =
+        read_index_segments_from_dataset_v1(dataset, VECTOR_INDEX_NAME, "after the append").await?;
     Ok(ann_seal_record_v1(
         plan.num_partitions,
         after,
@@ -798,40 +931,144 @@ async fn append_to_inherited_v1(
 }
 
 /// Drop every vector index the dataset carries and train the policy's.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 async fn train_v1(
-    table: &lancedb::Table,
+    dataset: &mut Dataset,
     present: &[VectorIndexListingV1],
     generation: u64,
     row_count: u64,
     num_partitions: u32,
 ) -> Result<VectorIndexSealV1, CoreError> {
-    drop_vector_indices_v1(table, present).await?;
-    table
+    drop_vector_indices_v1(dataset, present).await?;
+    let sealed = seal_fresh_vector_index_dataset_v1(dataset, generation, row_count).await?;
+    if sealed.ann.as_ref().map(|ann| ann.num_partitions) != Some(num_partitions) {
+        return Err(seal_refused(&format!(
+            "the trained index has an unexpected partition count, expected {num_partitions}"
+        )));
+    }
+    Ok(sealed)
+}
+
+/// Drop every listed vector index; the library drops all of a name's
+/// segments at once.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+async fn drop_vector_indices_v1(
+    dataset: &mut Dataset,
+    present: &[VectorIndexListingV1],
+) -> Result<(), CoreError> {
+    for listing in present {
+        dataset.drop_index(&listing.name).await.map_err(|err| {
+            crate::errors::admitted_cause(&err).unwrap_or_else(|| {
+                CoreError::Storage(format!("semantic: drop inherited vector index: {err}"))
+            })
+        })?;
+    }
+    Ok(())
+}
+
+/// Seal the dense lane of `dataset`.
+///
+/// Below the row floor the lane is exact and every inherited vector index
+/// is dropped. At or above it, a delta appends to the inherited index when
+/// [`append_plan_v1`] admits it and trains otherwise; a fresh seal trains.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+pub(crate) async fn seal_vector_index_v1(
+    dataset: &mut Dataset,
+    input: VectorIndexSealInputV1<'_>,
+) -> Result<VectorIndexSealV1, CoreError> {
+    let configs = IndexVerificationSourceV1::Dataset(dataset)
+        .list_indices()
+        .await?;
+    let present = vector_indices(&configs)?;
+    let VectorIndexPlanV1::IvfHnswSq { num_partitions } = plan_for_rows_v1(input.row_count) else {
+        drop_vector_indices_v1(dataset, &present).await?;
+        return Ok(exact_vector_index_seal_v1());
+    };
+    match append_plan_v1(dataset, input, &present, num_partitions).await? {
+        Some(plan) => append_to_inherited_v1(dataset, plan).await,
+        None => {
+            train_v1(
+                dataset,
+                &present,
+                input.generation,
+                input.row_count,
+                num_partitions,
+            )
+            .await
+        }
+    }
+}
+
+fn exact_vector_index_seal_v1() -> VectorIndexSealV1 {
+    VectorIndexSealV1 {
+        mode: VECTOR_INDEX_MODE_EXACT.to_string(),
+        library: ANN_LIBRARY.to_string(),
+        library_version: ANN_LIBRARY_VERSION.to_string(),
+        index_min_rows: VECTOR_INDEX_MIN_ROWS,
+        ann: None,
+    }
+}
+
+/// Seal a fresh Native dataset using the same pinned physical recipe as the
+/// persisted Table adapter. Native never inherits or appends an index here.
+pub(crate) async fn seal_fresh_vector_index_dataset_v1(
+    dataset: &mut Dataset,
+    generation: u64,
+    row_count: u64,
+) -> Result<VectorIndexSealV1, CoreError> {
+    let configs = IndexVerificationSourceV1::Dataset(dataset)
+        .list_indices()
+        .await?;
+    if let Some(index) = vector_indices(&configs)?.first() {
+        return Err(seal_refused(&format!(
+            "fresh Native dataset already carries vector index `{}`",
+            index.name
+        )));
+    }
+    let VectorIndexPlanV1::IvfHnswSq { num_partitions } = plan_for_rows_v1(row_count) else {
+        return Ok(exact_vector_index_seal_v1());
+    };
+    let mut ivf = IvfBuildParams::new(
+        usize::try_from(num_partitions).map_err(|err| seal_refused(&err.to_string()))?,
+    );
+    ivf.sample_rate =
+        usize::try_from(IVF_SAMPLE_RATE).map_err(|err| seal_refused(&err.to_string()))?;
+    ivf.max_iters =
+        usize::try_from(IVF_MAX_ITERATIONS).map_err(|err| seal_refused(&err.to_string()))?;
+    let hnsw = HnswBuildParams::default()
+        .num_edges(usize::try_from(HNSW_M).map_err(|err| seal_refused(&err.to_string()))?)
+        .ef_construction(
+            usize::try_from(HNSW_EF_CONSTRUCTION).map_err(|err| seal_refused(&err.to_string()))?,
+        );
+    let sq = SQBuildParams {
+        sample_rate: usize::try_from(IVF_SAMPLE_RATE)
+            .map_err(|err| seal_refused(&err.to_string()))?,
+        ..Default::default()
+    };
+    let params = VectorIndexParams::with_ivf_hnsw_sq_params(MetricType::Cosine, ivf, hnsw, sq);
+    let _created = dataset
         .create_index(
             &[COLUMN_VECTOR],
-            Index::IvfHnswSq(
-                IvfHnswSqIndexBuilder::default()
-                    .distance_type(DistanceType::Cosine)
-                    .num_partitions(num_partitions)
-                    .sample_rate(IVF_SAMPLE_RATE)
-                    .max_iterations(IVF_MAX_ITERATIONS)
-                    .num_edges(HNSW_M)
-                    .ef_construction(HNSW_EF_CONSTRUCTION),
-            ),
+            LanceIndexType::Vector,
+            Some(VECTOR_INDEX_NAME.to_string()),
+            &params,
+            false,
         )
-        .name(VECTOR_INDEX_NAME.to_string())
-        .replace(false)
-        .execute()
         .await
-        .map_err(|err| lancedb_err("create_index IvfHnswSq(cosine)", err))?;
-    let report = read_index_report_v1(table, "after the train").await?;
+        .map_err(|err| {
+            crate::errors::admitted_cause(&err).unwrap_or_else(|| {
+                CoreError::Storage(format!("semantic: create_index IvfHnswSq(cosine): {err}"))
+            })
+        })?;
+    let report = read_index_report_from_dataset_v1(dataset, "after the train").await?;
     if report.indexed_rows != row_count || report.unindexed_rows != 0 {
         return Err(seal_refused(&format!(
             "the trained index covers {} of {row_count} rows ({} unindexed)",
             report.indexed_rows, report.unindexed_rows
         )));
     }
-    let segments = read_index_segments_v1(table, VECTOR_INDEX_NAME, "after the train").await?;
+    let segments =
+        read_index_segments_from_dataset_v1(dataset, VECTOR_INDEX_NAME, "after the train").await?;
     let trained_as_built = segments.first().is_some_and(|segment| {
         segment.hnsw_m == HNSW_M && segment.hnsw_ef_construction == HNSW_EF_CONSTRUCTION
     });
@@ -846,60 +1083,6 @@ async fn train_v1(
         trained_lineage_v1(generation, row_count),
         segments,
     ))
-}
-
-/// Drop every listed vector index; the library drops all of a name's
-/// segments at once.
-async fn drop_vector_indices_v1(
-    table: &lancedb::Table,
-    present: &[VectorIndexListingV1],
-) -> Result<(), CoreError> {
-    for listing in present {
-        table
-            .drop_index(&listing.name)
-            .await
-            .map_err(|err| lancedb_err("drop inherited vector index", err))?;
-    }
-    Ok(())
-}
-
-/// Seal the dense lane of `table`.
-///
-/// Below the row floor the lane is exact and every inherited vector index
-/// is dropped. At or above it, a delta appends to the inherited index when
-/// [`append_plan_v1`] admits it and trains otherwise; a fresh seal trains.
-pub(crate) async fn seal_vector_index_v1(
-    table: &lancedb::Table,
-    input: VectorIndexSealInputV1<'_>,
-) -> Result<VectorIndexSealV1, CoreError> {
-    let configs = table
-        .list_indices()
-        .await
-        .map_err(|err| lancedb_err("list_indices before seal", err))?;
-    let present = vector_indices(&configs)?;
-    let VectorIndexPlanV1::IvfHnswSq { num_partitions } = plan_for_rows_v1(input.row_count) else {
-        drop_vector_indices_v1(table, &present).await?;
-        return Ok(VectorIndexSealV1 {
-            mode: VECTOR_INDEX_MODE_EXACT.to_string(),
-            library: ANN_LIBRARY.to_string(),
-            library_version: ANN_LIBRARY_VERSION.to_string(),
-            index_min_rows: VECTOR_INDEX_MIN_ROWS,
-            ann: None,
-        });
-    };
-    match append_plan_v1(table, input, &present, num_partitions).await? {
-        Some(plan) => append_to_inherited_v1(table, plan).await,
-        None => {
-            train_v1(
-                table,
-                &present,
-                input.generation,
-                input.row_count,
-                num_partitions,
-            )
-            .await
-        }
-    }
 }
 
 /// How an opened generation runs its dense lane.
@@ -979,7 +1162,7 @@ impl QueryEffortV1 {
         }
     }
 
-    fn apply(&self, query: VectorQuery, top_k: usize) -> Result<VectorQuery, CoreError> {
+    fn parameters(&self, top_k: usize) -> Result<(usize, usize, u32), CoreError> {
         let refine_factor = usize::try_from(self.refine_factor).map_err(|err| {
             CoreError::Storage(format!("semantic: refine factor overflow: {err}"))
         })?;
@@ -1002,24 +1185,41 @@ impl QueryEffortV1 {
             .max(ef_floor);
         let nprobes = usize::try_from(self.nprobes)
             .map_err(|err| CoreError::Storage(format!("semantic: nprobes overflow: {err}")))?;
-        Ok(query
-            .nprobes(nprobes)
-            .ef(ef)
-            .refine_factor(self.refine_factor))
+        Ok((nprobes, ef, self.refine_factor))
+    }
+
+    fn apply_scanner(
+        &self,
+        scanner: &mut lance::dataset::scanner::Scanner,
+        top_k: usize,
+    ) -> Result<(), CoreError> {
+        let (nprobes, ef, refine_factor) = self.parameters(top_k)?;
+        let _ = scanner.nprobes(nprobes).ef(ef).refine(refine_factor);
+        Ok(())
     }
 }
 
 impl LoadedVectorIndexV1 {
-    /// Pin the sealed effort on a query, or bypass every index for an exact
-    /// lane.
-    pub(crate) fn apply(&self, query: VectorQuery, top_k: usize) -> Result<VectorQuery, CoreError> {
+    /// Apply the same sealed effort to a direct Lance scan.
+    pub(crate) fn apply_scanner(
+        &self,
+        scanner: &mut lance::dataset::scanner::Scanner,
+        top_k: usize,
+    ) -> Result<(), CoreError> {
         match self.approximate.as_ref() {
-            Some(approximate) => approximate.effort.apply(query, top_k),
-            None => Ok(query.bypass_vector_index()),
+            Some(approximate) => {
+                let _ = scanner.use_index(true);
+                approximate.effort.apply_scanner(scanner, top_k)
+            }
+            None => {
+                let _ = scanner.use_index(false);
+                Ok(())
+            }
         }
     }
 
     /// Which lane a query runs through, as the budget checkpoint names it.
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) const fn lane_kind(&self) -> DenseLaneKindV1 {
         if self.approximate.is_some() {
             DenseLaneKindV1::Approximate
@@ -1059,6 +1259,236 @@ fn ann_incompatible(detail: &str) -> CoreError {
     }
 }
 
+fn index_statistics_open_error(name: &str, error: lance::Error) -> CoreError {
+    if let Some(typed) = crate::errors::admitted_cause(&error) {
+        return typed;
+    }
+    match error {
+        lance::Error::IndexNotFound { .. }
+        | lance::Error::NotFound { .. }
+        | lance::Error::CorruptFile { .. }
+        | lance::Error::InvalidInput { .. } => {
+            // The index name came from the pinned dataset's metadata. Bad
+            // input here is an unreadable index, such as an invalid footer.
+            ann_missing(&format!(
+                "vector index `{name}` could not be opened: {error}"
+            ))
+        }
+        _ => CoreError::Storage(format!(
+            "semantic: index_statistics at open for `{name}`: {error}"
+        )),
+    }
+}
+
+// Statistics from Lance can carry additional fields. Recognized fields still
+// reject duplicates, and only optional fields can be absent in a map.
+macro_rules! lance_statistics_record {
+    ($name:ident { $($field:ident: $ty:ty => $position:literal $(; $default:expr)?),+ $(,)? }) => {
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                struct Record;
+                impl<'de> serde::de::Visitor<'de> for Record {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        formatter.write_str(concat!("struct ", stringify!($name)))
+                    }
+
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                        self,
+                        mut seq: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        Ok($name {
+                            $($field: seq.next_element::<$ty>()?.ok_or_else(|| {
+                                serde::de::Error::invalid_length($position, &self)
+                            })?,)+
+                        })
+                    }
+
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(key) = map.next_key::<String>()? {
+                            match key.as_str() {
+                                $(stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value::<$ty>()?);
+                                },)+
+                                _ => { let _: serde::de::IgnoredAny = map.next_value()?; }
+                            }
+                        }
+                        Ok($name {
+                            $($field: lance_statistics_record!(@field $field $(, $default)?),)+
+                        })
+                    }
+                }
+
+                deserializer.deserialize_struct(stringify!($name), FIELDS, Record)
+            }
+        }
+    };
+    (@field $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@field $field:ident, $default:expr) => {
+        $field.unwrap_or($default)
+    };
+}
+
+struct DirectIndexSegmentReportV1 {
+    metric_type: Option<DistanceType>,
+    index_type: Option<IndexType>,
+}
+
+struct DirectIndexReportV1 {
+    num_indexed_rows: usize,
+    num_unindexed_rows: usize,
+    indices: Vec<DirectIndexSegmentReportV1>,
+    index_type: Option<IndexType>,
+    num_indices: Option<u32>,
+}
+
+lance_statistics_record!(DirectIndexSegmentReportV1 {
+    metric_type: Option<DistanceType> => 0; None,
+    index_type: Option<IndexType> => 1; None,
+});
+
+lance_statistics_record!(DirectIndexReportV1 {
+    num_indexed_rows: usize => 0,
+    num_unindexed_rows: usize => 1,
+    indices: Vec<DirectIndexSegmentReportV1> => 2,
+    index_type: Option<IndexType> => 3; None,
+    num_indices: Option<u32> => 4; None,
+});
+
+struct ObservedIndexStatisticsV1 {
+    num_indexed_rows: usize,
+    num_unindexed_rows: usize,
+    index_type: IndexType,
+    distance_type: Option<DistanceType>,
+    num_indices: Option<u32>,
+}
+
+enum IndexVerificationSourceV1<'a> {
+    Dataset(&'a Dataset),
+}
+
+impl IndexVerificationSourceV1<'_> {
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>, CoreError> {
+        match self {
+            Self::Dataset(dataset) => {
+                // Refuse malformed vector metadata before interpreting the seal.
+                let indices = dataset.load_indices().await.map_err(|err| {
+                    CoreError::Storage(format!("semantic: load_indices at open: {err}"))
+                })?;
+                let mut configs = Vec::new();
+                for index in indices.iter() {
+                    // LanceDB omits this internal index from its public listing.
+                    if index.name == "__lance_frag_reuse" {
+                        continue;
+                    }
+                    let columns = index
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            dataset.schema().field_path(*field).map_err(|err| {
+                                CoreError::Storage(format!(
+                                    "semantic: index `{}` field path at open: {err}",
+                                    index.name
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if !columns.iter().any(|column| column == COLUMN_VECTOR) {
+                        continue;
+                    }
+                    let statistics = dataset
+                        .index_statistics(&index.name)
+                        .await
+                        .map_err(|err| index_statistics_open_error(&index.name, err))?;
+                    let statistics: serde_json::Value =
+                        serde_json::from_str(&statistics).map_err(|err| {
+                            CoreError::Storage(format!(
+                                "semantic: decode index statistics at open for `{}`: {err}",
+                                index.name
+                            ))
+                        })?;
+                    let kind = statistics
+                        .get("index_type")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            CoreError::Storage(format!(
+                                "semantic: index `{}` statistics have no index_type",
+                                index.name
+                            ))
+                        })?
+                        .parse::<IndexType>()
+                        .map_err(|err| {
+                            CoreError::Storage(format!(
+                                "semantic: index `{}` type at open: {err}",
+                                index.name
+                            ))
+                        })?;
+                    configs.push(IndexConfig {
+                        name: index.name.clone(),
+                        index_type: kind,
+                        columns,
+                    });
+                }
+                Ok(configs)
+            }
+        }
+    }
+
+    async fn index_stats(
+        &self,
+        name: &str,
+    ) -> Result<Option<ObservedIndexStatisticsV1>, CoreError> {
+        match self {
+            Self::Dataset(dataset) => {
+                let json = match dataset.index_statistics(name).await {
+                    Ok(json) => json,
+                    Err(lance::Error::IndexNotFound { .. }) => return Ok(None),
+                    Err(err) => return Err(index_statistics_open_error(name, err)),
+                };
+                let mut report: DirectIndexReportV1 =
+                    serde_json::from_str(&json).map_err(|err| {
+                        CoreError::Storage(format!(
+                            "semantic: decode index statistics at open: {err}"
+                        ))
+                    })?;
+                // Use the last segment's type and metric for the fields the seal checks.
+                let last = report.indices.pop().ok_or_else(|| {
+                    CoreError::Storage("semantic: index statistics are empty".to_string())
+                })?;
+                let index_type = report.index_type.or(last.index_type).ok_or_else(|| {
+                    CoreError::Storage("semantic: index statistics have no index type".to_string())
+                })?;
+                Ok(Some(ObservedIndexStatisticsV1 {
+                    num_indexed_rows: report.num_indexed_rows,
+                    num_unindexed_rows: report.num_unindexed_rows,
+                    index_type,
+                    distance_type: last.metric_type,
+                    num_indices: report.num_indices,
+                }))
+            }
+        }
+    }
+
+    async fn index_segments(&self, name: &str) -> Result<Vec<AnnIndexSegmentSealV1>, CoreError> {
+        match self {
+            Self::Dataset(dataset) => {
+                read_index_segments_from_dataset_v1(dataset, name, "at open").await
+            }
+        }
+    }
+}
+
 /// Verify the dataset's vector indices against the seal.
 ///
 /// A sealed exact lane must have no vector index (an index the seal did not
@@ -1068,15 +1498,21 @@ fn ann_incompatible(detail: &str) -> CoreError {
 /// parameters. The lineage the seal recorded (already checked against that
 /// coverage when the manifest was validated) is carried into the served
 /// contract as it stands.
-pub(crate) async fn verify_vector_index_v1(
-    table: &lancedb::Table,
+pub(crate) async fn verify_vector_index_dataset_v1(
+    dataset: &Dataset,
     seal: &VectorIndexSealV1,
     row_count: u64,
 ) -> Result<LoadedVectorIndexV1, CoreError> {
-    let configs = table
-        .list_indices()
+    verify_vector_index_from_source_v1(IndexVerificationSourceV1::Dataset(dataset), seal, row_count)
         .await
-        .map_err(|err| lancedb_err("list_indices at open", err))?;
+}
+
+async fn verify_vector_index_from_source_v1(
+    source: IndexVerificationSourceV1<'_>,
+    seal: &VectorIndexSealV1,
+    row_count: u64,
+) -> Result<LoadedVectorIndexV1, CoreError> {
+    let configs = source.list_indices().await?;
     let present = vector_indices(&configs)?;
     if seal.library != ANN_LIBRARY {
         return Err(ann_incompatible(&format!(
@@ -1131,16 +1567,12 @@ pub(crate) async fn verify_vector_index_v1(
             index_type_token(&listing.index_type)
         )));
     }
-    let statistics = table
-        .index_stats(&ann.index_name)
-        .await
-        .map_err(|err| lancedb_err("index_stats at open", err))?
-        .ok_or_else(|| {
-            ann_missing(&format!(
-                "vector index `{}` is listed but reports no statistics",
-                ann.index_name
-            ))
-        })?;
+    let statistics = source.index_stats(&ann.index_name).await?.ok_or_else(|| {
+        ann_missing(&format!(
+            "vector index `{}` is listed but reports no statistics",
+            ann.index_name
+        ))
+    })?;
     if statistics.index_type != IndexType::IvfHnswSq {
         return Err(ann_incompatible(&format!(
             "vector index `{}` statistics report {}, the seal says ivf_hnsw_sq",
@@ -1162,14 +1594,14 @@ pub(crate) async fn verify_vector_index_v1(
             ann.index_name, ann.indexed_rows
         )));
     }
-    let segments = index_segments_u32(&statistics)?;
+    let segments = index_segments_u32(statistics.num_indices)?;
     if segments != ann.index_segments {
         return Err(ann_incompatible(&format!(
             "vector index `{}` has {segments} segments, the seal recorded {}",
             ann.index_name, ann.index_segments
         )));
     }
-    let built = read_index_segments_v1(table, &ann.index_name, "at open").await?;
+    let built = source.index_segments(&ann.index_name).await?;
     if built != ann.segments {
         return Err(ann_incompatible(&format!(
             "vector index `{}` segments were built as {built:?}, the seal recorded {:?}",
@@ -1193,7 +1625,14 @@ mod tests {
     use arrow_array::{Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt as _;
-    use lancedb::query::{ExecutableQuery as _, QueryBase as _};
+    use lance::Dataset;
+    use lance::index::DatasetIndexExt as _;
+    use lance::index::vector::VectorIndexParams;
+    use lance_index::IndexType as LanceIndexType;
+    use lance_index::vector::{
+        hnsw::builder::HnswBuildParams, ivf::IvfBuildParams, sq::builder::SQBuildParams,
+    };
+    use lance_linalg::distance::MetricType;
     use quanta_index_core::CoreError;
     use quanta_index_core::domains::semantic::{
         DenseIndexBuildV1, DenseIndexSegmentBuildV1, DenseIndexTrainingV1, DenseIndexV1,
@@ -1204,9 +1643,9 @@ mod tests {
         ANN_APPEND_RATIO_MAX_PER_MILLE, ANN_APPEND_ROWS_MAX, ANN_APPEND_SEGMENTS_MAX,
         ANN_LIBRARY_VERSION, HNSW_EF_CONSTRUCTION, HNSW_M, IndexReportV1, LoadedVectorIndexV1,
         MAX_PARTITIONS, SemanticRowFingerprintV1, TARGET_PARTITION_ROWS, VECTOR_INDEX_MIN_ROWS,
-        VECTOR_INDEX_NAME, VectorIndexPlanV1, VectorIndexSealInputV1,
-        inherited_index_contracted_v1, plan_for_rows_v1, read_index_segments_v1,
-        seal_vector_index_v1, verify_contraction_row_changes_v1, verify_vector_index_v1,
+        VECTOR_INDEX_NAME, VectorIndexPlanV1, VectorIndexSealInputV1, plan_for_rows_v1,
+        read_index_segments_from_dataset_v1, seal_vector_index_v1,
+        verify_contraction_row_changes_v1, verify_vector_index_dataset_v1,
     };
 
     /// The graph parameters the library's incremental builder uses for a
@@ -1223,6 +1662,70 @@ mod tests {
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn direct_index_statistics_decode_preserves_lance_json() -> TestResult {
+        use super::{DirectIndexReportV1, DistanceType, IndexType};
+
+        let report: DirectIndexReportV1 = serde_json::from_str(
+            r#"{
+                "num_indexed_rows": 256,
+                "num_unindexed_rows": 0,
+                "indices": [
+                    {"metric_type":"cosine", "index_type":"IVF_HNSW_SQ", "extra":[1,2]},
+                    {"index_type":"Inverted"},
+                    {"metric_type":"dot", "index_type":"IvfHnswSq"}
+                ],
+                "num_indices": 3,
+                "future": {"ignored":true}
+            }"#,
+        )?;
+        assert_eq!(report.num_indexed_rows, 256);
+        assert_eq!(report.num_unindexed_rows, 0);
+        assert_eq!(report.num_indices, Some(3));
+        assert_eq!(report.index_type, None);
+        let [first, second, third] = report.indices.as_slice() else {
+            return Err("Lance statistics must retain the three reported segments".into());
+        };
+        assert_eq!(first.metric_type, Some(DistanceType::Cosine));
+        assert_eq!(first.index_type, Some(IndexType::IvfHnswSq));
+        assert_eq!(second.metric_type, None);
+        assert_eq!(second.index_type, Some(IndexType::Fts));
+        assert_eq!(third.metric_type, Some(DistanceType::Dot));
+        assert_eq!(third.index_type, Some(IndexType::IvfHnswSq));
+
+        let positional: DirectIndexReportV1 =
+            serde_json::from_str(r#"[256,0,[["l2","IVF_SQ"]],{"IvfSq":null},null]"#)?;
+        let [segment] = positional.indices.as_slice() else {
+            return Err("positional statistics must retain the reported segment".into());
+        };
+        assert_eq!(segment.metric_type, Some(DistanceType::L2));
+        assert_eq!(segment.index_type, Some(IndexType::IvfSq));
+        assert_eq!(positional.index_type, Some(IndexType::IvfSq));
+        assert_eq!(positional.num_indices, None);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_index_statistics_reject_invalid_or_duplicate_fields() {
+        use super::DirectIndexReportV1;
+
+        for invalid in [
+            r#"{"num_indexed_rows":256,"num_unindexed_rows":0}"#,
+            r#"{"num_indexed_rows":256,"num_unindexed_rows":0,"indices":[],"num_indices":null,"num_indices":1}"#,
+            r#"{"num_indexed_rows":256,"num_unindexed_rows":0,"indices":[{"index_type":null,"index_type":"IVF_SQ"}]}"#,
+            r#"{"num_indexed_rows":256,"num_unindexed_rows":0,"indices":[{"metric_type":"Cosine"}]}"#,
+            r#"{"num_indexed_rows":256,"num_unindexed_rows":0,"indices":[],"index_type":"ivf_sq"}"#,
+            r#"[256,0,[],null]"#,
+            r#"[256,0,[],null,null,"extra"]"#,
+            r#"[256,0,[[null,null,"extra"]],null,null]"#,
+        ] {
+            assert!(
+                serde_json::from_str::<DirectIndexReportV1>(invalid).is_err(),
+                "{invalid}"
+            );
+        }
+    }
 
     const DIMENSION: usize = 8;
     const COLUMN_ID: &str = "id";
@@ -1290,30 +1793,52 @@ mod tests {
         )?)
     }
 
-    /// A table holding rows `0..rows`: the smallest dataset the seal and
+    /// A dataset holding rows `0..rows`: the smallest dataset the seal and
     /// the verifier can be exercised on.
     async fn vector_table(
         root: &std::path::Path,
         rows: u64,
         dimension: usize,
-    ) -> Result<lancedb::Table, Box<dyn std::error::Error>> {
+    ) -> Result<Dataset, Box<dyn std::error::Error>> {
         let batch = rows_batch(0..rows, dimension)?;
-        let connection = lancedb::connect(&root.to_string_lossy()).execute().await?;
-        let table = connection.create_table("semantic", batch).execute().await?;
-        Ok(table)
+        let uri = crate::layout::dataset_dir_to_uri(&root.join("semantic.lance"))?;
+        let schema = batch.schema();
+        let reader = arrow_array::RecordBatchIterator::new(std::iter::once(Ok(batch)), schema);
+        Ok(Dataset::write(reader, uri.as_str(), None).await?)
+    }
+
+    async fn create_foreign_index(table: &mut Dataset, name: &str) -> TestResult {
+        let params = VectorIndexParams::with_ivf_hnsw_sq_params(
+            MetricType::Cosine,
+            IvfBuildParams::new(1),
+            HnswBuildParams::default(),
+            SQBuildParams::default(),
+        );
+        let _created = table
+            .create_index(
+                &[COLUMN_VECTOR],
+                LanceIndexType::Vector,
+                Some(name.to_string()),
+                &params,
+                false,
+            )
+            .await?;
+        Ok(())
     }
 
     async fn append_rows(
-        table: &lancedb::Table,
+        table: &mut Dataset,
         ids: std::ops::Range<u64>,
         dimension: usize,
     ) -> TestResult {
         let batch = rows_batch(ids, dimension)?;
-        let _added = table.add(batch).execute().await?;
+        let schema = batch.schema();
+        let reader = arrow_array::RecordBatchIterator::new(std::iter::once(Ok(batch)), schema);
+        table.append(reader, None).await?;
         Ok(())
     }
 
-    async fn delete_ids(table: &lancedb::Table, ids: &[u64]) -> TestResult {
+    async fn delete_ids(table: &mut Dataset, ids: &[u64]) -> TestResult {
         let list = ids
             .iter()
             .map(u64::to_string)
@@ -1323,25 +1848,23 @@ mod tests {
         Ok(())
     }
 
-    async fn row_count(table: &lancedb::Table) -> Result<u64, Box<dyn std::error::Error>> {
+    async fn row_count(table: &Dataset) -> Result<u64, Box<dyn std::error::Error>> {
         Ok(u64::try_from(table.count_rows(None).await?)?)
     }
 
     /// Top-`k` ids the lane returns for `query` under `loaded`'s effort.
     async fn search_ids(
-        table: &lancedb::Table,
+        table: &Dataset,
         loaded: &LoadedVectorIndexV1,
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
-        let vector_query = loaded.apply(
-            table
-                .vector_search(query.to_vec())?
-                .distance_type(lancedb::DistanceType::Cosine)
-                .limit(top_k),
-            top_k,
-        )?;
-        let batches: Vec<RecordBatch> = vector_query.execute().await?.try_collect().await?;
+        let key = Float32Array::from(query.to_vec());
+        let mut scan = table.scan();
+        let _ = scan.nearest(COLUMN_VECTOR, &key, top_k)?;
+        let _ = scan.distance_metric(MetricType::Cosine);
+        loaded.apply_scanner(&mut scan, top_k)?;
+        let batches: Vec<RecordBatch> = scan.try_into_stream().await?.try_collect().await?;
         let mut ids = Vec::with_capacity(top_k);
         for batch in batches {
             let column = batch
@@ -1412,7 +1935,7 @@ mod tests {
 
     /// Seal `table` as generation `generation`, a fresh one without a base.
     async fn seal_fresh(
-        table: &lancedb::Table,
+        table: &mut Dataset,
         generation: u64,
     ) -> Result<VectorIndexSealV1, CoreError> {
         let rows = row_count(table)
@@ -1431,7 +1954,7 @@ mod tests {
 
     /// Seal `table` as generation `generation`, a delta over `base`.
     async fn seal_delta(
-        table: &lancedb::Table,
+        table: &mut Dataset,
         generation: u64,
         base: &VectorIndexSealV1,
     ) -> Result<VectorIndexSealV1, CoreError> {
@@ -1467,9 +1990,9 @@ mod tests {
     /// What the library itself reports for the policy index: indexed
     /// rows, unindexed rows, segments.
     async fn library_report(
-        table: &lancedb::Table,
+        table: &Dataset,
     ) -> Result<(usize, usize, Option<u32>), Box<dyn std::error::Error>> {
-        let statistics = table
+        let statistics = super::IndexVerificationSourceV1::Dataset(table)
             .index_stats(VECTOR_INDEX_NAME)
             .await?
             .ok_or("the policy index reports no statistics")?;
@@ -1484,12 +2007,13 @@ mod tests {
     fn the_verifier_refuses_every_disagreement_between_seal_and_dataset() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), VECTOR_INDEX_MIN_ROWS, DIMENSION).await?;
-            let sealed = seal_fresh(&table, 1).await?;
+            let mut table = vector_table(temp.path(), VECTOR_INDEX_MIN_ROWS, DIMENSION).await?;
+            let sealed = seal_fresh(&mut table, 1).await?;
             let ann = sealed.ann.clone().ok_or("the floor seals an index")?;
 
             // The dataset agrees with its own seal.
-            let loaded = verify_vector_index_v1(&table, &sealed, VECTOR_INDEX_MIN_ROWS).await?;
+            let loaded =
+                verify_vector_index_dataset_v1(&table, &sealed, VECTOR_INDEX_MIN_ROWS).await?;
             assert!(loaded.approximate.is_some());
             assert_eq!(loaded.attestation, DenseLaneAttestationV1::Sealed);
 
@@ -1498,7 +2022,8 @@ mod tests {
             let mut other_version = sealed.clone();
             other_version.library_version = "0.0.1".to_string();
             let served =
-                verify_vector_index_v1(&table, &other_version, VECTOR_INDEX_MIN_ROWS).await?;
+                verify_vector_index_dataset_v1(&table, &other_version, VECTOR_INDEX_MIN_ROWS)
+                    .await?;
             assert_eq!(
                 served.attestation,
                 DenseLaneAttestationV1::SealedByAnotherLibraryVersion
@@ -1506,7 +2031,7 @@ mod tests {
             let mut other_library = sealed.clone();
             other_library.library = "faiss".to_string();
             let refused =
-                verify_vector_index_v1(&table, &other_library, VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_dataset_v1(&table, &other_library, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&refused),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
@@ -1515,7 +2040,7 @@ mod tests {
             // An exact seal over an indexed dataset: the served mode would not
             // be the sealed one.
             let indexed_but_exact =
-                verify_vector_index_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_dataset_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&indexed_but_exact),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
@@ -1526,7 +2051,8 @@ mod tests {
             if let Some(record) = fewer_rows.ann.as_mut() {
                 record.indexed_rows = record.indexed_rows.saturating_sub(1);
             }
-            let coverage = verify_vector_index_v1(&table, &fewer_rows, VECTOR_INDEX_MIN_ROWS).await;
+            let coverage =
+                verify_vector_index_dataset_v1(&table, &fewer_rows, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&coverage),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
@@ -1536,7 +2062,7 @@ mod tests {
                 record.index_segments = record.index_segments.saturating_add(1);
             }
             let segments =
-                verify_vector_index_v1(&table, &more_segments, VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_dataset_v1(&table, &more_segments, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&segments),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
@@ -1548,7 +2074,7 @@ mod tests {
                 record.index_name = "vector_idx".to_string();
             }
             let missing_name =
-                verify_vector_index_v1(&table, &renamed, VECTOR_INDEX_MIN_ROWS).await;
+                verify_vector_index_dataset_v1(&table, &renamed, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&missing_name),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexMissing)
@@ -1556,14 +2082,16 @@ mod tests {
 
             // The index gone from the dataset while the seal still records it.
             table.drop_index(&ann.index_name).await?;
-            let dropped = verify_vector_index_v1(&table, &sealed, VECTOR_INDEX_MIN_ROWS).await;
+            let dropped =
+                verify_vector_index_dataset_v1(&table, &sealed, VECTOR_INDEX_MIN_ROWS).await;
             assert_eq!(
                 typed_code(&dropped),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexMissing)
             );
             // ... and the same dataset agrees with an exact seal again.
             let exact =
-                verify_vector_index_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS).await?;
+                verify_vector_index_dataset_v1(&table, &exact_seal(), VECTOR_INDEX_MIN_ROWS)
+                    .await?;
             assert_eq!(
                 exact,
                 LoadedVectorIndexV1 {
@@ -1579,47 +2107,27 @@ mod tests {
     fn the_seal_replaces_an_inherited_index_of_any_name() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), VECTOR_INDEX_MIN_ROWS, DIMENSION).await?;
+            let mut table = vector_table(temp.path(), VECTOR_INDEX_MIN_ROWS, DIMENSION).await?;
             // An index a base generation built under a different name and
             // policy, as a delta inherits it from a base that sealed nothing.
-            table
-                .create_index(
-                    &[COLUMN_VECTOR],
-                    lancedb::index::Index::IvfHnswSq(
-                        lancedb::index::vector::IvfHnswSqIndexBuilder::default()
-                            .distance_type(lancedb::DistanceType::Cosine),
-                    ),
-                )
-                .name("vector_idx".to_string())
-                .execute()
-                .await?;
-            let sealed = seal_fresh(&table, 1).await?;
+            create_foreign_index(&mut table, "vector_idx").await?;
+            let sealed = seal_fresh(&mut table, 1).await?;
             let names: Vec<String> = table
-                .list_indices()
+                .load_indices()
                 .await?
-                .into_iter()
-                .map(|config| config.name)
+                .iter()
+                .map(|config| config.name.clone())
                 .collect();
             assert_eq!(names, vec![VECTOR_INDEX_NAME.to_string()]);
             assert_eq!(report_of(&sealed), Some((VECTOR_INDEX_MIN_ROWS, 1)));
             // Below the floor the seal drops what it inherited and seals exact.
             let small_root = tempfile::tempdir()?;
             let below = VECTOR_INDEX_MIN_ROWS.saturating_sub(1);
-            let small = vector_table(small_root.path(), below, DIMENSION).await?;
-            small
-                .create_index(
-                    &[COLUMN_VECTOR],
-                    lancedb::index::Index::IvfHnswSq(
-                        lancedb::index::vector::IvfHnswSqIndexBuilder::default()
-                            .distance_type(lancedb::DistanceType::Cosine),
-                    ),
-                )
-                .name("vector_idx".to_string())
-                .execute()
-                .await?;
-            let exact = seal_fresh(&small, 1).await?;
+            let mut small = vector_table(small_root.path(), below, DIMENSION).await?;
+            create_foreign_index(&mut small, "vector_idx").await?;
+            let exact = seal_fresh(&mut small, 1).await?;
             assert_eq!(exact.mode, VECTOR_INDEX_MODE_EXACT);
-            assert!(small.list_indices().await?.is_empty());
+            assert!(small.load_indices().await?.is_empty());
             Ok(())
         })
     }
@@ -1629,8 +2137,8 @@ mod tests {
     fn a_fresh_seal_trains_and_is_its_own_lineage() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), 300, DIMENSION).await?;
-            let sealed = seal_fresh(&table, 4).await?;
+            let mut table = vector_table(temp.path(), 300, DIMENSION).await?;
+            let sealed = seal_fresh(&mut table, 4).await?;
             assert_eq!(report_of(&sealed), Some((300, 1)));
             assert_eq!(
                 lineage_of(&sealed)?,
@@ -1659,15 +2167,15 @@ mod tests {
     fn a_delta_inside_the_budget_appends_to_the_inherited_index() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), 400, DIMENSION).await?;
-            let base = seal_fresh(&table, 1).await?;
+            let mut table = vector_table(temp.path(), 400, DIMENSION).await?;
+            let base = seal_fresh(&mut table, 1).await?;
 
             // The delta tombstones four base rows and adds sixty: 60 of 400 is
             // 150 per mille, inside the quarter.
             let deleted = [3_u64, 77, 150, 399];
-            delete_ids(&table, &deleted).await?;
-            append_rows(&table, 1_000..1_060, DIMENSION).await?;
-            let delta = seal_delta(&table, 2, &base).await?;
+            delete_ids(&mut table, &deleted).await?;
+            append_rows(&mut table, 1_000..1_060, DIMENSION).await?;
+            let delta = seal_delta(&mut table, 2, &base).await?;
 
             assert_eq!(report_of(&delta), Some((456, 2)));
             assert_eq!(
@@ -1683,7 +2191,7 @@ mod tests {
             assert_eq!(library_report(&table).await?, (456, 0, Some(2)));
 
             // The open serves the appended index with its lineage.
-            let loaded = verify_vector_index_v1(&table, &delta, 456).await?;
+            let loaded = verify_vector_index_dataset_v1(&table, &delta, 456).await?;
             let DenseIndexV1::Approximate { lineage, build, .. } = loaded.contract().index else {
                 return Err("the appended index is approximate".into());
             };
@@ -1723,8 +2231,8 @@ mod tests {
 
             // A further deletion-only delta appends nothing, changes no
             // segment, and only advances the deletion counter.
-            delete_ids(&table, &[1_000, 1_001]).await?;
-            let deletion_only = seal_delta(&table, 3, &delta).await?;
+            delete_ids(&mut table, &[1_000, 1_001]).await?;
+            let deletion_only = seal_delta(&mut table, 3, &delta).await?;
             assert_eq!(report_of(&deletion_only), Some((454, 2)));
             assert_eq!(
                 lineage_of(&deletion_only)?,
@@ -1735,7 +2243,7 @@ mod tests {
                 }
             );
             assert_eq!(library_report(&table).await?, (454, 0, Some(2)));
-            let loaded = verify_vector_index_v1(&table, &deletion_only, 454).await?;
+            let loaded = verify_vector_index_dataset_v1(&table, &deletion_only, 454).await?;
             for id in [1_000_u64, 1_001] {
                 let hits = search_ids(&table, &loaded, &unit_vector(id, DIMENSION), 5).await?;
                 assert!(
@@ -1754,11 +2262,11 @@ mod tests {
     fn a_delta_beyond_the_ratio_retrains() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), 400, DIMENSION).await?;
-            let base = seal_fresh(&table, 1).await?;
+            let mut table = vector_table(temp.path(), 400, DIMENSION).await?;
+            let base = seal_fresh(&mut table, 1).await?;
             // 101 of 400 is 252.5 per mille, one row past the quarter.
-            append_rows(&table, 1_000..1_101, DIMENSION).await?;
-            let delta = seal_delta(&table, 2, &base).await?;
+            append_rows(&mut table, 1_000..1_101, DIMENSION).await?;
+            let delta = seal_delta(&mut table, 2, &base).await?;
             assert_eq!(report_of(&delta), Some((501, 1)));
             assert_eq!(
                 lineage_of(&delta)?,
@@ -1775,13 +2283,13 @@ mod tests {
             // The budget is cumulative: appends that each fit still retrain
             // once their sum would not.
             let second = {
-                append_rows(&table, 2_000..2_100, DIMENSION).await?;
-                seal_delta(&table, 3, &delta).await?
+                append_rows(&mut table, 2_000..2_100, DIMENSION).await?;
+                seal_delta(&mut table, 3, &delta).await?
             };
             assert_eq!(lineage_of(&second)?.appended_rows, 100);
             assert_eq!(lineage_of(&second)?.trained_at_generation, 2);
-            append_rows(&table, 3_000..3_030, DIMENSION).await?;
-            let third = seal_delta(&table, 4, &second).await?;
+            append_rows(&mut table, 3_000..3_030, DIMENSION).await?;
+            let third = seal_delta(&mut table, 4, &second).await?;
             // 130 of 501 is 259 per mille: over.
             assert_eq!(lineage_of(&third)?.trained_at_generation, 4);
             assert_eq!(lineage_of(&third)?.appended_rows, 0);
@@ -1800,8 +2308,8 @@ mod tests {
                 // physical base so the next one cannot inherit an old seal
                 // over the previous variant's newly trained index.
                 let temp = tempfile::tempdir()?;
-                let table = vector_table(temp.path(), 400, DIMENSION).await?;
-                let base = seal_fresh(&table, 1).await?;
+                let mut table = vector_table(temp.path(), 400, DIMENSION).await?;
+                let base = seal_fresh(&mut table, 1).await?;
                 let mut inherited = base.clone();
                 match label {
                     "another library version" => {
@@ -1813,9 +2321,9 @@ mod tests {
                     }
                     _ => return Err("unexpected policy variant".into()),
                 }
-                append_rows(&table, 1_000..1_010, DIMENSION).await?;
+                append_rows(&mut table, 1_000..1_010, DIMENSION).await?;
                 let rows = row_count(&table).await?;
-                let sealed = seal_delta(&table, 2, &inherited).await?;
+                let sealed = seal_delta(&mut table, 2, &inherited).await?;
                 assert_eq!(
                     lineage_of(&sealed)?.trained_at_generation,
                     2,
@@ -1834,15 +2342,15 @@ mod tests {
     fn a_dataset_that_disagrees_with_the_inherited_contract_is_refused() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), 400, DIMENSION).await?;
-            let base = seal_fresh(&table, 1).await?;
-            append_rows(&table, 1_000..1_010, DIMENSION).await?;
+            let mut table = vector_table(temp.path(), 400, DIMENSION).await?;
+            let base = seal_fresh(&mut table, 1).await?;
+            append_rows(&mut table, 1_000..1_010, DIMENSION).await?;
 
             let mut more_segments = base.clone();
             if let Some(ann) = more_segments.ann.as_mut() {
                 ann.index_segments = 2;
             }
-            let refused = seal_delta(&table, 2, &more_segments).await;
+            let refused = seal_delta(&mut table, 2, &more_segments).await;
             assert!(
                 matches!(&refused, Err(CoreError::Storage(message)) if message.contains("segments")),
                 "{refused:?}"
@@ -1855,7 +2363,7 @@ mod tests {
                 .and_then(|ann| ann.segments.first_mut())
                 .ok_or("fixture must seal a trained segment")?;
             segment.uuid = "forged-segment-uuid".to_string();
-            let refused = seal_delta(&table, 2, &changed_segment).await;
+            let refused = seal_delta(&mut table, 2, &changed_segment).await;
             assert!(
                 matches!(&refused, Err(CoreError::Storage(message)) if message.contains("segment")),
                 "a changed inherited segment identity must be refused: {refused:?}"
@@ -1864,14 +2372,14 @@ mod tests {
             let mut exact_base = base.clone();
             exact_base.mode = VECTOR_INDEX_MODE_EXACT.to_string();
             exact_base.ann = None;
-            let refused = seal_delta(&table, 2, &exact_base).await;
+            let refused = seal_delta(&mut table, 2, &exact_base).await;
             assert!(
                 matches!(&refused, Err(CoreError::Storage(message)) if message.contains("sealed an exact lane")),
                 "{refused:?}"
             );
 
             table.drop_index(VECTOR_INDEX_NAME).await?;
-            let refused = seal_delta(&table, 2, &base).await;
+            let refused = seal_delta(&mut table, 2, &base).await;
             assert!(
                 matches!(&refused, Err(CoreError::Storage(message)) if message.contains("inherited dataset lists")),
                 "{refused:?}"
@@ -1887,12 +2395,12 @@ mod tests {
     fn a_contracted_index_requires_exact_survivor_identity_and_deleted_rows() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), 400, DIMENSION).await?;
-            let base = seal_fresh(&table, 1).await?;
-            append_rows(&table, 1_000..1_060, DIMENSION).await?;
-            let appended = seal_delta(&table, 2, &base).await?;
+            let mut table = vector_table(temp.path(), 400, DIMENSION).await?;
+            let base = seal_fresh(&mut table, 1).await?;
+            append_rows(&mut table, 1_000..1_060, DIMENSION).await?;
+            let appended = seal_delta(&mut table, 2, &base).await?;
             assert_eq!(report_of(&appended), Some((460, 2)));
-            delete_ids(&table, &(1_000..1_060).collect::<Vec<_>>()).await?;
+            delete_ids(&mut table, &(1_000..1_060).collect::<Vec<_>>()).await?;
             assert_eq!(library_report(&table).await?, (400, 0, Some(1)));
             let fingerprint = |id: u64| SemanticRowFingerprintV1 {
                 record_id: format!("{id:04}"),
@@ -1906,8 +2414,14 @@ mod tests {
             base_rows.sort_unstable_by(|left, right| left.record_id.cmp(&right.record_id));
             let current_rows = (0..400).map(fingerprint).collect::<Vec<_>>();
             assert!(
-                inherited_index_contracted_v1(&table, &appended, 400, &base_rows, &current_rows)
-                    .await?
+                super::inherited_index_contracted_v1(
+                    &table,
+                    &appended,
+                    400,
+                    &base_rows,
+                    &current_rows
+                )
+                .await?
             );
 
             let ann = appended
@@ -1979,7 +2493,7 @@ mod tests {
                 .and_then(|ann| ann.segments.first_mut())
                 .ok_or("fixture has no trained segment")?;
             survivor.uuid = "forged-survivor-uuid".to_string();
-            let mismatch = inherited_index_contracted_v1(
+            let mismatch = super::inherited_index_contracted_v1(
                 &table,
                 &changed_uuid,
                 400,
@@ -1992,9 +2506,14 @@ mod tests {
                 "{mismatch:?}"
             );
 
-            let wrong_row_count =
-                inherited_index_contracted_v1(&table, &appended, 399, &base_rows, &current_rows)
-                    .await;
+            let wrong_row_count = super::inherited_index_contracted_v1(
+                &table,
+                &appended,
+                399,
+                &base_rows,
+                &current_rows,
+            )
+            .await;
             assert!(
                 matches!(&wrong_row_count, Err(CoreError::Storage(message)) if message.contains("dataset holds")),
                 "{wrong_row_count:?}"
@@ -2003,7 +2522,7 @@ mod tests {
             let mut no_deleted_rows = appended.clone();
             let ann = no_deleted_rows.ann.as_mut().ok_or("fixture has no index")?;
             ann.indexed_rows = 400;
-            let no_deletion = inherited_index_contracted_v1(
+            let no_deletion = super::inherited_index_contracted_v1(
                 &table,
                 &no_deleted_rows,
                 400,
@@ -2034,9 +2553,11 @@ mod tests {
     fn the_seal_records_every_segment_as_built_and_the_open_refuses_a_false_claim() -> TestResult {
         run(async {
             let temp = tempfile::tempdir()?;
-            let table = vector_table(temp.path(), 400, DIMENSION).await?;
-            let base = seal_fresh(&table, 1).await?;
-            let built = read_index_segments_v1(&table, VECTOR_INDEX_NAME, "in the test").await?;
+            let mut table = vector_table(temp.path(), 400, DIMENSION).await?;
+            let base = seal_fresh(&mut table, 1).await?;
+            let built =
+                read_index_segments_from_dataset_v1(&table, VECTOR_INDEX_NAME, "in the test")
+                    .await?;
             let trained = base.ann.as_ref().ok_or("trained seal")?;
             assert_eq!(trained.segments, built);
             assert_eq!(built.len(), 1);
@@ -2046,9 +2567,11 @@ mod tests {
                 "the trained segment is the recipe"
             );
 
-            append_rows(&table, 1_000..1_060, DIMENSION).await?;
-            let delta = seal_delta(&table, 2, &base).await?;
-            let built = read_index_segments_v1(&table, VECTOR_INDEX_NAME, "in the test").await?;
+            append_rows(&mut table, 1_000..1_060, DIMENSION).await?;
+            let delta = seal_delta(&mut table, 2, &base).await?;
+            let built =
+                read_index_segments_from_dataset_v1(&table, VECTOR_INDEX_NAME, "in the test")
+                    .await?;
             let appended = delta.ann.as_ref().ok_or("appended seal")?;
             assert_eq!(appended.segments, built);
             assert_eq!(built.len(), 2);
@@ -2089,7 +2612,7 @@ mod tests {
             claimed.validate(460, 2)?;
             // … it is self-consistent, so it is the open that catches it
             // against the dataset.
-            let refused = verify_vector_index_v1(&table, &claimed, 460).await;
+            let refused = verify_vector_index_dataset_v1(&table, &claimed, 460).await;
             assert_eq!(
                 typed_code(&refused),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
@@ -2101,14 +2624,14 @@ mod tests {
             {
                 segment.uuid = "not-a-segment".to_string();
             }
-            let refused = verify_vector_index_v1(&table, &foreign, 460).await;
+            let refused = verify_vector_index_dataset_v1(&table, &foreign, 460).await;
             assert_eq!(
                 typed_code(&refused),
                 Some(quanta_index_contract::SearchPlaneErrorCodeV2::AnnIndexIncompatible)
             );
             // The honest record opens, and the attestation names the appended
             // segment's actual construction beam width.
-            let loaded = verify_vector_index_v1(&table, &delta, 460).await?;
+            let loaded = verify_vector_index_dataset_v1(&table, &delta, 460).await?;
             let trace = loaded.contract().trace_detail();
             assert!(
                 trace.contains(&format!(
@@ -2140,17 +2663,17 @@ mod tests {
         const TOLERANCE: f64 = 0.02;
         run(async {
             let appended_root = tempfile::tempdir()?;
-            let appended_table = vector_table(appended_root.path(), BASE_ROWS, WIDE).await?;
-            let base = seal_fresh(&appended_table, 1).await?;
+            let mut appended_table = vector_table(appended_root.path(), BASE_ROWS, WIDE).await?;
+            let base = seal_fresh(&mut appended_table, 1).await?;
             append_rows(
-                &appended_table,
+                &mut appended_table,
                 BASE_ROWS..BASE_ROWS.saturating_add(DELTA_ROWS),
                 WIDE,
             )
             .await?;
-            let appended = seal_delta(&appended_table, 2, &base).await?;
+            let appended = seal_delta(&mut appended_table, 2, &base).await?;
             assert_eq!(lineage_of(&appended)?.appended_rows, DELTA_ROWS);
-            let appended_loaded = verify_vector_index_v1(
+            let appended_loaded = verify_vector_index_dataset_v1(
                 &appended_table,
                 &appended,
                 BASE_ROWS.saturating_add(DELTA_ROWS),
@@ -2158,16 +2681,19 @@ mod tests {
             .await?;
 
             let fresh_root = tempfile::tempdir()?;
-            let fresh_table = vector_table(
+            let mut fresh_table = vector_table(
                 fresh_root.path(),
                 BASE_ROWS.saturating_add(DELTA_ROWS),
                 WIDE,
             )
             .await?;
-            let fresh = seal_fresh(&fresh_table, 1).await?;
-            let fresh_loaded =
-                verify_vector_index_v1(&fresh_table, &fresh, BASE_ROWS.saturating_add(DELTA_ROWS))
-                    .await?;
+            let fresh = seal_fresh(&mut fresh_table, 1).await?;
+            let fresh_loaded = verify_vector_index_dataset_v1(
+                &fresh_table,
+                &fresh,
+                BASE_ROWS.saturating_add(DELTA_ROWS),
+            )
+            .await?;
 
             let corpus: BTreeSet<u64> = (0..BASE_ROWS.saturating_add(DELTA_ROWS)).collect();
             let mut appended_found = 0_u64;
@@ -2215,16 +2741,16 @@ mod tests {
     }
 
     #[test]
-    fn the_recorded_library_version_is_the_locked_one() {
-        // The seal records the library version as provenance; a dependency
-        // bump that forgets this constant would record the wrong builder.
+    fn the_legacy_seal_version_and_direct_lance_builder_version_are_pinned() {
+        // Keep the persisted legacy seal spelling stable while requiring an
+        // explicit review when the physical Lance index builder changes.
         let lock =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
                 .expect("workspace lock file");
         let mut lines = lock.lines();
         let mut locked = None;
         while let Some(line) = lines.next() {
-            if line.trim() == "name = \"lancedb\"" {
+            if line.trim() == "name = \"lance\"" {
                 locked = lines.next().and_then(|version| {
                     version
                         .trim()
@@ -2235,7 +2761,8 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(locked.as_deref(), Some(ANN_LIBRARY_VERSION));
+        assert_eq!(locked.as_deref(), Some("7.0.0"));
+        assert_eq!(ANN_LIBRARY_VERSION, "0.30.0");
     }
 
     #[test]

@@ -67,12 +67,20 @@ enum ExportFrame<'a> {
         repo_id: &'a RepoId,
         count: u64,
     },
+    NativeInventoryAllComplete {
+        source_root_nonce: Digest,
+        source_view: quanta_index_core::index::ViewRef,
+        count: u64,
+    },
     CheckpointPage(LegacyHistoryCheckpointPageRefV2),
     InventoryKey {
         generation: &'a AuxiliaryGenerationKeyV1,
     },
     InventoryComplete {
         repo_id: &'a RepoId,
+        count: u64,
+    },
+    InventoryAllComplete {
         count: u64,
     },
     Complete {
@@ -140,12 +148,24 @@ impl Serialize for ExportBody<'_, '_> {
             ExportFrame::NativeInventoryComplete { repo_id, count } => {
                 serialize_body!(serializer, "NativeInventoryComplete", { repo_id, count })
             }
+            ExportFrame::NativeInventoryAllComplete {
+                source_root_nonce,
+                source_view,
+                count,
+            } => {
+                serialize_body!(serializer, "NativeInventoryAllComplete", {
+                    source_root_nonce, source_view, count
+                })
+            }
             ExportFrame::CheckpointPage(page) => page.serialize(serializer),
             ExportFrame::InventoryKey { generation } => {
                 serialize_body!(serializer, "InventoryKey", { generation })
             }
             ExportFrame::InventoryComplete { repo_id, count } => {
                 serialize_body!(serializer, "InventoryComplete", { repo_id, count })
+            }
+            ExportFrame::InventoryAllComplete { count } => {
+                serialize_body!(serializer, "InventoryAllComplete", { count })
             }
             ExportFrame::Complete {
                 generation,
@@ -175,9 +195,11 @@ impl Serialize for ExportFrame<'_> {
             ExportFrame::NativeObjectEnd { .. } => "native_object_end",
             ExportFrame::NativeHistory { .. } => "native_history",
             ExportFrame::NativeInventoryComplete { .. } => "native_inventory_complete",
+            ExportFrame::NativeInventoryAllComplete { .. } => "native_inventory_all_complete",
             ExportFrame::CheckpointPage(..) => "checkpoint_page",
             ExportFrame::InventoryKey { .. } => "inventory_key",
             ExportFrame::InventoryComplete { .. } => "inventory_complete",
+            ExportFrame::InventoryAllComplete { .. } => "inventory_all_complete",
             ExportFrame::Complete { .. } => "complete",
         };
         let mut frame = serializer.serialize_struct("ExportFrame", 2)?;
@@ -326,19 +348,19 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
                         budget,
                         |legacy_root, catalog, budget| {
                             match &command.scope {
-                                NativeHistoryExportScopeV1::Checkpoint(generation) => {
+                                NativeHistoryExportScopeV1::NativeInventoryAll => {
+                                    bail!(
+                                        "all-repository Native History export requires a Native selection"
+                                    );
+                                }
+                                NativeHistoryExportScopeV1::Checkpoint(generation)
+                                | NativeHistoryExportScopeV1::CheckpointAll(generation) => {
                                     let root = legacy_root
                                         .to_str()
                                         .ok_or_else(|| anyhow!("Legacy root is not UTF-8"))?;
                                     ensure!(root.len() <= 4096, "Legacy root exceeds export bound");
                                     let mut page_count = 0_u32;
-                                    let observation =
-                                        quanta_index_catalog::visit_legacy_history_checkpoint_pages_v1(
-                                            legacy_root,
-                                            catalog,
-                                            generation,
-                                            budget,
-                                            &mut |page: LegacyHistoryCheckpointPageV1<'_>, budget| {
+                                    let mut emit_page = |page: LegacyHistoryCheckpointPageV1<'_>, budget: &mut WorkBudget| {
                                                 let (reference, ordinal, row_count) = match page {
                                                     LegacyHistoryCheckpointPageV1::V1 { page, encoded_bytes } => {
                                                         let reference = emit_v1_checkpoint_page(
@@ -384,8 +406,19 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
                                                         IndexError::Storage(format!("History page marker stream: {cause}"))
                                                     })
                                                 })
-                                            },
-                                        )?;
+                                            };
+                                    let observation = if matches!(
+                                        &command.scope,
+                                        NativeHistoryExportScopeV1::CheckpointAll(_)
+                                    ) {
+                                        quanta_index_catalog::visit_legacy_history_checkpoint_pages_all_v2(
+                                            legacy_root, catalog, generation, budget, &mut emit_page,
+                                        )?
+                                    } else {
+                                        quanta_index_catalog::visit_legacy_history_checkpoint_pages_v1(
+                                            legacy_root, catalog, generation, budget, &mut emit_page,
+                                        )?
+                                    };
                                     ensure!(page_count > 0, "History export contains no pages");
                                     write_frame(
                                         &mut output,
@@ -429,6 +462,30 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
                                         budget,
                                     )
                                     .context("History inventory completion frame")?;
+                                }
+                                NativeHistoryExportScopeV1::InventoryAll => {
+                                    let count = quanta_index_catalog::visit_legacy_history_generation_keys_all_v2(
+                                        legacy_root,
+                                        catalog,
+                                        budget,
+                                        &mut |generation, budget| {
+                                            write_frame(
+                                                &mut output,
+                                                &ExportFrame::InventoryKey { generation },
+                                                budget,
+                                            ).map_err(|error| {
+                                                error.downcast::<IndexError>().unwrap_or_else(|error| {
+                                                    IndexError::Storage(format!("History all-repository inventory frame: {error}"))
+                                                })
+                                            })
+                                        },
+                                    )?;
+                                    write_frame(
+                                        &mut output,
+                                        &ExportFrame::InventoryAllComplete { count },
+                                        budget,
+                                    )
+                                    .context("History all-repository inventory completion frame")?;
                                 }
                             }
                             Ok(())

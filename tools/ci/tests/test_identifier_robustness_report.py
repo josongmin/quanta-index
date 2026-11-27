@@ -1081,9 +1081,52 @@ def test_generation_manifest_binds_admission_census_and_submitted_suite(tmp_path
     census_path.write_text(json.dumps(census))
     with pytest.raises(ValueError, match="generation artifact mismatch: census.json"):
         verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
-    census_path.write_text(json.dumps(fixture()[1]))
+    census = fixture()[1]
+    census_path.write_text(json.dumps(census))
     suite_path.write_text(json.dumps({**suite, "suite_id": "swapped"}))
     with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
+        verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
+
+
+@pytest.mark.parametrize("drift", ["suite", "census", "manifest"])
+def test_generation_manifest_binds_the_inputs_consumed_by_the_report(tmp_path, monkeypatch, drift):
+    suite, census, _, _ = fixture()
+    suite_path = tmp_path / "prefix-suite.json"
+    census_path = tmp_path / "census.json"
+    manifest_path = tmp_path / "manifest.json"
+    suite_path.write_text(json.dumps(suite))
+    census_path.write_text(json.dumps(census))
+    manifest = {
+        "schema_version": 1,
+        "qualification": "diagnostic_unqualified_source_exposed",
+        "repository_commit": suite["repository_commit"],
+        "artifacts": [
+            {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in (suite_path, census_path)
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    if drift == "suite":
+        suite = {**suite, "suite_id": "stale-suite"}
+        error = "loaded suite differs"
+    elif drift == "census":
+        census = copy.deepcopy(census)
+        census["lanes"]["prefix"]["records"].clear()
+        error = "loaded census differs"
+    else:
+        manifest_path.write_text(json.dumps({**manifest, "repository_commit": "wrong-source"}))
+        read_bytes = Path.read_bytes
+
+        def read_then_replace(path):
+            raw = read_bytes(path)
+            if path == manifest_path:
+                path.write_text(json.dumps(manifest))
+            return raw
+
+        monkeypatch.setattr(Path, "read_bytes", read_then_replace)
+        error = "generation source mismatch"
+
+    with pytest.raises(ValueError, match=error):
         verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
 
 
@@ -1235,6 +1278,12 @@ def test_content_no_answer_population_requires_frozen_generation_count(tmp_path)
         manifest_path, census_path, suite_path, suite, census, "no-answer-content"
     )
     census["lanes"]["no-answer"]["records"].append({"task_id": "NOA2"})
+    census_path.write_text(json.dumps(census))
+    manifest = json.loads(manifest_path.read_text())
+    for artifact in manifest["artifacts"]:
+        if artifact["path"] == census_path.name:
+            artifact["sha256"] = hashlib.sha256(census_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="content no-answer source population mismatch"):
         verify_generation_manifest(
             manifest_path, census_path, suite_path, suite, census, "no-answer-content"
@@ -1293,12 +1342,22 @@ def test_identifier_osa1_generation_binds_frozen_source_and_target_bytes(monkeyp
     verify_generation_manifest(
         manifest_path, census_path, suite_path, target, census, "typo-osa1-absence"
     )
+    original_manifest = manifest_path.read_bytes()
+    original_suite = suite_path.read_bytes()
     wrong_route = copy.deepcopy(target)
     wrong_route["routes"].append("semble-lexical-file")
+    suite_path.write_text(json.dumps(wrong_route))
+    manifest = json.loads(original_manifest)
+    for artifact in manifest["artifacts"]:
+        if artifact["path"] == suite_path.name:
+            artifact["sha256"] = hashlib.sha256(suite_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="target suite is not the frozen source population"):
         verify_generation_manifest(
             manifest_path, census_path, suite_path, wrong_route, census, "typo-osa1-absence"
         )
+    suite_path.write_bytes(original_suite)
+    manifest_path.write_bytes(original_manifest)
     (root / "source-no-answer-content-suite.json").write_text("{}")
     with pytest.raises(ValueError, match="generation source suite mismatch"):
         verify_generation_manifest(

@@ -6,6 +6,7 @@ mod hybrid;
 mod page;
 mod path_page_v1;
 mod profile;
+mod text_matches;
 
 use super::{
     IndexInstanceId, MAX_NATIVE_TEXT_TOP_K, NativeIndexRequest, NativeIndexResponse,
@@ -17,6 +18,7 @@ use quanta_index_contract::native_protocol::{
     NativeReadSessionSettlement, NativeReadSessionState, NativeReadSessionStatus,
     NativeReadSettlementState,
 };
+use crate::ClientLexicalQueryObservationV1;
 
 // The original budget owns cancellation, absolute and phase-observed deadlines.
 // Do not approximate it with a copied clock or cancellation flag.
@@ -60,13 +62,24 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         open_key: [u8; 32],
         budget: &RequestBudgetV1,
     ) -> Result<NativeReadSessionStatus, NativeUdsError> {
+        self.open_read_session_with_observation(selection, open_key, budget, None)
+    }
+
+    pub(crate) fn open_read_session_with_observation(
+        &self,
+        selection: ViewSelection,
+        open_key: [u8; 32],
+        budget: &RequestBudgetV1,
+        observation: Option<&mut ClientLexicalQueryObservationV1>,
+    ) -> Result<NativeReadSessionStatus, NativeUdsError> {
         let NativeIndexResponse::ReadSession(NativeReadSessionReply::Status(status)) = self
-            .request(
+            .request_lexical(
                 NativeIndexRequest::ReadSession(NativeReadSessionRequest::Open {
                     selection,
                     open_key,
                 }),
                 budget,
+                observation,
             )?
         else {
             return Err(NativeUdsError::Protocol(
@@ -335,6 +348,12 @@ pub(super) fn response_matches_request(
         }
         (R::ReadProfile { session }, S::ReadSessionProfile(result)) => result.session == *session,
         (R::SearchDslV1 { session, .. }, S::DslPageV1(page)) => page.session == *session,
+        (
+            R::ReadDslRuntimeCatalogV1 { session, offset, .. },
+            S::DslRuntimeCatalogPageV1(page),
+        ) => page.session == *session && page.matches_offset_v1(*offset),
+        (R::ReadDslStructuralChunksV1 { session, .. }, S::DslStructuralChunksPageV1(page)) =>
+            page.session == *session,
         (R::ReadHistoryCut { session, instance }, S::HistoryCut(result)) => {
             result.session == *session && result.instance == *instance
         }

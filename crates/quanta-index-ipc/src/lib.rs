@@ -39,9 +39,10 @@ pub use admitted_decode::{
 };
 pub use batch_digest::{
     BatchDigestVerdictV1, CanonicalBatchDigestProgressError, canonical_batch_digest_v1,
-    canonical_batch_digest_with_progress_v1, history_replay_advance_with_progress_v1,
-    history_replay_genesis_with_progress_v1, history_snapshot_checkpoint_replay_with_progress_v1,
-    matches_batch_digest_token_v1, stamp_batch_digest_v1, verify_batch_digest_v1,
+    canonical_batch_digest_with_progress_v1, matches_batch_digest_token_v1, stamp_batch_digest_v1,
+    history_replay_advance_with_progress_v1, history_replay_genesis_with_progress_v1,
+    history_snapshot_checkpoint_replay_with_progress_v1,
+    verify_batch_digest_v1,
 };
 pub use codec::{
     AdmittedClientRequestFrame, AdmittedClientResponseBody, CborPayloadLengthProgressErrorV1,
@@ -71,24 +72,26 @@ pub use quanta_index_core::{
     BudgetInterruptionV1, CancelHandleV1, IngestBatchBodyV1, REQUEST_CANCELLED_CODE,
     REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1, RequestExecutionObserverV1,
 };
-#[doc(hidden)]
-pub use server::connect_unix_probe;
 pub use server::{
+    capture_connected_peer_process_with_budget_v1,
     BoundSocketPathProbe, ClientIoPolicy, ClientIpcTimingV1, ClientResponseStream,
     DEFAULT_CLIENT_IO_TIMEOUT, DispatchContextV1, IpcDispatcher, RequestEnvelope, ResponseEnvelope,
-    ShutdownHandle, StreamDispatch, UdsServer, capture_connected_peer_process_with_budget_v1,
-    send_request, send_request_body_negotiated_with_budget_admitted,
+    ShutdownHandle, StreamDispatch, UdsServer, send_request,
+    send_request_body_negotiated_with_budget_admitted,
     send_request_body_negotiated_with_budget_admitted_with_work_v1,
-    send_request_body_with_budget_admitted, send_request_body_with_budget_admitted_bound_peer_v1,
+    send_request_body_with_budget_admitted, send_request_body_with_budget_admitted_peer_v1,
+    send_request_body_with_budget_admitted_bound_peer_v1,
     send_request_body_with_budget_admitted_deadline_v1,
     send_request_body_with_budget_admitted_multiframe_bound_peer_v1,
     send_request_body_with_budget_admitted_multiframe_v1,
-    send_request_body_with_budget_admitted_peer_v1,
     send_request_body_with_budget_admitted_with_work_v1, send_request_negotiated,
     send_request_observed, send_request_observed_negotiated, send_request_with_budget,
-    send_request_with_budget_bound_peer_v1, send_request_with_commit_deadline_v1,
+    send_request_with_budget_bound_peer_v1, send_request_with_budget_observed_v1,
+    send_request_with_commit_deadline_v1,
     send_stream_request,
 };
+#[doc(hidden)]
+pub use server::connect_unix_probe;
 pub use socket_access::{
     GROUP_DIRECTORY_MODE, GROUP_SOCKET_MODE, PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE,
     PeerCredentials, PeerRefusal, SharedSocketAccess, SocketAccessPolicy, WORLD_DIRECTORY_MODE,
@@ -97,3 +100,6 @@ pub use socket_access::{
 #[cfg(feature = "native-send-observer-v1")]
 #[doc(hidden)]
 pub mod native_send_observer_v1;
+#[cfg(feature = "native-send-observer-v1")]
+#[doc(hidden)]
+pub mod native_response_loss_test_support_v1;

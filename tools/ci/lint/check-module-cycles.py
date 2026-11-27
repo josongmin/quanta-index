@@ -25,7 +25,7 @@ The existing `src/bin/` target exclusion remains explicit: library and
 under `src/bin/` require their own structural scope.
 
 A path through a facade (`mod.rs` re-export) is resolved to the submodule
-that defines the item, so a facade does not hide a cycle.
+that defines the item, including explicit renamed re-exports.
 
 `baselines/module-cycles.txt` names the cycles still tolerated, each with
 why it is not yet broken. The lint fails on any cycle not listed and on any
@@ -61,10 +61,12 @@ DEFINITION_RE = re.compile(
 )
 MACRO_RE = re.compile(r"^[ \t]*macro_rules!\s+(" + IDENT + r")", re.M)
 MOD_DECL_RE = re.compile(r"^[ \t]*" + VISIBILITY + r"mod\s+(" + IDENT + r")\s*;", re.M)
+REEXPORT_RE = re.compile(r"\bpub(?:[ \t]*\([^()\n]+\))?\s+use\s+([^;]+);")
 PATH_MOD_PREFIX = r'#\[path\s*=\s*"([^"\n]+)"\]\s*' + VISIBILITY + r"mod\s+(" + IDENT + r")\s*"
 PATH_MOD_DECL_RE = re.compile(PATH_MOD_PREFIX + r";")
 PATH_INLINE_MOD_DECL_RE = re.compile(PATH_MOD_PREFIX + r"\{")
 INLINE_MOD_DECL_RE = re.compile(r"\bmod\s+(" + IDENT + r")\s*\{")
+TEST_CFG_RE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 
 
 def blank_non_code(text: str) -> str:
@@ -109,7 +111,11 @@ def blank_non_code(text: str) -> str:
             i = j
             continue
         prev_ident = i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_")
-        raw = re.match(r"b?r(#*)\"", text[i : i + 260]) if not prev_ident else None
+        raw = (
+            re.match(r"b?r(#*)\"", text[i : i + 260])
+            if c in {"b", "r"} and not prev_ident
+            else None
+        )
         if raw:
             close = '"' + raw.group(1)
             end = text.find(close, i + raw.end())
@@ -161,9 +167,9 @@ def top_level_cfg_test_spans(code: str) -> list[tuple[int, int]]:
             depth += 1
         elif ch == "}":
             depth -= 1
-        elif depth == 0 and code.startswith("#[cfg(test)]", k):
+        elif depth == 0 and ch == "#" and (guard := TEST_CFG_RE.match(code, k)):
             start = k
-            j = k
+            j = guard.end()
             # the item ends at its first top-level `;` or its body's brace
             while j < n and code[j] not in ";{":
                 if code[j] == "[":
@@ -186,6 +192,22 @@ def top_level_cfg_test_spans(code: str) -> list[tuple[int, int]]:
     return spans
 
 
+def cfg_test_spans(code: str) -> list[tuple[int, int]]:
+    """Test-only items in the source module and its inline module bodies."""
+    if TEST_CFG_RE.search(code) is None:
+        return []
+    spans = top_level_cfg_test_spans(code)
+    for module in INLINE_MOD_DECL_RE.finditer(code):
+        if any(start <= module.start() < end for start, end in spans):
+            continue
+        body = module.end()
+        end = matching_brace(code, body - 1)
+        spans.extend(
+            (body + start, body + stop) for start, stop in top_level_cfg_test_spans(code[body:end])
+        )
+    return spans
+
+
 def remove_spans(code: str, spans: list[tuple[int, int]]) -> str:
     out = list(code)
     for start, end in spans:
@@ -195,17 +217,22 @@ def remove_spans(code: str, spans: list[tuple[int, int]]) -> str:
     return "".join(out)
 
 
-def expand_use_tree(prefix: list[str], tree: str) -> list[list[str]]:
-    """Every leaf path of a `use` tree body (`a::{b, c::{d, e}}`)."""
+def use_segments(path: str) -> list[str]:
+    # Leading `::` in a Rust 2018+ use path names the extern prelude.
+    parts = [part.strip() for part in path.split("::") if part.strip()]
+    return ["", *parts] if path.lstrip().startswith("::") else parts
+
+
+def expand_use_tree(prefix: list[str], tree: str) -> list[tuple[list[str], str | None]]:
+    """Every leaf path and optional rename in a `use` tree body."""
     tree = tree.strip()
     if not tree:
         return []
     brace = tree.find("{")
     if brace < 0:
-        head = tree.split(" as ")[0].strip()
-        parts = [p for p in head.split("::") if p]
-        return [prefix + parts]
-    head = [p for p in tree[:brace].split("::") if p.strip()]
+        path, *renames = re.split(r"\s+as\s+", tree, maxsplit=1)
+        return [(prefix + use_segments(path), renames[0].strip() if renames else None)]
+    head = use_segments(tree[:brace])
     inner = tree[brace + 1 : tree.rfind("}")]
     items, depth, current = [], 0, ""
     for ch in inner:
@@ -221,31 +248,32 @@ def expand_use_tree(prefix: list[str], tree: str) -> list[list[str]]:
     items.append(current)
     leaves = []
     for item in items:
-        leaves.extend(expand_use_tree(prefix + [p.strip() for p in head], item))
+        leaves.extend(expand_use_tree(prefix + head, item))
     return leaves
 
 
 PATH_START_RE = re.compile(r"(?<![A-Za-z0-9_:])(crate|super|self)\s*::\s*")
+PATH_SEGMENT_RE = re.compile(r"((?:" + IDENT + r"\s*::\s*)*)(" + IDENT + r"|\{)?")
 
 
-def referenced_paths(code: str) -> list[list[str]]:
-    """Every `crate::`/`super::`/`self::` path in `code`, use trees expanded."""
-    paths = []
+def referenced_paths_with_offsets(code: str) -> list[tuple[int, list[str]]]:
+    """Every `crate::`/`super::`/`self::` path with its source offset."""
+    paths: list[tuple[int, list[str]]] = []
     for m in PATH_START_RE.finditer(code):
         k = m.end()
         # read `ident::ident::...` and an optional `{ ... }` group
-        seg = re.match(r"((?:" + IDENT + r"\s*::\s*)*)(" + IDENT + r"|\{)?", code[k:])
+        seg = PATH_SEGMENT_RE.match(code, k)
         if not seg:
             continue
         head = [p.strip() for p in seg.group(1).split("::") if p.strip()]
         tail = seg.group(2)
         if tail == "{":
-            open_at = k + seg.end() - 1
+            open_at = seg.end() - 1
             close = matching_brace(code, open_at)
-            for leaf in expand_use_tree([], code[open_at : close + 1]):
-                paths.append([m.group(1)] + head + leaf)
+            for leaf, _rename in expand_use_tree([], code[open_at : close + 1]):
+                paths.append((m.start(), [m.group(1)] + head + leaf))
         else:
-            paths.append([m.group(1)] + head + ([tail] if tail else []))
+            paths.append((m.start(), [m.group(1)] + head + ([tail] if tail else [])))
     return paths
 
 
@@ -255,6 +283,7 @@ class Crate:
     modules: dict[str, str] = field(default_factory=dict)  # module path -> production code
     definitions: dict[str, set[str]] = field(default_factory=dict)
     owners: dict[str, list[str]] = field(default_factory=dict)  # name -> defining modules
+    renamed_exports: dict[tuple[str, str], set[tuple[str, ...]]] = field(default_factory=dict)
 
 
 def module_path_of(src: Path, file: Path) -> str | None:
@@ -269,14 +298,17 @@ def module_path_of(src: Path, file: Path) -> str | None:
     return "::".join(parts)
 
 
+def inline_module_ranges(code: str, before: int) -> list[tuple[int, int, str]]:
+    ranges = []
+    for match in INLINE_MOD_DECL_RE.finditer(code, 0, before):
+        start = match.end() - 1
+        ranges.append((start, matching_brace(code, start), match.group(1)))
+    return ranges
+
+
 def enclosing_inline_modules(code: str, offset: int) -> tuple[str, ...]:
     """Inline module scopes containing a declaration at `offset`."""
-    names = []
-    for match in INLINE_MOD_DECL_RE.finditer(code, 0, offset):
-        open_at = match.end() - 1
-        if offset < matching_brace(code, open_at):
-            names.append(match.group(1))
-    return tuple(names)
+    return tuple(name for _, stop, name in inline_module_ranges(code, offset) if offset < stop)
 
 
 def reparent_module(owner: str, original: str, alias: str) -> str:
@@ -349,9 +381,7 @@ def load_crate(
                     or not target.is_file()
                 ):
                     raise ValueError(missing)
-                if not any(
-                    start <= match.start() < end for start, end in top_level_cfg_test_spans(code)
-                ):
+                if not any(start <= match.start() < end for start, end in cfg_test_spans(code)):
                     sibling_paths.append((parent, missing))
                 continue
             if not target.is_file():
@@ -415,17 +445,19 @@ def load_crate(
                 ]
     # modules declared under #[cfg(test)] are test code, with their subtree
     test_modules: set[str] = set()
+    test_spans = {path: cfg_test_spans(code) for path, code in raw.items()}
     for path, code in raw.items():
-        for start, end in top_level_cfg_test_spans(code):
+        for start, end in test_spans[path]:
             span = code[start:end]
+            scope = f"{path}::" if path else ""
+            scope += "".join(f"{name}::" for name in enclosing_inline_modules(code, start))
             for decl in (*MOD_DECL_RE.finditer(span), *INLINE_MOD_DECL_RE.finditer(span)):
                 # Children inside an inline test module belong to that module,
                 # not to its production parent. Do not hide a same-named peer.
                 prefix = span[: decl.start()]
                 if prefix.count("{") != prefix.count("}"):
                     continue
-                child = f"{path}::{decl.group(1)}" if path else decl.group(1)
-                test_modules.add(child)
+                test_modules.add(scope + decl.group(1))
 
     def is_test(path: str) -> bool:
         return any(path == t or path.startswith(t + "::") for t in test_modules)
@@ -439,11 +471,20 @@ def load_crate(
     for path, code in raw.items():
         if is_test(path):
             continue
-        production = remove_spans(code, top_level_cfg_test_spans(code))
+        production = remove_spans(code, test_spans[path])
         crate.modules[path] = production
         crate.definitions[path] = set(DEFINITION_RE.findall(production)) | set(
             MACRO_RE.findall(production)
         )
+        for export in REEXPORT_RE.finditer(production):
+            prefix = production[: export.start()]
+            if prefix.count("{") != prefix.count("}"):
+                continue
+            for source, rename in expand_use_tree([], export.group(1)):
+                if rename and rename != "_" and source:
+                    if source[-1] == "self" and len(source) > 1:
+                        source.pop()
+                    crate.renamed_exports.setdefault((path, rename), set()).add(tuple(source))
     # A deleted declared module must not disappear from the measured graph.
     for module, code in crate.modules.items():
         for declaration in MOD_DECL_RE.finditer(code):
@@ -459,8 +500,13 @@ def load_crate(
     return crate
 
 
-def resolve(crate: Crate, current: str, path: list[str]) -> str | None:
-    """The module file a path names an item of, or None outside the crate."""
+def resolve(
+    crate: Crate,
+    current: str,
+    path: list[str],
+    seen: frozenset[tuple[str, str]] = frozenset(),
+) -> set[str]:
+    """Module files a path can name, including alternative cfg re-exports."""
     anchor, rest = path[0], path[1:]
     if anchor == "crate":
         base: list[str] = []
@@ -479,7 +525,26 @@ def resolve(crate: Crate, current: str, path: list[str]) -> str | None:
             best, remainder = candidate, segments[k:]
             break
     if best is None:
-        return None
+        return set()
+    if remainder and (binding := (best, remainder[0])) in crate.renamed_exports:
+        if binding in seen:
+            return set()
+        targets: set[str] = set()
+        for source in crate.renamed_exports[binding]:
+            first = source[0]
+            if first in {"crate", "super", "self"}:
+                local = list(source)
+            else:
+                child = f"{best}::{first}" if best else first
+                if not first or (
+                    child not in crate.modules
+                    and first not in crate.definitions.get(best, set())
+                    and (best, first) not in crate.renamed_exports
+                ):
+                    continue
+                local = ["self", *source]
+            targets.update(resolve(crate, best, local + remainder[1:], seen | {binding}))
+        return targets
     if remainder and remainder[0] not in crate.definitions.get(best, set()):
         # a facade re-export: find the submodule that defines the name
         prefix = best + "::" if best else ""
@@ -487,8 +552,8 @@ def resolve(crate: Crate, current: str, path: list[str]) -> str | None:
             m for m in crate.owners.get(remainder[0], []) if m.startswith(prefix) and m != best
         )
         if len(owners) == 1:
-            return owners[0]
-    return best
+            return {owners[0]}
+    return {best}
 
 
 def related(a: str, b: str) -> bool:
@@ -500,10 +565,18 @@ def module_graph(crate: Crate) -> dict[str, set[str]]:
     for module, code in crate.modules.items():
         if not module:
             continue
-        for path in referenced_paths(code):
-            target = resolve(crate, module, path)
-            if target is not None and not related(module, target):
-                edges[module].add(target)
+        paths = referenced_paths_with_offsets(code)
+        ranges = (
+            inline_module_ranges(code, len(code)) if any(p[0] != "crate" for _, p in paths) else []
+        )
+        for offset, path in paths:
+            scope = module
+            if ranges and path[0] != "crate":
+                names = (name for start, stop, name in ranges if start < offset < stop)
+                scope = "::".join((module, *names))
+            edges[module].update(
+                target for target in resolve(crate, scope, path) if not related(module, target)
+            )
     return edges
 
 

@@ -1,10 +1,34 @@
 //! Service-owned bounded retirement; Catalog remains the lifetime authority.
+//!
+//! # Rotation
+//!
+//! The configured scopes form one rotation: every round runs the turn of the
+//! scope at its front and moves that scope to the back, whether the turn
+//! completed or failed, so with `n` configured scopes every scope takes a
+//! turn every `n` rounds and a scope that keeps failing never takes another
+//! scope's turn. A committed release queues its view range on its scope; the
+//! scope's next turn retires that range unless its previous turn already
+//! served a release, so regular Work, Views and Custody turns continue under
+//! sustained releases and a queued range is reached within `2n` rounds.
+//!
+//! A scope's queued ranges are cleared when its floor step refuses with the
+//! typed `SnapshotUnavailable`: the scope's epoch is not its workspace's
+//! current epoch. A release implies the workspace was current at that epoch,
+//! and the Catalog never changes a workspace's epoch or removes its row, so
+//! such a range can never be served.
+//!
+//! # Passes
+//!
+//! A pass ends once every configured scope has taken a turn in it. A pass in
+//! which no turn completed is a stalled pass; see
+//! [`crate::native_retention_observation::NATIVE_RETENTION_STALL_PASSES`].
 
 use std::{
     collections::{BTreeSet, VecDeque},
     time::Duration,
 };
 
+use quanta_index_catalog::{MaintenanceDemand, ReleasedViewRange};
 use quanta_index_core::index::{
     IndexError, WorkBudget, WorkLimits, WorkspaceKey,
     ports::{
@@ -206,6 +230,38 @@ enum Phase {
     Custody,
 }
 
+// Release hints accelerate the durable Views sweep. Keep a bounded backlog
+// even when readers release pins faster than retention can run.
+const MAX_PENDING_RELEASE_RANGES: usize = 256;
+
+struct ReleasedViews {
+    after: Option<u64>,
+    last_sequence: u64,
+}
+
+impl ReleasedViews {
+    fn new(released: &ReleasedViewRange) -> Self {
+        Self {
+            after: released.first_sequence.checked_sub(1),
+            last_sequence: released.last_sequence,
+        }
+    }
+
+    fn covers_remaining(&self, released: &ReleasedViewRange) -> bool {
+        self.after
+            .is_none_or(|after| after < released.first_sequence)
+            && self.last_sequence >= released.last_sequence
+    }
+
+    fn request(&self) -> SweepRequest<u64> {
+        SweepRequest {
+            after: self.after,
+            through: Some(self.last_sequence),
+            head: false,
+        }
+    }
+}
+
 struct ScopeState {
     scope: NativeRetentionScope,
     phase: Phase,
@@ -215,12 +271,33 @@ struct ScopeState {
     // A successful partial release proves that this scope has another page.
     // An empty scan clears the hint; Catalog remains the debt authority.
     custody_unfinished: bool,
+    // Independent, gap-free ranges in arrival order. The front retains its
+    // cursor when a new release arrives behind it.
+    released_views: VecDeque<ReleasedViews>,
+    // A release page gets the first turn, then yields one regular phase.
+    served_release_last: bool,
+}
+
+/// What one round of the driver showed, for the retention observation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct NativeRetentionRound {
+    /// The round's turn completed.
+    pub(crate) completed: bool,
+    /// The round ended a pass in which no turn completed.
+    pub(crate) stalled_pass: bool,
+    /// A committed release range still waits for its scope's release turn.
+    pub(crate) releases_pending: bool,
 }
 
 pub(crate) struct NativeRetentionDriver {
     config: NativeRetentionConfig,
     scopes: VecDeque<ScopeState>,
     progress: Option<RetentionProgress>,
+    // Scopes that have not taken a turn in the current pass.
+    pass_untried: BTreeSet<NativeRetentionScope>,
+    // Whether a turn of the current pass completed.
+    pass_completed: bool,
+    last_round: NativeRetentionRound,
 }
 
 impl NativeRetentionDriver {
@@ -237,17 +314,49 @@ impl NativeRetentionDriver {
                 views: Sweep::new(),
                 custody: Sweep::new(),
                 custody_unfinished: false,
+                released_views: VecDeque::new(),
+                served_release_last: false,
             })
             .collect();
+        let pass_untried = config.scopes.iter().copied().collect();
         Ok(Self {
             config,
             scopes,
             progress: RetentionProgress::new_if_enabled(),
+            pass_untried,
+            pass_completed: false,
+            last_round: NativeRetentionRound::default(),
         })
     }
 
     pub(crate) fn config(&self) -> &NativeRetentionConfig {
         &self.config
+    }
+
+    /// Steer the next rounds by committed Catalog demand.
+    ///
+    /// Released ranges run in arrival order, independently of ordinary Views.
+    /// The durable Views sweep still covers hints that cannot be queued.
+    pub(crate) fn schedule(&mut self, demand: &MaintenanceDemand) {
+        for released in &demand.released_views {
+            let Some(state) = self.scopes.iter_mut().find(|state| {
+                state.scope.workspace == released.workspace && state.scope.epoch == released.epoch
+            }) else {
+                continue;
+            };
+            let pending = &mut state.released_views;
+            if pending.len() < MAX_PENDING_RELEASE_RANGES
+                && !pending.iter().any(|range| range.covers_remaining(released))
+                && pending.try_reserve(1).is_ok()
+            {
+                pending.push_back(ReleasedViews::new(released));
+            }
+        }
+    }
+
+    /// What the latest round showed.
+    pub(crate) const fn last_round(&self) -> NativeRetentionRound {
+        self.last_round
     }
 
     pub(crate) fn record_admission_refusal(&mut self) {
@@ -274,16 +383,61 @@ impl NativeRetentionDriver {
             .scopes
             .pop_front()
             .ok_or_else(|| IndexError::BackendViolation("retention lost its scopes".into()))?;
-        let result = self.run_scope(catalog, &mut state, budget);
-        // Reinsert even on refusal: a single absent epoch/limited page must
-        // not erase configuration or keep other scopes behind itself.
+        let floor = self.retain_floor(catalog, state.scope, budget);
+        let result = match floor {
+            Ok(()) => self.run_scope(catalog, &mut state, budget),
+            Err(IndexError::SnapshotUnavailable) => {
+                // The scope's epoch is not current: its ranges can never be
+                // served, so they are cleared rather than retried.
+                state.released_views.clear();
+                state.served_release_last = false;
+                Err(IndexError::SnapshotUnavailable)
+            }
+            Err(error) => Err(error),
+        };
+        let _untried = self.pass_untried.remove(&state.scope);
         self.scopes.push_back(state);
+        self.pass_completed |= result.is_ok();
+        let stalled_pass = self.pass_untried.is_empty() && !self.pass_completed;
+        if self.pass_untried.is_empty() {
+            self.pass_untried = self.config.scopes.iter().copied().collect();
+            self.pass_completed = false;
+        }
+        self.last_round = NativeRetentionRound {
+            completed: result.is_ok(),
+            stalled_pass,
+            releases_pending: self
+                .scopes
+                .iter()
+                .any(|state| !state.released_views.is_empty()),
+        };
         if let Some(progress) = &mut self.progress {
             progress.emit_due();
         }
         result
     }
 
+    /// Every turn first retains its scope's exact-history tail.
+    fn retain_floor<C: CatalogExactHistoryPort>(
+        &mut self,
+        catalog: &C,
+        scope: NativeRetentionScope,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        let floor = catalog.retain_exact_history_tail(
+            scope.workspace,
+            scope.epoch,
+            self.config.sequence_window,
+            budget,
+        );
+        if let Some(progress) = &mut self.progress {
+            progress.floor_result(floor.is_err());
+        }
+        floor.map(|_floor| ())
+    }
+
+    /// The scheduled release or regular phase of a turn whose floor step
+    /// succeeded.
     fn run_scope<C>(
         &mut self,
         catalog: &C,
@@ -296,21 +450,18 @@ impl NativeRetentionDriver {
             + CatalogCustodyMaintenancePort,
     {
         let NativeRetentionScope { workspace, epoch } = state.scope;
-        let floor = catalog.retain_exact_history_tail(
-            workspace,
-            epoch,
-            self.config.sequence_window,
-            budget,
-        );
-        if let Some(progress) = &mut self.progress {
-            progress.floor_result(floor.is_err());
-        }
-        let _floor = floor?;
-        let phase = state.phase;
-        state.phase = match phase {
-            Phase::Work => Phase::Views,
-            Phase::Views => Phase::Custody,
-            Phase::Custody => Phase::Work,
+        let release_turn = !state.released_views.is_empty() && !state.served_release_last;
+        state.served_release_last = release_turn;
+        let phase = if release_turn {
+            Phase::Views
+        } else {
+            let phase = state.phase;
+            state.phase = match phase {
+                Phase::Work => Phase::Views,
+                Phase::Views => Phase::Custody,
+                Phase::Custody => Phase::Work,
+            };
+            phase
         };
         match phase {
             Phase::Work => {
@@ -343,14 +494,28 @@ impl NativeRetentionDriver {
                 }
             }
             Phase::Views => {
-                let request = state.views.request(self.config.head_probe_every)?;
-                let page = catalog.retire_exact_history_page(
-                    workspace,
-                    epoch,
-                    request.after,
-                    self.config.page_limit,
-                    budget,
-                )?;
+                let released = state.released_views.front_mut().filter(|_| release_turn);
+                let request = match &released {
+                    Some(released) => released.request(),
+                    None => state.views.request(self.config.head_probe_every)?,
+                };
+                let page = match request.through {
+                    Some(through) => catalog.retire_exact_history_page_through(
+                        workspace,
+                        epoch,
+                        request.after,
+                        through,
+                        self.config.page_limit,
+                        budget,
+                    ),
+                    None => catalog.retire_exact_history_page(
+                        workspace,
+                        epoch,
+                        request.after,
+                        self.config.page_limit,
+                        budget,
+                    ),
+                }?;
                 validate_page(
                     request,
                     page.after,
@@ -362,9 +527,17 @@ impl NativeRetentionDriver {
                     .after
                     .zip(request.through)
                     .is_some_and(|(after, upper)| after >= upper);
-                state
-                    .views
-                    .accept(request, page.after, page.has_more, reached);
+                if let Some(released) = released {
+                    if reached || !page.has_more {
+                        let _finished = state.released_views.pop_front();
+                    } else {
+                        released.after = page.after;
+                    }
+                } else {
+                    state
+                        .views
+                        .accept(request, page.after, page.has_more, reached);
+                }
                 if (page.examined == 0 || (page.retired == 0 && state.custody_unfinished))
                     && self.can_use_spare_custody(budget)?
                 {
@@ -518,8 +691,27 @@ mod tests {
         work_page: Option<TerminalWorkRetirementPage>,
         view_page: Option<ViewRetirementPage>,
         refuse_views: bool,
+        refuse_custody: bool,
         custody_has_more: bool,
         custody_absent: AtomicBool,
+    }
+
+    fn bounded_view_page(
+        after: Option<u64>,
+        through: u64,
+        mut page: ViewRetirementPage,
+    ) -> ViewRetirementPage {
+        if page.after.is_some_and(|sequence| sequence > through) {
+            return ViewRetirementPage {
+                after,
+                examined: 0,
+                retired: 0,
+                blocked: 0,
+                has_more: false,
+            };
+        }
+        page.has_more &= page.after != Some(through);
+        page
     }
 
     impl RefusingCatalog {
@@ -603,6 +795,19 @@ mod tests {
                 has_more: false,
             })
         }
+
+        fn retire_exact_history_page_through(
+            &self,
+            workspace: WorkspaceKey,
+            epoch: u64,
+            after: Option<u64>,
+            through: u64,
+            limit: u32,
+            budget: &mut WorkBudget,
+        ) -> Result<ViewRetirementPage, IndexError> {
+            let page = self.retire_exact_history_page(workspace, epoch, after, limit, budget)?;
+            Ok(bounded_view_page(after, through, page))
+        }
     }
 
     impl CatalogTerminalWorkRetentionPort for RefusingCatalog {
@@ -637,6 +842,9 @@ mod tests {
             _budget: &mut WorkBudget,
         ) -> Result<Option<TerminalCustodyCandidate>, IndexError> {
             self.record(epoch, "custody")?;
+            if self.refuse_custody {
+                return Err(IndexError::ResourceLimited);
+            }
             Ok(
                 (after.is_none() && !self.custody_absent.load(Ordering::Acquire))
                     .then_some(self.custody_candidate)
@@ -1238,11 +1446,13 @@ mod tests {
                     "retention phase result changed under split page limits".into(),
                 ));
             }
-            match outcome {
-                Ok(()) => {}
-                Err(IndexError::ResourceLimited) if expected_failure => {}
-                Err(error) => return Err(error),
-            }
+            outcome.or_else(|error| {
+                if expected_failure && error == IndexError::ResourceLimited {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })?;
         }
         if catalog
             .limits
@@ -1351,5 +1561,619 @@ mod tests {
             }
         }
         validate_page(request, Some(11), [1, 0, 1], true, 1)
+    }
+
+    /// An endless, always-blocked view history: every page examines the next
+    /// sequence and reports more. Records each view request's cursor.
+    #[derive(Default)]
+    struct EndlessViews {
+        view_afters: Mutex<Vec<(u64, Option<u64>)>>,
+        /// Epochs whose next Views page fails once.
+        fail_views_once: Mutex<BTreeSet<u64>>,
+        /// The epoch of every turn, in order: each turn starts at the floor.
+        turns: Mutex<Vec<u64>>,
+        /// Epochs whose every floor step fails, with the failure.
+        fail_floor: Mutex<std::collections::BTreeMap<u64, IndexError>>,
+    }
+
+    impl EndlessViews {
+        fn turns(&self) -> Result<Vec<u64>, IndexError> {
+            Ok(self
+                .turns
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?
+                .clone())
+        }
+
+        fn fail_floor(&self, epoch: u64, failure: Option<IndexError>) -> Result<(), IndexError> {
+            let mut failing = self
+                .fail_floor
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?;
+            match failure {
+                Some(failure) => {
+                    let _previous = failing.insert(epoch, failure);
+                }
+                None => {
+                    let _previous = failing.remove(&epoch);
+                }
+            }
+            drop(failing);
+            Ok(())
+        }
+
+        fn pending_ranges(driver: &NativeRetentionDriver, epoch: u64) -> usize {
+            driver
+                .scopes
+                .iter()
+                .filter(|state| state.scope.epoch == epoch)
+                .map(|state| state.released_views.len())
+                .sum()
+        }
+    }
+
+    impl CatalogExactHistoryPort for EndlessViews {
+        fn exact_history_floor(&self, _: WorkspaceKey, _: u64) -> Result<u64, IndexError> {
+            Err(IndexError::BackendViolation("unexpected floor read".into()))
+        }
+
+        fn advance_exact_history_floor(
+            &self,
+            _: WorkspaceKey,
+            _: u64,
+            _: u64,
+            _: &mut WorkBudget,
+        ) -> Result<u64, IndexError> {
+            Err(IndexError::BackendViolation(
+                "unexpected floor advance".into(),
+            ))
+        }
+
+        fn retain_exact_history_tail(
+            &self,
+            _: WorkspaceKey,
+            epoch: u64,
+            _: u64,
+            _: &mut WorkBudget,
+        ) -> Result<u64, IndexError> {
+            self.turns
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?
+                .push(epoch);
+            if let Some(failure) = self
+                .fail_floor
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?
+                .get(&epoch)
+            {
+                return Err(failure.clone());
+            }
+            Ok(1_000)
+        }
+
+        fn retire_exact_history_page(
+            &self,
+            _workspace: WorkspaceKey,
+            epoch: u64,
+            after: Option<u64>,
+            _limit: u32,
+            _budget: &mut WorkBudget,
+        ) -> Result<ViewRetirementPage, IndexError> {
+            self.view_afters
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?
+                .push((epoch, after));
+            if self
+                .fail_views_once
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?
+                .remove(&epoch)
+            {
+                return Err(IndexError::ResourceLimited);
+            }
+            Ok(ViewRetirementPage {
+                after: Some(after.map_or(0, |sequence| sequence.saturating_add(1))),
+                examined: 1,
+                retired: 0,
+                blocked: 1,
+                has_more: true,
+            })
+        }
+
+        fn retire_exact_history_page_through(
+            &self,
+            workspace: WorkspaceKey,
+            epoch: u64,
+            after: Option<u64>,
+            through: u64,
+            limit: u32,
+            budget: &mut WorkBudget,
+        ) -> Result<ViewRetirementPage, IndexError> {
+            let page = self.retire_exact_history_page(workspace, epoch, after, limit, budget)?;
+            Ok(bounded_view_page(after, through, page))
+        }
+    }
+
+    impl CatalogTerminalWorkRetentionPort for EndlessViews {
+        fn retire_terminal_work_page(
+            &self,
+            _: WorkspaceKey,
+            _: u64,
+            after: Option<WorkRetirementCursor>,
+            _: u32,
+            _: &mut WorkBudget,
+        ) -> Result<TerminalWorkRetirementPage, IndexError> {
+            Ok(TerminalWorkRetirementPage {
+                after,
+                examined: 0,
+                retired: 0,
+                blocked: 0,
+                has_more: false,
+            })
+        }
+    }
+
+    impl CatalogCustodyMaintenancePort for EndlessViews {
+        fn next_terminal_custody(
+            &self,
+            _: WorkspaceKey,
+            _: u64,
+            _: Option<u64>,
+            _: Option<u64>,
+            _: &mut WorkBudget,
+        ) -> Result<Option<TerminalCustodyCandidate>, IndexError> {
+            Ok(None)
+        }
+
+        fn release_terminal_custody(
+            &self,
+            _: OperationKey,
+            _: u32,
+            _: &mut WorkBudget,
+        ) -> Result<TerminalCustodyPage, IndexError> {
+            Err(IndexError::BackendViolation(
+                "unexpected custody release".into(),
+            ))
+        }
+    }
+
+    /// A release starts its own range on the next Views turn and preserves
+    /// the ordinary forward cursor.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test assertions report the observed view cursors on mismatch"
+    )]
+    fn released_view_prioritizes_its_sequence_and_preserves_ordinary_cursor()
+    -> Result<(), IndexError> {
+        let first = fallback_scope(2);
+        let second = fallback_scope(3);
+        let mut config = fallback_config(vec![first, second])?;
+        config.head_probe_every = 64;
+        let mut driver = NativeRetentionDriver::new(config)?;
+        let catalog = EndlessViews::default();
+        let run = |driver: &mut NativeRetentionDriver| -> Result<(), IndexError> {
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(2))
+                .ok_or(IndexError::ResourceLimited)?;
+            let mut budget = WorkBudget::new(driver.config.work_limits, deadline);
+            driver.run_round(&catalog, &mut budget)
+        };
+        let afters = |catalog: &EndlessViews| -> Result<Vec<(u64, Option<u64>)>, IndexError> {
+            Ok(catalog
+                .view_afters
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?
+                .clone())
+        };
+        // Two scopes alternate; phases rotate Work, Views, Custody. Twelve
+        // rounds give each scope two forward Views turns.
+        for _ in 0..12 {
+            run(&mut driver)?;
+        }
+        assert_eq!(
+            afters(&catalog)?,
+            [(2, None), (3, None), (2, Some(0)), (3, Some(0))]
+        );
+        // Scope 2 keeps its scheduled turn. Scope 3 takes a release page
+        // while preserving its previous Views cursor.
+        driver.schedule(&MaintenanceDemand {
+            released_views: vec![release_range(second.epoch, 8, 8), release_range(9, 8, 8)],
+            ..MaintenanceDemand::default()
+        });
+        run(&mut driver)?;
+        assert_eq!(afters(&catalog)?.len(), 4);
+        run(&mut driver)?;
+        assert_eq!(afters(&catalog)?.last(), Some(&(3, Some(7))));
+        assert_eq!(afters(&catalog)?.len(), 5);
+        let ordinary = driver
+            .scopes
+            .iter()
+            .find(|state| state.scope == second)
+            .and_then(|state| state.views.forward);
+        assert_eq!(ordinary, Some(1));
+        Ok(())
+    }
+
+    fn release_range(epoch: u64, first_sequence: u64, last_sequence: u64) -> ReleasedViewRange {
+        ReleasedViewRange {
+            workspace: fallback_scope(epoch).workspace,
+            epoch,
+            first_sequence,
+            last_sequence,
+        }
+    }
+
+    fn release(epochs: &[u64]) -> MaintenanceDemand {
+        MaintenanceDemand {
+            released_views: epochs
+                .iter()
+                .map(|epoch| release_range(*epoch, 0, 0))
+                .collect(),
+            ..MaintenanceDemand::default()
+        }
+    }
+
+    fn view_round(
+        driver: &mut NativeRetentionDriver,
+        catalog: &EndlessViews,
+    ) -> Result<(), IndexError> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut budget = WorkBudget::new(driver.config.work_limits, deadline);
+        driver.run_round(catalog, &mut budget)
+    }
+
+    fn view_afters(catalog: &EndlessViews) -> Result<Vec<(u64, Option<u64>)>, IndexError> {
+        Ok(catalog
+            .view_afters
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?
+            .clone())
+    }
+
+    /// Release arrival order leaves the configured scope rotation intact.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test assertions report the observed view cursors on mismatch"
+    )]
+    fn released_scopes_run_in_configured_rotation() -> Result<(), IndexError> {
+        let mut config = fallback_config(vec![
+            fallback_scope(2),
+            fallback_scope(3),
+            fallback_scope(4),
+        ])?;
+        config.head_probe_every = 64;
+        let mut driver = NativeRetentionDriver::new(config)?;
+        let catalog = EndlessViews::default();
+        // Three scopes, three phases: nine rounds give each scope one forward
+        // Views turn, so every later unscheduled Views turn starts at Some(0).
+        for _ in 0..9 {
+            view_round(&mut driver, &catalog)?;
+        }
+        assert_eq!(view_afters(&catalog)?, [(2, None), (3, None), (4, None)]);
+        driver.schedule(&release(&[4]));
+        driver.schedule(&release(&[2]));
+        driver.schedule(&release(&[2]));
+        for _ in 0..3 {
+            view_round(&mut driver, &catalog)?;
+        }
+        assert_eq!(
+            view_afters(&catalog)?.get(3..),
+            Some([(2, None), (4, None)].as_slice())
+        );
+        Ok(())
+    }
+
+    /// A failed release keeps its cursor and retries after a regular turn.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test assertions report the observed view cursors on mismatch"
+    )]
+    fn failed_release_round_retries_after_a_regular_turn() -> Result<(), IndexError> {
+        let mut config = fallback_config(vec![fallback_scope(2), fallback_scope(3)])?;
+        config.head_probe_every = 64;
+        let mut driver = NativeRetentionDriver::new(config)?;
+        let catalog = EndlessViews::default();
+        for _ in 0..6 {
+            view_round(&mut driver, &catalog)?;
+        }
+        assert_eq!(view_afters(&catalog)?, [(2, None), (3, None)]);
+        let _armed = catalog
+            .fail_views_once
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?
+            .insert(3);
+        driver.schedule(&release(&[3]));
+        view_round(&mut driver, &catalog)?;
+        assert_eq!(
+            view_round(&mut driver, &catalog),
+            Err(IndexError::ResourceLimited)
+        );
+        for _ in 0..3 {
+            view_round(&mut driver, &catalog)?;
+        }
+        assert_eq!(
+            view_afters(&catalog)?.get(2..),
+            Some([(3, None), (2, Some(0))].as_slice())
+        );
+        view_round(&mut driver, &catalog)?;
+        assert_eq!(
+            view_afters(&catalog)?.get(2..),
+            Some([(3, None), (2, Some(0)), (3, None)].as_slice())
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "report the observed phase order on mismatch"
+    )]
+    fn sustained_releases_preserve_every_scope_and_regular_phase() -> Result<(), IndexError> {
+        use quanta_index_core::index::Digest;
+        let scopes = vec![fallback_scope(2), fallback_scope(3)];
+        let mut driver = NativeRetentionDriver::new(fallback_config(scopes)?)?;
+        let catalog = RefusingCatalog {
+            work_page: Some(TerminalWorkRetirementPage {
+                after: Some(WorkRetirementCursor {
+                    sequence: 1,
+                    work: Digest([7; 32]),
+                }),
+                examined: 1,
+                retired: 1,
+                blocked: 0,
+                has_more: false,
+            }),
+            view_page: Some(ViewRetirementPage {
+                after: Some(0),
+                examined: 1,
+                retired: 1,
+                blocked: 0,
+                has_more: false,
+            }),
+            ..RefusingCatalog::default()
+        };
+        for _ in 0..12 {
+            driver.schedule(&release(&[2, 3]));
+            run_fallback_round(&mut driver, &catalog)?;
+        }
+        let phases: Vec<_> = catalog
+            .calls
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?
+            .iter()
+            .copied()
+            .filter(|(_, phase)| *phase != "floor")
+            .collect();
+        assert_eq!(
+            phases,
+            ["views", "work", "views", "views", "views", "custody"]
+                .into_iter()
+                .flat_map(|phase| [(2, phase), (3, phase)])
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "report the release cursors on mismatch"
+    )]
+    fn sparse_releases_reach_later_views_without_rewinding() -> Result<(), IndexError> {
+        let mut driver = NativeRetentionDriver::new(fallback_config(vec![fallback_scope(2)])?)?;
+        let catalog = EndlessViews::default();
+        driver.schedule(&MaintenanceDemand {
+            released_views: vec![release_range(2, 5, 7), release_range(2, 1_000, 1_000)],
+            ..MaintenanceDemand::default()
+        });
+        view_round(&mut driver, &catalog)?;
+        let earlier = MaintenanceDemand {
+            released_views: vec![release_range(2, 3, 3)],
+            ..MaintenanceDemand::default()
+        };
+        for _ in 0..7 {
+            driver.schedule(&earlier);
+            view_round(&mut driver, &catalog)?;
+        }
+        for _ in 0..3 {
+            view_round(&mut driver, &catalog)?;
+        }
+        assert_eq!(
+            view_afters(&catalog)?,
+            [Some(4), Some(5), None, Some(6), Some(999), Some(2), Some(0),].map(|after| (2, after))
+        );
+        assert!(
+            driver
+                .scopes
+                .iter()
+                .all(|state| state.released_views.is_empty())
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "report the retention phase trace on mismatch"
+    )]
+    fn refused_spare_custody_does_not_repeat_an_accepted_release_page() -> Result<(), IndexError> {
+        let mut driver = NativeRetentionDriver::new(fallback_config(vec![fallback_scope(2)])?)?;
+        driver.schedule(&release(&[2]));
+        let refusing = RefusingCatalog {
+            refuse_custody: true,
+            ..RefusingCatalog::default()
+        };
+        assert_eq!(
+            run_fallback_round(&mut driver, &refusing),
+            Err(IndexError::ResourceLimited)
+        );
+        assert_eq!(
+            *refusing
+                .calls
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?,
+            [(2, "floor"), (2, "views"), (2, "custody")]
+        );
+
+        let recovered = RefusingCatalog {
+            work_page: Some(TerminalWorkRetirementPage {
+                after: None,
+                examined: 0,
+                retired: 0,
+                blocked: 0,
+                has_more: false,
+            }),
+            ..RefusingCatalog::default()
+        };
+        run_fallback_round(&mut driver, &recovered)?;
+        assert_eq!(
+            *recovered
+                .calls
+                .lock()
+                .map_err(|error| IndexError::Storage(error.to_string()))?,
+            [(2, "floor"), (2, "work"), (2, "custody")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "report the retention phase trace on mismatch"
+    )]
+    fn unavailable_released_scope_does_not_starve_other_scopes() -> Result<(), IndexError> {
+        let scopes = vec![fallback_scope(1), fallback_scope(2)];
+        let mut driver = NativeRetentionDriver::new(fallback_config(scopes)?)?;
+        let catalog = RefusingCatalog {
+            work_page: Some(TerminalWorkRetirementPage {
+                after: None,
+                examined: 0,
+                retired: 0,
+                blocked: 0,
+                has_more: false,
+            }),
+            ..RefusingCatalog::default()
+        };
+
+        driver.schedule(&release(&[1]));
+        for _ in 0..2 {
+            assert_eq!(
+                run_fallback_round(&mut driver, &catalog),
+                Err(IndexError::SnapshotUnavailable)
+            );
+            run_fallback_round(&mut driver, &catalog)?;
+        }
+        let calls = catalog
+            .calls
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        let floor_epochs: Vec<_> = calls
+            .iter()
+            .filter(|(_, phase)| *phase == "floor")
+            .map(|(epoch, _)| *epoch)
+            .collect();
+        assert_eq!(floor_epochs, [1, 2, 1, 2]);
+        assert!(calls.contains(&(2, "views")));
+        Ok(())
+    }
+
+    /// A released scope whose every turn fails keeps its range and its place
+    /// in the rotation: the other scopes keep their Work, Views and Custody
+    /// turns.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test assertions report the observed turns on mismatch"
+    )]
+    fn permanently_failing_released_scope_does_not_starve_other_scopes() -> Result<(), IndexError> {
+        let mut config = fallback_config(vec![
+            fallback_scope(2),
+            fallback_scope(3),
+            fallback_scope(4),
+        ])?;
+        config.head_probe_every = 64;
+        let mut driver = NativeRetentionDriver::new(config)?;
+        let catalog = EndlessViews::default();
+        catalog.fail_floor(3, Some(IndexError::ResourceLimited))?;
+        driver.schedule(&release(&[3]));
+        for _ in 0..12 {
+            let _turn = view_round(&mut driver, &catalog);
+        }
+        assert_eq!(catalog.turns()?, [2, 3, 4, 2, 3, 4, 2, 3, 4, 2, 3, 4]);
+        // Scopes 2 and 4 ran Work, Views, Custody and Work: one Views turn each.
+        assert_eq!(view_afters(&catalog)?, [(2, None), (4, None)]);
+        assert_eq!(EndlessViews::pending_ranges(&driver, 3), 1);
+        Ok(())
+    }
+
+    /// An obsolete release range is cleared, not retried.
+    ///
+    /// A range whose scope epoch is no longer the workspace's current epoch
+    /// can never be served: the floor step refuses with `SnapshotUnavailable`
+    /// on every turn. The range is cleared on that typed refusal.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test assertions report the observed turns on mismatch"
+    )]
+    fn obsolete_release_range_is_cleared_not_retried() -> Result<(), IndexError> {
+        let mut config = fallback_config(vec![fallback_scope(2), fallback_scope(3)])?;
+        config.head_probe_every = 64;
+        let mut driver = NativeRetentionDriver::new(config)?;
+        let catalog = EndlessViews::default();
+        catalog.fail_floor(3, Some(IndexError::SnapshotUnavailable))?;
+        driver.schedule(&release(&[3]));
+        view_round(&mut driver, &catalog)?;
+        assert!(driver.last_round().releases_pending);
+        assert_eq!(
+            view_round(&mut driver, &catalog),
+            Err(IndexError::SnapshotUnavailable)
+        );
+        assert_eq!(EndlessViews::pending_ranges(&driver, 3), 0);
+        assert!(!driver.last_round().releases_pending);
+        assert_eq!(catalog.turns()?, [2, 3]);
+        Ok(())
+    }
+
+    /// A pass is stalled exactly when none of its turns completed.
+    ///
+    /// A pass ends when every configured scope has taken a turn in it. One
+    /// scope that always fails cannot stall a pass in which another scope
+    /// completes.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "test assertions report the observed rounds on mismatch"
+    )]
+    fn a_pass_is_stalled_only_when_no_turn_in_it_completed() -> Result<(), IndexError> {
+        let mut config = fallback_config(vec![fallback_scope(2), fallback_scope(3)])?;
+        config.head_probe_every = 64;
+        let mut driver = NativeRetentionDriver::new(config)?;
+        let catalog = EndlessViews::default();
+        catalog.fail_floor(3, Some(IndexError::ResourceLimited))?;
+        let mut stalled = Vec::new();
+        for _ in 0..4 {
+            let _turn = view_round(&mut driver, &catalog);
+            stalled.push(driver.last_round().stalled_pass);
+        }
+        assert_eq!(stalled, [false, false, false, false]);
+        catalog.fail_floor(2, Some(IndexError::ResourceLimited))?;
+        for _ in 0..4 {
+            let _turn = view_round(&mut driver, &catalog);
+            let round = driver.last_round();
+            assert!(!round.completed);
+            stalled.push(round.stalled_pass);
+        }
+        assert_eq!(
+            stalled.get(4..),
+            Some([false, true, false, true].as_slice())
+        );
+        assert_eq!(catalog.turns()?, [2, 3, 2, 3, 2, 3, 2, 3]);
+        Ok(())
     }
 }

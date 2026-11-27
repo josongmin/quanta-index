@@ -242,12 +242,25 @@ fn validate_source_body(
     )
 }
 
+fn validate_prior_path_owner(owner: OwnerKey, current: Option<OwnerKey>) -> Result<(), IndexError> {
+    if current != Some(owner) {
+        return Err(IndexError::CorruptObject(
+            "source owner/path reverse entry mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_path_claim(
     leaving: Option<OwnerKey>,
     current: Option<OwnerKey>,
+    legacy_parent_owner: Option<OwnerKey>,
 ) -> Result<(), IndexError> {
     if let Some(leaver) = leaving {
         if current != Some(leaver) {
+            // A legacy marker can identify the prior record, but cannot
+            // authorize a scoped bucket edit.
+            validate_prior_path_owner(leaver, legacy_parent_owner.or(current))?;
             return Err(IndexError::CorruptObject(
                 "owner/path reverse entry mismatch".into(),
             ));
@@ -758,6 +771,7 @@ struct SourceEditCursor<'a> {
 struct RepositoryEditCursor<'a> {
     scratch: &'a PathScratch,
     path: &'a str,
+    root: u32,
     legacy: Option<(
         Option<quanta_index_core::index::MapValue>,
         Option<quanta_index_core::index::MapValue>,
@@ -772,7 +786,7 @@ impl MapEditCursor for RepositoryEditCursor<'_> {
         {
             let key = SourcePathRepositoryKey::new(None)?;
             return Ok(Some(OrdinalMapEdit::copy_key_parts(
-                0,
+                self.root,
                 &[key.as_slice()?],
                 expected,
                 next,
@@ -800,7 +814,7 @@ impl MapEditCursor for RepositoryEditCursor<'_> {
                     .ok_or_else(|| IndexError::BackendViolation("repository claim lost".into()))?
                     .key()?;
                 return Ok(Some(OrdinalMapEdit::copy_key_parts(
-                    0,
+                    self.root,
                     &[key],
                     expected,
                     next,
@@ -809,6 +823,45 @@ impl MapEditCursor for RepositoryEditCursor<'_> {
             }
         }
         Ok(None)
+    }
+}
+
+/// Emit one page of fresh repository children in path order. Their root
+/// ordinals follow the already sorted scratch page, and each child retains
+/// RepositoryEditCursor's key ordering and original-base checks.
+struct FreshRepositoryPageCursor<'a> {
+    scratch: &'a PathScratch,
+    rows: &'a [PathRow],
+    fresh_rows: &'a [usize],
+    next_root: usize,
+    current: Option<RepositoryEditCursor<'a>>,
+}
+
+impl MapEditCursor for FreshRepositoryPageCursor<'_> {
+    fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        loop {
+            if let Some(current) = &mut self.current {
+                if let Some(edit) = current.next_edit(budget)? {
+                    return Ok(Some(edit));
+                }
+                self.current = None;
+            }
+            let Some(&row) = self.fresh_rows.get(self.next_root) else {
+                return Ok(None);
+            };
+            let row = self.rows.get(row).ok_or_else(|| {
+                IndexError::BackendViolation("fresh repository row is outside its page".into())
+            })?;
+            let root = u32::try_from(self.next_root).map_err(|_| IndexError::ResourceLimited)?;
+            self.next_root += 1;
+            self.current = Some(RepositoryEditCursor {
+                scratch: self.scratch,
+                path: &row.path,
+                root,
+                legacy: Some((None, row.next)),
+                after: None,
+            });
+        }
     }
 }
 
@@ -824,24 +877,77 @@ fn install_repository_path_maps(
         if page.is_empty() {
             return Ok(());
         }
+        // Install fresh children together even when the page also contains
+        // retained repository roots or legacy paths.
+        let rows = page.as_slice();
+        let mut fresh_rows = [0; crate::path_staging::PAGE_ROWS];
+        let mut fresh_count = 0;
+        for (ordinal, row) in rows.iter().enumerate() {
+            if row.expected.is_none()
+                && scratch
+                    .next_repository_claim(&row.path, None, context.budget)?
+                    .is_some()
+            {
+                fresh_rows[fresh_count] = ordinal;
+                fresh_count += 1;
+            }
+        }
+        let fresh_rows = &fresh_rows[..fresh_count];
+        let fresh_roots = if fresh_rows.is_empty() {
+            None
+        } else {
+            let empty = [MapRoot(None); crate::path_staging::PAGE_ROWS];
+            let mut edits = FreshRepositoryPageCursor {
+                scratch,
+                rows,
+                fresh_rows,
+                next_root: 0,
+                current: None,
+            };
+            let roots = context.apply_stream(&empty[..fresh_count], &mut edits)?;
+            if roots.as_slice().len() != fresh_count {
+                return Err(IndexError::BackendViolation(
+                    "fresh repository page lost an ordinal root".into(),
+                ));
+            }
+            Some(roots)
+        };
+        let mut fresh_children = fresh_rows
+            .iter()
+            .zip(
+                fresh_roots
+                    .as_ref()
+                    .map_or(&[][..], |roots| roots.as_slice()),
+            )
+            .peekable();
         let scope = scratch.connection.scoped(context.budget)?;
         let tx = scope
             .unchecked_transaction()
             .map_err(|error| scratch_error(&error))?;
-        for row in page {
-            let prior = row
-                .expected
-                .map(|value| SourcePathOwners::decode(value, context.budget))
-                .transpose()?;
-            let root = match prior {
-                Some(SourcePathOwners::Repositories(root)) => Some(root),
-                Some(SourcePathOwners::LegacyOwner(_)) | None => None,
-            };
-            if root.is_some()
-                || scratch
-                    .next_repository_claim(&row.path, None, context.budget)?
-                    .is_some()
+        for (ordinal, row) in rows.iter().enumerate() {
+            let child = if fresh_children
+                .peek()
+                .is_some_and(|(row, _)| **row == ordinal)
             {
+                let (_, child) = fresh_children.next().ok_or_else(|| {
+                    IndexError::BackendViolation("fresh repository child disappeared".into())
+                })?;
+                *child
+            } else {
+                let Some(prior) = row.expected else {
+                    continue;
+                };
+                let root = match SourcePathOwners::decode(prior, context.budget)? {
+                    SourcePathOwners::Repositories(root) => Some(root),
+                    SourcePathOwners::LegacyOwner(_) => None,
+                };
+                if root.is_none()
+                    && scratch
+                        .next_repository_claim(&row.path, None, context.budget)?
+                        .is_none()
+                {
+                    continue;
+                }
                 let legacy = if root.is_none() {
                     Some((None, row.next))
                 } else if row.leaving.is_some() || row.incoming.is_some() {
@@ -856,6 +962,7 @@ fn install_repository_path_maps(
                 let mut edits = RepositoryEditCursor {
                     scratch,
                     path: &row.path,
+                    root: 0,
                     legacy,
                     after: None,
                 };
@@ -865,16 +972,17 @@ fn install_repository_path_maps(
                         "repository map stream lost its root".into(),
                     ));
                 };
-                let next = child
-                    .0
-                    .map(SourcePathOwners::Repositories)
-                    .map(SourcePathOwners::encode)
-                    .transpose()?;
-                scratch.set_refs(&tx, &row.path, row.expected, next, context.budget)?;
-            }
-            after = Some(row);
+                *child
+            };
+            let next = child
+                .0
+                .map(SourcePathOwners::Repositories)
+                .map(SourcePathOwners::encode)
+                .transpose()?;
+            scratch.set_refs(&tx, &row.path, row.expected, next, context.budget)?;
         }
         tx.commit().map_err(|error| scratch_error(&error))?;
+        after = rows.last().cloned();
     }
 }
 
@@ -1146,30 +1254,29 @@ fn apply_source_inner(
                 {
                     validate_source_body(record, context.objects, context.budget)?;
                 }
-                if let Some((_, prior)) = &prior {
-                    let key = PathKey::copy(&prior.path, context.budget)?;
-                    let marker = context
-                        .maps
-                        .lookup(base.paths, key.as_slice(), context.budget)?;
-                    let recorded_owner = marker
-                        .map(|value| {
-                            SourcePathOwners::decode(value, context.budget)?.owner_for_record(
-                                prior,
-                                context.maps,
-                                context.budget,
-                            )
-                        })
-                        .transpose()?
-                        .flatten();
-                    if recorded_owner != Some(mutation.owner) {
-                        return Err(IndexError::CorruptObject(
-                            "source owner/path reverse entry mismatch".into(),
-                        ));
-                    }
-                }
                 let old_path = prior.as_ref().map(|(_, record)| record.path.as_str());
                 let new_path = next.as_ref().map(|(_, record)| record.path.as_str());
                 if old_path == new_path {
+                    // An in-place edit has no path claim in scratch. Path
+                    // departures authenticate the same reverse entry in the
+                    // path phase before installing any of the staged maps.
+                    if let Some((_, prior)) = &prior {
+                        let key = PathKey::copy(&prior.path, context.budget)?;
+                        let marker = context
+                            .maps
+                            .lookup(base.paths, key.as_slice(), context.budget)?;
+                        let recorded_owner = marker
+                            .map(|value| {
+                                SourcePathOwners::decode(value, context.budget)?.owner_for_record(
+                                    prior,
+                                    context.maps,
+                                    context.budget,
+                                )
+                            })
+                            .transpose()?
+                            .flatten();
+                        validate_prior_path_owner(mutation.owner, recorded_owner)?;
+                    }
                     scratch.append_owner_edit(&mutation, context.budget)?;
                 } else {
                     scratch.append_owner_transition(
@@ -1236,6 +1343,10 @@ fn apply_source_inner(
                     let parent = expected
                         .map(|value| SourcePathOwners::decode(value, context.budget))
                         .transpose()?;
+                    let legacy_parent_owner = match parent {
+                        Some(SourcePathOwners::LegacyOwner(owner)) => Some(owner),
+                        _ => None,
+                    };
                     let has_legacy_claim = row.leaving.is_some() || row.incoming.is_some();
                     let (legacy_owner, repository_root) = match parent {
                         Some(SourcePathOwners::LegacyOwner(owner)) => (Some(owner), None),
@@ -1270,7 +1381,7 @@ fn apply_source_inner(
                             })
                             .transpose()?
                             .flatten();
-                        validate_path_claim(member.leaving, current)?;
+                        validate_path_claim(member.leaving, current, legacy_parent_owner)?;
                         claim = scratch.next_repository_claim(
                             &row.path,
                             Some(member.key()?),
@@ -1280,7 +1391,7 @@ fn apply_source_inner(
                     // Keep the unscoped owner in scratch until any required
                     // repository child map has been installed.
                     let legacy_next = if has_legacy_claim {
-                        validate_path_claim(row.leaving, legacy_owner)?;
+                        validate_path_claim(row.leaving, legacy_owner, None)?;
                         row.incoming
                     } else {
                         legacy_owner
@@ -1403,6 +1514,69 @@ mod tests {
         let (mut budget, _ledger) = crate::path_staging::tests::budget(u64::MAX)?;
         let paths = PathScratch::open(&space, &mut budget)?;
         Ok((home, paths))
+    }
+
+    #[test]
+    fn fresh_repository_page_emits_sorted_independent_child_roots() -> Result<(), IndexError> {
+        let (_home, paths) = path_fixture()?;
+        let (mut work, _ledger) = crate::path_staging::tests::budget(u64::MAX)?;
+        let repository =
+            RepoId::new("repo").map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        let key = SourcePathRepositoryKey::new(Some(&repository))?;
+        let db = paths.connection.scoped(&work)?;
+        RepositoryClaims::create(&db)?;
+        paths.repository_claims.set(true);
+        for (ordinal, path) in ["a.rs", "b.rs", "c.rs"].iter().enumerate() {
+            let owner = OwnerKey {
+                producer: ProducerId([7; 16]),
+                stable_id: quanta_index_core::index::StableOwnerId(
+                    [u8::try_from(ordinal).map_err(|_| IndexError::ResourceLimited)?; 16],
+                ),
+            };
+            let _inserted = db
+                .execute("INSERT INTO path_edits(path) VALUES(?1)", params![path])
+                .map_err(|error| scratch_error(&error))?;
+            if ordinal != 1 {
+                RepositoryClaims::mark_reserved(
+                    &db,
+                    path,
+                    key.as_slice()?,
+                    owner,
+                    false,
+                    &mut work,
+                )?;
+            }
+        }
+        drop(db);
+        let page = paths.page(None, &mut work)?;
+        let mut edits = FreshRepositoryPageCursor {
+            scratch: &paths,
+            rows: page.as_slice(),
+            fresh_rows: &[0, 2],
+            next_root: 0,
+            current: None,
+        };
+        for root in 0..2 {
+            let edit = edits.next_edit(&mut work)?.ok_or_else(|| {
+                IndexError::BackendViolation("fresh child root was not emitted".into())
+            })?;
+            check_eq!(edit.root(), root);
+            check_eq!(edit.key(), key.as_slice()?);
+            check_eq!(edit.expected()?, None);
+            let value = edit.next()?.ok_or_else(|| {
+                IndexError::BackendViolation("fresh child owner was omitted".into())
+            })?;
+            let owner = quanta_index_core::index::owner_from_path_map_value(value, &work)?;
+            check_eq!(owner.producer, ProducerId([7; 16]));
+            check_eq!(
+                owner.stable_id,
+                quanta_index_core::index::StableOwnerId(
+                    [u8::try_from(root * 2).map_err(|_| IndexError::ResourceLimited)?; 16]
+                )
+            );
+        }
+        check!(edits.next_edit(&mut work)?.is_none());
+        Ok(())
     }
 
     #[test]

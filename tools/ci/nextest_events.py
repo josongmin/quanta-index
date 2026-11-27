@@ -142,9 +142,15 @@ def parse_nextest_inventory_bytes(raw: bytes) -> NextestInventory:
             not all(isinstance(value, str) and value for value in (package, binary, kind))
             or not isinstance(cases, dict)
             or suite.get("status") != "listed"
-            or not binary_id.startswith(f"{package}::")
-            and binary_id != package
         ):
+            raise NextestEvidenceError("nextest inventory suite identity is invalid")
+        if kind in {"lib", "proc-macro"}:
+            expected_id = package
+        elif kind == "test":
+            expected_id = f"{package}::{binary}"
+        else:
+            expected_id = f"{package}::{kind}/{binary}"
+        if binary_id != expected_id or suite.get("binary-id", binary_id) != binary_id:
             raise NextestEvidenceError("nextest inventory suite identity is invalid")
         identity = (package, binary, kind)
         if identity in suite_counts:

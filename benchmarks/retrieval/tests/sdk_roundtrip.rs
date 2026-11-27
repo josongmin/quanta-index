@@ -39,10 +39,7 @@ use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
-#[path = "../../../crates/quanta-index-searchd-runtime/tests/common/legacy_physical_fixture.rs"]
-mod legacy_physical_fixture;
-
-use legacy_physical_fixture::legacy_physical_env;
+use quanta_index_searchd_harness::legacy_reference::legacy_physical_env;
 
 const EMBEDDER: &str = "hash-dev";
 
@@ -4844,7 +4841,12 @@ fn real_daemon_standard_hybrid_file_route_matches_independent_file_rrf_and_refus
             let candidate = &witness.candidate;
             candidate.source.is_some()
                 && candidate.preview.is_some()
-                && !candidate.highlights.is_empty()
+                && !candidate
+                    .excerpt
+                    .as_ref()
+                    .expect("fixture row carries a match excerpt")
+                    .highlights
+                    .is_empty()
         })
     }));
     let evidence = fixture.path().join("hybrid-file-evidence.json");

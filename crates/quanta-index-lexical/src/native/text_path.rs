@@ -302,6 +302,7 @@ pub(super) struct PathWrites {
     indexed_delta: i64,
     poisoned: bool,
     value: PathPostingValue,
+    pending: PreparedRows<FundedEdit>,
 }
 
 impl PathWrites {
@@ -364,7 +365,21 @@ impl PathWrites {
             indexed_delta: 0,
             poisoned: false,
             value,
+            pending: PreparedRows::new(WRITE_ROWS)?,
         })
+    }
+
+    fn flush_pending(&mut self, budget: &mut WorkBudget) -> Result<(), IndexError> {
+        if self.pending.len() == 0 {
+            return Ok(());
+        }
+        // Move the funded rows out while write_batch borrows the connection.
+        // Restore their backing only after the SQL batch completes.
+        let mut packet = std::mem::replace(&mut self.pending, PreparedRows::new(WRITE_ROWS)?);
+        self.write_batch(&packet, budget)?;
+        packet.clear();
+        self.pending = packet;
+        Ok(())
     }
 
     fn write_batch(
@@ -478,7 +493,6 @@ impl PathWrites {
         next_source: Option<ObjectRef>,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        let mut packet = PreparedRows::<FundedEdit>::with_capacity(WRITE_ROWS, budget)?;
         let value = self.value;
         visit_merge(
             prior,
@@ -499,7 +513,7 @@ impl PathWrites {
                     return Err(IndexError::ResourceLimited);
                 }
                 copied.extend_from_slice(key);
-                packet.push(
+                self.pending.push(
                     FundedEdit {
                         edit: MapEdit {
                             key: copied,
@@ -514,20 +528,34 @@ impl PathWrites {
                     },
                     budget,
                 )?;
-                if packet.len() == WRITE_ROWS {
-                    self.write_batch(&packet, budget)?;
-                    packet.clear();
+                if self.pending.len() == WRITE_ROWS {
+                    self.flush_pending(budget)?;
                 }
                 Ok(())
             },
         )?;
-        if packet.len() != 0 {
-            self.write_batch(&packet, budget)?;
-        }
         Ok(())
     }
 
     pub(super) fn push_change(
+        &mut self,
+        change: &SourceChange,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if self.poisoned {
+            return Err(IndexError::BackendViolation(
+                "native text path scratch attempt was poisoned".into(),
+            ));
+        }
+        let result = self.push_change_inner(change, budget);
+        if result.is_err() {
+            self.poisoned = true;
+            self.pending.clear();
+        }
+        result
+    }
+
+    fn push_change_inner(
         &mut self,
         change: &SourceChange,
         budget: &mut WorkBudget,
@@ -591,7 +619,7 @@ impl PathWrites {
     }
 
     pub(super) fn finish(
-        self,
+        mut self,
         base: PathIndex,
         context: &mut AttemptContext<'_>,
     ) -> Result<PathIndex, IndexError> {
@@ -600,6 +628,10 @@ impl PathWrites {
                 "native text path scratch attempt was poisoned".into(),
             ));
         }
+        self.flush_pending(context.budget)?;
+        // The SQLite stream owns the next phase; release the packet's
+        // temporary capacity before the map build reserves its own window.
+        self.pending = PreparedRows::new(WRITE_ROWS)?;
         let apply_delta = |prior: u64, delta: i64| {
             prior.checked_add_signed(delta).ok_or_else(|| {
                 IndexError::CorruptObject("native text path statistics outside range".into())
@@ -709,9 +741,12 @@ mod tests {
     fn path_write_batch_trace_preserves_sql_edits_and_work() -> Result<(), IndexError> {
         use quanta_index_core::{
             DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
-            DiagnosticEventSinkV1, DiagnosticRootKindV1,
+            DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticRootKindV1,
         };
-        use std::{path::Path, sync::Arc};
+        use std::{
+            path::Path,
+            sync::{Arc, Mutex},
+        };
 
         #[derive(Debug)]
         struct Scratch;
@@ -761,9 +796,13 @@ mod tests {
             }
         }
         #[derive(Debug, Default)]
-        struct Sink;
+        struct Sink(Mutex<Vec<DiagnosticEmitV1>>);
         impl DiagnosticEventSinkV1 for Sink {
-            fn try_emit(&self, _event: DiagnosticEmitV1) -> bool {
+            fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+                let Ok(mut events) = self.0.try_lock() else {
+                    return false;
+                };
+                events.push(event);
                 true
             }
         }
@@ -786,6 +825,16 @@ mod tests {
                 )?;
             }
             writer.write_batch(&rows, budget)?;
+            // Each call contributes one edit. A cold build should submit
+            // full 64-row packets across calls, then the tail.
+            for index in 0..70 {
+                let term = FundedTerm {
+                    key: format!("term-{index:03}").into_bytes(),
+                    _memory: None,
+                };
+                writer.emit_merge(&[], &[term], None, Some(ObjectRef(Digest([3; 32]))), budget)?;
+            }
+            writer.flush_pending(budget)?;
             let mut edits = PathEditCursor {
                 writer: &writer,
                 after: None,
@@ -822,10 +871,11 @@ mod tests {
             RequestBudgetV1::for_duration(Duration::from_secs(10)),
         );
         let off_edits = run(&mut off)?;
+        let sink = Arc::new(Sink::default());
         let trace = DiagnosticContextV1::new(
             DiagnosticCaptureIdV1([51; 16]),
             Arc::new(Clock),
-            Arc::new(Sink),
+            sink.clone(),
         );
         let root = trace
             .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
@@ -840,7 +890,24 @@ mod tests {
             .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
         assert_eq!(recorded_edits, off_edits);
         assert_eq!(recorded.usage(), off.usage());
-        assert_eq!(off_edits.len(), 2);
+        assert_eq!(off_edits.len(), 72);
+        let events = sink
+            .0
+            .lock()
+            .map_err(|_error| IndexError::BackendViolation("path trace lock".into()))?;
+        let batches = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    DiagnosticEventKindV1::Counter {
+                        key: DiagnosticCounterV1::SqliteBatches,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(batches, 3);
         Ok(())
     }
 

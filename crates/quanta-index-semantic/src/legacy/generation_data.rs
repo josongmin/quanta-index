@@ -1,10 +1,9 @@
 //! Decode committed Legacy generation DATA for existing-only verification.
 
-use super::{limits, sealed};
+use super::{limits, sealed, sidecar_commitment};
 use crate::{generation_contract, manifest};
 use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind, SemanticContentRootsV1};
 use quanta_index_core::{CoreError, SealedArtifactCommitmentV1};
-use sha2::{Digest as _, Sha256};
 use std::path::Path;
 
 /// Decode and bind existing marker/seal/sidecar DATA, then borrow its committed
@@ -58,9 +57,7 @@ where
         (scope_bytes, seal.scope_manifest),
         (contract_bytes, seal.build_contract),
     ] {
-        if u64::try_from(bytes.len()).ok() != Some(committed.0)
-            || <[u8; 32]>::from(Sha256::digest(bytes)) != committed.1
-        {
+        if sidecar_commitment::verify_bytes(bytes, committed).is_err() {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                 message: "semantic sidecar bytes differ from the seal commitment".into(),

@@ -576,6 +576,7 @@ fn activation_failure_preserves_original_publication_across_restart() -> TestRes
         other @ (SdkError::UnsupportedNativeQuery { .. }
         | SdkError::Usage(_)
         | SdkError::Protocol(_)
+        | SdkError::Native(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
         | SdkError::Binding { .. }

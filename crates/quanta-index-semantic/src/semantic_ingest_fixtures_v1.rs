@@ -10,8 +10,11 @@ use quanta_index_contract::{
     SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1,
     SemanticTombstoneScope, SourceFileKey, SourceRoleV1, lex::LanguageCode,
 };
-use quanta_index_core::{CoreError, SemanticPolicy, build_resident_semantic_batch_v1};
+use quanta_index_core::SemanticPolicy;
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use quanta_index_core::{CoreError, build_resident_semantic_batch_v1};
 
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 use crate::SemanticAdapter;
 
 /// Build an already-resident fixture batch through `adapter`'s streamed
@@ -20,6 +23,7 @@ use crate::SemanticAdapter;
 /// Fixtures hold their batches resident by construction; this is the one
 /// place they enter the production build entry, so a fixture test proves
 /// the same path a streamed batch takes.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub fn build_resident_batch_v1(
     adapter: &SemanticAdapter,
     batch: &SemanticIngestBatch,

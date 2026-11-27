@@ -9,7 +9,6 @@ use crate::{
     publication_inventory::{
         PublicationBootInventoryLimits, seed_publication_capacity_admitted_v1,
     },
-    publication_sqlite_vfs::SqliteCapacityVfs,
 };
 use quanta_index_contract::{
     native_cutover_evidence_v1::NativeCutoverDigest64V1,
@@ -22,12 +21,18 @@ use quanta_index_core::{
     ExistingTreeMetadataIoPortV1,
     index::{MemoryLifetime, WorkUsage},
 };
-use std::{ffi::CString, path::Path};
+use std::path::Path;
+
+use quanta_index_core::CoreError;
+use std::{
+    fs::File,
+    sync::{RwLock, TryLockError},
+};
 
 pub(super) struct LegacyReadAuthorityV1 {
     // This extra lease clone drops while Common still owns its funded root.
     lease: StateRootLease,
-    catalog: SqliteCapacityVfs,
+    catalog_retired: RwLock<bool>,
     objects: NativeObjectReadIo,
     metadata: crate::publication_file_capacity::ExistingTreeReadIoV1,
     physical: Arc<PublicationFileCapacity>,
@@ -112,19 +117,9 @@ impl LegacyReadAuthorityV1 {
             entries,
             inventory.max_path_bytes,
         )?;
-        let vfs_bytes = match native_io {
-            Some(native_io) => {
-                native_io.recovery_sibling_allocation_bytes_v1(entries, inventory.max_path_bytes)?
-            }
-            None => SqliteCapacityVfs::initial_recovery_allocation_bytes_v1(
-                entries,
-                inventory.max_path_bytes,
-                "quanta-publication-capacity".len(),
-            )?,
-        };
-        let backing = common_bytes
-            .checked_add(vfs_bytes)
-            .ok_or(IndexError::ResourceLimited)?;
+        // Catalog inspection selects the root-bound protected directory reader.
+        // Its Common owner holds the exact descriptors without a named scope.
+        let backing = common_bytes;
         let binder = budget
             .reserve_memory(backing, MemoryLifetime::Retained)?
             .ok_or(IndexError::ResourceLimited)?;
@@ -138,22 +133,10 @@ impl LegacyReadAuthorityV1 {
             tracked,
             usize::try_from(policy.binder.process_roots)?,
         )?;
-        let catalog = match native_io {
-            Some(native_io) => native_io.register_recovery_sibling_v1(
-                Arc::clone(&physical),
-                policy.global_sqlite_handles,
-                budget,
-            )?,
-            None => SqliteCapacityVfs::register_funded(
-                Arc::clone(&physical),
-                CString::new("quanta-publication-capacity")?,
-                policy.global_sqlite_handles,
-            )?,
-        };
         let objects = NativeObjectReadIo::new(Arc::clone(&physical));
         let metadata = physical.existing_tree_read_io_v1();
         Ok(Self {
-            catalog,
+            catalog_retired: RwLock::new(false),
             objects,
             metadata,
             physical,
@@ -178,7 +161,7 @@ impl LegacyReadAuthorityV1 {
         Ok(self.lease.observe_current_root_inode_v1()?)
     }
     pub(super) fn catalog(&self) -> &dyn quanta_index_catalog::CatalogReadOnlyIoAdmission {
-        &self.catalog
+        self
     }
     pub(super) fn objects(&self) -> &dyn ObjectReadIoPort {
         &self.objects
@@ -305,7 +288,6 @@ impl LegacyReadAuthorityV1 {
                 .ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        self.catalog.drain_retirements()?;
         self.physical.sweep_retired()?;
         self.physical
             .require_quiescent("Legacy offline recovery read facets")?;
@@ -314,7 +296,54 @@ impl LegacyReadAuthorityV1 {
     }
     pub(super) fn retire_catalog(&self, budget: &mut WorkBudget) -> Result<()> {
         budget.checkpoint()?;
-        self.catalog.retire_checked()?;
+        let mut retired = self
+            .catalog_retired
+            .try_write()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => {
+                    CoreError::NotReady("Legacy Catalog FD reader is active".into())
+                }
+                TryLockError::Poisoned(_) => {
+                    CoreError::Storage("Legacy Catalog retirement state is poisoned".into())
+                }
+            })?;
+        *retired = true;
         self.require_current_and_retired(budget)
+    }
+}
+
+impl quanta_index_catalog::CatalogReadOnlyIoAdmission for LegacyReadAuthorityV1 {
+    fn with_protected_catalog_directory_v1(
+        &self,
+        directory: &Path,
+        request: &RequestBudgetV1,
+        needs_wal: bool,
+        visit: &mut dyn FnMut(&File),
+    ) -> std::result::Result<bool, IndexError> {
+        let retired = self
+            .catalog_retired
+            .try_read()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => IndexError::Conflict,
+                TryLockError::Poisoned(_) => {
+                    IndexError::Storage("Legacy Catalog retirement state is poisoned".into())
+                }
+            })?;
+        if *retired {
+            return Err(IndexError::BackendViolation(
+                "Legacy Catalog scope has retired".into(),
+            ));
+        }
+        quanta_index_catalog::CatalogReadOnlyIoAdmission::with_protected_catalog_directory_v1(
+            self.physical.as_ref(),
+            directory,
+            request,
+            needs_wal,
+            visit,
+        )
+    }
+
+    fn poison_protected_catalog_close_v1(&self) {
+        self.physical.mark_close_unwitnessed();
     }
 }

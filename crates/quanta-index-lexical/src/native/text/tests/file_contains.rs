@@ -149,7 +149,6 @@ fn search(
         query,
         top_k,
         &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
-        &mut budget()?,
     )
 }
 
@@ -158,7 +157,16 @@ fn search_with_constraints(
     query: &str,
     top_k: u32,
     constraints: &quanta_index_contract::QueryConstraintSetV1,
-    budget: &mut WorkBudget,
+) -> Result<crate::native::text_query::NativeTextRanking, IndexError> {
+    search_with_constraints_and_budget(fixture, query, top_k, constraints, &mut budget()?)
+}
+
+fn search_with_constraints_and_budget(
+    fixture: &VisitorFixture,
+    query: &str,
+    top_k: u32,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
+    work: &mut WorkBudget,
 ) -> Result<crate::native::text_query::NativeTextRanking, IndexError> {
     let parsed = parse_native_content_query(query)
         .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
@@ -174,7 +182,7 @@ fn search_with_constraints(
             ticket: &fixture.ticket,
             objects: &fixture.objects,
             maps: &fixture.maps,
-            budget,
+            budget: work,
         },
     )
 }
@@ -194,6 +202,116 @@ fn regex_budget() -> Result<WorkBudget, IndexError> {
 }
 
 #[test]
+fn selected_source_predicates_use_certified_path_on_large_member() -> Result<(), IndexError> {
+    let (mut fixture, other) = substring_fixture()?;
+    // The selected marker is independent of the member-wide declared size.
+    // A selected predicate must not require the unrelated 4,097-owner census.
+    phrase_fixture_root(&mut fixture, 4_097, 10)?;
+    let selected = exact_path_constraint("src/lib.rs")?;
+    let absent = exact_path_constraint("src/missing.rs")?;
+    for query in ["file.contains('oo_ba')", "one AND file.contains('oo_ba')"] {
+        let ranking = search_with_constraints(&fixture, query, 1, &selected)?;
+        assert_eq!(ranking.matched, 1);
+        assert_eq!(ranking.hits.len(), 1);
+        assert_eq!(ranking.hits[0].owner, fixture.owner);
+        assert!(matches!(
+            search_with_constraints(&fixture, query, 1, &absent)?
+                .hits
+                .as_slice(),
+            []
+        ));
+    }
+    assert!(matches!(
+        search(&fixture, "file.contains('oo_ba')", 1),
+        Err(IndexError::ResourceLimited)
+    ));
+    assert!(matches!(
+        search_with_constraints(&fixture, "NOT one", 1, &selected),
+        Err(IndexError::ResourceLimited)
+    ));
+
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut work = WorkBudget::new(
+        WorkLimits {
+            reads: 100,
+            writes: 100,
+            bytes: 32 * 1024 * 1024,
+            mutations: 100,
+        },
+        deadline,
+    );
+    let regex = search_with_constraints_and_budget(&fixture, "/foo_bar/", 1, &selected, &mut work)?;
+    assert_eq!(regex.matched, 1);
+    assert_eq!(regex.hits[0].owner, fixture.owner);
+    assert_ne!(regex.hits[0].owner, other);
+    Ok(())
+}
+
+#[test]
+fn anchored_source_predicate_refuses_uncertified_large_df_and_drains_selected_posting()
+-> Result<(), IndexError> {
+    let (mut fixture, _) = substring_fixture()?;
+    phrase_fixture_root(&mut fixture, 4_097, 10)?;
+    let forged = Posting {
+        root: fixture.posting_root.into(),
+        df: 4_097,
+    };
+    fixture.objects.add(
+        fixture.posting_ref,
+        encode(&forged)?,
+        posting_children(&forged)?.as_slice().to_vec(),
+    )?;
+    assert!(matches!(
+        search(&fixture, "one AND file.contains('oo_ba')", 1),
+        Err(IndexError::ResourceLimited)
+    ));
+    // The narrow path may proceed, but cannot turn a malformed posting's
+    // first matching owner into a complete result.
+    assert!(matches!(
+        search_with_constraints(
+            &fixture,
+            "one AND file.contains('oo_ba')",
+            1,
+            &exact_path_constraint("src/lib.rs")?,
+        ),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn selective_source_conjunction_refuses_corrupt_unmatched_posting() -> Result<(), IndexError> {
+    let (mut fixture, _) = substring_fixture()?;
+    let query = "foo_bar AND one AND file.contains('oo_ba') case:yes";
+    let intact = search(&fixture, query, 1)?;
+    assert_eq!(intact.matched, 1);
+    assert_eq!(intact.hits.len(), 1);
+    assert_eq!(intact.hits[0].owner, fixture.owner);
+
+    // The second owner is in `one`, but has neither `foo_bar` nor `oo_ba`.
+    let second_occurrence = fixture
+        .maps
+        .lookup_object(
+            MapRoot(Some(reference(72))),
+            &stored_term_key("one", CaseMode::Sensitive)?,
+            &mut budget()?,
+        )?
+        .ok_or_else(|| IndexError::BackendViolation("second posting absent".into()))?;
+    fixture.objects.counted_occurrence = Some(second_occurrence);
+    fixture
+        .objects
+        .add(second_occurrence, b"{".to_vec(), Vec::new())?;
+    assert!(matches!(
+        search(&fixture, query, 1),
+        Err(IndexError::CorruptObject(_))
+    ));
+    assert!(fixture.objects.occurrence_reads.load(Ordering::Relaxed) > 0);
+    Ok(())
+}
+
+#[test]
 fn file_contains_skips_body_of_ineligible_exact_path_owner() -> Result<(), IndexError> {
     let (mut fixture, _) = substring_fixture()?;
     let second = fixture
@@ -207,13 +325,7 @@ fn file_contains_skips_body_of_ineligible_exact_path_owner() -> Result<(), Index
         .map_err(|error| IndexError::InvalidInput(error.into()))?;
     let constraints =
         quanta_index_contract::QueryConstraintSetV1::from_exact_repo_relative_path(selected);
-    let result = search_with_constraints(
-        &fixture,
-        "file.contains('oo_ba')",
-        1,
-        &constraints,
-        &mut budget()?,
-    )?;
+    let result = search_with_constraints(&fixture, "file.contains('oo_ba')", 1, &constraints)?;
     assert_eq!(result.matched, 1);
     assert_eq!(result.hits[0].owner, fixture.owner);
     assert_eq!(fixture.objects.body_reads.load(Ordering::Relaxed), 0);
@@ -241,10 +353,21 @@ fn regex_skips_bodies_of_ineligible_paths() -> Result<(), IndexError> {
             &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         ),
     ] {
-        // This case can compile a content regex and a path regex. Fund both
-        // admissions so the assertion measures source filtering.
-        let mut work = regex_budget()?;
-        let result = search_with_constraints(&fixture, query, 1, constraints, &mut work)?;
+        // Fund the content regex and the optional path regex so this case
+        // reaches the Source filtering assertion.
+        let mut work = WorkBudget::new(
+            WorkLimits {
+                reads: 100,
+                writes: 100,
+                bytes: 40_000_000,
+                mutations: 100,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        let result =
+            search_with_constraints_and_budget(&fixture, query, 1, constraints, &mut work)?;
         if result.matched != 1
             || result
                 .hits
@@ -281,7 +404,7 @@ fn regex_boolean_queries_ignore_corrupt_bodies_outside_the_exact_path() -> Resul
     // The unrestricted query proves that the selected corpus contains a
     // malformed body. Exact-path selection must exclude that candidate before
     // regex evaluation, including under Boolean composition.
-    let unrestricted = search_with_constraints(
+    let unrestricted = search_with_constraints_and_budget(
         &fixture,
         "/foo_bar/",
         2,
@@ -301,8 +424,13 @@ fn regex_boolean_queries_ignore_corrupt_bodies_outside_the_exact_path() -> Resul
         "one OR /foo_bar/",
         "one AND NOT /absent/",
     ] {
-        let result =
-            search_with_constraints(&fixture, query, 1, &constraints, &mut regex_budget()?)?;
+        let result = search_with_constraints_and_budget(
+            &fixture,
+            query,
+            1,
+            &constraints,
+            &mut regex_budget()?,
+        )?;
         assert_eq!(result.matched, 1, "{query}");
         assert_eq!(result.hits.len(), 1, "{query}");
         assert_eq!(
@@ -322,7 +450,7 @@ fn regex_boolean_queries_ignore_corrupt_bodies_outside_the_exact_path() -> Resul
 #[test]
 fn regex_path_filter_skips_corrupt_body_before_boolean_evaluation() -> Result<(), IndexError> {
     let (mut fixture, other) = substring_fixture()?;
-    let baseline = search_with_constraints(
+    let baseline = search_with_constraints_and_budget(
         &fixture,
         "/foo_bar/",
         2,
@@ -351,7 +479,7 @@ fn regex_path_filter_skips_corrupt_body_before_boolean_evaluation() -> Result<()
         ("file:other[.]rs /foo_bar/", 0, Vec::new()),
         ("file:other[.]rs (one OR /foo_bar/)", 1, vec![other]),
     ] {
-        let result = search_with_constraints(
+        let result = search_with_constraints_and_budget(
             &fixture,
             query,
             2,
@@ -383,8 +511,13 @@ fn regex_selected_body_preserves_cancellation_after_read() -> Result<(), IndexEr
         .map_err(|error| IndexError::InvalidInput(error.into()))?;
     let constraints =
         quanta_index_contract::QueryConstraintSetV1::from_exact_repo_relative_path(selected);
-    let result =
-        search_with_constraints(&fixture, "/foo_bar/", 1, &constraints, &mut regex_budget()?);
+    let result = search_with_constraints_and_budget(
+        &fixture,
+        "/foo_bar/",
+        1,
+        &constraints,
+        &mut regex_budget()?,
+    );
     assert!(matches!(result, Err(IndexError::Cancelled)));
     assert_eq!(fixture.objects.body_reads.load(Ordering::Relaxed), 1);
     Ok(())

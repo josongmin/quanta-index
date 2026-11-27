@@ -1,15 +1,18 @@
 //! P0 wire contract. All fixed integers are big-endian. Object references are
 //! raw digests. The containing object authenticates payload and ordered edges.
 //!
-//! Root: magic, recipe:32, three SourceCut optional refs (0 or 1+ref, in
-//! owners/paths/frontiers order), count:u16, repeated SegmentEdge.
+//! Root: magic, recipe:32, two `TextCut` optional refs (0 or 1+ref, in
+//! owners/paths order), count:u16, repeated `SegmentEdge`.
 //! SegmentEdge: ref:32, firstOwner:32, lastOwner:32, docs:u16, tokens:u64.
-//! Root children: present SourceCut refs, then segment refs in row order.
+//! Root children: present `TextCut` refs, then segment refs in row order.
+//! Source frontiers are producer stream positions and never change indexed
+//! text, so no Text root binds them; a frontier-only Source advance keeps the
+//! exact root identity.
 //!
 //! Segment: magic, recipe:32, docs:u16, Doc rows, routes:u16, Route rows.
 //! Doc: OwnerKey:32, source record ref:32, indexed token count:u64. The row
 //! ordinal is the local docID. Source records are retained by the root's
-//! SourceCut; the segment's children are exactly its posting pages.
+//! `TextCut` owners map; the segment's children are exactly its posting pages.
 //! Route: ref:32, firstTerm (len:u16 then full key), lastTerm (same).
 //! Empty document rows are retained. An all-empty segment has no routes.
 //!
@@ -24,11 +27,11 @@
 //! are strictly increasing within a page and route ranges cannot overlap
 //! except at a shared boundary key. The page's first/last keys equal its route.
 
-use quanta_index_core::index::{Digest, IndexError, ObjectRef, SourceCut};
+use quanta_index_core::index::{Digest, IndexError, MapRoot, ObjectRef, SourceCut};
 use sha2::{Digest as _, Sha256};
 
 pub(in crate::native::text) const POLICY: &[u8] = b"qidx.native.text.segment.full.v1";
-pub(in crate::native::text) const ROOT_MAGIC: &[u8; 8] = b"QTXROOT1";
+pub(in crate::native::text) const ROOT_MAGIC: &[u8; 8] = b"QTXROOT5";
 pub(in crate::native::text) const SEGMENT_MAGIC: &[u8; 8] = b"QTXSEGM1";
 pub(in crate::native::text) const PAGE_MAGIC: &[u8; 8] = b"QTXPOST1";
 pub(in crate::native::text) const MAX_DOCS: usize = 128;
@@ -55,22 +58,39 @@ pub(in crate::native::text) struct SegmentEdge {
     pub tokens: u64,
 }
 
-pub(in crate::native::text) fn source_edges(source: SourceCut) -> impl Iterator<Item = ObjectRef> {
-    [source.owners.0, source.paths.0, source.frontiers.0]
-        .into_iter()
-        .flatten()
+/// The Source surface bound by every segmented Text root: exactly the owner
+/// and path maps that determine its indexed documents and path postings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::native::text) struct TextCut {
+    pub owners: MapRoot,
+    pub paths: MapRoot,
+}
+
+impl TextCut {
+    /// Project a full `SourceCut` onto the surface a Text root binds.
+    pub(in crate::native::text) const fn of(source: SourceCut) -> Self {
+        Self {
+            owners: source.owners,
+            paths: source.paths,
+        }
+    }
+
+    /// Present root edges in canonical owners/paths order.
+    pub(in crate::native::text) fn edges(self) -> impl Iterator<Item = ObjectRef> {
+        [self.owners.0, self.paths.0].into_iter().flatten()
+    }
 }
 
 pub(in crate::native::text) fn logical_commitment(
     recipe: Digest,
-    source: SourceCut,
+    cut: TextCut,
     docs: u64,
     tokens: u64,
 ) -> Digest {
     let mut hash = Sha256::new();
     hash.update(b"qidx.native.text.segment.full.logical.v1\0");
     hash.update(recipe.0);
-    match source.owners.0 {
+    match cut.owners.0 {
         Some(reference) => {
             hash.update([1]);
             hash.update(reference.0.0);
@@ -85,7 +105,7 @@ pub(in crate::native::text) fn logical_commitment(
 pub(in crate::native::text) fn write_root(
     out: &mut Vec<u8>,
     recipe: Digest,
-    source: SourceCut,
+    cut: TextCut,
     segments: &[SegmentEdge],
 ) -> Result<(), IndexError> {
     if segments.len() > MAX_SEGMENTS {
@@ -93,7 +113,7 @@ pub(in crate::native::text) fn write_root(
     }
     out.extend_from_slice(ROOT_MAGIC);
     out.extend_from_slice(&recipe.0);
-    for root in [source.owners, source.paths, source.frontiers] {
+    for root in [cut.owners, cut.paths] {
         match root.0 {
             Some(reference) => {
                 out.push(1);
@@ -181,26 +201,57 @@ pub(in crate::native::text) fn corrupt(reason: &'static str) -> IndexError {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed bytes are independent test oracles"
+)]
 mod tests {
     use super::*;
-    use quanta_index_core::index::MapRoot;
 
     #[test]
     fn empty_root_wire_is_fixed() -> Result<(), IndexError> {
         let recipe = Digest(*b"0123456789abcdef0123456789abcdef");
-        let source = SourceCut {
+        let cut = TextCut {
             owners: MapRoot(None),
             paths: MapRoot(None),
-            frontiers: MapRoot(None),
         };
         let mut bytes = Vec::new();
-        write_root(&mut bytes, recipe, source, &[])?;
-        assert_eq!(
-            &bytes,
-            b"QTXROOT10123456789abcdef0123456789abcdef\0\0\0\0\0"
-        );
-        assert_eq!(source_edges(source).count(), 0);
+        write_root(&mut bytes, recipe, cut, &[])?;
+        assert_eq!(&bytes, b"QTXROOT50123456789abcdef0123456789abcdef\0\0\0\0");
+        assert_eq!(cut.edges().count(), 0);
         Ok(())
+    }
+
+    #[test]
+    fn text_cut_binds_owners_and_paths_but_not_frontiers() {
+        let owners = MapRoot(Some(ObjectRef(Digest([0x11; 32]))));
+        let paths = MapRoot(Some(ObjectRef(Digest([0x22; 32]))));
+        let source = SourceCut {
+            owners,
+            paths,
+            frontiers: MapRoot(None),
+        };
+        let advanced = SourceCut {
+            frontiers: MapRoot(Some(ObjectRef(Digest([0x33; 32])))),
+            ..source
+        };
+        assert_eq!(TextCut::of(source), TextCut::of(advanced));
+        assert_eq!(
+            TextCut::of(advanced).edges().collect::<Vec<_>>(),
+            [ObjectRef(Digest([0x11; 32])), ObjectRef(Digest([0x22; 32]))]
+        );
+        for changed in [
+            SourceCut {
+                owners: MapRoot(None),
+                ..source
+            },
+            SourceCut {
+                paths: MapRoot(None),
+                ..source
+            },
+        ] {
+            assert_ne!(TextCut::of(changed), TextCut::of(source));
+        }
     }
 
     #[test]

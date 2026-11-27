@@ -99,7 +99,6 @@ async fn physical_fixture(
         &memory,
     ))))));
     let session = AnnLanceSession::new(AnnStoreLimits::default(), &mut work)?;
-    let connection = session.connect().await?;
     let recipe = Digest([9; 32]);
     let vectors: Vec<_> = (0..rows)
         .map(|ordinal| u16::try_from(ordinal).map(vector))
@@ -126,20 +125,13 @@ async fn physical_fixture(
             vector,
         })
         .collect();
-    let (table, seal) = build_region(
-        &connection,
-        "physical_query",
-        &region_rows,
-        recipe,
-        1,
-        8,
-        &mut work,
-    )
-    .await?;
+    let (dataset, seal) = session
+        .build_region(&region_rows, recipe, 1, 8, &mut work)
+        .await?;
     if trained != seal.vector_index.ann.is_some() {
         return Err("Lance fixture selected the wrong index branch".into());
     }
-    let region = open_region(table, seal, &mut work)
+    let region = open_region(dataset, seal, &mut work)
         .await?
         .with_read_store(session.read_store());
     let _files = session.freeze_and_snapshot().await?;

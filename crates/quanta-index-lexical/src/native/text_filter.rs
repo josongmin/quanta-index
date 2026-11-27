@@ -22,6 +22,25 @@ pub(super) enum OwnerSelection {
 }
 
 impl OwnerSelection {
+    /// A path marker is an exhaustive, source-authenticated candidate list.
+    /// `Any` has no certified cardinality and must use the member universe.
+    pub(super) fn selected_len(&self) -> Option<usize> {
+        match self {
+            Self::Any => None,
+            Self::Absent => Some(0),
+            Self::Exact { .. } => Some(1),
+            Self::Repositories(rows) => Some(rows.rows.len()),
+        }
+    }
+
+    pub(super) fn selected_at(&self, index: usize) -> Option<(OwnerKey, ObjectRef)> {
+        match self {
+            Self::Exact { owner, source } if index == 0 => Some((*owner, *source)),
+            Self::Repositories(rows) => rows.rows.get(index).copied(),
+            Self::Any | Self::Absent | Self::Exact { .. } => None,
+        }
+    }
+
     pub(super) fn matches(&self, owner: OwnerKey, source: ObjectRef) -> Result<bool, IndexError> {
         match self {
             Self::Any => Ok(true),

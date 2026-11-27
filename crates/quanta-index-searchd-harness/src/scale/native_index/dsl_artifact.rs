@@ -1010,6 +1010,7 @@ mod tests {
             },
             instance: IndexInstanceId([4; 16]),
             member: ObjectRef(Digest([5; 32])),
+            source_input: ObjectRef(Digest([8; 32])),
             cut: HistorySourceCutV1 {
                 generation: AuxiliaryGenerationKeyV1 {
                     repo_id: fixture.repo_id.clone(),

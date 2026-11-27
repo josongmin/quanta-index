@@ -54,6 +54,55 @@ def test_version_option_is_logged_as_cargo_data(tmp_path: Path) -> None:
     assert rows[0]["rc"] == 0
 
 
+@pytest.mark.parametrize(
+    ("args", "use_host_default"),
+    [
+        (("test",), False),
+        (("nextest", "run"), False),
+        (("llvm-cov", "nextest"), False),
+        (("+nightly", "test"), False),
+        (("--offline", "test"), False),
+        (("test",), True),
+    ],
+)
+def test_rust_test_commands_receive_physical_tmpdir(
+    tmp_path: Path, args: tuple[str, ...], use_host_default: bool
+) -> None:
+    physical = tmp_path / "physical temp"
+    physical.mkdir()
+    alias = tmp_path / "temp alias"
+    alias.symlink_to(physical, target_is_directory=True)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    cargo = fake_bin / "cargo"
+    cargo.write_text('#!/bin/bash\nprintf "%s\\n" "$TMPDIR"\n', encoding="utf-8")
+    cargo.chmod(0o755)
+    env = os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "TMPDIR": str(alias),
+        "QUANTA_INDEX_CACHE_ROOT": str(tmp_path / "cache"),
+        "QUANTA_INDEX_BUILD_LOGGING": "0",
+        "QUANTA_INDEX_RESOURCE_ADMISSION": "0",
+        "QUANTA_INDEX_SCCACHE": "0",
+        "QUANTA_INDEX_TARGET_GC": "0",
+    }
+    expected = physical.resolve()
+    if use_host_default:
+        env.pop("TMPDIR")
+        host_default = "/tmp"
+        if os.uname().sysname == "Darwin":
+            host_default = subprocess.check_output(
+                ["getconf", "DARWIN_USER_TEMP_DIR"], text=True
+            ).strip()
+        expected = Path(host_default).resolve()
+
+    result = subprocess.run(
+        [str(SCRIPT), *args], cwd=REPO_ROOT, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(expected)
+
+
 def _run_metadata(*args: str, env: dict[str, str]) -> dict[str, object]:
     result = subprocess.run(
         [str(SCRIPT), *args, "metadata", "--format-version", "1", "--no-deps"],
@@ -164,7 +213,9 @@ def test_auxiliary_cargo_tools_share_the_checkout_namespace(
     monkeypatch.setenv("CARGO_BUILD_BUILD_DIR", str(tmp_path / "foreign-intermediates"))
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.delenv("QUANTA_INDEX_BUILD_LANE", raising=False)
-    cargo_env = runpy.run_path(str(REPO_ROOT / "tools" / "ci" / "lint" / script_name))["cargo_env"]
+    lint_dir = REPO_ROOT / "tools" / "ci" / "lint"
+    monkeypatch.syspath_prepend(str(lint_dir))
+    cargo_env = runpy.run_path(str(lint_dir / script_name))["cargo_env"]
     checkout_id = hashlib.sha256(str(REPO_ROOT.resolve()).encode()).hexdigest()[:16]
     lane = "auxiliary-lane"
     env = cargo_env(lane)
@@ -215,7 +266,8 @@ def test_invalid_lane_is_rejected_before_cargo(
     assert not (tmp_path / "cache" / "escaped").exists()
 
 
-def test_workspace_nextest_builds_and_exports_explicit_searchd_pin(tmp_path: Path) -> None:
+@pytest.mark.parametrize("explicit_pin", [False, True])
+def test_workspace_nextest_marks_only_its_own_searchd_pin(tmp_path: Path, explicit_pin: bool) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     log = tmp_path / "cargo.log"
@@ -223,7 +275,8 @@ def test_workspace_nextest_builds_and_exports_explicit_searchd_pin(tmp_path: Pat
     fake_cargo.write_text(
         "#!/bin/bash\n"
         "set -euo pipefail\n"
-        'printf \'%s|%s\\n\' "${QUANTA_INDEX_SEARCHD_BIN:-}" "$*" >> "$CARGO_CALL_LOG"\n'
+        'printf \'%s|%s|%s\\n\' "${QUANTA_INDEX_SEARCHD_BIN:-}" '
+        '"${QIDX_CARGOW_AUTO_SEARCHD_PIN:-}" "$*" >> "$CARGO_CALL_LOG"\n'
         'if [[ "${1:-}" == build ]]; then\n'
         '  mkdir -p "$CARGO_TARGET_DIR/debug"\n'
         "  printf '#!/bin/sh\\nexit 0\\n' > \"$CARGO_TARGET_DIR/debug/quanta-index-searchd\"\n"
@@ -239,6 +292,9 @@ def test_workspace_nextest_builds_and_exports_explicit_searchd_pin(tmp_path: Pat
     env["QUANTA_INDEX_CACHE_ROOT"] = str(tmp_path / "cache")
     env["QUANTA_INDEX_SCCACHE"] = "0"
     env.pop("QUANTA_INDEX_SEARCHD_BIN", None)
+    env.pop("QIDX_CARGOW_AUTO_SEARCHD_PIN", None)
+    if explicit_pin:
+        env["QUANTA_INDEX_SEARCHD_BIN"] = str(tmp_path / "external-searchd")
 
     result = subprocess.run(
         [str(SCRIPT), "--lane", "test-workspace-lane", "nextest", "run", "--workspace"],
@@ -250,15 +306,20 @@ def test_workspace_nextest_builds_and_exports_explicit_searchd_pin(tmp_path: Pat
 
     assert result.returncode == 0, result.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert calls[0].endswith(
-        "|build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked"
-    )
-    pin, command = calls[1].split("|", 1)
-    pin_path = Path(pin)
-    assert pin_path.name == "quanta-index-searchd"
-    assert pin_path.parent.name == "debug"
-    assert pin_path.parent.parent.name == "test-workspace-lane"
-    assert command == "nextest run --workspace"
+    pin, marker, command = calls[-1].split("|", 2)
+    if explicit_pin:
+        assert len(calls) == 1
+        assert pin == env["QUANTA_INDEX_SEARCHD_BIN"]
+        assert marker == ""
+    else:
+        assert calls[0] == "||build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked"
+        assert len(calls) == 2
+        pin_path = Path(pin)
+        assert pin_path.name == "quanta-index-searchd"
+        assert pin_path.parent.name == "debug"
+        assert pin_path.parent.parent.name == "test-workspace-lane"
+        assert marker == "1"
+    assert command.startswith("nextest run --workspace --tool-config-file ")
 
 
 def _source_env(env: dict[str, str], shell: str = "/bin/bash") -> list[str]:

@@ -2411,22 +2411,43 @@ fn object_sync_directories(
 }
 
 fn sync_directory_witness(path: &Path) -> Result<SyncedDirectory, IndexError> {
-    validate_private_directory(path)?;
-    let file = File::open(path).map_err(|error| storage_error(&error))?;
+    let linked = private_directory_metadata(path)?;
+    let file = File::from(
+        rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|error| IndexError::Storage(format!("open storage directory: {error}")))?,
+    );
     let metadata = file.metadata().map_err(|error| storage_error(&error))?;
-    if !metadata.is_dir()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o7777 != 0o700
+    validate_synced_directory_path(path, &linked, &metadata)?;
+    file.sync_all().map_err(|error| storage_error(&error))?;
+    validate_synced_directory_path(path, &linked, &metadata)?;
+    Ok(SyncedDirectory {
+        _file: file,
+        identity: directory_key(&metadata),
+    })
+}
+
+fn validate_synced_directory_path(
+    path: &Path,
+    linked: &fs::Metadata,
+    opened: &fs::Metadata,
+) -> Result<(), IndexError> {
+    validate_private_directory_metadata(path, opened)?;
+    let current = private_directory_metadata(path)?;
+    if directory_key(linked) != directory_key(opened)
+        || directory_key(opened) != directory_key(&current)
     {
         return Err(IndexError::Storage(
             "storage directory changed during sync".into(),
         ));
     }
-    file.sync_all().map_err(|error| storage_error(&error))?;
-    Ok(SyncedDirectory {
-        _file: file,
-        identity: directory_key(&metadata),
-    })
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -2449,6 +2470,7 @@ fn sync_directory_plain_witness(
     path: &Path,
     expected_device: u64,
 ) -> Result<SyncedDirectory, IndexError> {
+    let linked = private_directory_metadata(path)?;
     let file = File::from(
         rustix::fs::open(
             path,
@@ -2463,18 +2485,12 @@ fn sync_directory_plain_witness(
         })?,
     );
     let metadata = file.metadata().map_err(|error| storage_error(&error))?;
-    if !metadata.is_dir()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o7777 != 0o700
-    {
-        return Err(IndexError::Storage(
-            "storage directory changed during batch sync".into(),
-        ));
-    }
+    validate_synced_directory_path(path, &linked, &metadata)?;
     ensure_same_device(expected_device, metadata.dev())?;
     rustix::fs::fsync(&file).map_err(|error| {
         IndexError::Storage(format!("sync immutable object directory: {error}"))
     })?;
+    validate_synced_directory_path(path, &linked, &metadata)?;
     Ok(SyncedDirectory {
         _file: file,
         identity: directory_key(&metadata),
@@ -2487,11 +2503,11 @@ fn sync_parent_directory(path: &Path) -> Result<(), IndexError> {
         .map_err(|error| storage_error(&error))
 }
 
-fn hex_digit(nibble: u8) -> char {
+fn hex_digit(nibble: u8) -> u8 {
     if nibble < 10 {
-        char::from(b'0'.wrapping_add(nibble))
+        b'0'.wrapping_add(nibble)
     } else {
-        char::from(b'a'.wrapping_add(nibble.wrapping_sub(10)))
+        b'a'.wrapping_add(nibble.wrapping_sub(10))
     }
 }
 
@@ -3149,6 +3165,37 @@ mod tests {
     }
 
     #[test]
+    fn small_stored_wire_preserves_edges_and_digest_at_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let mut work = budget()?;
+        let child = store.put(b"child", &[], &mut work)?.reference;
+        let small_len = read_io::SMALL_STORED_WIRE_BYTES - HEADER_LEN - 32;
+        let small_payload = vec![0xa5; small_len];
+        let small = store.put(&small_payload, &[child], &mut work)?.reference;
+        let large_payload = vec![0x5a; small_len + 1];
+        let large = store.put(&large_payload, &[child], &mut work)?.reference;
+        check_eq!(fs::metadata(store.path_for(small))?.len(), 512);
+        check_eq!(fs::metadata(store.path_for(large))?.len(), 513);
+        for (reference, payload) in [(small, &small_payload), (large, &large_payload)] {
+            let stored = store.get(reference, &mut work)?;
+            check_eq!(stored.payload.as_slice(), payload.as_slice());
+            check_eq!(stored.registration.children.as_slice(), &[child]);
+        }
+        let path = store.path_for(small);
+        let mut damaged = fs::read(&path)?;
+        let last = damaged.last_mut().ok_or("missing object payload")?;
+        *last ^= 1;
+        fs::write(&path, damaged)?;
+        check!(matches!(
+            store.get(small, &mut work),
+            Err(IndexError::CorruptObject(message)) if message == "object digest or size mismatch"
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn identify_matches_durable_install_without_touching_storage()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = TestDir::new();
@@ -3369,6 +3416,38 @@ mod tests {
             ),
             (0, 0, 0)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn directory_sync_rejects_replaced_name_after_open() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let linked = private_directory_metadata(&store.objects)?;
+        let opened = File::open(&store.objects)?;
+        let opened_metadata = opened.metadata()?;
+        let detached = directory.0.join("detached-objects");
+        fs::rename(&store.objects, &detached)?;
+        fs::create_dir(&store.objects)?;
+        fs::set_permissions(&store.objects, fs::Permissions::from_mode(0o700))?;
+
+        check!(matches!(
+            validate_synced_directory_path(&store.objects, &linked, &opened_metadata),
+            Err(IndexError::Storage(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn directory_sync_rejects_symlink_name() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let link = directory.0.join("objects-link");
+        std::os::unix::fs::symlink(&store.objects, &link)?;
+        check!(matches!(
+            sync_directory_witness(&link),
+            Err(IndexError::Storage(_))
+        ));
         Ok(())
     }
 

@@ -36,7 +36,7 @@ pub(super) fn compiled(language: SymbolLanguage) -> Result<&'static Query, Symbo
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(tree_sitter_registry_consumer)))]
 mod tests {
     use super::*;
 

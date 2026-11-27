@@ -323,6 +323,7 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     other @ (SdkError::UnsupportedNativeQuery { .. }
                     | SdkError::Usage(_)
                     | SdkError::Protocol(_)
+                    | SdkError::Native(_)
                     | SdkError::Serialization(_)
                     | SdkError::Transport(_)
                     | SdkError::Remote { .. }

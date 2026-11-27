@@ -8,6 +8,8 @@ funded scoped SDK RPC·opaque ACK/NativeInitialFullPublishedV3·Source cut diges
 
 선택형 genuine FULL의 operation/view/source/digest를 실제 Q receipt와 대조해 candidate Verify/Serve/search/reopen에 인계한다. stage receipt·reservation·ACK만으로 published result를 합성하지 않는다. predecessor는 전환 전에 실제 저장 상태로 보존한다.
 
+설치 전환은 FULL 이후 view와 Source를 candidate manifest의 operation/source와 대조한다. `preserve-legacy`는 보호된 deployment 안의 별도 private 파일에 expected CAS로 현재 Legacy selection을 보존한다. Source CAS와 목적지 absent-or-same 조건은 rename 직전에 다시 확인한다. fsync/rename 뒤 내구성이 불확실하면 재시작 때 양쪽 selection을 검증한다. 협조적 deployment lock과 별도로 실제 process stop/join/lease를 확인한 뒤 isolated Serve/search를 실행한다.
+
 ## Native control request boundary
 
 완료된 Status/ReadView budget 전달·실패 후 reconciliation·ticket/Open 보존은
@@ -35,4 +37,4 @@ UDS accept 대기는 [IPC 계약](../../adr/NOV-07-001-native-index-execution-an
 - [ ] E08 통합 A 뒤 default daemon/CLI/launcher 전환, B에서 default smoke·rollback·bounded child/FD/lease/scratch cleanup.
 - [ ] installed exact producer/consumer pair·provider identity/egress/budget/cancel과 실제 운영 target/action/독립 observer를 E08에 인계.
 
-제품 선택의 default 전환과 실제 배포 권한은 다르다. 승인 Linux target/설치 bundle/worker provenance가 없으면 해당 실제 process/운영 gate는 BLOCKED다. fixture/local boot pass를 installed qualification으로 승격하지 않는다. [보존 BOOT 계약](../../history/oct-22-finalizing/oct-17-index-closeout/tickets/W2-18-native-cutover.md)과 [state runbook](../../operator/state-cutover-runbook.md)을 따른다.
+승인 Linux target/설치 bundle/worker provenance가 없으면 해당 실제 process/운영 gate는 BLOCKED다. fixture/local boot pass를 installed qualification으로 승격하지 않는다. [전환 ADR](../../adr/SEP-21-004-process-supervision-state-cutover-and-proof.md#cross-repository-cutover)과 [state runbook](../../operator/state-cutover-runbook.md)을 따르며, W2-18 원문은 [복구 색인](../../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages)에서 찾을 수 있다.

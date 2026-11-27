@@ -163,11 +163,11 @@ fn overflow_and_changed_observation_mode_cannot_yield_a_profile()
         ..snapshot()?.ok_or("missing active profile")?
     };
     PROFILE.with(|profile| profile.set(Some(broken)));
-    let connection = rusqlite::Connection::open_in_memory()?;
+    let mut connection = rusqlite::Connection::open_in_memory()?;
     connection.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
         Some(record),
-    );
+    )?;
     connection.execute_batch("SELECT 1;")?;
     assert!(snapshot().is_err());
     drop(guard);
@@ -183,11 +183,11 @@ fn restarting_observation_cannot_accept_a_previous_session_baseline()
     let baseline = snapshot()?;
     drop(first);
     let second = Guard::start()?;
-    let connection = rusqlite::Connection::open_in_memory()?;
+    let mut connection = rusqlite::Connection::open_in_memory()?;
     connection.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
         Some(record),
-    );
+    )?;
     connection.execute_batch("SELECT 1;")?;
     // Counts increased, so counter subtraction alone would accept this reset.
     assert!(since(baseline).is_err());

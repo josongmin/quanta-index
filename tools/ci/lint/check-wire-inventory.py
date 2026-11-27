@@ -9,8 +9,8 @@ that drifts from the code is worse than none, so this gate fails when:
   1. an IPC enum listed under `[[ipc]]` does not exist at the named file,
      has a variant the inventory does not list, or the inventory lists a
      variant the enum does not have (both directions, exact);
-  2. a known search-plane or native control enum exists in the contract files
-     but no `[[ipc]]` row names it;
+  2. a search-plane or Native control opcode enum exists without an `[[ipc]]`
+     row, including a tagged enum directly carried by another Native opcode;
   3. a format-version constant in a workspace `src/` tree is not named by
      exactly one `[[artifact]]`, or is named with a value other than the
      one the code declares (a bump without an inventory update fails);
@@ -40,19 +40,19 @@ ROOT = Path(__file__).resolve().parents[3]
 INVENTORY_PATH = ROOT / "tools" / "ci" / "inventory" / "wire-surface.toml"
 
 # The only files that may declare the search-plane IPC opcode enums.
-IPC_FILES: tuple[str, ...] = (
+SEARCH_PLANE_IPC_FILES: tuple[str, ...] = (
     "crates/quanta-index-contract/src/ipc/split.rs",
     "crates/quanta-index-contract/src/ipc/ingest/envelope.rs",
-    "crates/quanta-index-contract/src/native_protocol.rs",
 )
 NATIVE_IPC_FILE = "crates/quanta-index-contract/src/native_protocol.rs"
+NATIVE_IPC_ROOTS = {"NativeIndexRequest": "request", "NativeIndexResponse": "response"}
 
-IPC_ENUM_NAME_RE = re.compile(r"^SearchPlane(?:Query|Control|Ingest)Ipc(?:Request|Response)$")
-NATIVE_ENUM_NAMES = frozenset({"NativeIndexRequest", "NativeIndexResponse"})
-NATIVE_UNIT_BLOCK_RE = re.compile(
-    rb"^\(\s*(NativeIndexRequest|NativeIndexResponse)\s*\{\s*units\s*\{([^{}]*)\}"
+IPC_ENUM_NAME_RE = re.compile(
+    r"^SearchPlane(?P<plane>Query|Control|Ingest)Ipc(?P<direction>Request|Response)$"
 )
+NATIVE_UNIT_BLOCK_RE = re.compile(rb"^\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*units\s*\{([^{}]*)\}")
 NATIVE_UNIT_TAG_RE = re.compile(rb"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[0-9]+\s*")
+NATIVE_CFG_TEST_RE = re.compile(rb"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 ENUM_DECL_RE = re.compile(r"^\s*pub\s+enum\s+(?P<name>[A-Z][A-Za-z0-9_]*)\s*\{\s*$")
 VARIANT_RE = re.compile(r"^\s*(?P<name>[A-Z][A-Za-z0-9_]*)\s*\(")
 
@@ -291,7 +291,7 @@ def crate_source_files(root: Path = ROOT) -> list[Path]:
         if not src.is_dir():
             continue
         for rs in sorted(src.rglob("*.rs")):
-            if any(part == "tests" for part in rs.parts):
+            if "tests" in rs.relative_to(src).parts:
                 continue
             files.append(rs)
     return files
@@ -333,9 +333,9 @@ def parse_ipc_enums(text: str) -> dict[str, list[str]]:
     return enums
 
 
-def native_unit_tags(tree) -> dict[str, set[str]]:
-    tags: dict[str, set[str]] = {}
-    for item in tree.root_node.named_children:
+def native_unit_tags(scope, enum_name: str) -> set[str]:
+    tags: set[str] | None = None
+    for item in scope.named_children:
         macro = item.named_children[0] if item.type == "expression_statement" else item
         if macro.type != "macro_invocation":
             continue
@@ -347,72 +347,233 @@ def native_unit_tags(tree) -> dict[str, set[str]]:
             continue
         token_tree = macro.named_children[-1]
         block = NATIVE_UNIT_BLOCK_RE.match(token_tree.text)
-        if block is None:
+        if block is None or block[1].decode("ascii") != enum_name:
             continue
-        enum_name = block[1].decode("ascii")
-        if enum_name in tags:
+        if tags is not None:
             raise ValueError(f"{enum_name}: duplicate native wire declarations")
-        tags[enum_name] = set()
+        tags = set()
         for declaration in block[2].strip().rstrip(b",").split(b",") if block[2].strip() else ():
             unit = NATIVE_UNIT_TAG_RE.fullmatch(declaration)
             if unit is None:
                 raise ValueError(f"{enum_name}: malformed native unit tag")
             variant = unit[1].decode("ascii")
-            if variant in tags[enum_name]:
+            if variant in tags:
                 raise ValueError(f"{enum_name}: native unit `{variant}` tagged twice")
-            tags[enum_name].add(variant)
-    return tags
+            tags.add(variant)
+    return tags or set()
 
 
-def parse_native_enums(text: str) -> dict[str, list[str]]:
-    """Read record, newtype, and explicitly tagged native control variants."""
+def native_enum_variants(item, name: str, tagged_units: set[str]) -> tuple[list[str], set[str]]:
+    visibility = next((node for node in item.children if node.type == "visibility_modifier"), None)
+    if visibility is None or visibility.text != b"pub":
+        raise ValueError(f"{name}: control enum must be public")
+    body = item.child_by_field_name("body")
+    if body is None:
+        raise ValueError(f"{name}: enum body is absent")
+    variants: list[str] = []
+    payloads: set[str] = set()
+    seen_units: set[str] = set()
+    for child in body.named_children:
+        if child.type != "enum_variant":
+            continue
+        variant_node = child.child_by_field_name("name")
+        if variant_node is None:
+            raise ValueError(f"{name}: unrecognized native variant shape")
+        variant = variant_node.text.decode("utf-8").removeprefix("r#")
+        fields = child.child_by_field_name("body")
+        if fields is None:
+            if child.child_count != 1 or variant not in tagged_units:
+                raise ValueError(f"{name}: unrecognized native variant shape")
+            seen_units.add(variant)
+        elif fields.type == "ordered_field_declaration_list":
+            types = [
+                node
+                for node in fields.named_children
+                if node.type not in {"line_comment", "block_comment"}
+            ]
+            if len(types) == 1:
+                payload = types[0]
+                if payload.type in {"type_identifier", "scoped_type_identifier"}:
+                    payloads.add(payload.text.decode("utf-8"))
+        elif fields.type != "field_declaration_list":
+            raise ValueError(f"{name}: unrecognized native variant shape")
+        if variant in variants:
+            raise ValueError(f"{name}: variant `{variant}` declared twice")
+        variants.append(variant)
+    if seen_units != tagged_units:
+        raise ValueError(f"{name}: native unit tags differ from enum variants")
+    return variants, payloads
+
+
+@dataclass(frozen=True)
+class NativeOpcode:
+    file: str
+    direction: str
+    variants: list[str]
+
+
+def parse_native_enums(sources: dict[str, str]) -> dict[str, NativeOpcode]:
+    """Follow Native envelope variants through directly carried tagged enums."""
     try:
         from tree_sitter_language_pack import get_parser
     except ImportError as error:
         raise ValueError("native wire discovery requires tree-sitter-language-pack") from error
 
-    source = text.encode("utf-8")
-    tree = get_parser("rust").parse(source)
-    if tree.root_node.has_error:
-        raise ValueError("native control Rust syntax could not be parsed")
-    tagged_units = native_unit_tags(tree)
-    enums: dict[str, list[str]] = {}
-    for item in tree.root_node.children:
-        if item.type != "enum_item":
-            continue
-        name_node = item.child_by_field_name("name")
-        if name_node is None:
-            continue
-        name = source[name_node.start_byte : name_node.end_byte].decode("utf-8")
-        if name not in NATIVE_ENUM_NAMES:
-            continue
-        if name in enums:
-            raise ValueError(f"{name}: declared twice")
-        if not any(child.type == "visibility_modifier" for child in item.children):
-            raise ValueError(f"{name}: control enum must be public")
-        body = item.child_by_field_name("body")
-        if body is None:
-            raise ValueError(f"{name}: enum body is absent")
-        variants: list[str] = []
-        seen_units: set[str] = set()
-        for child in body.children:
-            if child.type != "enum_variant":
+    parser = get_parser("rust")
+    definitions: dict[str, tuple[str, object, object, tuple[str, ...]]] = {}
+    by_name: dict[str, set[str]] = {}
+    imports: dict[tuple[str, ...], dict[str, set[str]]] = {}
+    native_dir = Path(NATIVE_IPC_FILE).with_suffix("")
+
+    def use_targets(node, prefix: str = "") -> list[tuple[str, str]]:
+        if node.type == "use_as_clause":
+            path = node.child_by_field_name("path")
+            alias = node.child_by_field_name("alias")
+            if path is not None and alias is not None:
+                target = (
+                    f"{prefix}::{path.text.decode('utf-8')}"
+                    if prefix
+                    else path.text.decode("utf-8")
+                )
+                return [(alias.text.decode("utf-8"), target)]
+        if node.type == "scoped_use_list":
+            path = node.child_by_field_name("path")
+            group = next((child for child in node.named_children if child.type == "use_list"), None)
+            if path is not None and group is not None:
+                target_prefix = (
+                    f"{prefix}::{path.text.decode('utf-8')}"
+                    if prefix
+                    else path.text.decode("utf-8")
+                )
+                return use_targets(group, target_prefix)
+        if node.type in {"use_declaration", "use_list"}:
+            return [
+                target for child in node.named_children for target in use_targets(child, prefix)
+            ]
+        if node.type in {"identifier", "scoped_identifier"}:
+            path = node.text.decode("utf-8")
+            target = f"{prefix}::{path}" if prefix else path
+            return [(path.rsplit("::", 1)[-1], target)]
+        return []
+
+    def collect(scope, rel: str, module_path: tuple[str, ...]) -> None:
+        test_only = False
+        for item in scope.named_children:
+            if item.type == "attribute_item":
+                test_only |= bool(NATIVE_CFG_TEST_RE.fullmatch(item.text))
                 continue
-            variant_node = child.child_by_field_name("name")
-            shape = {part.type for part in child.children}
-            if variant_node is None:
-                raise ValueError(f"{name}: unrecognized native variant shape")
-            variant = source[variant_node.start_byte : variant_node.end_byte].decode("utf-8")
-            if not shape.intersection({"field_declaration_list", "ordered_field_declaration_list"}):
-                if child.child_count != 1 or variant not in tagged_units.get(name, ()):
-                    raise ValueError(f"{name}: unrecognized native variant shape")
-                seen_units.add(variant)
-            if variant in variants:
-                raise ValueError(f"{name}: variant `{variant}` declared twice")
-            variants.append(variant)
-        if seen_units != tagged_units.get(name, set()):
-            raise ValueError(f"{name}: native unit tags differ from enum variants")
-        enums[name] = variants
+            if item.type in {"line_comment", "block_comment"}:
+                continue
+            if test_only:
+                test_only = False
+                continue
+            if item.type == "use_declaration":
+                local = imports.setdefault(module_path, {})
+                for alias, target in use_targets(item):
+                    local.setdefault(alias, set()).add(target)
+            elif item.type == "type_item":
+                name = item.child_by_field_name("name")
+                target = item.child_by_field_name("type")
+                if (
+                    name is not None
+                    and target is not None
+                    and target.type
+                    in {
+                        "type_identifier",
+                        "scoped_type_identifier",
+                    }
+                ):
+                    imports.setdefault(module_path, {}).setdefault(
+                        name.text.decode("utf-8"), set()
+                    ).add(target.text.decode("utf-8"))
+            elif (
+                item.type == "enum_item" and (node := item.child_by_field_name("name")) is not None
+            ):
+                name = node.text.decode("utf-8").removeprefix("r#")
+                qualified = "::".join((*module_path, name))
+                if qualified in definitions:
+                    raise ValueError(f"{qualified}: native enum declared twice")
+                definitions[qualified] = (rel, item, scope, module_path)
+                by_name.setdefault(name, set()).add(qualified)
+            elif item.type == "mod_item":
+                name = item.child_by_field_name("name")
+                body = item.child_by_field_name("body")
+                if name is not None and body is not None:
+                    collect(body, rel, (*module_path, name.text.decode("utf-8")))
+
+    for rel, text in sources.items():
+        tree = parser.parse(text.encode("utf-8"))
+        if tree.root_node.has_error:
+            raise ValueError(f"{rel}: native control Rust syntax could not be parsed")
+        if rel == NATIVE_IPC_FILE:
+            module_path = ("crate", "native_protocol")
+        else:
+            member = Path(rel).relative_to(native_dir)
+            parts = member.parts[:-1] + (() if member.stem == "mod" else (member.stem,))
+            module_path = ("crate", "native_protocol", *parts)
+        collect(tree.root_node, rel, module_path)
+
+    def resolve_direct_path(path: str, module_path: tuple[str, ...]) -> str | None:
+        parts = tuple(part.removeprefix("r#") for part in path.split("::"))
+        if parts[0] == "crate":
+            qualified = "::".join(parts)
+        elif parts[0] == "self":
+            qualified = "::".join((*module_path, *parts[1:]))
+        elif parts[0] == "super":
+            parent = module_path
+            while parts and parts[0] == "super":
+                parent = parent[:-1]
+                parts = parts[1:]
+            qualified = "::".join((*parent, *parts))
+        else:
+            qualified = "::".join((*module_path, *parts))
+        if qualified in definitions:
+            return qualified
+        return None
+
+    def resolve_payload(payload: str, module_path: tuple[str, ...]) -> str | None:
+        direct = resolve_direct_path(payload, module_path)
+        if direct is not None:
+            return direct
+        parts = tuple(part.removeprefix("r#") for part in payload.split("::"))
+        if len(parts) == 1:
+            targets = imports.get(module_path, {}).get(parts[0])
+            if targets is not None:
+                if len(targets) != 1:
+                    raise ValueError(f"{payload}: ambiguous native opcode import")
+                return resolve_direct_path(next(iter(targets)), module_path)
+            matches = by_name.get(parts[0], set())
+            if len(matches) > 1:
+                raise ValueError(f"{payload}: ambiguous unqualified native opcode payload")
+            return next(iter(matches), None)
+        return None
+
+    enums: dict[str, NativeOpcode] = {}
+    visited: dict[str, str] = {}
+    pending = [
+        (f"crate::native_protocol::{name}", direction)
+        for name, direction in NATIVE_IPC_ROOTS.items()
+    ]
+    while pending:
+        qualified, direction = pending.pop()
+        name = qualified.rsplit("::", 1)[-1]
+        if (known := visited.get(qualified)) is not None:
+            if known != direction:
+                raise ValueError(f"{name}: native opcode reached as both request and response")
+            continue
+        if qualified not in definitions:
+            raise ValueError(f"{name}: expected one native enum declaration, found 0")
+        if name in enums:
+            raise ValueError(f"{name}: multiple native opcodes require distinct inventory names")
+        rel, item, scope, module_path = definitions[qualified]
+        variants, payloads = native_enum_variants(item, name, native_unit_tags(scope, name))
+        visited[qualified] = direction
+        enums[name] = NativeOpcode(rel, direction, variants)
+        pending.extend(
+            (resolved, direction)
+            for payload in sorted(payloads)
+            if (resolved := resolve_payload(payload, module_path)) is not None
+        )
     return enums
 
 
@@ -460,16 +621,13 @@ def load_inventory(path: Path = INVENTORY_PATH) -> dict:
 def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
     findings: list[Finding] = []
     code_enums: dict[str, tuple[str, list[str]]] = {}
-    for rel in IPC_FILES:
+    for rel in SEARCH_PLANE_IPC_FILES:
         path = root / rel
         if not path.is_file():
             findings.append(Finding(rel, "IPC file listed in the checker does not exist"))
             continue
         try:
-            source = path.read_text(encoding="utf-8")
-            parsed = (
-                parse_native_enums(source) if rel == NATIVE_IPC_FILE else parse_ipc_enums(source)
-            )
+            parsed = parse_ipc_enums(path.read_text(encoding="utf-8"))
         except ValueError as err:
             findings.append(Finding(rel, str(err)))
             continue
@@ -479,13 +637,25 @@ def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
                 continue
             code_enums[name] = (rel, variants)
 
+    native_file = root / NATIVE_IPC_FILE
+    native_dir = native_file.with_suffix("")
+    try:
+        sources = {
+            path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+            for path in (native_file, *sorted(native_dir.rglob("*.rs")))
+        }
+        native_enums = parse_native_enums(sources)
+    except (OSError, ValueError) as error:
+        findings.append(Finding(NATIVE_IPC_FILE, str(error)))
+        native_enums = {}
+    code_enums.update((name, (enum.file, enum.variants)) for name, enum in native_enums.items())
+
     listed: set[str] = set()
     for row in inventory.get("ipc", []):
         name = row.get("enum")
         where = f"wire-surface.toml [[ipc]] enum={name!r}"
-        if not isinstance(name, str) or not (
-            IPC_ENUM_NAME_RE.match(name) or name in NATIVE_ENUM_NAMES
-        ):
+        search_plane = IPC_ENUM_NAME_RE.match(name) if isinstance(name, str) else None
+        if not isinstance(name, str) or (search_plane is None and name not in native_enums):
             findings.append(
                 Finding(where, "enum is not a known search-plane or native control name")
             )
@@ -518,20 +688,21 @@ def check_ipc(inventory: dict, root: Path = ROOT) -> list[Finding]:
             findings.append(
                 Finding(where, f"variant `{extra}` is listed but the enum has no such variant")
             )
-        if row.get("direction") not in {"request", "response"}:
-            findings.append(Finding(where, "`direction` must be `request` or `response`"))
-        if name in NATIVE_ENUM_NAMES:
-            expected_direction = "request" if name == "NativeIndexRequest" else "response"
-            if row.get("plane") != "control" or row.get("direction") != expected_direction:
-                findings.append(
-                    Finding(
-                        where,
-                        "native control row must use plane='control' and "
-                        f"direction={expected_direction!r}",
-                    )
+        if search_plane is None:
+            label, expected_plane = "native control", "control"
+            expected_direction = native_enums[name].direction
+        else:
+            label = "search-plane"
+            expected_plane = search_plane["plane"].lower()
+            expected_direction = search_plane["direction"].lower()
+        if row.get("plane") != expected_plane or row.get("direction") != expected_direction:
+            findings.append(
+                Finding(
+                    where,
+                    f"{label} row must use plane={expected_plane!r} and "
+                    f"direction={expected_direction!r}",
                 )
-        elif row.get("plane") not in {"query", "control", "ingest"}:
-            findings.append(Finding(where, "`plane` must be `query`, `control` or `ingest`"))
+            )
 
     for name, (code_file, _variants) in sorted(code_enums.items()):
         if name not in listed:

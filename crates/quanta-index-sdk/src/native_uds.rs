@@ -20,7 +20,7 @@ use quanta_index_contract::{
         MAX_SOURCE_PATH_BYTES, MapRoot, ObjectRef, OperationKey, OperationReply, OperationStatus,
         OwnerKey, OwnerMutation, OwnerMutationSet, ProducerId, ProjectionCertificate, ProjectionId,
         ProjectionOwnerContribution, SourceInput, SourceTextAdmission, StableOwnerId,
-        SubmitOutcome, UpdateRequest, ViewSelection,
+        SubmitOutcome, UpdateRequest, ViewRef, ViewSelection, is_canonical_source_path,
     },
     native_protocol::{
         MAX_NATIVE_SEMANTIC_OWNER_SCAN, MAX_NATIVE_SEMANTIC_QUERY_BYTES, MAX_NATIVE_SEMANTIC_TOP_K,
@@ -34,28 +34,54 @@ use quanta_index_contract::{
         NativeOverlayTextQuery, NativeOverlayTextResult, NativeOverlayTextSource, NativePathPage,
         NativeProducerSourcePage, NativeProjectionOwnerLookup, NativeProjectionRead,
         NativeReadSessionRequest, NativeRepositoryPathCursor, NativeRepositoryPathPage,
-        NativeRootScopedViewV1, NativeSemanticResult, NativeSourceOwnerKeys,
-        NativeSourceOwnerLookup, NativeStubReply, NativeStubRequest, NativeTextPathResultV1,
-        NativeTextPreviewResult, NativeTextResult, SourceStageReplayContextV1,
+        NativeRootScopedViewV1,
+        NativeSemanticResult, NativeSourceOwnerKeys, NativeSourceOwnerLookup, NativeStubReply,
+        NativeStubRequest, NativeTextPathResultV1, NativeTextPreviewResult, NativeTextResult,
+        SourceStageReplayContextV1, SourceStageReplayReceiptV1,
     },
 };
 use quanta_index_ipc::{
-    AdmittedClientResponseBody, IpcError, MAX_MULTIFRAME_REQUEST_BODY_BYTES, MemoryLease,
-    MemoryLifetime, MemoryScope, RequestBudgetV1, send_request_body_with_budget_admitted,
-    send_request_with_budget, send_request_with_commit_deadline_v1, send_stream_request,
+    AdmittedClientResponseBody, ClientIpcTimingV1, IpcError, MAX_MULTIFRAME_REQUEST_BODY_BYTES,
+    MemoryLease, MemoryLifetime, MemoryScope, RequestBudgetV1,
+    send_request_body_with_budget_admitted, send_request_with_budget,
+    send_request_with_commit_deadline_v1, send_stream_request,
 };
+
+use crate::{ClientLexicalQueryObservationV1, ClientQueryRpcKindV1, ClientQueryRpcObservationV1};
 
 mod admitted_reply_v1;
 mod dsl;
-pub use dsl::{NativeDslChangesV1, NativeDslFileChangeV1, NativeDslPublicationV1};
+pub use dsl::{
+    NativeDslChangesV1, NativeDslFileChangeV1, NativeDslPublicationV1, SealedNativeDslRequestV1,
+};
 mod path_output_v1;
 mod published_view_metadata;
+mod operation_request_identity_v1;
 mod root_scoped_view;
 pub use root_scoped_view::{
     AdmittedNativeCandidateInstallationReplyV1, AdmittedNativeRootScopedViewReplyV1,
 };
 mod read_session;
 mod stub_reply;
+
+/// Default product code search addressed to a selected Native view.
+///
+/// Native selects published views rather than manifest generations, so the
+/// request carries no generation pin and no Legacy continuation. Its result
+/// unit is one repository/path group: execute it with the `select:path`
+/// routes (`search_text_paths`, `search_text_path_page_in_read_session`).
+#[must_use]
+pub fn native_code_search_request(query_text: impl Into<String>, top_k: u32) -> TextQueryRequest {
+    TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::CodeSearch,
+        query_text: query_text.into(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: None,
+        generation_selector: None,
+        top_k,
+        cursor: None,
+    }
+}
 
 const MUTATION_PAGE_SIZE: usize = 128;
 
@@ -290,22 +316,49 @@ impl<T: SourceInputView> Serialize for SourceInputWire<'_, T> {
 struct BorrowedSubmitEnvelope<'a> {
     request_id: u64,
     request: &'a UpdateRequest,
+    staging: BorrowedSubmitStaging,
+}
+
+#[derive(Clone, Copy)]
+enum BorrowedSubmitStaging {
+    Ordinary,
+    Source(SourceStageReplayReceiptV1),
+    SealDsl(IngressRef),
 }
 
 impl Serialize for BorrowedSubmitEnvelope<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut envelope = serializer.serialize_struct("NativeIndexRequestEnvelope", 2)?;
         envelope.serialize_field("request_id", &self.request_id)?;
-        envelope.serialize_field("payload", &BorrowedSubmitPayload(self.request))?;
+        envelope.serialize_field("payload", &BorrowedSubmitPayload(self.request, self.staging))?;
         envelope.end()
     }
 }
 
-struct BorrowedSubmitPayload<'a>(&'a UpdateRequest);
+struct BorrowedSubmitPayload<'a>(&'a UpdateRequest, BorrowedSubmitStaging);
 
 impl Serialize for BorrowedSubmitPayload<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_newtype_variant("NativeIndexRequest", 6, "Submit", self.0)
+        match self.1 {
+            BorrowedSubmitStaging::Ordinary =>
+                serializer.serialize_newtype_variant("NativeIndexRequest", 6, "Submit", self.0),
+            BorrowedSubmitStaging::Source(receipt) => {
+                let mut payload = serializer.serialize_struct_variant(
+                    "NativeIndexRequest", 78, "SubmitStagedSourceV1", 2,
+                )?;
+                payload.serialize_field("request", self.0)?;
+                payload.serialize_field("receipt", &receipt)?;
+                payload.end()
+            }
+            BorrowedSubmitStaging::SealDsl(ingress) => {
+                let mut payload = serializer.serialize_struct_variant(
+                    "NativeIndexRequest", 79, "SealStagedDslRequestV1", 2,
+                )?;
+                payload.serialize_field("ingress", &ingress)?;
+                payload.serialize_field("request", self.0)?;
+                payload.end()
+            }
+        }
     }
 }
 
@@ -374,9 +427,11 @@ fn observed_query_request_v1(request: &NativeIndexRequest) -> bool {
             | NativeIndexRequest::ObserveRootView(_)
             | NativeIndexRequest::ObserveCandidateInstallationV1
             | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
             | NativeIndexRequest::SearchLiteral { .. }
             | NativeIndexRequest::QueryPaths { .. }
             | NativeIndexRequest::QueryRepositoryPaths { .. }
+            | NativeIndexRequest::TextMatches(_)
             | NativeIndexRequest::SearchText { .. }
             | NativeIndexRequest::SearchTextPreview { .. }
             | NativeIndexRequest::SearchSemantic { .. }
@@ -392,9 +447,11 @@ fn observed_query_request_v1(request: &NativeIndexRequest) -> bool {
 fn native_dsl_commit_request(request: &NativeIndexRequest) -> bool {
     let operation = match request {
         NativeIndexRequest::Submit(request) => request.operation,
+        NativeIndexRequest::SubmitStagedSourceV1 { request, .. } => request.operation,
         NativeIndexRequest::Resume(operation) => *operation,
         // A verified replay may drive the original Pending operation.
         NativeIndexRequest::ReplayDslV1(replay) => replay.operation,
+        NativeIndexRequest::SubmitSealedDslV1(input) => input.replay.operation,
         _ => return false,
     };
     operation.producer == NATIVE_DSL_PRODUCER_V1
@@ -580,6 +637,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexResponse::MutationsStaged(_)
                 | NativeIndexResponse::MutationsSealedForReplayV1(_)
                 | NativeIndexResponse::SealedMutationsForReplayV1(_)
+                | NativeIndexResponse::SealedDslRequestV1(_)
                 | NativeIndexResponse::InputDiscarded(_)
                 | NativeIndexResponse::LiteralPage(_)
                 | NativeIndexResponse::PathPage(_)
@@ -589,15 +647,20 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexResponse::TextRanked(_)
                 | NativeIndexResponse::TextPathRankedV1(_)
                 | NativeIndexResponse::TextPathPageV1(_)
+                | NativeIndexResponse::TextMatchPage(_)
                 | NativeIndexResponse::TextPreviewRanked(_)
                 | NativeIndexResponse::HybridFileRanked(_)
                 | NativeIndexResponse::TextRankedPage(_)
                 | NativeIndexResponse::DslPageV1(_)
+                | NativeIndexResponse::DslRuntimeCatalogPageV1(_)
+                | NativeIndexResponse::DslStructuralChunksPageV1(_)
                 | NativeIndexResponse::HistoryPage(_)
                 | NativeIndexResponse::HistoryCut(_)
+                | NativeIndexResponse::InitialHistoryCutV1(_)
                 | NativeIndexResponse::HistoryGeneration(_)
                 | NativeIndexResponse::ReadSessionProfile(_)
                 | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::OperationRequestIdentityV1(_)
                 | NativeIndexResponse::RootScopedView(_)
                 | NativeIndexResponse::CandidateInstallationV1(_)
                 | NativeIndexResponse::SemanticRanked(_)
@@ -641,6 +704,57 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         payload: NativeIndexRequest,
         budget: &RequestBudgetV1,
     ) -> Result<NativeIndexResponse, NativeUdsError> {
+        self.request_envelope(payload, budget, None)
+            .map(|(_, reply)| reply)
+    }
+
+    fn request_lexical(
+        &self,
+        payload: NativeIndexRequest,
+        budget: &RequestBudgetV1,
+        observation: Option<&mut ClientLexicalQueryObservationV1>,
+    ) -> Result<NativeIndexResponse, NativeUdsError> {
+        use quanta_index_contract::native_protocol::NativeReadSessionRequest;
+
+        let Some(observation) = observation else {
+            return self.request(payload, budget);
+        };
+        let kind = match &payload {
+            NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. } => {
+                ClientQueryRpcKindV1::NativeResolveProtectedSourceHead
+            }
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::Open { .. }) => {
+                ClientQueryRpcKindV1::NativeOpenReadSession
+            }
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadProfile { .. }) => {
+                ClientQueryRpcKindV1::NativeReadSessionProfile
+            }
+            NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchTextPathPageV1 { .. }) => {
+                ClientQueryRpcKindV1::NativeTextPathPage
+            }
+            _ => {
+                return Err(NativeUdsError::Protocol(
+                    "Native lexical observation reached a non-lexical RPC".into(),
+                ));
+            }
+        };
+        let mut ipc = ClientIpcTimingV1::default();
+        let (request_id, response) = self.request_envelope(payload, budget, Some(&mut ipc))?;
+        observation.rpcs.push(ClientQueryRpcObservationV1 {
+            kind,
+            request_id,
+            ipc,
+        });
+        Ok(response)
+    }
+
+    fn request_envelope(
+        &self,
+        payload: NativeIndexRequest,
+        budget: &RequestBudgetV1,
+        timing: Option<&mut ClientIpcTimingV1>,
+    ) -> Result<(u64, NativeIndexResponse), NativeUdsError> {
         if matches!(payload, NativeIndexRequest::QueryEffortStream { .. }) {
             return Err(NativeUdsError::Protocol(
                 "progressive effort requires the streaming client API".into(),
@@ -654,7 +768,15 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             request_id,
             payload,
         };
-        self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))
+        let response = self.request_wire_with_timing(
+            request_id,
+            &envelope,
+            budget,
+            Some(&envelope.payload),
+            native_dsl_commit_request(&envelope.payload),
+            timing,
+        )?;
+        Ok((request_id, response))
     }
 
     /// Restrict this existing client's admitted publication I/O to the same
@@ -776,6 +898,29 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         }
     }
 
+    /// Borrow Q's paid first-History fold from the exact staged Source ingress.
+    pub fn preview_initial_history_cut_admitted_v1(
+        &self,
+        ingress: IngressRef,
+        expected_view: ViewRef,
+        input: ObjectRef,
+        profile: ObjectRef,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        let reply = self.request_publication_admitted(
+            NativeIndexRequest::PreviewInitialHistoryCutV1 {
+                ingress, expected_view, input, profile,
+            },
+            budget,
+            memory,
+        )?;
+        match reply.response() {
+            NativeIndexResponse::InitialHistoryCutV1(_) | NativeIndexResponse::Error(_) => Ok(reply),
+            _ => Err(NativeUdsError::Unknown(ingress.operation)),
+        }
+    }
+
     /// Reopen an existing operation at its confirmed source-stage root.
     pub fn reopen_input_with_root_for_source_stage_admitted_v1(
         &self,
@@ -826,23 +971,30 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexRequest::StageProfile { .. }
                 | NativeIndexRequest::StageProjectionOutput { .. }
                 | NativeIndexRequest::StageImmutableObject { .. }
+                | NativeIndexRequest::SealStagedDslRequestV1 { .. }
+                | NativeIndexRequest::PreviewInitialHistoryCutV1 { .. }
                 | NativeIndexRequest::StageProjectionOwner { .. }
                 | NativeIndexRequest::StageProjectionCertificate { .. }
                 | NativeIndexRequest::StageMutationPage { .. }
                 | NativeIndexRequest::SealMutations { .. }
                 | NativeIndexRequest::SealMutationsForReplayV1 { .. }
                 | NativeIndexRequest::ReadSealedMutationsForReplayV1 { .. }
+                | NativeIndexRequest::ReadSealedDslV1(_)
                 | NativeIndexRequest::DiscardInput(_)
                 | NativeIndexRequest::Submit(_)
+                | NativeIndexRequest::SubmitStagedSourceV1 { .. }
                 | NativeIndexRequest::Resume(_)
                 | NativeIndexRequest::ReplayDslV1(_)
+                | NativeIndexRequest::SubmitSealedDslV1(_)
                 | NativeIndexRequest::Status(_)
                 | NativeIndexRequest::ReadSession(_)
                 | NativeIndexRequest::ReadView(_)
                 | NativeIndexRequest::PublishedViewMetadata(_)
+                | NativeIndexRequest::OperationRequestIdentityV1(_)
                 | NativeIndexRequest::ObserveRootView(_)
                 | NativeIndexRequest::ObserveCandidateInstallationV1
                 | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
                 | NativeIndexRequest::ReadProjection { .. }
                 | NativeIndexRequest::QueryGraph { .. }
                 | NativeIndexRequest::LookupProjectionOwners { .. }
@@ -860,12 +1012,15 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             || matches!(
                 payload,
                 NativeIndexRequest::PublishedViewMetadata(_)
+                    | NativeIndexRequest::OperationRequestIdentityV1(_)
+                    | NativeIndexRequest::PreviewInitialHistoryCutV1 { .. }
                     | NativeIndexRequest::ListProducerSourceOwners { .. }
                     | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }
                     | NativeIndexRequest::ObserveRootView(_)
                     | NativeIndexRequest::ObserveCandidateInstallationV1
                     | NativeIndexRequest::QueryGraph { .. }
                     | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
             );
         if checkpointed_read {
             read_session::admitted_budget_checkpoint(budget)?;
@@ -888,7 +1043,10 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             None
         };
         let route = match payload {
-            NativeIndexRequest::ReadSession(_) => AdmittedWireRoute::ReadSession,
+            NativeIndexRequest::ReadSession(_)
+            | NativeIndexRequest::PreviewInitialHistoryCutV1 { .. } => {
+                AdmittedWireRoute::ReadSession
+            }
             NativeIndexRequest::QueryGraph { .. } => AdmittedWireRoute::GraphQuery,
             _ if native_dsl_commit_request(payload) => AdmittedWireRoute::DslCommit,
             NativeIndexRequest::StageProjectionOutput { .. }
@@ -1028,6 +1186,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::MutationsStaged(_)
             | NativeIndexResponse::MutationsSealedForReplayV1(_)
             | NativeIndexResponse::SealedMutationsForReplayV1(_)
+            | NativeIndexResponse::SealedDslRequestV1(_)
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
@@ -1037,15 +1196,20 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::TextRanked(_)
             | NativeIndexResponse::TextPathRankedV1(_)
             | NativeIndexResponse::TextPathPageV1(_)
+            | NativeIndexResponse::TextMatchPage(_)
             | NativeIndexResponse::TextPreviewRanked(_)
             | NativeIndexResponse::HybridFileRanked(_)
             | NativeIndexResponse::TextRankedPage(_)
             | NativeIndexResponse::DslPageV1(_)
+            | NativeIndexResponse::DslRuntimeCatalogPageV1(_)
+            | NativeIndexResponse::DslStructuralChunksPageV1(_)
             | NativeIndexResponse::HistoryPage(_)
             | NativeIndexResponse::HistoryCut(_)
+                | NativeIndexResponse::InitialHistoryCutV1(_)
             | NativeIndexResponse::HistoryGeneration(_)
             | NativeIndexResponse::ReadSessionProfile(_)
             | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::OperationRequestIdentityV1(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
             | NativeIndexResponse::SemanticRanked(_)
@@ -1123,6 +1287,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::MutationsStaged(_)
             | NativeIndexResponse::MutationsSealedForReplayV1(_)
             | NativeIndexResponse::SealedMutationsForReplayV1(_)
+            | NativeIndexResponse::SealedDslRequestV1(_)
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
@@ -1132,15 +1297,20 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::TextRanked(_)
             | NativeIndexResponse::TextPathRankedV1(_)
             | NativeIndexResponse::TextPathPageV1(_)
+            | NativeIndexResponse::TextMatchPage(_)
             | NativeIndexResponse::TextPreviewRanked(_)
             | NativeIndexResponse::HybridFileRanked(_)
             | NativeIndexResponse::TextRankedPage(_)
             | NativeIndexResponse::DslPageV1(_)
+            | NativeIndexResponse::DslRuntimeCatalogPageV1(_)
+            | NativeIndexResponse::DslStructuralChunksPageV1(_)
             | NativeIndexResponse::HistoryPage(_)
             | NativeIndexResponse::HistoryCut(_)
+                | NativeIndexResponse::InitialHistoryCutV1(_)
             | NativeIndexResponse::HistoryGeneration(_)
             | NativeIndexResponse::ReadSessionProfile(_)
             | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::OperationRequestIdentityV1(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
             | NativeIndexResponse::SemanticRanked(_)
@@ -1175,6 +1345,49 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        self.submit_borrowed_with_stage(request, None, budget, memory)
+    }
+
+    pub fn submit_staged_source_borrowed_admitted_v1(
+        &self,
+        request: &UpdateRequest,
+        receipt: SourceStageReplayReceiptV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        self.submit_borrowed_with_stage(request, Some(receipt), budget, memory)
+    }
+
+    fn seal_dsl_request_borrowed_admitted_v1(
+        &self,
+        ingress: IngressRef,
+        request: &UpdateRequest,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<ObjectRef, NativeUdsError> {
+        let request_id = allocate_request_id(&self.next_request_id)?;
+        let envelope = BorrowedSubmitEnvelope {
+            request_id,
+            request,
+            staging: BorrowedSubmitStaging::SealDsl(ingress),
+        };
+        let reply = self.request_wire_admitted(
+            request_id, &envelope, budget, memory, AdmittedWireRoute::Publication,
+        )?;
+        match reply.response() {
+            NativeIndexResponse::Staged(reference) => Ok(*reference),
+            NativeIndexResponse::Error(error) => Err(NativeUdsError::Refused(error.clone())),
+            _ => Err(NativeUdsError::Protocol("missing DSL request seal".into())),
+        }
+    }
+
+    fn submit_borrowed_with_stage(
+        &self,
+        request: &UpdateRequest,
+        receipt: Option<SourceStageReplayReceiptV1>,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
         let key = request.operation;
         if budget.is_cancelled() {
             return Err(cancelled_error());
@@ -1183,6 +1396,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         let envelope = BorrowedSubmitEnvelope {
             request_id,
             request,
+            staging: receipt.map_or(BorrowedSubmitStaging::Ordinary, BorrowedSubmitStaging::Source),
         };
         let route = if key.producer == NATIVE_DSL_PRODUCER_V1 {
             AdmittedWireRoute::DslCommit
@@ -1213,6 +1427,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::MutationsStaged(_)
             | NativeIndexResponse::MutationsSealedForReplayV1(_)
             | NativeIndexResponse::SealedMutationsForReplayV1(_)
+            | NativeIndexResponse::SealedDslRequestV1(_)
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
@@ -1222,15 +1437,20 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::TextRanked(_)
             | NativeIndexResponse::TextPathRankedV1(_)
             | NativeIndexResponse::TextPathPageV1(_)
+            | NativeIndexResponse::TextMatchPage(_)
             | NativeIndexResponse::TextPreviewRanked(_)
             | NativeIndexResponse::HybridFileRanked(_)
             | NativeIndexResponse::TextRankedPage(_)
             | NativeIndexResponse::DslPageV1(_)
+            | NativeIndexResponse::DslRuntimeCatalogPageV1(_)
+            | NativeIndexResponse::DslStructuralChunksPageV1(_)
             | NativeIndexResponse::HistoryPage(_)
             | NativeIndexResponse::HistoryCut(_)
+                | NativeIndexResponse::InitialHistoryCutV1(_)
             | NativeIndexResponse::HistoryGeneration(_)
             | NativeIndexResponse::ReadSessionProfile(_)
             | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::OperationRequestIdentityV1(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
             | NativeIndexResponse::SemanticRanked(_)
@@ -1287,15 +1507,17 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             ));
         }
         let body = match (route, self.bound_peer_v1.as_ref()) {
-            (AdmittedWireRoute::DslCommit | AdmittedWireRoute::GraphQuery, peer) => {
-                quanta_index_ipc::send_request_body_with_budget_admitted_deadline_v1(
-                    self.socket.as_ref(),
-                    envelope,
-                    budget,
-                    memory,
-                    peer,
-                )
-            }
+            (
+                AdmittedWireRoute::DslCommit
+                | AdmittedWireRoute::GraphQuery,
+                peer,
+            ) => quanta_index_ipc::send_request_body_with_budget_admitted_deadline_v1(
+                self.socket.as_ref(),
+                envelope,
+                budget,
+                memory,
+                peer,
+            ),
             (AdmittedWireRoute::StageProjectionOutput, Some(peer)) => {
                 quanta_index_ipc::send_request_body_with_budget_admitted_multiframe_bound_peer_v1(
                     self.socket.as_ref(),
@@ -1372,6 +1594,25 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         payload: Option<&NativeIndexRequest>,
         propagate_deadline: bool,
     ) -> Result<NativeIndexResponse, NativeUdsError> {
+        self.request_wire_with_timing(
+            request_id,
+            envelope,
+            budget,
+            payload,
+            propagate_deadline,
+            None,
+        )
+    }
+
+    fn request_wire_with_timing<E: serde::Serialize>(
+        &self,
+        request_id: u64,
+        envelope: &E,
+        budget: &RequestBudgetV1,
+        payload: Option<&NativeIndexRequest>,
+        propagate_deadline: bool,
+        timing: Option<&mut ClientIpcTimingV1>,
+    ) -> Result<NativeIndexResponse, NativeUdsError> {
         if self.bound_peer_v1.is_some() {
             return Err(NativeUdsError::PeerBindingRefused(
                 quanta_index_ipc::PeerBindingRefusalV1::UnsupportedRoute,
@@ -1389,7 +1630,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             .diagnostic_attempt_source
             .as_deref()
             .and_then(crate::DiagnosticAttemptSourceV1::begin_attempt);
-        let result = self.request_wire_inner(request_id, envelope, budget, propagate_deadline);
+        let result =
+            self.request_wire_inner(request_id, envelope, budget, propagate_deadline, timing);
         if let Some(guard) = attempt {
             use quanta_index_contract::DiagnosticAttemptOutcomeV1;
             let outcome = match &result {
@@ -1417,18 +1659,29 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         envelope: &E,
         budget: &RequestBudgetV1,
         propagate_deadline: bool,
+        timing: Option<&mut ClientIpcTimingV1>,
     ) -> Result<NativeIndexResponse, NativeUdsError> {
-        let reply: NativeIndexResponseEnvelope = match self.observed_query_peer_v1.as_ref() {
-            Some(peer) => quanta_index_ipc::send_request_with_budget_bound_peer_v1(
+        let reply: NativeIndexResponseEnvelope = match (timing, self.observed_query_peer_v1.as_ref()) {
+            (Some(timing), peer) => quanta_index_ipc::send_request_with_budget_observed_v1(
+                self.socket.as_ref(),
+                envelope,
+                budget,
+                peer,
+            )
+            .map(|(response, observed)| {
+                *timing = observed;
+                response
+            }),
+            (None, Some(peer)) => quanta_index_ipc::send_request_with_budget_bound_peer_v1(
                 self.socket.as_ref(),
                 envelope,
                 budget,
                 peer,
             ),
-            None if propagate_deadline => {
+            (None, None) if propagate_deadline => {
                 send_request_with_commit_deadline_v1(self.socket.as_ref(), envelope, budget)
             }
-            None => send_request_with_budget(self.socket.as_ref(), envelope, budget),
+            (None, None) => send_request_with_budget(self.socket.as_ref(), envelope, budget),
         }
         .map_err(|error| {
             if let IpcError::PeerBindingRefused(cause) = error {
@@ -1461,6 +1714,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::MutationsStaged(_)
             | NativeIndexResponse::MutationsSealedForReplayV1(_)
             | NativeIndexResponse::SealedMutationsForReplayV1(_)
+            | NativeIndexResponse::SealedDslRequestV1(_)
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
@@ -1470,15 +1724,20 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::TextRanked(_)
             | NativeIndexResponse::TextPathRankedV1(_)
             | NativeIndexResponse::TextPathPageV1(_)
+            | NativeIndexResponse::TextMatchPage(_)
             | NativeIndexResponse::TextPreviewRanked(_)
             | NativeIndexResponse::HybridFileRanked(_)
             | NativeIndexResponse::TextRankedPage(_)
             | NativeIndexResponse::DslPageV1(_)
+            | NativeIndexResponse::DslRuntimeCatalogPageV1(_)
+            | NativeIndexResponse::DslStructuralChunksPageV1(_)
             | NativeIndexResponse::HistoryPage(_)
             | NativeIndexResponse::HistoryCut(_)
+                | NativeIndexResponse::InitialHistoryCutV1(_)
             | NativeIndexResponse::HistoryGeneration(_)
             | NativeIndexResponse::ReadSessionProfile(_)
             | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::OperationRequestIdentityV1(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
             | NativeIndexResponse::SemanticRanked(_)
@@ -1980,6 +2239,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         let envelope = BorrowedSubmitEnvelope {
             request_id,
             request,
+            staging: BorrowedSubmitStaging::Ordinary,
         };
         classify_submit_result(
             self.request_wire_with_deadline(
@@ -2032,6 +2292,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::MutationsStaged(_)
             | NativeIndexResponse::MutationsSealedForReplayV1(_)
             | NativeIndexResponse::SealedMutationsForReplayV1(_)
+            | NativeIndexResponse::SealedDslRequestV1(_)
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
@@ -2041,15 +2302,20 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::TextRanked(_)
             | NativeIndexResponse::TextPathRankedV1(_)
             | NativeIndexResponse::TextPathPageV1(_)
+            | NativeIndexResponse::TextMatchPage(_)
             | NativeIndexResponse::TextPreviewRanked(_)
             | NativeIndexResponse::HybridFileRanked(_)
             | NativeIndexResponse::TextRankedPage(_)
             | NativeIndexResponse::DslPageV1(_)
+            | NativeIndexResponse::DslRuntimeCatalogPageV1(_)
+            | NativeIndexResponse::DslStructuralChunksPageV1(_)
             | NativeIndexResponse::HistoryPage(_)
             | NativeIndexResponse::HistoryCut(_)
+                | NativeIndexResponse::InitialHistoryCutV1(_)
             | NativeIndexResponse::HistoryGeneration(_)
             | NativeIndexResponse::ReadSessionProfile(_)
             | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::OperationRequestIdentityV1(_)
             | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::CandidateInstallationV1(_)
             | NativeIndexResponse::SemanticRanked(_)
@@ -2363,8 +2629,9 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                             && item
                                 .path
                                 .as_ref()
-                                .is_none_or(|path| valid_native_source_path(path))
+                                .is_none_or(|path| is_canonical_source_path(path))
                             && (item.text.is_some() || item.path.is_none())
+                            && (item.path.is_some() || item.repository_witness.is_none())
                     })
             }
             _ => false,
@@ -2378,6 +2645,9 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     }
 
     /// Update one overlay revision with an exact source path for unsaved owners.
+    ///
+    /// A new owner without a durable record names a durable `repository_witness`
+    /// of the selected view; durable owners keep their own repository.
     pub fn update_overlay_at_path(
         &self,
         document: quanta_index_contract::native_protocol::NativeOverlayDocument,
@@ -2385,6 +2655,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         revision: u64,
         text: Option<String>,
         path: Option<String>,
+        repository_witness: Option<quanta_index_contract::index::OwnerKey>,
         budget: &RequestBudgetV1,
     ) -> Result<NativeOverlayReply, NativeUdsError> {
         self.overlay(
@@ -2394,6 +2665,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 revision,
                 text,
                 path,
+                repository_witness,
             },
             budget,
         )
@@ -2603,7 +2875,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             let mut cursor = [0; 32];
             cursor[..16].copy_from_slice(&hit.owner.producer.0);
             cursor[16..].copy_from_slice(&hit.owner.stable_id.0);
-            if !valid_native_source_path(&hit.record.path)
+            if !is_canonical_source_path(&hit.record.path)
                 || prior.is_some_and(|previous| cursor <= previous)
             {
                 return Err(NativeUdsError::Protocol(
@@ -2852,6 +3124,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         Ok(result)
     }
 
+    /// Continue against `ViewSelection::Exact` using the view from the first page.
     pub fn query_paths(
         &self,
         selection: ViewSelection,
@@ -2862,11 +3135,20 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
     ) -> Result<NativePathPage, NativeUdsError> {
         if prefix.len() > MAX_SOURCE_PATH_BYTES
-            || after.is_some_and(|cursor| cursor.len() > MAX_SOURCE_PATH_BYTES)
+            || prefix.starts_with('/')
+            || prefix.contains('\0')
+            || after.is_some_and(|cursor| {
+                !is_canonical_source_path(cursor) || !cursor.starts_with(prefix)
+            })
             || !(1..=128).contains(&limit)
         {
             return Err(NativeUdsError::Protocol(
                 "path query exceeds native request bounds".into(),
+            ));
+        }
+        if after.is_some() && !matches!(selection, ViewSelection::Exact(_)) {
+            return Err(NativeUdsError::Protocol(
+                "path continuation requires an exact view".into(),
             ));
         }
         let page_limit = usize::try_from(limit)
@@ -2891,6 +3173,24 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 "path query page binding or limit mismatch".into(),
             ));
         }
+        if page.has_more && page.entries.is_empty() {
+            return Err(NativeUdsError::Protocol(
+                "path query continuation has no entry".into(),
+            ));
+        }
+        let mut prior = after;
+        for entry in &page.entries {
+            let path = entry.path.as_str();
+            if !is_canonical_source_path(path)
+                || !path.starts_with(prefix)
+                || prior.is_some_and(|prior| path <= prior)
+            {
+                return Err(NativeUdsError::Protocol(
+                    "path query page has invalid or unordered entries".into(),
+                ));
+            }
+            prior = Some(path);
+        }
         Ok(page)
     }
 
@@ -2912,7 +3212,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 cursor.instance != instance
                     || cursor.prefix != prefix
                     || !matches!(selection, ViewSelection::Exact(view) if view == cursor.view)
-                    || !valid_native_source_path(&cursor.path)
+                    || !is_canonical_source_path(&cursor.path)
                     || !cursor.path.starts_with(&prefix)
             })
         {
@@ -2953,7 +3253,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         for entry in &page.entries {
             let path = entry.file.path.as_str();
             let key = (path, entry.repository.as_ref());
-            if !valid_native_source_path(path)
+            if !is_canonical_source_path(path)
                 || !path.starts_with(&prefix)
                 || prior.is_some_and(|previous| key <= previous)
             {
@@ -2986,18 +3286,22 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
     match request {
         NativeIndexRequest::BeginInput(key)
         | NativeIndexRequest::Resume(key)
-        | NativeIndexRequest::Status(key) => Some(*key),
+        | NativeIndexRequest::Status(key)
+        | NativeIndexRequest::OperationRequestIdentityV1(key) => Some(*key),
         NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { operation, .. } => {
             Some(*operation)
         }
         NativeIndexRequest::ReadSealedMutationsForReplayV1 { operation, .. } => Some(*operation),
-        NativeIndexRequest::ReplayDslV1(input) => Some(input.operation),
+        NativeIndexRequest::ReplayDslV1(input) | NativeIndexRequest::ReadSealedDslV1(input) => Some(input.operation),
+        NativeIndexRequest::SubmitSealedDslV1(input) => Some(input.replay.operation),
         NativeIndexRequest::StageSource { ingress, .. }
         | NativeIndexRequest::StageSources { ingress, .. }
         | NativeIndexRequest::StageRepositorySources { ingress, .. }
         | NativeIndexRequest::StageProfile { ingress, .. }
         | NativeIndexRequest::StageProjectionOutput { ingress, .. }
         | NativeIndexRequest::StageImmutableObject { ingress, .. }
+        | NativeIndexRequest::SealStagedDslRequestV1 { ingress, .. }
+        | NativeIndexRequest::PreviewInitialHistoryCutV1 { ingress, .. }
         | NativeIndexRequest::SealCandidateWithSourceRoutes { ingress, .. }
         | NativeIndexRequest::SealCandidateWithSourceRoutesAndRetiredPolicyV1 { ingress, .. }
         | NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 { ingress, .. }
@@ -3008,6 +3312,7 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::SealMutationsForReplayV1 { ingress, .. }
         | NativeIndexRequest::DiscardInput(ingress) => Some(ingress.operation),
         NativeIndexRequest::Submit(request) => Some(request.operation),
+        NativeIndexRequest::SubmitStagedSourceV1 { request, .. } => Some(request.operation),
         NativeIndexRequest::CreateWorkspace { .. }
         | NativeIndexRequest::ReadSession(_)
         | NativeIndexRequest::ReadView(_)
@@ -3015,6 +3320,7 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::ObserveRootView(_)
         | NativeIndexRequest::ObserveCandidateInstallationV1
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }
         | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }
@@ -3031,6 +3337,7 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::SearchLiteral { .. }
         | NativeIndexRequest::QueryPaths { .. }
         | NativeIndexRequest::QueryRepositoryPaths { .. }
+        | NativeIndexRequest::TextMatches(_)
         | NativeIndexRequest::SearchOverlayText(_)
         | NativeIndexRequest::SearchText { .. }
         | NativeIndexRequest::SearchTextPreview { .. }
@@ -3066,6 +3373,10 @@ fn publication_response_matches_request(
             NativeIndexRequest::ReopenInputWithRootForSourceStageV1 { operation, .. },
             NativeIndexResponse::InputOpened(ingress),
         ) => ingress.operation == *operation,
+        (
+            NativeIndexRequest::PreviewInitialHistoryCutV1 { .. },
+            NativeIndexResponse::InitialHistoryCutV1(_),
+        ) => true,
         (
             NativeIndexRequest::StageSource { .. }
             | NativeIndexRequest::StageProfile { .. }
@@ -3116,7 +3427,8 @@ fn publication_response_matches_request(
             NativeIndexRequest::DiscardInput(expected),
             NativeIndexResponse::InputDiscarded(actual),
         ) => actual == expected,
-        (NativeIndexRequest::Submit(request), NativeIndexResponse::Submitted(reply)) => {
+        (NativeIndexRequest::Submit(request), NativeIndexResponse::Submitted(reply))
+        | (NativeIndexRequest::SubmitStagedSourceV1 { request, .. }, NativeIndexResponse::Submitted(reply)) => {
             validate_submit_reply(request.operation, reply.clone()).is_ok()
         }
         (NativeIndexRequest::Resume(key), NativeIndexResponse::Submitted(reply)) => {
@@ -3125,6 +3437,12 @@ fn publication_response_matches_request(
         (NativeIndexRequest::ReplayDslV1(input), NativeIndexResponse::Submitted(reply)) => {
             validate_submit_reply(input.operation, reply.clone()).is_ok()
         }
+        (NativeIndexRequest::ReadSealedDslV1(input), NativeIndexResponse::SealedDslRequestV1(seal)) => {
+            seal.as_ref().is_none_or(|seal| seal.replay == *input && seal.ingress.operation == input.operation)
+        }
+        (NativeIndexRequest::SubmitSealedDslV1(input), NativeIndexResponse::Submitted(reply)) => {
+            validate_submit_reply(input.replay.operation, reply.clone()).is_ok()
+        }
         (NativeIndexRequest::Status(key), NativeIndexResponse::Status(reply)) => {
             validate_status_reply(*key, reply.clone()).is_ok()
         }
@@ -3132,6 +3450,10 @@ fn publication_response_matches_request(
             NativeIndexRequest::PublishedViewMetadata(key),
             NativeIndexResponse::PublishedViewMetadata(reply),
         ) => published_view_metadata::validate_reply(*key, reply).is_ok(),
+        (
+            NativeIndexRequest::OperationRequestIdentityV1(key),
+            NativeIndexResponse::OperationRequestIdentityV1(reply),
+        ) => reply.operation == *key && reply.payload.key == *key,
         (NativeIndexRequest::ReadView(selection), NativeIndexResponse::View(view)) => {
             validate_catalog_view_selection(*selection, view).is_ok()
         }
@@ -3150,6 +3472,10 @@ fn publication_response_matches_request(
             root_scoped_view::validate_reply(ViewSelection::Exact(observed.view.identity), observed)
                 .is_ok()
         }
+        (
+            NativeIndexRequest::ResolveProtectedSourceViewV1 { view, .. },
+            NativeIndexResponse::RootScopedView(observed),
+        ) => root_scoped_view::validate_reply(ViewSelection::Exact(*view), observed).is_ok(),
         (
             NativeIndexRequest::QueryGraph {
                 selection,
@@ -3526,11 +3852,13 @@ fn native_text_result_limit_checked_with_memory(
 ) -> Result<u32, NativeUdsError> {
     use quanta_index_contract::TextQuerySyntax;
 
-    let parse_fail = |message: String| NativeUdsError::QueryRejected {
-        code: SearchPlaneErrorCodeV2::Lexical(
-            quanta_index_contract::lex::LexicalErrorCode::ParseFail,
-        ),
-        message,
+    // An unplannable shape is UnsupportedCombo; a malformed query is ParseFail.
+    let parse_fail = |error| {
+        let code = quanta_index_contract::native_query_refusal_code(&error);
+        NativeUdsError::QueryRejected {
+            code: SearchPlaneErrorCodeV2::Lexical(code),
+            message: error.to_string(),
+        }
     };
 
     let limit = |parsed: &quanta_index_contract::LqQuery| {
@@ -3540,13 +3868,35 @@ fn native_text_result_limit_checked_with_memory(
             Some(quanta_index_contract::LqCountBound::Bounded(count)) if count > 0 => {
                 Ok(query.top_k.min(count))
             }
-            Some(_) => Err(NativeUdsError::Protocol(
-                "native text count must be positive and bounded".into(),
-            )),
+            // `count:all` and `count:0` parse but have no Native plan.
+            Some(_) => Err(NativeUdsError::QueryRejected {
+                code: SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::UnsupportedCombo,
+                ),
+                message: "native text count must be positive and bounded".into(),
+            }),
         }
     };
     match query.syntax {
-        TextQuerySyntax::CodeSearch => return Ok(query.top_k),
+        TextQuerySyntax::CodeSearch => {
+            // The server lowers through the same shared grammar; the client
+            // refuses the same queries typed before any I/O.
+            let backing =
+                quanta_index_contract::code_search_query_backing_bytes(query.query_text.len());
+            let _backing = match backing {
+                Some(bytes) => temporary_bytes(memory, bytes)?,
+                None => None,
+            };
+            let refusal = |error: quanta_index_contract::CodeSearchQueryError| {
+                NativeUdsError::QueryRejected {
+                    code: SearchPlaneErrorCodeV2::Lexical(error.lexical_code()),
+                    message: error.to_string(),
+                }
+            };
+            let parsed = quanta_index_contract::lower_code_search_native_query(&query.query_text)
+                .map_err(refusal)?;
+            return limit(&parsed);
+        }
         TextQuerySyntax::Sourcegraph => {
             let parse_sourcegraph = || {
                 quanta_index_contract::parse_sourcegraph_content_query(&query.query_text).map_err(
@@ -3582,7 +3932,7 @@ fn native_text_result_limit_checked_with_memory(
     if query.query_text.len() > quanta_index_contract::MAX_NATIVE_CONTENT_INPUT_BYTES {
         return Err(
             match quanta_index_contract::tokenize_native_content_query(&query.query_text) {
-                Err(error) => parse_fail(error.to_string()),
+                Err(error) => parse_fail(error),
                 Ok(_) => {
                     NativeUdsError::Protocol("Native content query exceeds backing bound".into())
                 }
@@ -3595,14 +3945,12 @@ fn native_text_result_limit_checked_with_memory(
         })?;
     let _tokens = temporary_bytes(memory, backing)?;
     let tokens = quanta_index_contract::tokenize_native_content_query(&query.query_text)
-        .map_err(|error| parse_fail(error.to_string()))?;
+        .map_err(parse_fail)?;
     let preparation = tokens
         .preparation_backing_bytes()
         .ok_or_else(|| NativeUdsError::Protocol("Native regex preparation overflow".into()))?;
     let _preparation = temporary_bytes(memory, preparation)?;
-    let parsed = tokens
-        .parse()
-        .map_err(|error| parse_fail(error.to_string()))?;
+    let parsed = tokens.parse().map_err(parse_fail)?;
     limit(&parsed)
 }
 
@@ -3656,12 +4004,12 @@ fn validate_overlay_text_result(
         ));
     }
     for (position, hit) in result.hits.iter().enumerate() {
-        if !valid_native_source_path(&hit.path)
-            || result
-                .hits
-                .iter()
-                .take(position)
-                .any(|prior| prior.owner == hit.owner)
+        // Owners and `(repository, path)` files are both unique per page.
+        if !is_canonical_source_path(&hit.path)
+            || result.hits.iter().take(position).any(|prior| {
+                prior.owner == hit.owner
+                    || (prior.repository == hit.repository && prior.path == hit.path)
+            })
         {
             return Err(NativeUdsError::Protocol(
                 "overlay hit path or owner differs".into(),
@@ -3742,7 +4090,7 @@ fn validate_text_result_with_memory(
         .try_reserve_exact(result.hits.len())
         .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
     for hit in &result.hits {
-        if !valid_native_source_path(&hit.path)
+        if !is_canonical_source_path(&hit.path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()
@@ -4025,15 +4373,6 @@ fn selection_matches(
     }
 }
 
-fn valid_native_source_path(path: &str) -> bool {
-    !path.is_empty()
-        && path.len() <= MAX_SOURCE_PATH_BYTES
-        && !path.starts_with('/')
-        && !path.contains('\0')
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
-}
 
 fn admitted_write_error_v1(key: OperationKey, error: NativeUdsError) -> NativeUdsError {
     match error {
@@ -4188,6 +4527,36 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn immutable_operation_identity_reply_requires_both_exact_operation_keys() {
+        use quanta_index_contract::index::{
+            ImmutableOperation, ObjectRef, SourceOperationMode,
+        };
+        let expected = key(1);
+        let foreign = key(2);
+        let request = NativeIndexRequest::OperationRequestIdentityV1(expected);
+        let immutable = ImmutableOperation {
+            key: expected,
+            request: ObjectRef(Digest([7; 32])),
+            source_mode: SourceOperationMode::Advance,
+        };
+        let exact = NativeIndexResponse::OperationRequestIdentityV1(OperationReply {
+            operation: expected,
+            payload: immutable,
+        });
+        assert!(publication_response_matches_request(&request, &exact));
+        let wrong_outer = NativeIndexResponse::OperationRequestIdentityV1(OperationReply {
+            operation: foreign,
+            payload: immutable,
+        });
+        assert!(!publication_response_matches_request(&request, &wrong_outer));
+        let wrong_inner = NativeIndexResponse::OperationRequestIdentityV1(OperationReply {
+            operation: expected,
+            payload: ImmutableOperation { key: foreign, ..immutable },
+        });
+        assert!(!publication_response_matches_request(&request, &wrong_inner));
+    }
+
     struct PublicationChargeOwner(Arc<AtomicU64>);
 
     impl quanta_index_ipc::MemoryLeaseOwner for PublicationChargeOwner {
@@ -4305,6 +4674,7 @@ mod tests {
             hits: vec![NativeOverlayTextHit {
                 owner,
                 source: NativeOverlayTextSource::Overlay { revision: 1 },
+                repository: None,
                 path: "src/lib.rs".into(),
                 score: FiniteScore::new(1.25).expect("finite score"),
             }],
@@ -5430,9 +5800,7 @@ mod tests {
         let reply = match (reply, peer_result) {
             (Ok(reply), Ok(())) => reply,
             (reply, peer) => {
-                return Err(
-                    format!("fragmented stage failed: SDK={reply:?}, peer={peer:?}").into(),
-                );
+                return Err(format!("fragmented stage failed: SDK={reply:?}, peer={peer:?}").into());
             }
         };
         assert_eq!(reply.response(), &NativeIndexResponse::Staged(staged));
@@ -5616,14 +5984,24 @@ mod tests {
         let budget = RequestBudgetV1::for_duration(Duration::from_secs(10));
         let client = NativeUdsClient::new(socket);
         let mutations = [mutation];
-        let first = client
-            .stage_mutation_page_borrowed_admitted(ingress, base, &mutations, &budget, &memory);
+        let first = client.stage_mutation_page_borrowed_admitted(
+            ingress,
+            base,
+            &mutations,
+            &budget,
+            &memory,
+        );
         let first_unknown =
             matches!(&first, Err(NativeUdsError::Unknown(key)) if *key == operation);
         let first_refunded = active.load(AtomicOrdering::SeqCst) == 0;
         drop(first);
-        let retry = client
-            .stage_mutation_page_borrowed_admitted(ingress, base, &mutations, &budget, &memory);
+        let retry = client.stage_mutation_page_borrowed_admitted(
+            ingress,
+            base,
+            &mutations,
+            &budget,
+            &memory,
+        );
         match peer.join() {
             Ok(result) => result?,
             Err(payload) => std::panic::resume_unwind(payload),
@@ -5685,6 +6063,7 @@ mod tests {
         let borrowed_wire = quanta_index_ipc::encode_request(&BorrowedSubmitEnvelope {
             request_id: 1,
             request: &request,
+            staging: BorrowedSubmitStaging::Ordinary,
         })
         .expect("borrowed submit wire");
         let canonical_wire =
@@ -5692,6 +6071,33 @@ mod tests {
         assert_eq!(borrowed_wire, canonical_wire);
 
         let operation = request.operation;
+        let receipt = SourceStageReplayReceiptV1 {
+            ingress: IngressRef { operation, fence: 17 },
+            owners: request.kind.source_transition_v1().expect("Source").owners,
+            context: SourceStageReplayContextV1 { correlation: Digest([3; 32]), history: None },
+        };
+        let staged = NativeIndexRequestEnvelope {
+            request_id: 1,
+            payload: NativeIndexRequest::SubmitStagedSourceV1 { request: request.clone(), receipt },
+        };
+        assert_eq!(
+            quanta_index_ipc::encode_request(&BorrowedSubmitEnvelope {
+                request_id: 1, request: &request, staging: BorrowedSubmitStaging::Source(receipt),
+            }).expect("borrowed staged Source wire"),
+            quanta_index_ipc::encode_request(&staged).expect("canonical staged Source wire"),
+        );
+        let seal = NativeIndexRequestEnvelope {
+            request_id: 1,
+            payload: NativeIndexRequest::SealStagedDslRequestV1 {
+                ingress: receipt.ingress, request: request.clone(),
+            },
+        };
+        assert_eq!(
+            quanta_index_ipc::encode_request(&BorrowedSubmitEnvelope {
+                request_id: 1, request: &request, staging: BorrowedSubmitStaging::SealDsl(receipt.ingress),
+            }).expect("borrowed staged DSL wire"),
+            quanta_index_ipc::encode_request(&seal).expect("canonical staged DSL wire"),
+        );
         let accepted = SubmitOutcome::Unknown(operation);
         let response = NativeIndexResponse::Submitted(OperationReply {
             operation,
@@ -6972,6 +7378,73 @@ mod tests {
     }
 
     #[test]
+    fn path_query_rejects_malformed_pages_and_moving_continuations() {
+        use quanta_index_contract::native_protocol::NativeFilePathEntry;
+
+        let view = text_result().view;
+        let instance = IndexInstanceId([9; 16]);
+        let entry = |id, path: &str| NativeFilePathEntry {
+            owner: OwnerKey {
+                producer: ProducerId([5; 16]),
+                stable_id: StableOwnerId([id; 16]),
+            },
+            path: path.into(),
+            source: ObjectRef(Digest([id; 32])),
+            bytes: ObjectRef(Digest([id; 32])),
+            byte_len: 8,
+        };
+        let first = entry(2, "src/b.rs");
+        let second = entry(3, "src/c.rs");
+        let valid = NativePathPage {
+            view,
+            entries: vec![first.clone(), second.clone()],
+            has_more: true,
+        };
+        let query = |page| {
+            scripted_reply(NativeIndexResponse::PathPage(page), |client, budget| {
+                client.query_paths(
+                    ViewSelection::Exact(view),
+                    instance,
+                    "src/",
+                    Some("src/a.rs"),
+                    2,
+                    budget,
+                )
+            })
+        };
+        assert_eq!(
+            query(valid.clone()).expect("valid path continuation"),
+            valid
+        );
+        for entries in [
+            vec![],
+            vec![first.clone(), first.clone()],
+            vec![second, first],
+            vec![entry(4, "src/a.rs")],
+            vec![entry(4, "other/z.rs")],
+            vec![entry(4, "src/../z.rs")],
+        ] {
+            assert!(matches!(
+                query(NativePathPage {
+                    entries,
+                    ..valid.clone()
+                }),
+                Err(NativeUdsError::Protocol(_))
+            ));
+        }
+        let directory = tempfile::tempdir().expect("socket directory");
+        let client = NativeUdsClient::new(directory.path().join("absent.sock"));
+        assert!(matches!(
+            client.query_paths(
+                ViewSelection::Latest { workspace: view.workspace, epoch: view.epoch },
+                instance, "src/", Some("src/a.rs"), 2,
+                &RequestBudgetV1::for_duration(Duration::from_secs(1)),
+            ),
+            Err(NativeUdsError::Protocol(message)) if message == "path continuation requires an exact view"
+        ));
+    }
+
+    #[test]
     fn text_query_accepts_selected_core_reply() {
         let result = text_result();
         for selection in [
@@ -8138,5 +8611,52 @@ mod tests {
         assert!(matches!(outcome.0, Err(NativeUdsError::Protocol(_))));
         assert_eq!(outcome.1, 1);
         assert_eq!(outcome.2, 0);
+    }
+
+    #[test]
+    fn pre_io_refusals_separate_unsupported_shapes_from_parse_failures() {
+        use quanta_index_contract::lex::LexicalErrorCode;
+
+        let code = |syntax: TextQuerySyntax, text: &str| {
+            let mut query = text_query(1);
+            query.syntax = syntax;
+            query.query_text = text.into();
+            match native_text_result_limit_checked(&query, |_parsed| Ok(())) {
+                Err(NativeUdsError::QueryRejected {
+                    code: SearchPlaneErrorCodeV2::Lexical(code),
+                    ..
+                }) => Some(code),
+                other => panic!("{text:?} was not a typed lexical rejection: {other:?}"),
+            }
+        };
+        for (syntax, text) in [
+            (TextQuerySyntax::Native, "symbol.has.name(needle)"),
+            (
+                TextQuerySyntax::Native,
+                "needle AND symbol.has.name(needle)",
+            ),
+            (TextQuerySyntax::CodeSearch, "typo:load_jsom"),
+        ] {
+            assert_eq!(
+                code(syntax, text),
+                Some(LexicalErrorCode::UnsupportedCombo),
+                "{text}"
+            );
+        }
+        // More body or path substrings than Native admits is a fanout limit.
+        assert_eq!(
+            code(TextQuerySyntax::CodeSearch, "a b c d e"),
+            Some(LexicalErrorCode::LimitExceededFanout)
+        );
+        for (syntax, text) in [
+            (TextQuerySyntax::Native, "\"unterminated"),
+            (TextQuerySyntax::Native, "needle AND"),
+        ] {
+            assert_ne!(
+                code(syntax, text),
+                Some(LexicalErrorCode::UnsupportedCombo),
+                "{text}"
+            );
+        }
     }
 }

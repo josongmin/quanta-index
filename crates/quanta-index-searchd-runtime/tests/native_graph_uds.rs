@@ -220,6 +220,7 @@ fn service_with_graph_builder_retention<B: IndexProjectionBuildPort + 'static>(
         literal: QueryAdapterRegistry::new(),
         path: QueryAdapterRegistry::new(),
         text: QueryAdapterRegistry::new(),
+        text_matches: QueryAdapterRegistry::new(),
         semantic: QueryAdapterRegistry::new(),
         pump: None,
         provider_attempt_pool: None,
@@ -241,9 +242,14 @@ fn service_with_graph_builder_retention<B: IndexProjectionBuildPort + 'static>(
                     trigger_bytes: 8 * 1024 * 1024,
                     min_interval: Duration::from_secs(1),
                 },
-                max_steps_per_round: 4,
+                // Retention requires one round to reach every root a retired
+                // view queues: seven steps and their round byte allowance.
+                max_steps_per_round: 7,
                 child_limit: 32,
-                work_limits: work_limits(),
+                work_limits: WorkLimits {
+                    bytes: 939_524_096,
+                    ..work_limits()
+                },
                 round_timeout: Duration::from_secs(2),
                 head_probe_every: 4,
             }),

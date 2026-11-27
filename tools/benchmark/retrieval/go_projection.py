@@ -8,12 +8,9 @@ original source bytes. This module does not select the benchmark producer.
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import platform
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 import time
@@ -21,7 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from tools.benchmark.retrieval.projection_process import ProjectionProcessError, run_bounded
+from tools.benchmark.retrieval.projection_process import (
+    HELPER_ENV,
+    ProjectionProcessError,
+    parse_helper_json,
+    read_bounded_regular,
+    run_bounded,
+)
 
 MAX_SOURCE_BYTES = 1 << 20
 MAX_EDITS = 1 << 16
@@ -72,17 +75,8 @@ class GoProjector:
         if platform.system() not in {"Darwin", "Linux"}:
             raise GoProjectionError("unsupported_platform")
         try:
-            metadata = self.binary.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_BINARY_BYTES:
-                raise GoProjectionError("binary_identity")
-            # O_NOFOLLOW also refuses a path swapped to a symlink after lstat.
-            fd = os.open(self.binary, os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, "rb") as source:
-                blob = source.read(MAX_BINARY_BYTES + 1)
-            if (
-                len(blob) > MAX_BINARY_BYTES
-                or hashlib.sha256(blob).hexdigest() != self.binary_sha256
-            ):
+            blob = read_bounded_regular(self.binary, MAX_BINARY_BYTES)
+            if hashlib.sha256(blob).hexdigest() != self.binary_sha256:
                 raise GoProjectionError("binary_identity")
             self._directory = Path(tempfile.mkdtemp(prefix="quanta-go-projection-"))
             self._staged = self._directory / "projector"
@@ -124,6 +118,7 @@ class GoProjector:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=HELPER_ENV,
                 close_fds=True,
                 start_new_session=True,
             )
@@ -144,8 +139,8 @@ class GoProjector:
         if returncode != 0 or stderr:
             raise GoProjectionError("producer_defect")
         try:
-            response = json.loads(output)
-        except (ValueError, UnicodeDecodeError) as error:
+            response = parse_helper_json(output)
+        except (ValueError, UnicodeDecodeError, RecursionError) as error:
             raise GoProjectionError("producer_defect") from error
         if (
             not isinstance(response, dict)
@@ -156,6 +151,8 @@ class GoProjector:
             raise GoProjectionError("producer_defect")
         digest = hashlib.sha256(source).hexdigest()
         if response["source_sha256"] != digest:
+            raise GoProjectionError("producer_defect")
+        if not isinstance(response["status"], str):
             raise GoProjectionError("producer_defect")
         if response["status"] != "ok":
             if (

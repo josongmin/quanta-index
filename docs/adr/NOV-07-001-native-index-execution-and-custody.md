@@ -82,7 +82,7 @@ The [Native RFC](../rfc/oct-10-native-incremental-vnext.md) and
    samples. A scratch connection keeps its selected VFS binding through close.
    Typed capacity refusal requires the active operation's VFS attribution. See
    [Catalog I/O](../../crates/quanta-index-catalog/src/io_admission.rs), the
-   [pinned rusqlite interface](../../vendor/rusqlite-0.40.2/src/pager_cache_status.rs)
+   [pinned rusqlite interface](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/vendor/rusqlite-0.40.2/src/pager_cache_status.rs)
    and the [scratch connection](../../crates/quanta-index-scratch-sqlite/src/connection.rs).
 8. **Search-corpus publication proof.** The dispatcher retains the immutable
    request in its publication owner. The same batch can reuse its checked
@@ -91,7 +91,7 @@ The [Native RFC](../rfc/oct-10-native-incremental-vnext.md) and
    dimension. The canonical wire digest still binds the journal, and direct
    inputs retain their own checks. See the
    [publication owner](../../crates/quanta-index-core/src/publication_validation.rs)
-   and [Pending recovery](../../crates/quanta-index-lexical/src/adapter_lifecycle.rs).
+   and [Pending recovery](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/adapter_lifecycle.rs).
 9. **Native boot.** A non-Materialize operation must advance its expected
    sequence by exactly one, with overflow refused. Materialize retains its
    rebase contract. Boot retains the authenticated request and profile from
@@ -115,14 +115,26 @@ The [Native RFC](../rfc/oct-10-native-incremental-vnext.md) and
     [ANN store](../../crates/quanta-index-semantic/src/native/ann_store.rs)
     and [refill](../../crates/quanta-index-semantic/src/native/ann_lance.rs).
 12. **Public read sessions.** Open replay of the same UID, key and selection
-    returns the retained session state and pin within the registry lifetime.
-    Sweep and drain share terminal-state handling. Only successful public
-    Release can issue a replayable Release ACK. The retained Text path shares
+    returns the retained session state and pin. A different selection under
+    a retained key conflicts. Confirmed releases free live slots and retain
+    replay records for at least the configured terminal TTL while the daemon
+    is running. If the funded registry fills before records expire, new
+    Opens are refused and existing records remain replayable. Sweep and drain
+    share terminal-state handling. Only successful public Release can issue
+    a replayable Release ACK. The retained Text path shares
     profile completion with first-stage lease validation before reader
     resolution and reservation. Later stages and the Registry's entry and
     final validation keep their original checks. See the
     [registry](../../crates/quanta-index-searchd-runtime/src/native_read_sessions.rs)
     and [Kernel stage](../../crates/quanta-index-kernel/src/update.rs).
+    The CLI resolves a continuation through the selected Catalog root.
+    A cursor names an exact view. Catalog authorization requires the actual
+    selected historical repo/revision binding and a currently protected
+    matching repo, workspace and epoch. Fresh CLI processes must also satisfy
+    the exact-history floor. Existing leases keep their original read
+    authority. Bindings are recorded atomically with route selection and retire
+    with the view. See [Catalog selection](../../crates/quanta-index-catalog/src/native/authority/boot_manifest.rs)
+    and [CLI continuation](../../crates/quanta-index-searchctl/src/native/code_search.rs).
 13. **Sidecar physical custody.** Bind authenticates private parent type,
     ownership, permissions and device before starting the reserved ticket.
     Staging and target parents must share a device. Held directory FDs carry
@@ -208,8 +220,8 @@ Historical implementation results and unchanged product gates remain in
   locator and decoded body; the independent transition proof requires unchanged
   logical identity and a replacement segment in the new segment range. A changed
   length/digest or an old-segment locator remains a refusal. See the
-  [compaction writer](../../crates/quanta-index-lexical/src/text_authority/paged_writer.rs)
-  and [transition proof](../../crates/quanta-index-lexical/src/text_authority/paged_transition.rs).
+  [compaction writer](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/text_authority/paged_writer.rs)
+  and [transition proof](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/text_authority/paged_transition.rs).
 - **Cold alias handoff and packed Diff.** Reuse authenticates the persisted ordered
   key set, sealed anchor edit, same attempt and expected root/layout before the
   prepared batch transfers aliases. Refusal invalidates the enclosing batch so
@@ -441,6 +453,124 @@ use the original SQL admission, fees, bindings, row-count check and terminal
 failure path. The arena supplies those rows without another tokenization
 pass. The original fixed operation budgets still govern acceptance.
 [SQL replay](../../crates/quanta-index-lexical/src/native/text/occurrence_pack.rs)
+
+## Native lexical replay and cold-build evidence
+
+A failure after Dense confirmation can return `Unknown` while the immutable
+Source operation remains Pending. That Pending row retains its event claim.
+A new operation for the same event conflicts. After reopening the same root,
+`resume(op2)` runs the original immutable request under a new fence. Late
+work carrying the former fence is refused. [Recovery dispatch](../../crates/quanta-index-kernel/src/update.rs) ·
+[Scoped Runtime3 results](../plans/nov-12-native-cutover/tickets/NC-TEXT-build-final.md#ntx1a-runtime3-실제-green)
+
+Nextest `8ee85ee8-371d-405e-98ff-aef809179e83` verified 3/3 in its frozen
+NoFeatures Runtime scope. G1 compared the whole-window and fallback install
+with the same DF/TF, positions, artifact and reopen. F2 kept the prior root
+through `Unknown`, resumed the original operation, and reopened the published
+nine-owner membership. A1 verified fallback after optional admission missed
+an 8 MiB credit. The separate descriptor candidate stopped at ACK zero on
+both original corpora. Caddy first exceeded the one-million reads limit and
+etcd first exceeded the 512 MiB work-bytes limit. [Original corpus results](../plans/nov-12-native-cutover/tickets/NC-TEXT-build-final.md#descriptor-후보-원-sdk-실제-실패와-다음-경계) ·
+[Original run history](../ARCHIVE-INDEX.md#2026-11-23-native-supplier-and-runtime-history)
+
+The frozen compact-cursor candidate on dirty HEAD
+`ade5fadc1a084fbb81eba831861e996081d80867` passed Lexical410 and Runtime15
+in nextest `c2c3d5e8-b512-4a59-a982-ca9036ed978f`. The run covered fixed
+129/300-term boundaries, Original funding, membership and positions, Dense
+cross-page reuse, and same-operation resume and reopen after post-confirm
+failure. F integration passed 10/10 across four binaries in
+`16c936f8-7f9e-4b90-9762-4769cc84ee3a`. The no-default release built and
+the locally rehashed daemon and helper matched the candidate's source binding.
+Separate SDK Record runs refused both original corpora with `ResourceLimited`
+at ACK zero, before query or reopen. Quiet Off stopped in preflight with zero
+test bodies. Product acceptance still required the original resource limits and
+observed Work reduction with the existing logical-edit charges.
+[Execution preimages](../ARCHIVE-INDEX.md#2026-11-23-native-cohort-and-proof-history)
+
+## Native Source commitment and selected reads
+
+- **Facts reads.** Existing-file checks, disk-size accounting and disk-image
+  preparation borrow the selected path through the Original Source owner.
+  Inherited members follow the predecessor Current and retain the path,
+  content-digest and language checks.
+- **Durable DELTA commitment.** Facts and disk-attribution DELTA with a prepared C1
+  candidate share the target issuer. Store admission binds the ordered changes
+  and roots before Source manifest issuance. The committed pointer and E02 replay bind
+  the transition to the exact predecessor, target and publication journal.
+  The Source manifest records the transition commitment. The full Store target
+  seal is issued against the completed Store manifest, whose identity depends
+  on that transition. A prepared DELTA that loses its required C1 candidate
+  is refused before Source CAS.
+- **Committed selected reads.** Store V4 checks the same Store, repository,
+  generation and Original Current before opening selected C1 paths and their
+  bodies. SDK rollback uses that loan under the committed HEAD fence. A
+  mounted Query C1 provider authenticates selected paths against the bound
+  Source and roots. Its absence and refusal remain authoritative. Source
+  subset admission pays for shape and the selected membership proof. Workspace
+  digest lookup retains FileText precedence, and C1-unbound readers retain
+  the legacy lookup contract. Original CFG and Callsite SSOT retain the whole
+  Source in their keys after member admission. SemanticModule keeps its
+  workspace key when it joins a subset from the same Source. Original
+  SemanticModule without a subset retains the whole Source key. File-member
+  HIR retains the content-addressed member key.
+- **Workspace birth.** Runtime reserves the new workspace path list using the
+  member count from the retained Original Source. Filling the list checks the
+  count, path order and byte-count overflow under Original Current. Before
+  handing off the group, Runtime checks the output count and reenters the
+  retained Source and predecessor Currents. An externally supplied workspace
+  is still compared path by path against Source.
+- **Selected ItemIndex paths.** Small DELTAs can check the affected paths
+  against the retained target census. The selected owner loader authenticates
+  the requested provenance and membership. The sparse finish checks the
+  remaining affected paths against the validated seed and target counts.
+- **V1 compatibility.** The Original pin computes the existing Source and
+  membership digests in one visit to the authenticated headers and preserves
+  the frontier digest. Older readers retain the canonical V1 digest and
+  membership formats.
+
+[INC-01](../bugbash/nov-20-native-delta-cost/tickets/INC-01-source-closure.md#소유-회귀-영수증)
+owns exact Source, Kernel and Wire receipts and the open V1 projection,
+Store warm and ItemIndex work. [INC-03](../bugbash/nov-20-native-delta-cost/tickets/INC-03-product-acceptance.md)
+owns installed FULL parity, publication recovery and warm cost acceptance.
+
+## Native Literal changed-directory publication
+
+INC-02 closed the packed Literal implementation and its focused cost and
+correctness regressions. A warm Patch seeks affected posting blocks with
+`lower_bound_page` and merges sorted edits per block. An append past the maximum
+key reads only the rightmost descriptor through `last_entry`. Moving an upper
+fence removes the old key before inserting the new one. Duplicate posting adds,
+missing deletes and overlapping block boundaries are refused. A custom Map port
+must provide `last_entry` for this append path. The default port rejects it.
+[Block lookup](../../crates/quanta-index-lexical/src/native/literal_blocks.rs) ·
+[Map contract](../../crates/quanta-index-core/src/index/ports.rs#L542)
+
+The candidate owns the funded, sorted edit witness through seal. Seal reads
+every page of `visit_diff` and matches the exact key and before/after references
+against that witness. Only changed children are re-read after installation. A
+failed diff page leaves the prior view searchable and prevents publication.
+Bootstrap and first format conversion use full verification. An empty Patch
+reuses the prior artifact, and a posting-identical Patch can reuse its directory.
+The persistent format remains compatible. [Literal writer and seal](../../crates/quanta-index-lexical/src/native/literal_packed.rs) ·
+[Candidate and modes](../../crates/quanta-index-lexical/src/native/literal.rs)
+
+The focused oracle derives `(3-byte gram, owner)` membership from Source bytes.
+It compares both stored generations and their pinned searches, and bounds the
+seek work for a one-file edit in directories with more than 64 descriptors.
+Other cases cover empty-to-nonempty and reverse transitions, edge edits, repeated
+tail appends against one batch, cancellation, and success or rejection on the
+second diff page. The original integration run `547734ff-6354-4f1a-ac34-227e98aba8ec`
+had 9 passes and two fixture failures before reaching the page boundary. After
+the fixture correction, both cases passed in `1d3a5bb4-06c1-419e-9a65-f37e94ae1404`
+and again in `e09ac454-c3fa-4327-9c32-ac33d96fddc9` on Q `70d17e3cb` with its
+recorded worktree. [Work and postings oracle](../../crates/quanta-index-kernel/tests/native_lifecycle.rs#L8081) ·
+[Seal cases](../../crates/quanta-index-kernel/tests/native_bootstrap/literal_seal.rs#L938) ·
+[Rightmost seek regression](../../crates/quanta-index-storage/src/map/tests/structural_diff.rs#L147)
+
+Installed SDK and Watch acceptance stays with [INC-03](../bugbash/nov-20-native-delta-cost/tickets/INC-03-product-acceptance.md).
+E07 owns [final performance acceptance](../plans/oct-22-finalizing/E07-performance-operations.md#dod).
+The original ticket and exact run history are recoverable from the
+[archive index](../ARCHIVE-INDEX.md#2026-11-23-completed-native-tickets).
 
 ## Inventory Diff observation
 

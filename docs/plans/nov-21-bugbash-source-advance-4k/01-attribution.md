@@ -1,6 +1,6 @@
 # 01 · 기존 실행 복구와 읽기 비용 분리
 
-**담당과 산출물.** [이 채팅 B](README.md#채팅별-실행권과-재사용-범위)가 기존 controller를 확인한다. TEXT·Catalog는 현재 trace로 판별할 수 없는 비용만 계측한다. 산출물은 같은 operation에 대한 단계별 읽기 차액, 실패 위치 또는 초기 게시 결과, 그리고 02·03·04 중 다음 작업이다. [선행 RCA](../../bugbash/nov-20/findings.md#L129)
+**담당과 산출물.** [이 채팅 B](README.md#채팅별-실행권과-재사용-범위)가 기존 controller를 확인한다. TEXT·Catalog는 현재 trace로 판별할 수 없는 비용만 계측한다. 산출물은 같은 operation에 대한 단계별 읽기 차액, 실패 위치 또는 초기 게시 결과, 그리고 02·03·04 중 다음 작업이다. [현재 실패 분기](04-product-acceptance.md#가장-먼저-실패한-경계로-분기) · [선행 감사 원문](../../ARCHIVE-INDEX.md#nov-20-ann-audit-preimage)
 
 ## 실행을 이어받는 위치
 
@@ -14,10 +14,11 @@
 | `ann4k-owner-budget-repair-uls30q9w/` | `ANN4K/`는 1 PASS·exit 0, `PRODUCT4K/`는 1 FAIL·exit 100 terminal이다. `quality-pair.json`은 `quality_incomplete`다. [두 결과](04-product-acceptance.md#기존-실행기-결과) |
 | `ann4k-late-record-6cO3Bn2x/` | 미시작 예약 이력. PID 5314가 사라졌고 child·본문 로그·trace·terminal이 없다. 종료 원인은 기록되지 않았다. |
 | `ann4k-late-record-h4a2lcwt/` | 같은 controller로 재접수했으나 admission 대기 중 preflight·상태 쓰기에서 `ENOSPC`가 났다. PID는 종료, child·본문·trace는 부재다. [실행 기록](04-product-acceptance.md#후기-worker-계측-준비) |
+| `ann4k-late-record-5w6y78vu/` | 직전 후기 Record. PID 89072가 종료됐으며 상태의 대기 표시는 잔류 값이다. 본문·trace·terminal이 없어 **NOT_RUN**이다. 다음 접수는 이 슬롯을 보존하고 기존 admission과 공용 잠금으로 한 건만 수행한다. [최신 판정](04-product-acceptance.md#현재-코드와-실행-판정) |
 | `ann4k-resume-20261117/run_quality.py` | 원 admission·정확한 Nextest 본문·소스 및 resolver 비교의 실행 권한. 복구 스크립트가 이 파일의 SHA를 확인한다 |
 
 1. `controller_pid`와 `child_pid`의 실제 명령, 기존 실행 잠금, 본문 로그·trace와 terminal을 대조한다. 실행 중이면 그 실행을 이어서 관찰한다. 본문이 시작되었거나 종료했다면 로그부터 인수한다.
-2. Prefix와 ANN 예약의 초기 ENOSPC 회수는 기존 `resume_queued.py`가 처리했고 두 본문의 terminal이 남아 있다. 후기 Record는 별도 진단 슬롯이다. 다음 실행 전 원 controller와 공용 잠금을 확인한다. 앞선 슬롯을 미시작 예약으로 되돌리거나 상태 파일을 수동 수정하지 않는다. [호스트 admission](../../../AGENT_PLAYBOOK.md#L49)
+2. Prefix와 ANN 예약의 초기 ENOSPC 회수는 기존 `resume_queued.py`가 처리했고 두 본문의 terminal이 남아 있다. 후기 Record는 별도 진단 슬롯이다. 다음 실행 전 원 controller와 공용 잠금을 확인한다. 앞선 슬롯을 미시작 예약으로 되돌리거나 상태 파일을 수동 수정하지 않는다. [호스트 admission](../../../AGENT_PLAYBOOK.md#tests)
 
 ## 원인 판별
 

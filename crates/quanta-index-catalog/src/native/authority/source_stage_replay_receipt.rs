@@ -332,6 +332,43 @@ pub(super) fn read(
     Ok(receipt)
 }
 
+pub(super) fn submission_ingress(
+    catalog: &SqliteCatalog,
+    receipt: SourceStageReplayReceiptV1,
+    expected_view: ViewRef,
+    expected_source: SourceCut,
+    budget: &mut WorkBudget,
+) -> Result<Option<ObjectRef>, IndexError> {
+    if !catalog
+        .native_source_stage_schema
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(IndexError::FenceLost);
+    }
+    if receipt.context.history.is_none() {
+        return Err(IndexError::DigestConflict);
+    }
+    let mut guard = catalog.lock_native_budget(budget)?;
+    let tx = begin(&mut guard)?;
+    let workspace = receipt.ingress.operation.workspace;
+    budget.charge(WorkUsage { reads: 2, ..WorkUsage::default() })?;
+    let current = current_view(&tx, workspace)?.ok_or(IndexError::SnapshotUnavailable)?;
+    // The receipt carries the target profile. The exact expected view
+    // authenticates the base profile, including during a profile transition.
+    if current.identity != expected_view || current.source != expected_source {
+        return Err(IndexError::Conflict);
+    }
+    if read_row(&tx, receipt.ingress.operation, receipt.context.correlation, budget)?
+        != Some(receipt)
+    {
+        return Err(IndexError::FenceLost);
+    }
+    let sealed = check_ingress(&tx, receipt.ingress)?.sealed;
+    budget.checkpoint()?;
+    tx.commit().map_err(|error| sql(&error))?;
+    Ok(sealed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

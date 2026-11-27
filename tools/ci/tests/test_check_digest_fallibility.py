@@ -149,6 +149,14 @@ def test_literal_prefilter_keeps_whitespace_tolerant_digest(tmp_path: Path):
     assert len(violations) == 1
 
 
+def test_equivalent_rust_literal_widths_cannot_escape_the_guard(tmp_path: Path):
+    for literal in ("32usize", "0x20", "0b10_0000usize", "0o40", "(32)"):
+        p = write(tmp_path, f"pub fn h() -> [u8 /* bytes */; {literal}] {{ todo!() }}")
+        sites, violations = MODULE.audit_file(p)
+        assert len(sites) == len(violations) == 1, literal
+        assert "[u8; 32]" in violations[0].message
+
+
 def test_multiline_signature_handled(tmp_path: Path):
     p = write(
         tmp_path,

@@ -1,6 +1,7 @@
 [graph]
 targets = [
   "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
 ]
@@ -11,10 +12,14 @@ yanked = "deny"
 unmaintained = "all"
 unsound = "all"
 ignore = [
-  # lancedb 0.30 -> datafusion 53 transitive: `paste` proc-macro is no longer
+  # Lance 7 and DataFusion 53 still transitively use `paste`. This proc-macro is no longer
   # maintained. It is a build-time-only macro with no runtime/security impact;
   # widely used across the ecosystem and tracked for replacement upstream.
-  { id = "RUSTSEC-2024-0436", reason = "lancedb 0.30 transitive: paste proc-macro unmaintained; build-time only, no runtime/security surface" },
+  { id = "RUSTSEC-2024-0436", reason = "DataFusion and Lance transitive: paste proc-macro unmaintained; build-time only, no runtime/security surface" },
+  { id = "RUSTSEC-2026-0543", reason = "Maintenance notice for chrono; pinned Arrow 58, DataFusion 53 and Lance 7 require its time types. Revisit with the columnar stack upgrade." },
+  { id = "RUSTSEC-2026-0555", reason = "Maintenance notice for chrono-tz; pinned Arrow 58 and DataFusion 53 use its time-zone types. Revisit with the columnar stack upgrade." },
+  { id = "RUSTSEC-2026-0542", reason = "Maintenance notice for humantime; pinned Lance 7 and object_store 0.13 still depend on it. Revisit with the columnar stack upgrade." },
+  { id = "RUSTSEC-2024-0449", reason = "The independent LanceDB comparison oracle retains upstream serde_yaml_ng. The root graph bans unsafe-libyaml." },
 ]
 
 [bans]
@@ -26,26 +31,32 @@ external-default-features = "allow"
 # The registry Unicode tables are pinned with their upstream standard-library features.
 features = [
   { name = "unicode-normalization", version = "=0.1.25", allow = ["default", "std"], exact = true },
-  # The vendored decoder is a workspace member for its bounded-reader tests.
-  # Criterion also uses its upstream default, which consists only of std.
+  # Criterion uses the registry Ciborium default feature, which enables std.
   { name = "ciborium", version = "=0.2.2", allow = ["default", "std"], exact = true },
 ]
 deny = [
   { crate = "openssl", use-instead = "rustls", reason = "Prefer Rust-native TLS unless a crate-specific exception is approved." },
   { crate = "openssl-sys", use-instead = "rustls", reason = "Prefer Rust-native TLS unless a crate-specific exception is approved." },
+  { crate = "unsafe-libyaml", reason = "Keep the retired upstream YAML stack out of the product graph. The isolated LanceDB comparison oracle has its own lockfile." },
 ]
-skip = []
-skip-tree = [
-  # Ciborium still pulls rand 0.8 and getrandom 0.2. Keep the bypass bounded
-  # to that rand subtree while the newer graph uses rand 0.9.
-  { crate = "rand@0.8", reason = "ciborium transitive duplicate of getrandom via rand 0.8 / rand_core 0.6" },
-  { crate = "uuid@1", reason = "Lance and DataFusion transitive duplicate of getrandom via uuid" },
-  # lancedb 0.30 -> lance + datafusion 53 + reqwest pulls in ~20 internal
-  # duplicate versions (arrow-array/arrow-buffer/hashbrown/itertools/thiserror
-  # /strum/nom/phf/...). The duplicates are entirely *inside* lancedb's tree
-  # and don't escape to our crates. Scope the bypass to the whole lancedb
-  # subtree rather than enumerating each transitive dep.
-  { crate = "lancedb@0.30", reason = "lancedb 0.30 transitive duplicates: contained inside the lancedb subtree" },
+skip = [
+  { name = "base64", version = "=0.13.1", reason = "The SentencePiece tokenizer's spm_precompiled requires 0.13." },
+  { name = "cpufeatures", version = "=0.2.17", reason = "SHA-2 and curve25519-dalek require 0.2; BLAKE3 uses 0.3." },
+  { name = "darling", version = "=0.20.11", reason = "Lance's derive_builder 0.20 requires darling 0.20." },
+  { name = "darling_core", version = "=0.20.11", reason = "The darling 0.20 proc-macro family pins these internal crates together." },
+  { name = "darling_macro", version = "=0.20.11", reason = "The darling 0.20 proc-macro family pins these internal crates together." },
+  { name = "foldhash", version = "=0.1.5", reason = "Petgraph's hashbrown 0.15 requires foldhash 0.1." },
+  { name = "getrandom", version = "=0.2.17", reason = "ring 0.17 requires getrandom 0.2." },
+  { name = "getrandom", version = "=0.3.4", reason = "rand 0.9, ahash and tokenizers require getrandom 0.3." },
+  { name = "hashbrown", version = "=0.14.5", reason = "DashMap 6 requires hashbrown 0.14." },
+  { name = "hashbrown", version = "=0.15.5", reason = "Petgraph 0.8 requires hashbrown 0.15." },
+  { name = "hashbrown", version = "=0.16.1", reason = "DataFusion 53 requires hashbrown 0.16." },
+  { name = "itertools", version = "=0.13.0", reason = "Lance 7 and bindgen 0.72 require itertools 0.13." },
+  { name = "ndarray", version = "=0.15.6", reason = "model2vec-rs 0.3 requires ndarray 0.15; Lance 7 uses 0.16." },
+  { name = "nom", version = "=7.1.3", reason = "cexpr and spm_precompiled require nom 7; jsonb uses nom 8." },
+  { name = "rand_core", version = "=0.6.4", reason = "Ed25519-dalek 2 requires rand_core 0.6." },
+  { name = "shlex", version = "=1.3.0", reason = "bindgen 0.72 requires shlex 1; cc uses shlex 2." },
+  { name = "syn", version = "=1.0.109", reason = "Lance's deepsize_derive uses syn 1." },
 ]
 
 [licenses]
@@ -74,7 +85,9 @@ exceptions = [
   # Permissive license but not in baseline allowlist; scope the exception
   # tightly to the crate.
   { name = "foldhash", allow = ["Zlib"] },
-  # lancedb 0.30 -> reqwest/rustls: webpki-roots distributes CA trust-anchor
+  # LLVM libFuzzer in the two standalone fuzz workspaces.
+  { name = "libfuzzer-sys", version = "=0.4.13", allow = ["NCSA"] },
+  # reqwest/rustls: webpki-roots distributes CA trust-anchor
   # data under CDLA-Permissive-2.0. Keep this non-code data license exception
   # constrained to the exact transitive package rather than widening allow.
   { name = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },

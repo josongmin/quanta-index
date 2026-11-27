@@ -453,6 +453,27 @@ def test_closed_workers_cli_preserves_canonical_partial_and_exclusive_output(tmp
         main(occupancy_args)
 
 
+@pytest.mark.parametrize(
+    ("options", "error"),
+    [
+        (["--minimum-closed-workers", "100"], "requires a capture window"),
+        (["--occupancy-only"], "occupancy requires a capture window"),
+        (["--window-ns", "4", "4"], "invalid worker capture window"),
+        (
+            ["--window-ns", "1", "8", "--occupancy-only", "--minimum-closed-workers", "2"],
+            "does not accept a minimum closed worker sample",
+        ),
+    ],
+)
+def test_closed_workers_cli_rejects_invalid_options_before_opening_capture(
+    tmp_path, options, error
+):
+    source, target = tmp_path / "missing.qtrace", tmp_path / "closed.json"
+    with pytest.raises(ValueError, match=error):
+        main(["closed-workers", "--input", str(source), "--out", str(target), *options])
+    assert not target.exists()
+
+
 def _partial_with_maintenance():
     capture = _partial()
     capture["spans"].update(

@@ -324,7 +324,7 @@ fn read_attempt_concurrent_successes_share_one_real_commit_and_clock_write() -> 
         let ticket = ticket(&catalog, session.as_ref(), &view)?;
         let commits = Arc::new(AtomicUsize::new(0));
         {
-            let connection = catalog.lock()?;
+            let mut connection = catalog.lock()?;
             // SQLite update_hook omits WITHOUT ROWID tables. A TEMP trigger
             // counts actual clock UPDATEs without changing the durable format.
             connection.execute_batch("CREATE TEMP TABLE read_attempt_clock_updates(sample INTEGER NOT NULL);
@@ -1307,7 +1307,7 @@ fn assert_failed_batch_settles_followers_and_recovers(fault: BatchFailure) -> Te
     let injected = Arc::new(AtomicUsize::new(0));
     clock.set(1_001);
     std::thread::scope(|scope| -> TestResult {
-        let held = catalog.lock()?;
+        let mut held = catalog.lock()?;
         match fault {
             BatchFailure::Begin => {
                 let injected = Arc::clone(&injected);
@@ -1441,7 +1441,7 @@ fn assert_failed_batch_settles_followers_and_recovers(fault: BatchFailure) -> Te
         }
     );
     {
-        let connection = catalog.lock()?;
+        let mut connection = catalog.lock()?;
         match fault {
             BatchFailure::Begin => {
                 check_eq!(injected.load(Ordering::SeqCst), 1);

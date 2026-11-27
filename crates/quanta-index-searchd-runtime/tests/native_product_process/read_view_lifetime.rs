@@ -3,6 +3,7 @@ use quanta_index_contract::{
     index::{ObjectRef, ViewRef},
     native_protocol::NativeReadSettlementState,
 };
+use quanta_index_searchd_harness::product_xfs::ProductXfsProfile;
 
 pub(super) fn check_product_daemon_publish_query_and_reopen(
     retention: bool,
@@ -11,11 +12,31 @@ pub(super) fn check_product_daemon_publish_query_and_reopen(
 ) -> TestResult {
     let temp = tempfile::tempdir()?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
-    let root = temp.path().join("state");
+    let config_path = temp.path().join("native-config.json");
+    let selected = selected_test_daemon_binary(
+        "P04 requires the release daemon path in QUANTA_INDEX_SEARCHD_BIN",
+        "P04 daemon path must be absolute",
+    )?;
+    let binary = selected.path.as_path();
+    let socket = if selected.product {
+        ProductXfsProfile::service_socket(temp.path(), "uds")?
+    } else {
+        temp.path().join("native.sock")
+    };
+    let profile = selected
+        .product
+        .then(ProductXfsProfile::from_env)
+        .transpose()?;
+    let product_root = profile
+        .as_ref()
+        .map(ProductXfsProfile::tempdir)
+        .transpose()?;
+    let root = product_root.as_ref().map_or_else(
+        || temp.path().join("state"),
+        |directory| directory.path().join("state"),
+    );
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
-    let socket = temp.path().join("native.sock");
-    let config_path = temp.path().join("native-config.json");
     // Read sessions require funded automatic maintenance. This functional
     // fixture uses its existing maintenance-capable resource profile for both
     // retention modes; it does not qualify the minimal product defaults.
@@ -35,6 +56,7 @@ pub(super) fn check_product_daemon_publish_query_and_reopen(
             }),
         );
     if retention {
+        release_bounded_maintenance(&mut configuration)?;
         let object = configuration
             .as_object_mut()
             .ok_or("invalid product config fixture")?;
@@ -45,17 +67,30 @@ pub(super) fn check_product_daemon_publish_query_and_reopen(
             "work_limits": {"reads": 1_000_000, "writes": 1_000_000, "bytes": 536_870_912, "mutations": 1_000_000}
         }));
     }
-    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
-    let supplied_binary = std::env::var_os("QUANTA_INDEX_SEARCHD_BIN");
-    let binary = match supplied_binary.as_deref() {
-        Some(binary) => Path::new(binary),
-        None if std::env::var_os("QUANTA_PROOF_DAEMON_WITNESS_DIR").is_some() => {
-            return Err("P04 requires the release daemon path in QUANTA_INDEX_SEARCHD_BIN".into());
-        }
-        None => Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
+    let sqlite_temp = if let Some(profile) = profile.as_ref() {
+        profile.configure(&mut configuration)?;
+        Some(profile.prepare_root(&root, &socket)?)
+    } else {
+        None
     };
-    require(binary.is_absolute(), "P04 daemon path must be absolute")?;
-    let start_daemon = || Daemon::start_binary(binary, &config_path, &socket, None, None);
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    if let Some(sqlite_temp) = sqlite_temp.as_ref() {
+        ProductXfsProfile::preflight(binary, &config_path, sqlite_temp)?;
+    }
+    let start_daemon = || {
+        if let Some(sqlite_temp) = sqlite_temp.as_ref() {
+            Daemon::start_command_before(
+                ProductXfsProfile::command(binary, sqlite_temp),
+                &config_path,
+                &socket,
+                None,
+                None,
+                None,
+            )
+        } else {
+            Daemon::start_binary(binary, &config_path, &socket, None, None)
+        }
+    };
     let daemon = start_daemon()?;
     let client = NativeUdsClient::new(socket.clone());
     let NativeIndexResponse::Created(genesis) = client.request(
@@ -72,18 +107,18 @@ pub(super) fn check_product_daemon_publish_query_and_reopen(
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec()],
+            instances: vec![literal_spec(), text_spec()],
         },
         &budget(),
     )?;
-    let configured = published(&client.submit(
-        UpdateRequest {
+    let configured = submit_and_settle(
+        &client,
+        &UpdateRequest {
             operation: operation(1),
             expected_view: genesis,
             kind: UpdateKind::Reconfigure { profile },
         },
-        &budget(),
-    )?)?;
+    )?;
     let (view, source) = publish_text(&client, configured, 1, 1, None, "a.rs", "needle needle")?;
     let query = TextQueryRequest {
         syntax: TextQuerySyntax::Native,
@@ -245,10 +280,13 @@ pub(super) fn check_product_daemon_publish_query_and_reopen(
             if settlement.state == NativeReadSettlementState::SettledAtSnapshot {
                 break;
             }
-            require(
-                Instant::now() < deadline,
-                "retired reader GC did not settle",
-            )?;
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "retired reader GC did not settle: state={:?}, exact_floor={}, target_pins={}",
+                    settlement.state, settlement.exact_floor, settlement.has_remaining_target_pins,
+                )
+                .into());
+            }
             thread::sleep(Duration::from_millis(20));
         }
         let fresh = client.search_text(
@@ -352,7 +390,7 @@ pub(super) fn publish_text(
             text,
         }],
     )?;
-    Ok((published(&client.submit(request, &budget())?)?, source))
+    Ok((submit_and_settle(client, &request)?, source))
 }
 
 pub(super) struct TextOwnerUpdate<'a> {

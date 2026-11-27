@@ -15,8 +15,7 @@ use super::native_graph;
 use super::selected_owner::scan_ordered_page;
 use super::{EmbeddingRecipe, ReadContext};
 use crate::native::{
-    ann_files, ann_lance, ann_region_policy,
-    ann_session::{ANN_TABLE_NAME, AnnLanceSession},
+    ann_files, ann_lance, ann_region_policy, ann_session::AnnLanceSession,
     ann_store::AnnStoreLimits,
 };
 
@@ -465,26 +464,17 @@ pub(super) async fn install_lance_region(
         ..limits
     };
     let session = AnnLanceSession::new(limits, context.budget)?;
-    let connection = session.connect().await?;
     let build_span = crate::build_diagnostic::begin_build_stage(
         context.budget.request().diagnostic_context(),
         quanta_index_core::DiagnosticStageV1::SemanticBuild,
     );
-    let built = ann_lance::build_region(
-        &connection,
-        ANN_TABLE_NAME,
-        rows,
-        recipe,
-        generation,
-        dimension,
-        context.budget,
-    )
-    .await;
+    let built = session
+        .build_region(rows, recipe, generation, dimension, context.budget)
+        .await;
     let resolved = session.resolve(built);
     crate::build_diagnostic::finish_build_stage(build_span, resolved.is_ok());
-    let (table, seal) = resolved?;
-    drop(table);
-    drop(connection);
+    let (dataset, seal) = resolved?;
+    drop(dataset);
     let files = session.freeze_and_snapshot().await?;
     let _inputs_memory = context.budget.reserve_memory(
         u64::try_from(

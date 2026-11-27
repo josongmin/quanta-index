@@ -133,6 +133,31 @@ fn invalid_type<E, P: SemanticReasonV3>() -> Error<E, P> {
     Error::Semantic(None, P::custom_v3("invalid CBOR value"))
 }
 
+fn expected_header<E: Debug, P: SemanticReasonV3>(
+    header: Header,
+    expected: &'static str,
+) -> Error<E, P> {
+    let actual = match header {
+        Header::Positive(value) => de::Unexpected::Unsigned(value),
+        Header::Negative(value) => {
+            de::Unexpected::Signed(i64::from_be_bytes(value.to_be_bytes()) ^ !0)
+        }
+        Header::Bytes(_) => de::Unexpected::Other("bytes"),
+        Header::Text(_) => de::Unexpected::Other("string"),
+        Header::Array(_) => de::Unexpected::Seq,
+        Header::Map(_) => de::Unexpected::Map,
+        Header::Tag(_) => de::Unexpected::Other("tag"),
+        Header::Simple(simple::FALSE) => de::Unexpected::Bool(false),
+        Header::Simple(simple::TRUE) => de::Unexpected::Bool(true),
+        Header::Simple(simple::NULL) => de::Unexpected::Other("null"),
+        Header::Simple(simple::UNDEFINED) => de::Unexpected::Other("undefined"),
+        Header::Simple(_) => de::Unexpected::Other("simple"),
+        Header::Float(value) => de::Unexpected::Float(value),
+        Header::Break => de::Unexpected::Other("break"),
+    };
+    de::Error::invalid_type(actual, &expected)
+}
+
 struct ChargedReader<'a, E, F> {
     remaining: &'a [u8],
     work: &'a mut F,
@@ -184,7 +209,7 @@ where
     attempt
         .owner
         .begin_decode_v3()
-        .map_err(|_| Error::semantic(None, "controlled CBOR decode attempt refused"))?;
+        .map_err(|_error| Error::semantic(None, "controlled CBOR decode attempt refused"))?;
     let result = (|| {
         work(0).map_err(|e| Error::Io(FiniteReadErrorV3::Work(e)))?;
         if scratch.len() < 4 {
@@ -214,7 +239,7 @@ where
         attempt
             .owner
             .complete_decode_v3()
-            .map_err(|_| Error::semantic(None, "controlled CBOR decode completion refused"))?;
+            .map_err(|_error| Error::semantic(None, "controlled CBOR decode completion refused"))?;
         attempt.complete = true;
     }
     result
@@ -255,11 +280,14 @@ where
     Ok(value)
 }
 
+/// Ordinary slice decoding retains Serde's dynamic diagnostic text.
+pub type SliceDecodeError<'a> = Error<<&'a [u8] as Read>::Error, String>;
+
 /// Decode one value and return its consumed byte count. Definite owned scalars
 /// reserve one backing after checking their length against the remaining input.
 pub fn from_slice_with_definite_scalars<T: de::DeserializeOwned>(
     bytes: &[u8],
-) -> Result<(T, usize), Error<<&[u8] as Read>::Error, String>> {
+) -> Result<(T, usize), SliceDecodeError<'_>> {
     let mut scratch = [0_u8; 4096];
     let mut decoder = FiniteDecoder {
         tokens: Decoder::from(bytes),
@@ -323,6 +351,13 @@ where
         {
             return Err(Error::Syntax(self.tokens.offset()));
         }
+        self.check_borrowed_length(length, kind)
+    }
+    fn check_borrowed_length(
+        &mut self,
+        length: Option<usize>,
+        kind: u8,
+    ) -> Result<(), Error<R::Error, P>> {
         if let Some(owner) = self.owner.as_deref_mut() {
             let result = match kind {
                 0 => Some(owner.check_text_length_v3(length)),
@@ -336,7 +371,7 @@ where
                     1 => "controlled CBOR bytes header refused",
                     _ => "controlled CBOR array header refused",
                 };
-                result.map_err(|_| Error::semantic(None, reason))?;
+                result.map_err(|_error| Error::semantic(None, reason))?;
             }
         }
         Ok(())
@@ -358,7 +393,7 @@ where
                 if let Some(owner) = self.owner.as_deref_mut() {
                     owner
                         .reserve_text_v3(&mut value, chunk.len())
-                        .map_err(|_| {
+                        .map_err(|_error| {
                             Error::semantic(None, "controlled CBOR text append refused")
                         })?;
                     if value.capacity().saturating_sub(value.len()) < chunk.len() {
@@ -368,7 +403,7 @@ where
                         ));
                     }
                 } else {
-                    value.try_reserve(chunk.len()).map_err(|_| {
+                    value.try_reserve(chunk.len()).map_err(|_error| {
                         Error::semantic(None, "CBOR text backing allocation refused")
                     })?;
                 }
@@ -401,7 +436,7 @@ where
                 if let Some(owner) = self.owner.as_deref_mut() {
                     owner
                         .reserve_bytes_v3(&mut value, chunk.len())
-                        .map_err(|_| {
+                        .map_err(|_error| {
                             Error::semantic(
                                 None,
                                 if sequence {
@@ -422,7 +457,7 @@ where
                         ));
                     }
                 } else {
-                    value.try_reserve(chunk.len()).map_err(|_| {
+                    value.try_reserve(chunk.len()).map_err(|_error| {
                         Error::semantic(None, "CBOR bytes backing allocation refused")
                     })?;
                 }
@@ -439,15 +474,16 @@ where
                 Header::Tag(tag::BIGPOS) => return self.bigint(false),
                 Header::Tag(tag::BIGNEG) => return self.bigint(true),
                 Header::Tag(_) => {}
-                _ => return Err(invalid_type()),
+                header => return Err(expected_header(header, "integer")),
             }
         }
     }
     fn bigint(&mut self, negative: bool) -> Result<(bool, u128), Error<R::Error, P>> {
-        let Header::Bytes(length) = self.pull()? else {
-            return Err(invalid_type());
+        let header = self.pull()?;
+        let Header::Bytes(length) = header else {
+            return Err(expected_header(header, "bytes"));
         };
-        self.check_length(length, 1)?;
+        self.check_borrowed_length(length, 1)?;
         let mut value = 0_u128;
         let mut chunk = [0_u8; 16];
         let mut segments = self.tokens.bytes(length);
@@ -457,7 +493,7 @@ where
                     value = value
                         .checked_mul(256)
                         .and_then(|n| n.checked_add(u128::from(*byte)))
-                        .ok_or_else(invalid_type)?;
+                        .ok_or_else(|| Error::semantic(None, P::custom_v3("bigint too large")))?;
                 }
             }
         }
@@ -484,7 +520,8 @@ where
             Header::Float(_) => self.deserialize_f64(visitor),
             Header::Simple(simple::FALSE | simple::TRUE) => self.deserialize_bool(visitor),
             Header::Simple(simple::NULL | simple::UNDEFINED) => self.deserialize_option(visitor),
-            Header::Simple(_) | Header::Break => Err(invalid_type()),
+            header @ Header::Simple(_) => Err(expected_header(header, "known simple value")),
+            Header::Break => Err(expected_header(header, "non-break")),
             Header::Text(Some(n)) if n <= self.scratch.len() => self.deserialize_str(visitor),
             Header::Text(_) => self.deserialize_string(visitor),
             Header::Bytes(Some(n)) if n <= self.scratch.len() => self.deserialize_bytes(visitor),
@@ -492,7 +529,7 @@ where
             Header::Array(_) => self.deserialize_seq(visitor),
             Header::Map(_) => self.deserialize_map(visitor),
             Header::Tag(tag_value) => {
-                let _ = self.pull()?;
+                let _: Header = self.pull()?;
                 let next = self.pull()?;
                 self.tokens.push(next);
                 if (tag_value == tag::BIGPOS || tag_value == tag::BIGNEG)
@@ -503,7 +540,7 @@ where
                     if !negative {
                         return visitor.visit_u128(value);
                     }
-                    let signed = i128::try_from(value).map_err(|_| invalid_type())? ^ !0;
+                    let signed = i128::try_from(value).map_err(|_error| invalid_type())? ^ !0;
                     return visitor.visit_i128(signed);
                 }
                 self.step(|parser| {
@@ -533,7 +570,7 @@ where
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.next_plain()? {
             Header::Float(x) => visitor.visit_f64(x),
-            _ => Err(invalid_type()),
+            header => Err(expected_header(header, "float")),
         }
     }
     fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -547,12 +584,14 @@ where
     }
     fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let (negative, raw) = self.natural()?;
-        let n = i64::try_from(raw).map_err(|_| invalid_type())?;
+        let n = i64::try_from(raw)
+            .map_err(|_error| Error::semantic(None, P::custom_v3("integer too large")))?;
         visitor.visit_i64(if negative { n ^ !0 } else { n })
     }
     fn deserialize_i128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let (negative, raw) = self.natural()?;
-        let n = i128::try_from(raw).map_err(|_| invalid_type())?;
+        let n = i128::try_from(raw)
+            .map_err(|_error| Error::semantic(None, P::custom_v3("integer too large")))?;
         visitor.visit_i128(if negative { n ^ !0 } else { n })
     }
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -566,20 +605,36 @@ where
     }
     fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.natural()? {
-            (false, n) => visitor.visit_u64(u64::try_from(n).map_err(|_| invalid_type())?),
-            _ => Err(invalid_type()),
+            (false, n) => visitor.visit_u64(
+                u64::try_from(n)
+                    .map_err(|_error| Error::semantic(None, P::custom_v3("integer too large")))?,
+            ),
+            _ => Err(Error::semantic(
+                None,
+                P::custom_v3("unexpected negative integer"),
+            )),
         }
     }
     fn deserialize_u128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.natural()? {
             (false, n) => visitor.visit_u128(n),
-            _ => Err(invalid_type()),
+            _ => Err(Error::semantic(
+                None,
+                P::custom_v3("unexpected negative integer"),
+            )),
         }
     }
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        match self.next_plain()? {
-            Header::Text(Some(n)) if n <= 4 => {
-                self.check_length(Some(n), 0)?;
+        let (offset, header) = loop {
+            let offset = self.tokens.offset();
+            let header = self.pull()?;
+            if !matches!(header, Header::Tag(_)) {
+                break (offset, header);
+            }
+        };
+        match header {
+            header @ Header::Text(Some(n)) if n <= 4 => {
+                self.check_borrowed_length(Some(n), 0)?;
                 let mut bytes = [0_u8; 4];
                 let target = bytes
                     .get_mut(..n)
@@ -590,14 +645,14 @@ where
                         .get(..n)
                         .ok_or_else(|| Error::Syntax(self.tokens.offset()))?,
                 )
-                .map_err(|_| Error::Syntax(self.tokens.offset()))?;
+                .map_err(|_error| Error::Syntax(offset))?;
                 let mut chars = text.chars();
                 match (chars.next(), chars.next()) {
                     (Some(ch), None) => visitor.visit_char(ch),
-                    _ => Err(invalid_type()),
+                    _ => Err(expected_header(header, "char")),
                 }
             }
-            _ => Err(invalid_type()),
+            header => Err(expected_header(header, "char")),
         }
     }
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -605,11 +660,11 @@ where
         let Header::Text(Some(n)) = self.next_plain()? else {
             return Err(invalid_type());
         };
-        self.check_length(Some(n), 0)?;
+        self.check_borrowed_length(Some(n), 0)?;
         if n <= self.scratch.len() {
             let target = self.scratch.get_mut(..n).ok_or(Error::Syntax(offset))?;
             self.tokens.read_exact(target).map_err(Error::Io)?;
-            let value = std::str::from_utf8(target).map_err(|_| Error::Syntax(offset))?;
+            let value = std::str::from_utf8(target).map_err(|_error| Error::Syntax(offset))?;
             return visitor.visit_str(value);
         }
         let Some(owner) = self.owner.as_deref_mut() else {
@@ -625,26 +680,29 @@ where
                         return Err(Error::semantic(None, "invalid borrowed scratch length"));
                     }
                     decoder.read_exact(target).map_err(Error::Io)?;
-                    let value = std::str::from_utf8(target).map_err(|_| Error::Syntax(offset))?;
+                    let value =
+                        std::str::from_utf8(target).map_err(|_error| Error::Syntax(offset))?;
                     visitor
                         .take()
                         .ok_or_else(|| Error::semantic(None, "repeated borrowed scratch callback"))?
                         .visit_str(value)
                 })());
             })
-            .map_err(|_| Error::semantic(None, "controlled CBOR borrowed text scratch refused"))?;
+            .map_err(|_error| {
+                Error::semantic(None, "controlled CBOR borrowed text scratch refused")
+            })?;
         result.ok_or_else(|| Error::semantic(None, "borrowed text callback missing"))?
     }
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.next_plain()? {
             Header::Text(n) => visitor.visit_string(self.read_text(n)?),
-            _ => Err(invalid_type()),
+            header => Err(expected_header(header, "string")),
         }
     }
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.next_plain()? {
             Header::Bytes(Some(n)) if n <= self.scratch.len() => {
-                self.check_length(Some(n), 1)?;
+                self.check_borrowed_length(Some(n), 1)?;
                 let target = self
                     .scratch
                     .get_mut(..n)
@@ -700,7 +758,7 @@ where
                     error: std::marker::PhantomData,
                 })
             }
-            _ => Err(invalid_type()),
+            header => Err(expected_header(header, "array")),
         }
     }
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -714,7 +772,7 @@ where
                     })
                 })
             }
-            _ => Err(invalid_type()),
+            header => Err(expected_header(header, "map")),
         }
     }
     fn deserialize_struct<V: Visitor<'de>>(
@@ -747,7 +805,7 @@ where
                 self.deserialize_str(visitor)
             }
             Header::Bytes(Some(n)) if n <= self.scratch.len() => {
-                self.check_length(Some(n), 1)?;
+                self.check_borrowed_length(Some(n), 1)?;
                 let target = self
                     .scratch
                     .get_mut(..n)
@@ -773,7 +831,7 @@ where
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         match self.next_plain()? {
             Header::Simple(simple::NULL | simple::UNDEFINED) => visitor.visit_unit(),
-            _ => Err(invalid_type()),
+            header => Err(expected_header(header, "unit")),
         }
     }
     fn deserialize_unit_struct<V: Visitor<'de>>(
@@ -1254,7 +1312,7 @@ mod tests {
             }
             value
                 .try_reserve_exact(additional)
-                .map_err(|_| FiniteParserAllocationRefusalV3)?;
+                .map_err(|_error| FiniteParserAllocationRefusalV3)?;
             self.births = self.births.saturating_add(1);
             Ok(())
         }
@@ -1275,7 +1333,7 @@ mod tests {
             }
             value
                 .try_reserve_exact(additional)
-                .map_err(|_| FiniteParserAllocationRefusalV3)?;
+                .map_err(|_error| FiniteParserAllocationRefusalV3)?;
             self.births = self.births.saturating_add(1);
             Ok(())
         }
@@ -1286,7 +1344,7 @@ mod tests {
         ) -> Result<(), FiniteParserAllocationRefusalV3> {
             self.borrowed
                 .try_reserve_exact(length)
-                .map_err(|_| FiniteParserAllocationRefusalV3)?;
+                .map_err(|_error| FiniteParserAllocationRefusalV3)?;
             self.borrowed.resize(length, 0);
             visit(&mut self.borrowed);
             Ok(())
@@ -1835,6 +1893,50 @@ mod edge_tests {
             Err(Error::Semantic(None, FiniteSemanticReasonV3::CustomRefused))
         ));
     }
+
+    #[test]
+    fn ordinary_slice_decode_retains_custom_visitor_diagnostic() {
+        struct Rejected;
+        impl<'de> serde::Deserialize<'de> for Rejected {
+            fn deserialize<D: serde::Deserializer<'de>>(_decoder: D) -> Result<Self, D::Error> {
+                Err(serde::de::Error::custom("fixed visitor diagnostic"))
+            }
+        }
+        let Err(error) = from_slice_with_definite_scalars::<Rejected>(&[0]) else {
+            panic!("visitor must reject");
+        };
+        assert!(
+            matches!(error, Error::Semantic(None, reason) if reason == "fixed visitor diagnostic")
+        );
+    }
+
+    #[test]
+    fn ordinary_slice_decode_preserves_invalid_scalar_reasons() {
+        let negative = from_slice_with_definite_scalars::<u64>(&[0x20]);
+        assert!(
+            matches!(negative, Err(Error::Semantic(None, reason)) if reason == "unexpected negative integer")
+        );
+        let wrong_string = from_slice_with_definite_scalars::<String>(&[0]);
+        assert!(
+            matches!(wrong_string, Err(Error::Semantic(None, reason)) if reason == "invalid type: integer `0`, expected string")
+        );
+        let incomplete_bigint = from_slice_with_definite_scalars::<u64>(&[0xc2, 0x41]);
+        assert!(matches!(incomplete_bigint, Err(Error::Io(_))));
+        let wrong_float = from_slice_with_definite_scalars::<f64>(&[0]);
+        assert!(
+            matches!(wrong_float, Err(Error::Semantic(None, reason)) if reason == "invalid type: integer `0`, expected float")
+        );
+        let wrong_sequence = from_slice_with_definite_scalars::<Vec<u8>>(&[0]);
+        assert!(
+            matches!(wrong_sequence, Err(Error::Semantic(None, reason)) if reason == "invalid type: integer `0`, expected array")
+        );
+        let invalid_char = from_slice_with_definite_scalars::<char>(&[0x61, 0x80]);
+        assert!(matches!(invalid_char, Err(Error::Syntax(0))));
+        let wrong_unit = from_slice_with_definite_scalars::<()>(&[0]);
+        assert!(
+            matches!(wrong_unit, Err(Error::Semantic(None, reason)) if reason == "invalid type: integer `0`, expected unit")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1941,6 +2043,16 @@ mod fixed_wire_contract {
         refuse::<Vec<u8>>(&[0x5f, 0x41, 1], end);
         refuse::<String>(&[0x62, 0xc3, 0x28], syntax);
         refuse::<MapWire>(&[0xa1, 0x61, b'a'], end);
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn oversized_container_lengths_are_syntax_errors() {
+        // Each definite length is 2^32, which cannot fit a 32-bit usize.
+        for major in [0x5b, 0x7b, 0x9b, 0xbb] {
+            let wire = [major, 0, 0, 0, 1, 0, 0, 0, 0];
+            refuse::<serde::de::IgnoredAny>(&wire, |error| matches!(error, Error::Syntax(_)));
+        }
     }
 
     #[test]

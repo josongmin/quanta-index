@@ -98,11 +98,15 @@ SELECTED_CASE = ("caller", "pkg", "feature", "binary", "test", "selected")
 def _rows(
     outcome: str = "ok", name: str = "pkg::binary$selected", *, kind: str = "test"
 ) -> tuple[bytes, bytes]:
+    from tools.ci.tests.p11_test_issuer import nextest_suite_id
+
+    binary_id = nextest_suite_id("pkg", "binary", kind)
     inventory = {
         "test-count": 1,
         "rust-suites": {
-            "pkg::binary": {
+            binary_id: {
                 "package-name": "pkg",
+                "binary-id": binary_id,
                 "binary-name": "binary",
                 "kind": kind,
                 "status": "listed",
@@ -767,7 +771,10 @@ def _recipe_command(case, phase):
     return command
 
 
-@pytest.mark.parametrize("case", CASES)
+@pytest.mark.parametrize("case", (*CASES, (
+    "caller", "quanta-sdk-runtime-executor", "ifx150-restart-recovery-test-support",
+    "ifx150_restart_recovery_product_owner", "test", "source_only_fixture",
+)))
 @pytest.mark.parametrize("phase", ["list", "run"])
 def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, case, phase):
     command = _recipe_command(case, phase)
@@ -785,6 +792,8 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
         RUNNER.WITNESS_DIR_ENV: str(tmp_path),
         RUNNER.WITNESS_NONCE_ENV: "b" * 32,
     }
+    if case[1] == "quanta-sdk-runtime-executor":
+        witness_environment[RUNNER.INSTALLED_Q_SHA_ENV] = "d" * 64
     environment = {
         **control,
         **witness_environment,
@@ -834,7 +843,8 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
     )
     assert (
         RUNNER._execute_qbc_phase(
-            tmp_path, case, phase, command, owner, completion, environment, "registered"
+            tmp_path, case, phase, command, owner, completion, environment, "registered",
+            cases=(case,),
         )
         == 17
     )
@@ -849,7 +859,8 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
     for changed in mutations:
         with pytest.raises(ValueError, match="command drift"):
             RUNNER._execute_qbc_phase(
-                tmp_path, case, phase, changed, owner, completion, environment, "registered"
+                tmp_path, case, phase, changed, owner, completion, environment, "registered",
+                cases=(case,),
             )
     with pytest.raises(ValueError, match="unregistered"):
         RUNNER._execute_qbc_phase(
@@ -869,7 +880,8 @@ def test_exact_recipe_uses_qbc_owner_admission_and_completion_port(tmp_path, cas
     owner._CARGO_INVOCATION_ADMISSION_OWNER_V1.__file__ = str(tmp_path / "foreign.py")
     with pytest.raises(ValueError, match="another source"):
         RUNNER._execute_qbc_phase(
-            tmp_path, case, phase, command, owner, completion, environment, "registered"
+            tmp_path, case, phase, command, owner, completion, environment, "registered",
+            cases=(case,),
         )
     assert len(calls) == 1
 

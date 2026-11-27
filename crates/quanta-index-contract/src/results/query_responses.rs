@@ -366,8 +366,7 @@ impl SymbolCandidate {
             score: self.score,
             source_repo_id: self.source_repo_id.as_str(),
             repo_relative_path: self.repo_relative_path.as_str(),
-            start_line: self.start_line,
-            end_line: self.end_line,
+            lines: Some((self.start_line, self.end_line)),
             candidate_id: self.candidate_id.as_str(),
         }
     }
@@ -3067,12 +3066,17 @@ mod tests {
                 .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(7),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-            start_line: 1,
-            end_line: 2,
+            lines: Some(crate::LexicalLineRange {
+                start_line: 1,
+                end_line: 2,
+            }),
+            excerpt: Some(crate::LexicalMatchExcerpt {
+                snippet: "needle".to_string(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score,
-            snippet: "needle".to_string(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         }
     }
 

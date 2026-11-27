@@ -2,6 +2,9 @@
 //! Repository and path are selected-source values with their original grants.
 
 use quanta_index_contract::{RepoId, native_protocol::compare_native_text_path_rank_v1};
+
+use super::text_code_search_rank::CodeSearchMatch;
+use super::text_rank_order::{RankOrderCapture, TextRankEntry};
 use quanta_index_core::index::{
     FiniteScore, IndexError, MAX_SOURCE_PATH_BYTES, MemoryLease, MemoryLifetime, OwnerKey,
     WorkBudget, WorkUsage,
@@ -27,6 +30,9 @@ struct Group<T> {
     // The backing dies before its retained allocation grant.
     _source_memory: Option<MemoryLease>,
 }
+
+/// Where `finish` records the full group order, and each group's match.
+pub(super) type OrderSink<'a, T> = (&'a mut RankOrderCapture, fn(&T) -> Option<CodeSearchMatch>);
 
 pub(super) struct PathGroupRow<T> {
     pub payload: T,
@@ -264,10 +270,13 @@ impl<T> PathGroupAccumulator<T> {
         Ok(())
     }
 
+    /// With `capture`, every group is also recorded in page order, keyed by
+    /// its representative owner and that owner's `CodeSearch` match.
     pub(super) fn finish(
         mut self,
         top_k: usize,
         after: Option<(FiniteScore, &RepoId, &str)>,
+        capture: Option<OrderSink<'_, T>>,
         budget: &mut WorkBudget,
     ) -> Result<PathGroupRanking<T>, IndexError> {
         budget.checkpoint()?;
@@ -331,6 +340,23 @@ impl<T> PathGroupAccumulator<T> {
             ..WorkUsage::default()
         })?;
         budget.checkpoint()?;
+        if let Some((capture, code_search)) = capture {
+            for index in &order {
+                let row = self
+                    .buckets
+                    .get(*index)
+                    .and_then(Option::as_ref)
+                    .ok_or(IndexError::ResourceLimited)?;
+                capture.push(
+                    TextRankEntry {
+                        score: row.score,
+                        owner: (self.rank)(&row.payload).0,
+                        code_search: code_search(&row.payload),
+                    },
+                    budget,
+                )?;
+            }
+        }
         let mut anchor = 0;
         if let Some((score, repository, path)) = after {
             let mut found = false;
@@ -463,6 +489,7 @@ mod tests {
                 [owner; 32],
             ))),
             score,
+            code_search: None,
         }
     }
 
@@ -494,7 +521,7 @@ mod tests {
         consider(&mut groups, &mut budget, "repo-b", "same.rs", 9, 0.9)?;
         consider(&mut groups, &mut budget, "repo-b", "same.rs", 3, 0.9)?;
         consider(&mut groups, &mut budget, "repo-a", "z.rs", 4, 0.8)?;
-        let ranked = groups.finish(2, None, &mut budget)?;
+        let ranked = groups.finish(2, None, None, &mut budget)?;
         assert_eq!(ranked.matched, 3);
         assert_eq!(ranked.remaining, 3);
         assert_eq!(ranked.rows.len(), 2);
@@ -519,7 +546,7 @@ mod tests {
             RepoId::new("repo-a").map_err(|error| IndexError::InvalidInput(error.to_string()))?;
         let score =
             FiniteScore::new(0.7).map_err(|error| IndexError::InvalidInput(error.to_string()))?;
-        let ranked = groups.finish(1, Some((score, &repo, "a.rs")), &mut budget)?;
+        let ranked = groups.finish(1, Some((score, &repo, "a.rs")), None, &mut budget)?;
         assert_eq!(ranked.matched, 3);
         assert_eq!(ranked.remaining, 2);
         assert_eq!(ranked.rows.len(), 1);
@@ -533,7 +560,7 @@ mod tests {
         let mut budget = budget()?;
         let groups =
             PathGroupAccumulator::<NativeTextRankedHit>::new(4, |hit| (hit.owner, hit.score))?;
-        let ranked = groups.finish(2, None, &mut budget)?;
+        let ranked = groups.finish(2, None, None, &mut budget)?;
         assert_eq!((ranked.matched, ranked.remaining), (0, 0));
         assert!(ranked.rows.is_empty());
         Ok(())
@@ -550,7 +577,7 @@ mod tests {
             RepoId::new("repo-a").map_err(|error| IndexError::InvalidInput(error.to_string()))?;
         let score =
             FiniteScore::new(0.7).map_err(|error| IndexError::InvalidInput(error.to_string()))?;
-        let ranked = groups.finish(2, Some((score, &repo, "a.rs")), &mut budget)?;
+        let ranked = groups.finish(2, Some((score, &repo, "a.rs")), None, &mut budget)?;
         assert_eq!((ranked.matched, ranked.remaining), (1, 0));
         assert!(ranked.rows.is_empty());
         Ok(())

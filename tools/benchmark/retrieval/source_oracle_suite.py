@@ -55,9 +55,21 @@ def _tool_digests() -> list[dict[str, str]]:
     ]
 
 
-def derive_suites(repo: Path, baseline: dict[str, Any]) -> dict[str, tuple[dict, dict]]:
+def derive_suites(
+    repo: Path,
+    baseline: dict[str, Any],
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+) -> dict[str, tuple[dict, dict]]:
     """Derive complete judgments, then revalidate each final suite and blind pack."""
-    _checked, _pack, source = evaluator.validate_suite(repo, baseline, source_oracle_admission=True)
+    _checked, _pack, source = evaluator.validate_suite(
+        repo,
+        baseline,
+        source_oracle_admission=True,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    )
     for task in baseline["tasks"]:
         evaluator.require(
             not (OWNED_TASK_FIELDS & task.keys()),
@@ -71,6 +83,8 @@ def derive_suites(repo: Path, baseline: dict[str, Any]) -> dict[str, tuple[dict,
     oracle = source_oracle.SourceOracleIndex(
         {entry["path"]: (source.file(entry["path"])[0], entry["file_sha256"]) for entry in entries},
         {task["query"] for task in baseline["tasks"]},
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
     )
     outputs: dict[str, tuple[dict, dict]] = {}
     for mode, (contract, unit, route) in MODES.items():
@@ -92,7 +106,12 @@ def derive_suites(repo: Path, baseline: dict[str, Any]) -> dict[str, tuple[dict,
                 bool(task["gold"]) == task["answerable"],
                 f"source oracle gold/judgment mismatch: {task['task_id']}",
             )
-        _checked, pack, _source = evaluator.validate_suite(repo, suite)
+        _checked, pack, _source = evaluator.validate_suite(
+            repo,
+            suite,
+            candidate_manifest_path=candidate_manifest_path,
+            candidate_manifest_sha256=candidate_manifest_sha256,
+        )
         outputs[mode] = suite, pack
     return outputs
 
@@ -111,6 +130,8 @@ def identifier_word_suite(
     seed: int = 20261010,
     per_stratum: int = 15,
     negatives: int = 10,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
 ) -> tuple[dict, dict, dict]:
     """Freeze content-token lookup tasks without consuming product outputs.
 
@@ -183,7 +204,12 @@ def identifier_word_suite(
         ("no_answer", query, source_oracle.ASCII_CODE_SEARCH_DEFAULT_ABSENT_CASEFOLD)
         for query in negative_queries
     )
-    oracle = source_oracle.SourceOracleIndex(files, {name for _key, name, _contract in selected})
+    oracle = source_oracle.SourceOracleIndex(
+        files,
+        {name for _key, name, _contract in selected},
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    )
     tasks = []
     for number, (stratum, name, contract) in enumerate(selected):
         judgments = oracle.expected_rows(contract, name, "distinct_file")
@@ -225,7 +251,12 @@ def identifier_word_suite(
         "tasks": tasks,
         "diagnostic_policy": evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
     }
-    checked, pack, _source = evaluator.validate_suite(repo, suite)
+    checked, pack, _source = evaluator.validate_suite(
+        repo,
+        suite,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    )
     return (
         checked,
         pack,
@@ -311,12 +342,24 @@ def _write_bundle(
     return manifest
 
 
-def write_suites(repo: Path, baseline_path: Path, output_root: Path) -> dict[str, Any]:
+def write_suites(
+    repo: Path,
+    baseline_path: Path,
+    output_root: Path,
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
     """Validate everything before creating a new external output root."""
     tool_files = _tool_digests()
     baseline_bytes = read_control(baseline_path)
     baseline = _baseline_from_bytes(baseline_bytes)
-    suites = derive_suites(repo, baseline)
+    suites = derive_suites(
+        repo,
+        baseline,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    )
     contents = {
         f"{mode}-{kind}.json": _json_bytes(payload)
         for mode, (suite, pack) in suites.items()
@@ -330,6 +373,7 @@ def write_suites(repo: Path, baseline_path: Path, output_root: Path) -> dict[str
         {
             "repository_commit": baseline["repository_commit"],
             "input_suite_sha256": evaluator.digest(baseline_bytes),
+            "candidate_manifest_sha256": candidate_manifest_sha256,
         },
     )
 
@@ -345,10 +389,18 @@ def main() -> int:
     parser.add_argument("--per-stratum", type=int, default=15)
     parser.add_argument("--negatives", type=int, default=10)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--candidate-manifest-path", type=Path)
+    parser.add_argument("--candidate-manifest-sha256")
     args = parser.parse_args()
     try:
         if args.corpus_manifest is None:
-            manifest = write_suites(args.repo.resolve(), args.baseline_suite, args.output_root)
+            manifest = write_suites(
+                args.repo.resolve(),
+                args.baseline_suite,
+                args.output_root,
+                candidate_manifest_path=args.candidate_manifest_path,
+                candidate_manifest_sha256=args.candidate_manifest_sha256,
+            )
         else:
             evaluator.require(bool(args.suite_id), "identifier suite requires --suite-id")
             tool_files = _tool_digests()
@@ -360,6 +412,8 @@ def main() -> int:
                 seed=args.seed,
                 per_stratum=args.per_stratum,
                 negatives=args.negatives,
+                candidate_manifest_path=args.candidate_manifest_path,
+                candidate_manifest_sha256=args.candidate_manifest_sha256,
             )
             manifest = _write_bundle(
                 args.repo.resolve(),
@@ -373,6 +427,7 @@ def main() -> int:
                 {
                     "repository_commit": suite["repository_commit"],
                     "input_corpus_manifest_sha256": evaluator.digest(corpus_bytes),
+                    "candidate_manifest_sha256": args.candidate_manifest_sha256,
                 },
             )
     except (OSError, ValueError, source_oracle.SourceOracleError) as exc:

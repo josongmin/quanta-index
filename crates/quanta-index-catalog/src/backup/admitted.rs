@@ -28,6 +28,7 @@ use crate::io_admission::{CatalogConnectionOwner, CatalogIoAdmission, ScopeLease
 pub struct CatalogSnapshotSessionV1 {
     destination: PathBuf,
     io: Arc<dyn CatalogIoAdmission>,
+    stock_vfs: bool,
     source_path: Option<PathBuf>,
     source: Option<CatalogConnectionOwner>,
     output: Option<CatalogConnectionOwner>,
@@ -42,12 +43,40 @@ impl CatalogSnapshotSessionV1 {
         Self {
             destination,
             io,
+            stock_vfs: false,
             source_path: None,
             source: None,
             output: None,
             verification: None,
             started: false,
         }
+    }
+
+    /// Select the stock SQLite VFS for the admitted destination and its
+    /// verification reopen. The caller must already hold a kernel-enforced
+    /// quota for the mutable output root; this does not change source custody
+    /// or grant stock SQLite the native VFS's file-level guarantees.
+    #[must_use]
+    pub fn new_with_stock_vfs(destination: PathBuf, io: Arc<dyn CatalogIoAdmission>) -> Self {
+        let mut session = Self::new(destination, io);
+        session.stock_vfs = true;
+        session
+    }
+
+    fn open_admitted_destination(&self, action: &str) -> Result<Connection, CoreError> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | if self.stock_vfs {
+                OpenFlags::SQLITE_OPEN_NOFOLLOW
+            } else {
+                OpenFlags::empty()
+            };
+        let opened = if self.stock_vfs {
+            Connection::open_with_flags(&self.destination, flags)
+        } else {
+            Connection::open_with_flags_and_vfs(&self.destination, flags, self.io.vfs_name())
+        };
+        opened.map_err(|error| engine_error(action, &self.destination, &error))
     }
 
     /// Copy a read-only source into the admitted destination and verify it.
@@ -93,7 +122,7 @@ impl CatalogSnapshotSessionV1 {
             let source_owner = self.source.as_ref().ok_or_else(|| {
                 CoreError::InvalidContract("catalog snapshot source owner absent".into())
             })?;
-            let source_guard = lock_connection(source_owner)?;
+            let mut source_guard = lock_connection(source_owner)?;
             source_guard.busy_timeout(busy_timeout).map_err(|error| {
                 engine_error("set snapshot source busy timeout", source, &error)
             })?;
@@ -106,22 +135,12 @@ impl CatalogSnapshotSessionV1 {
                         &error,
                     )
                 })?;
-            let source_receipt = read_receipt(&source_guard, source, budget)?;
+            let source_receipt = read_receipt(&mut source_guard, source, budget)?;
             drop(source_guard);
             budget.checkpoint("catalog snapshot before destination open")?;
             let _scope = ScopeLease::enter(Some(&self.io), None);
-            let connection = Connection::open_with_flags_and_vfs(
-                &self.destination,
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                self.io.vfs_name(),
-            )
-            .map_err(|error| {
-                engine_error(
-                    "open admitted snapshot destination",
-                    &self.destination,
-                    &error,
-                )
-            })?;
+            let connection =
+                self.open_admitted_destination("open admitted snapshot destination")?;
             // Install the actual connection before busy-timeout, backup init,
             // page steps or journal normalization can fail.
             self.output = Some(CatalogConnectionOwner::new(
@@ -223,18 +242,8 @@ impl CatalogSnapshotSessionV1 {
         self.close_checked()?;
         let observed = (|| {
             let _scope = ScopeLease::enter(Some(&self.io), None);
-            let connection = Connection::open_with_flags_and_vfs(
-                &self.destination,
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                self.io.vfs_name(),
-            )
-            .map_err(|error| {
-                engine_error(
-                    "open admitted snapshot verification",
-                    &self.destination,
-                    &error,
-                )
-            })?;
+            let connection =
+                self.open_admitted_destination("open admitted snapshot verification")?;
             self.verification = Some(CatalogConnectionOwner::new(
                 connection,
                 Some(Arc::clone(&self.io)),
@@ -242,10 +251,10 @@ impl CatalogSnapshotSessionV1 {
             let owner = self.verification.as_ref().ok_or_else(|| {
                 CoreError::InvalidContract("catalog snapshot verification owner absent".into())
             })?;
-            let guard = lock_connection(owner)?;
+            let mut guard = lock_connection(owner)?;
             budget.checkpoint("catalog snapshot before journal normalization")?;
             require_delete_journal_mode(&guard, &self.destination)?;
-            read_receipt(&guard, &self.destination, budget)
+            read_receipt(&mut guard, &self.destination, budget)
         })();
         let retired = self.close_checked();
         combine(observed, retired, "snapshot verification retirement")
@@ -321,12 +330,12 @@ fn require_delete_journal_mode(connection: &Connection, path: &Path) -> Result<(
 }
 
 fn read_receipt(
-    connection: &Connection,
+    connection: &mut Connection,
     path: &Path,
     budget: &RequestBudgetV1,
 ) -> Result<CatalogSnapshotReceiptV1, CoreError> {
     budget.checkpoint("catalog snapshot before integrity check")?;
-    with_budgeted_sql(connection, path, budget, |map_error| {
+    with_budgeted_sql(connection, path, budget, |connection, map_error| {
         let integrity: String = connection
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(|error| map_error("integrity_check snapshot connection", path, &error))?;
@@ -375,10 +384,13 @@ fn read_receipt(
 }
 
 fn with_budgeted_sql<T>(
-    connection: &Connection,
+    connection: &mut Connection,
     path: &Path,
     budget: &RequestBudgetV1,
-    work: impl FnOnce(&dyn Fn(&str, &Path, &rusqlite::Error) -> CoreError) -> Result<T, CoreError>,
+    work: impl FnOnce(
+        &Connection,
+        &dyn Fn(&str, &Path, &rusqlite::Error) -> CoreError,
+    ) -> Result<T, CoreError>,
 ) -> Result<T, CoreError> {
     let observed = Arc::new(Mutex::new(None));
     let captured = Arc::clone(&observed);
@@ -424,7 +436,7 @@ fn with_budgeted_sql<T>(
         }
         engine_error(action, path, error)
     };
-    let result = work(&map_error);
+    let result = work(connection, &map_error);
     // A cancelled budget must not interrupt transaction release, checked
     // close, or a later query on the same original connection.
     let cleared = connection
@@ -499,7 +511,7 @@ mod tests {
     #[test]
     fn native_progress_cancellation_retains_typed_cause_and_clears_before_rollback()
     -> Result<(), Box<dyn std::error::Error>> {
-        let connection = Connection::open_in_memory()?;
+        let mut connection = Connection::open_in_memory()?;
         connection.execute_batch("BEGIN DEFERRED")?;
         let budget = RequestBudgetV1::for_duration(Duration::from_secs(30));
         let cancel = budget.cancel_handle();
@@ -512,20 +524,21 @@ mod tests {
             Ok(())
         });
         let path = Path::new(":memory:");
-        let interrupted = with_budgeted_sql(&connection, path, &budget, |map_error| {
-            entered_tx
-                .send(())
-                .map_err(|error| CoreError::Storage(error.to_string()))?;
-            connection
-                .query_row(
-                    "WITH RECURSIVE seq(x) AS (VALUES(1) UNION ALL \
+        let interrupted =
+            with_budgeted_sql(&mut connection, path, &budget, |connection, map_error| {
+                entered_tx
+                    .send(())
+                    .map_err(|error| CoreError::Storage(error.to_string()))?;
+                connection
+                    .query_row(
+                        "WITH RECURSIVE seq(x) AS (VALUES(1) UNION ALL \
                      SELECT x + 1 FROM seq WHERE x < 100000000) \
                      SELECT sum(x) FROM seq",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(|error| map_error("scan cancellation fixture", path, &error))
-        });
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| map_error("scan cancellation fixture", path, &error))
+            });
         canceller.join().map_err(|payload| {
             io::Error::other(format!("canceller thread panicked: {payload:?}"))
         })??;

@@ -349,6 +349,7 @@ pub fn try_connect_native_into_v1<P: NativeSdkConnectAdmissionV1 + ?Sized>(
             selection,
             profile,
             io_policy,
+            options.native_text_instance,
         ));
         admission
             .birth_client_into_slots_v1(&mut data.payload, &mut data.shared, &mut data.funding)

@@ -7,7 +7,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from rust_attribute_policy import attribute_metas, macro_attribute_metas, rust_source_files
+from rust_attribute_policy import (
+    attribute_metas,
+    macro_attribute_metas,
+    rust_source_files,
+    shared_workspace_source_roots,
+)
 from tree_sitter_language_pack import get_parser
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -46,7 +51,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     findings: list[str] = []
     try:
-        for path in rust_source_files(roots):
+        sources = rust_source_files(roots)
+        sources.extend(rust_source_files(shared_workspace_source_roots(root)))
+        for path in sorted(sources):
             for line in allow_sites(path.read_text(encoding="utf-8")):
                 findings.append(f"{path}:{line}: allow attribute is banned; use an owned expect")
     except (OSError, ValueError) as exc:

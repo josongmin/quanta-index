@@ -62,12 +62,17 @@ fn sample_candidate(id: &str, score: f32) -> LexicalCandidate {
         revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
-        start_line: 1,
-        end_line: 3,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 1,
+            end_line: 3,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "fn sample() {}".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score,
-        snippet: "fn sample() {}".to_string(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 

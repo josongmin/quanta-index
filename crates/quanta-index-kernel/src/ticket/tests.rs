@@ -28,6 +28,7 @@ impl ReadSessionLease for Session {
 struct CleanupCatalog {
     refuse: bool,
     failures_remaining: AtomicUsize,
+    abandoned: std::sync::Mutex<Vec<ReadTicketLease>>,
     cancel_on_release: Option<CancelHandleV1>,
     calls: AtomicUsize,
     payload_drops: Option<Arc<AtomicUsize>>,
@@ -142,6 +143,17 @@ impl CatalogReadPort for CleanupCatalog {
             Ok(())
         }
     }
+    fn abandon_ticket(
+        &self,
+        _: Arc<dyn ReadSessionLease>,
+        ticket: ReadTicketLease,
+    ) -> Result<(), IndexError> {
+        self.abandoned
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?
+            .push(ticket);
+        Ok(())
+    }
     fn recover_read_sessions(
         &self,
         _: Option<ReadSessionRef>,
@@ -171,6 +183,7 @@ fn fixture(
     let catalog = Arc::new(CleanupCatalog {
         refuse,
         failures_remaining: AtomicUsize::new(0),
+        abandoned: std::sync::Mutex::new(Vec::new()),
         cancel_on_release: cancel_on_release.then(|| budget.request().cancel_handle()),
         calls: AtomicUsize::new(0),
         payload_drops,
@@ -394,4 +407,22 @@ fn composite_observer_preserves_exact_catalog_and_session_identity() {
     assert!(!ticket.belongs_to(&foreign, &ticket.session));
     let same_binding_other_owner: Arc<dyn ReadSessionLease> = Arc::new(Session);
     assert!(!ticket.belongs_to(&same, &same_binding_other_owner));
+}
+
+#[test]
+fn second_failed_release_transfers_the_exact_pin_once_to_its_catalog() {
+    for (failures, expected_calls, transferred) in [(0, 1, false), (1, 2, false), (2, 2, true)] {
+        let (ticket, catalog, _budget) = fixture(false, false, None);
+        let lease = ticket.record().lease;
+        catalog.failures_remaining.store(failures, Ordering::SeqCst);
+        let explicit = ticket.release();
+        assert_eq!(explicit.is_err(), failures > 0);
+        assert_eq!(catalog.calls.load(Ordering::SeqCst), expected_calls);
+        let abandoned = match catalog.abandoned.lock() {
+            Ok(abandoned) => abandoned.clone(),
+            Err(error) => panic!("abandonment fixture poisoned: {error}"),
+        };
+        let expected: &[ReadTicketLease] = if transferred { &[lease] } else { &[] };
+        assert_eq!(abandoned.as_slice(), expected);
+    }
 }

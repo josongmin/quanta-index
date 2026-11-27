@@ -23,8 +23,19 @@ from rust_attribute_policy import (  # noqa: E402
     attribute_metas,
     macro_attribute_metas,
     rust_source_files,
+    shared_workspace_source_roots,
     string_value,
 )
+
+
+def _shared_source_roots(root: Path) -> tuple[Path, ...]:
+    shared = set(shared_workspace_source_roots(root))
+    # The FD process launcher is first-party but has a separate Cargo workspace.
+    fd_process = root / "shared" / "quanta-explicit-fd-process"
+    if not (fd_process / "Cargo.toml").is_file():
+        raise ValueError(f"standalone shared package lacks manifest: {fd_process}")
+    shared.add(fd_process)
+    return tuple(sorted(shared))
 
 
 def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
@@ -32,7 +43,14 @@ def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
 
     found: set[tuple[str, str, str]] = set()
     parser = get_parser("rust")
-    for source in rust_source_files((root / "crates", root / "benchmarks")):
+    sources = rust_source_files((root / "crates", root / "benchmarks"))
+    shared_roots = _shared_source_roots(root)
+    sources.extend(
+        source
+        for source in rust_source_files((root / "shared",))
+        if any(source.is_relative_to(member) for member in shared_roots)
+    )
+    for source in sorted(sources):
         tree = parser.parse(source.read_bytes())
         targets: dict[str, int] = {}
 
@@ -96,6 +114,13 @@ def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
     return found
 
 
+def _reasons_by_test(entries: set[tuple[str, str, str]]) -> dict[tuple[str, str], set[str]]:
+    reasons: dict[tuple[str, str], set[str]] = {}
+    for path, test, reason in entries:
+        reasons.setdefault((path, test), set()).add(reason)
+    return reasons
+
+
 def audit(root: Path = ROOT, policy_path: Path = DEFAULT_POLICY) -> list[str]:
     try:
         policy = tomllib.loads(policy_path.read_text(encoding="utf-8"))
@@ -136,10 +161,19 @@ def audit(root: Path = ROOT, policy_path: Path = DEFAULT_POLICY) -> list[str]:
         actual = _ignored_tests(root)
     except (OSError, ValueError) as error:
         return [f"ignored-test source scan failed: {error}"]
-    for entry in sorted(actual - declared):
-        errors.append(f"unowned ignored test: {entry[0]}::{entry[1]}")
-    for entry in sorted(declared - actual):
-        errors.append(f"stale ignored-test exception: {entry[0]}::{entry[1]}")
+    source_reasons = _reasons_by_test(actual)
+    policy_reasons = _reasons_by_test(declared)
+    for path, test in sorted(source_reasons.keys() - policy_reasons.keys()):
+        errors.append(f"unowned ignored test: {path}::{test}")
+    for path, test in sorted(policy_reasons.keys() - source_reasons.keys()):
+        errors.append(f"stale ignored-test exception: {path}::{test}")
+    for key in sorted(source_reasons.keys() & policy_reasons.keys()):
+        if source_reasons[key] != policy_reasons[key]:
+            path, test = key
+            errors.append(
+                f"ignored-test reason mismatch: {path}::{test} "
+                f"(source: {sorted(source_reasons[key])}, policy: {sorted(policy_reasons[key])})"
+            )
     return errors
 
 

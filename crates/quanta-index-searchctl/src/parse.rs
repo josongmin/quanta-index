@@ -3,15 +3,22 @@ use quanta_index_contract::{
     ContinuationTokenV2, ExplainCandidateV1, GenerationPin, GoTestTraceFileQueryRequestV1,
     HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridSeedQueryRequest, LexicalCandidate, ManifestGeneration, ProcessRequestEventPlaneV1,
-    QueryConstraintSetV1, RepoId, RevisionId, RuntimeMetadataQueryRequest, SemanticQueryRequest,
-    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
-    ipc::{QuarantineTargetV1, QuarantinedGenerationEntryV1, SearchPlaneTrackKind},
+    QueryConstraintSetV1, RepoId,
+    RevisionId, RuntimeMetadataQueryRequest, SemanticQueryRequest, StructuralQueryRequest,
+    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    ipc::{
+        QuarantineTargetV1, QuarantinedGenerationEntryV1,
+        SearchPlaneTrackKind,
+    },
 };
 use quanta_index_sdk::ConnectOptions;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read as _;
 use std::path::PathBuf;
+
+/// Where a Legacy code-search refusal points a Native caller.
+pub(crate) const NATIVE_CODE_SEARCH_HINT: &str = "for Native code search run `searchctl code-search --socket PATH --repo ID --revision ID --query-text TEXT --top-k N`";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum OutputMode {
@@ -299,7 +306,16 @@ fn parse_query_command_flags(
 }
 
 fn parse_lexical(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> CliResult<CliRequest> {
-    let page = parse_keyset_page_query(common, rest, "lexical")?;
+    // Native has no manifest generation: point a pin refusal at the Native route.
+    let page = parse_keyset_page_query(common, rest, "lexical").map_err(|mut error| {
+        if error.message.contains("--manifest-generation") {
+            error.message = format!(
+                "{} (Legacy only; {})",
+                error.message, NATIVE_CODE_SEARCH_HINT
+            );
+        }
+        error
+    })?;
     let cursor = page.cursor()?;
     Ok(CliRequest::Lexical(TextQueryRequest {
         cursor,
@@ -675,7 +691,8 @@ fn parse_quarantine_discard(
         }
         _ => {
             return Err(CliError::usage(
-                "quarantine discard needs --track and --path (a generation directory)".to_string(),
+                "quarantine discard needs --track and --path (a generation directory)"
+                    .to_string(),
             ));
         }
     };

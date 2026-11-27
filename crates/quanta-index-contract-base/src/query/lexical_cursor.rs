@@ -41,8 +41,9 @@ pub struct LexicalRowOrderKey<'a> {
     pub source_repo_id: &'a str,
     pub score: f32,
     pub repo_relative_path: &'a str,
-    pub start_line: u32,
-    pub end_line: u32,
+    /// `(start_line, end_line)` of the row's match excerpt; a row without one
+    /// orders before every row with one at the same path.
+    pub lines: Option<(u32, u32)>,
     pub candidate_id: &'a str,
 }
 
@@ -56,8 +57,7 @@ impl LexicalRowOrderKey<'_> {
             .total_cmp(&self.score)
             .then_with(|| self.source_repo_id.cmp(other.source_repo_id))
             .then_with(|| self.repo_relative_path.cmp(other.repo_relative_path))
-            .then(self.start_line.cmp(&other.start_line))
-            .then(self.end_line.cmp(&other.end_line))
+            .then(self.lines.cmp(&other.lines))
             .then_with(|| self.candidate_id.cmp(other.candidate_id))
     }
 }
@@ -70,8 +70,7 @@ impl LexicalCandidate {
             score: self.score,
             source_repo_id: self.source_repo_id.as_str(),
             repo_relative_path: self.repo_relative_path.as_str(),
-            start_line: self.start_line,
-            end_line: self.end_line,
+            lines: self.lines.map(|lines| (lines.start_line, lines.end_line)),
             candidate_id: self.candidate_id.as_str(),
         }
     }
@@ -90,8 +89,9 @@ pub struct LexicalCursor {
     /// The row's score, finite.
     pub score: f32,
     pub repo_relative_path: RepoRelativePath,
-    pub start_line: u32,
-    pub end_line: u32,
+    /// The row's `(start_line, end_line)`; its wire keys are omitted when the
+    /// row has no match excerpt.
+    pub lines: Option<(u32, u32)>,
     pub candidate_id: String,
 }
 
@@ -101,8 +101,7 @@ impl PartialEq for LexicalCursor {
             && self.score.to_bits() == other.score.to_bits()
             && self.source_repo_id == other.source_repo_id
             && self.repo_relative_path == other.repo_relative_path
-            && self.start_line == other.start_line
-            && self.end_line == other.end_line
+            && self.lines == other.lines
             && self.candidate_id == other.candidate_id
     }
 }
@@ -118,8 +117,7 @@ impl LexicalCursor {
             score: key.score,
             source_repo_id: key.source_repo_id.to_string(),
             repo_relative_path: RepoRelativePath::new(key.repo_relative_path),
-            start_line: key.start_line,
-            end_line: key.end_line,
+            lines: key.lines,
             candidate_id: key.candidate_id.to_string(),
         }
     }
@@ -131,8 +129,7 @@ impl LexicalCursor {
             score: self.score,
             source_repo_id: &self.source_repo_id,
             repo_relative_path: self.repo_relative_path.as_str(),
-            start_line: self.start_line,
-            end_line: self.end_line,
+            lines: self.lines,
             candidate_id: self.candidate_id.as_str(),
         }
     }
@@ -205,13 +202,16 @@ impl Serialize for LexicalCursor {
             ));
         }
         let _validated = RepoId::new(&self.source_repo_id).map_err(serde::ser::Error::custom)?;
-        let mut state = serializer.serialize_struct("LexicalCursor", 7)?;
+        let fields = if self.lines.is_some() { 7 } else { 5 };
+        let mut state = serializer.serialize_struct("LexicalCursor", fields)?;
         state.serialize_field("source_repo_id", &self.source_repo_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
         state.serialize_field("score", &self.score)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
-        state.serialize_field("start_line", &self.start_line)?;
-        state.serialize_field("end_line", &self.end_line)?;
+        if let Some((start_line, end_line)) = &self.lines {
+            state.serialize_field("start_line", start_line)?;
+            state.serialize_field("end_line", end_line)?;
+        }
         state.serialize_field("candidate_id", &self.candidate_id)?;
         state.end()
     }
@@ -300,8 +300,12 @@ impl<'de> Visitor<'de> for LexicalCursorV1Visitor {
             score,
             repo_relative_path: repo_relative_path
                 .ok_or_else(|| de::Error::missing_field("repo_relative_path"))?,
-            start_line: start_line.ok_or_else(|| de::Error::missing_field("start_line"))?,
-            end_line: end_line.ok_or_else(|| de::Error::missing_field("end_line"))?,
+            lines: match (start_line, end_line) {
+                (Some(start_line), Some(end_line)) => Some((start_line, end_line)),
+                (None, None) => None,
+                (Some(_), None) => return Err(de::Error::missing_field("end_line")),
+                (None, Some(_)) => return Err(de::Error::missing_field("start_line")),
+            },
             candidate_id: candidate_id.ok_or_else(|| de::Error::missing_field("candidate_id"))?,
         })
     }
@@ -329,8 +333,7 @@ mod l3_tests {
             score: 2.0,
             source_repo_id: "a",
             repo_relative_path: "same.rs",
-            start_line: 1,
-            end_line: 2,
+            lines: Some((1, 2)),
             candidate_id: "same",
         };
         let next = LexicalRowOrderKey {

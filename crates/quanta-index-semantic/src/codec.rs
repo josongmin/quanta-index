@@ -13,6 +13,7 @@
 )]
 
 use quanta_index_core::CoreError;
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -100,6 +101,7 @@ macro_rules! cbor_serde {
 pub(crate) use cbor_serde;
 
 /// Encode a value to CBOR bytes, mapping codec failure to a typed storage error.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) fn encode<T: Serialize>(value: &T, label: &str) -> Result<Vec<u8>, CoreError> {
     let mut buffer = Vec::new();
     ciborium::into_writer(value, &mut buffer)

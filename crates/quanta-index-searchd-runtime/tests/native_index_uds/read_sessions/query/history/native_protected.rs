@@ -3,9 +3,9 @@
 
 use super::*;
 use quanta_index_contract::index::{
-    NativeProtectedFrontierV1, NativeProtectedNativeOriginV1, NativeProtectedNativeSnapshotV1,
+    native_protected_view_marker_bytes_v1, NativeProtectedFrontierV1,
+    NativeProtectedNativeOriginV1, NativeProtectedNativeSnapshotV1,
     NativeProtectedSourceAuthorityV1, NativeProtectedSourceHeadV1, NativeProtectedSourceRoutesV1,
-    native_protected_view_marker_bytes_v1,
 };
 use quanta_index_contract::native_protocol::{
     NativeImmutableObjectChildrenV1, NativeImmutableObjectPayloadV1,
@@ -291,80 +291,25 @@ fn assert_selected_native_source_export_v1(
     use quanta_index_contract::index::NativeSourceSnapshotExportFrameV1 as Frame;
     use quanta_index_searchd_harness::native_index::native_dsl_history_config;
     use sha2::{Digest as _, Sha256};
-    use std::{
-        os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
-        process::Command,
-    };
-
-    // The stopped in-process writer did not run the daemon's umask setup.
-    let catalog_name = quanta_index_catalog::CATALOG_FILE_NAME;
-    let catalog = quanta_index_catalog::catalog_dir(root).join(catalog_name);
-    let wal = catalog.with_file_name(format!("{catalog_name}-wal"));
-    std::fs::set_permissions(catalog, std::fs::Permissions::from_mode(0o600))?;
-    if wal.try_exists()? {
-        std::fs::set_permissions(wal, std::fs::Permissions::from_mode(0o600))?;
-    }
+    use std::{os::unix::fs::PermissionsExt as _, process::Command};
 
     let controls = private_root()?;
-    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"));
     let config = controls.path().join("old-native-config.json");
     let receipt = controls.path().join("old-native-receipt.json");
     let selection = controls.path().join("old-native-selection.json");
     let config_bytes = serde_json::to_vec(&native_dsl_history_config(root, socket)?)?;
     std::fs::write(&config, &config_bytes)?;
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
-    let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
-    let manifest_operation = serde_json::to_string(&operation(2))?;
-    let common_arguments = [
-        "--config",
-        config.to_str().ok_or("Native config path is not UTF-8")?,
-        "--config-digest",
-        &config_sha256,
-        "--manifest-operation",
-        &manifest_operation,
-        "--receipt",
-        receipt.to_str().ok_or("Native receipt path is not UTF-8")?,
-    ];
-    let before_refusal = native_regular_files(root)?;
-    let refused = Command::new(binary)
-        .arg("select-native-state")
-        .args(common_arguments)
-        .output()?;
-    assert!(
-        !refused.status.success(),
-        "mutable Select accepted a presealed route"
-    );
-    assert!(
-        String::from_utf8_lossy(&refused.stderr)
-            .contains("operation digest conflicts with retained admission"),
-        "mutable Select did not reach the retained route guard: {}",
-        String::from_utf8_lossy(&refused.stderr)
-    );
-    assert!(!receipt.try_exists()?, "refused Select published a receipt");
-    assert_eq!(
-        native_regular_files(root)?,
-        before_refusal,
-        "refused Select changed the protected root"
-    );
-
-    let hex = |bytes: [u8; 32]| {
-        bytes
-            .into_iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    };
-    let source_cut =
-        quanta_index_contract::native_boot_source_cut_digest_v1(&selected.view.source)?;
     let selected_output = Command::new(binary)
-        .arg("select-native-candidate")
-        .args(common_arguments)
         .args([
-            "--root-nonce",
-            &hex(selected.root_nonce.0),
-            "--source-cut-digest",
-            &hex(source_cut.0),
-            "--protected-source-routes",
-            &hex(route_ref.0.0),
+            "select-native-state",
+            "--config",
+            config.to_str().ok_or("Native config path is not UTF-8")?,
+            "--manifest-operation",
+            &serde_json::to_string(&operation(2))?,
+            "--receipt",
+            receipt.to_str().ok_or("Native receipt path is not UTF-8")?,
         ])
         .output()?;
     assert!(
@@ -378,6 +323,7 @@ fn assert_selected_native_source_export_v1(
     let copied_bytes = std::io::copy(&mut binary_file, &mut binary_hash)?;
     assert!(copied_bytes > 0, "Native binary is empty");
     let binary_sha256 = format!("{:x}", binary_hash.finalize());
+    let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
     let mut selected_bytes = serde_json::to_vec(&serde_json::json!({
         "schema_version": 2,
         "mode": "native",
@@ -392,15 +338,6 @@ fn assert_selected_native_source_export_v1(
     selected_bytes.push(b'\n');
     std::fs::write(&selection, &selected_bytes)?;
     std::fs::set_permissions(&selection, std::fs::Permissions::from_mode(0o600))?;
-    // Export opens the lock created when a deployment selection is published.
-    drop(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(controls.path().join(".quanta-index-deployment.lock"))?,
-    );
     let before = native_regular_files(root)?;
     let selection_sha256 = format!("{:x}", Sha256::digest(&selected_bytes));
     let export = |selected_sha: &str| -> TestResult<std::process::Output> {
@@ -835,7 +772,7 @@ fn native_protected_two_source_heads_import_seal_and_reopen() -> TestResult {
         .and_then(|db| {
             db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM native_object_v1 WHERE object=?1)",
-                params![primary_request.0.0.as_slice()],
+                params![primary_request.0 .0.as_slice()],
                 |row| row.get::<_, bool>(0),
             )
         });

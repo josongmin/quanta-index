@@ -123,15 +123,29 @@ def _validate_target_paths(target: dict[str, Any]) -> None:
         all(_absolute(path) for path in paths),
         "operational target paths must be normalized absolute paths below root",
     )
-    parsed = [Path(path) for path in paths]
+    _require_disjoint_target_paths([Path(path) for path in paths])
+
+
+def _require_disjoint_target_paths(paths: list[Path]) -> None:
     _require(
         all(
             not left.is_relative_to(right) and not right.is_relative_to(left)
-            for index, left in enumerate(parsed)
-            for right in parsed[index + 1 :]
+            for index, left in enumerate(paths)
+            for right in paths[index + 1 :]
         ),
         "operational binary, config and state paths must not overlap",
     )
+
+
+def _validate_live_target_paths(target: dict[str, Any]) -> None:
+    try:
+        paths = [
+            Path(target[name]).resolve()
+            for name in ("binary_path", "config_path", "state_root")
+        ]
+    except (OSError, RuntimeError) as error:
+        raise ExecutionResultError("operational target paths cannot be resolved") from error
+    _require_disjoint_target_paths(paths)
 
 
 def _time(value: Any) -> datetime:
@@ -613,8 +627,7 @@ def operational_installation_identity(payload_by_id: dict[str, Any]) -> tuple[st
         proof = payload_by_id.get(proof_id, {})
         result = proof.get("execution_result")
         _require(
-            isinstance(result, dict)
-            and result.get("kind") == "operational"
+            isinstance(result, dict) and result.get("kind") == "operational"
             and isinstance(result.get("target"), dict),
             f"{proof_id} lacks the signed installation target binding",
         )
@@ -818,6 +831,7 @@ def run_action(
     _require(isinstance(path, str), "operational contract is missing")
     contract_raw = _read_repo_regular_bytes(root, path, label="operational contract")
     contract, actor_bytes = _contract_with_actors(root, proof, contract_raw)
+    _validate_live_target_paths(contract["target"])
     _require(
         observed_host_identity()
         == binding["host_identity_digest"]
@@ -864,6 +878,7 @@ def run_action(
     )
 
     def check() -> None:
+        _validate_live_target_paths(contract["target"])
         _require(
             observed_host_identity() == binding["host_identity_digest"],
             "actual operational host changed during execution",

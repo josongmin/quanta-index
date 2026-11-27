@@ -5,6 +5,10 @@
   "description": "Structural contract for the JSON spec consumed by run.py quanta/pair. Claims are strict booleans (the string \"false\" is never a claim). runner_revision is derived, never supplied. searchd pin is mandatory: an unpinned capture cannot produce a qualified verdict. Semble keys are optional here because quanta uses this schema too; run_pair requires the pinned Semble interpreter, lockfile, existing model cache root and model revision and verifies the offline snapshot before creating a stage.",
   "type": "object",
   "additionalProperties": false,
+  "dependentRequired": {
+    "symbol_candidate_manifest": ["symbol_candidate_manifest_sha256"],
+    "symbol_candidate_manifest_sha256": ["symbol_candidate_manifest"]
+  },
   "required": [
     "spec_version",
     "repo",
@@ -38,6 +42,16 @@
       "minimum": 1,
       "maximum": 18446744073709551615,
       "description": "Corpus-wide symbol preflight budget in milliseconds (runner default 120000). Forwarded to the existing runner option and verified against its source-bound preflight policy. Producer failures remain fatal."
+    },
+    "symbol_candidate_manifest": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute installed registry grammar artifact manifest path. Requires symbol_candidate_manifest_sha256. Go, JavaScript and TypeScript source admission requires the pinned manifest for both Rust preflight and independent Python declaration census; pair qualification still requires all ordinary admission gates."
+    },
+    "symbol_candidate_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Pinned bytes of the explicit symbol candidate artifact manifest."
     },
     "spec_version": {
       "const": 2

@@ -1095,6 +1095,172 @@ pub(super) fn contains(
     block.contains(&target)
 }
 
+#[cfg(test)]
+struct MembershipBlock {
+    root: MapRoot,
+    searched_from: [u8; KEY_BYTES],
+    last: [u8; KEY_BYTES],
+    block: LiteralBlock,
+}
+
+/// Reuses authenticated blocks only for the directory intervals already
+/// established by a lower-bound lookup in this pinned read.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct MembershipCache {
+    blocks: [Option<MembershipBlock>; 8],
+    next: usize,
+}
+
+#[cfg(test)]
+impl MembershipCache {
+    pub(super) fn contains(
+        &mut self,
+        maps: &dyn PersistentMapPort,
+        objects: &dyn ImmutableObjectPort,
+        root: MapRoot,
+        target: [u8; KEY_BYTES],
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        if let Some(entry) = self.blocks.iter().flatten().find(|entry| {
+            entry.root == root && entry.searched_from <= target && target <= entry.last
+        }) {
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: KEY_BYTES as u64,
+                ..WorkUsage::default()
+            })?;
+            return entry.block.contains(&target);
+        }
+        let Some((last, reference)) = lower_bound_page(maps, root, &target, budget)? else {
+            return Ok(false);
+        };
+        let slot = &mut self.blocks[self.next];
+        *slot = None;
+        let block = load_block(objects, last, reference, budget)?;
+        let present = block.contains(&target)?;
+        // A held block must leave room for the next miss to authenticate a
+        // payload and its maximum restart table. Tight grants stay scalar.
+        let temporary = (MAX_BLOCK_BYTES + MAX_RESTARTS * std::mem::size_of::<Restart>()) as u64;
+        let retained = MAX_BLOCK_BYTES as u64;
+        let Some(_temporary_headroom) =
+            budget.try_reserve_spare_memory(temporary, MemoryLifetime::Temporary)?
+        else {
+            self.blocks.fill_with(|| None);
+            return Ok(present);
+        };
+        let Some(_retained_headroom) =
+            budget.try_reserve_spare_memory(retained, MemoryLifetime::Retained)?
+        else {
+            self.blocks.fill_with(|| None);
+            return Ok(present);
+        };
+        *slot = Some(MembershipBlock {
+            root,
+            searched_from: target,
+            last,
+            block,
+        });
+        self.next = (self.next + 1) % self.blocks.len();
+        Ok(present)
+    }
+}
+
+/// Membership of one gram's posting for owners asked in ascending order.
+///
+/// A block is loaded only for the first owner that falls in its key range
+/// and kept until a later owner passes its last key, so every block of the
+/// posting is read at most once, and only blocks holding asked owners are
+/// read at all. Owners must not decrease; repeating the last owner reuses
+/// its answer.
+pub(super) struct LiteralGramProbe {
+    root: MapRoot,
+    gram: [u8; 3],
+    block: Option<(LiteralBlock, [u8; KEY_BYTES])>,
+    previous: Option<([u8; KEY_BYTES], bool)>,
+    ended: bool,
+}
+
+impl LiteralGramProbe {
+    pub(super) const fn new(root: MapRoot, gram: [u8; 3]) -> Self {
+        Self {
+            root,
+            gram,
+            block: None,
+            previous: None,
+            ended: false,
+        }
+    }
+
+    pub(super) fn contains(
+        &mut self,
+        maps: &dyn PersistentMapPort,
+        objects: &dyn ImmutableObjectPort,
+        owner: [u8; 32],
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        let target = literal_key(self.gram, owner);
+        if let Some((prior, answer)) = self.previous {
+            if target == prior {
+                return Ok(answer);
+            }
+            if target < prior {
+                return Err(IndexError::BackendViolation(
+                    "literal gram probe owners regressed".into(),
+                ));
+            }
+        }
+        let answer = self.seek(maps, objects, target, budget)?;
+        self.previous = Some((target, answer));
+        Ok(answer)
+    }
+
+    fn seek(
+        &mut self,
+        maps: &dyn PersistentMapPort,
+        objects: &dyn ImmutableObjectPort,
+        target: [u8; KEY_BYTES],
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        if self.ended {
+            return Ok(false);
+        }
+        if let Some((block, last)) = &self.block
+            && target <= *last
+        {
+            return block.contains(&target);
+        }
+        budget.checkpoint()?;
+        let Some((last, reference)) = lower_bound_page(maps, self.root, &target, budget)? else {
+            self.ended = true;
+            self.block = None;
+            return Ok(false);
+        };
+        if self
+            .block
+            .as_ref()
+            .is_some_and(|(_block, prior)| *prior >= last)
+        {
+            return Err(corrupt("literal directory probe regressed"));
+        }
+        let block = load_block(objects, last, reference, budget)?;
+        let found = block.contains(&target)?;
+        // A block that starts past this gram ends its posting for every
+        // later owner.
+        if block
+            .first_key()?
+            .get(..3)
+            .is_some_and(|prefix| prefix > self.gram.as_slice())
+        {
+            self.ended = true;
+            self.block = None;
+            return Ok(found);
+        }
+        self.block = Some((block, last));
+        Ok(found)
+    }
+}
+
 pub(super) struct LiteralGramCursor<'a> {
     maps: &'a dyn PersistentMapPort,
     objects: &'a dyn ImmutableObjectPort,

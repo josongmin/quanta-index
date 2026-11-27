@@ -94,6 +94,12 @@ pub enum PlanLeaf {
     Predicate { name: String },
     /// Literal substring of the authenticated UTF-8 source body.
     FileContains { needle: String },
+    /// Literal substring of the repository-relative Source path, under the
+    /// same NFC and case policy as `FileContains`. Decided from path metadata.
+    PathContains { needle: String },
+    /// Regex over the repository-relative Source path, under the same NFC
+    /// and case policy as a Content regex. Decided from path metadata.
+    PathRegex { source: String },
     /// Gates all hits in a repository using a correlated single-file match.
     RepoHasFile { constraint: RepoFileConstraint },
     /// Symbol-name predicate (LXE-06).
@@ -138,6 +144,8 @@ impl PlanLeaf {
             | Self::Path { .. }
             | Self::Predicate { .. }
             | Self::FileContains { .. }
+            | Self::PathContains { .. }
+            | Self::PathRegex { .. }
             | Self::RepoHasFile { .. } => EngineKind::Text,
         }
     }

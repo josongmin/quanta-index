@@ -1,5 +1,6 @@
 mod aux_epoch;
 mod cluster_membership;
+mod code_search;
 mod directives;
 mod expression;
 mod filters;
@@ -15,6 +16,7 @@ mod structural_cursor;
 
 pub use aux_epoch::*;
 pub use cluster_membership::*;
+pub use code_search::*;
 pub use directives::*;
 pub use expression::*;
 pub use filters::*;

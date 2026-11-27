@@ -41,6 +41,7 @@ fn busy_native_close_restores_original_connection_and_retries_under_scope() -> T
             let _previous = active.fetch_add(1, Ordering::SeqCst);
             CloseScope(Arc::clone(&active))
         },
+        Connection::close,
         |error| (error, active.load(Ordering::SeqCst)),
     );
     let (error, active_during_mapping) = match observed {
@@ -78,6 +79,7 @@ fn busy_native_close_restores_original_connection_and_retries_under_scope() -> T
                 let _previous = active.fetch_add(1, Ordering::SeqCst);
                 CloseScope(Arc::clone(&active))
             },
+            Connection::close,
             |_error| std::panic::panic_any("close classification failed"),
         );
     }));
@@ -106,6 +108,7 @@ fn busy_native_close_restores_original_connection_and_retries_under_scope() -> T
             let _previous = active.fetch_add(1, Ordering::SeqCst);
             CloseScope(Arc::clone(&active))
         },
+        Connection::close,
         std::convert::identity,
     )?;
     if slot.is_some() || entries.load(Ordering::SeqCst) != 3 || active.load(Ordering::SeqCst) != 0 {
@@ -121,13 +124,19 @@ fn close_scope_entry_panic_keeps_the_original_connection_in_place() -> TestResul
         let _: Result<(), Error> = close_connection::close_connection_with_scope(
             &mut slot,
             || std::panic::panic_any("close scope entry failed"),
+            Connection::close,
             std::convert::identity,
         );
     }));
     if observed.is_ok() || slot.is_none() {
         return Err(io::Error::other("scope entry lost the original connection").into());
     }
-    close_connection::close_connection_with_scope(&mut slot, || (), std::convert::identity)?;
+    close_connection::close_connection_with_scope(
+        &mut slot,
+        || (),
+        Connection::close,
+        std::convert::identity,
+    )?;
     if slot.is_some() {
         return Err(io::Error::other("retained connection failed to close").into());
     }

@@ -2,15 +2,16 @@ set shell := ["/bin/zsh", "-lc"]
 
 cargo := "./scripts/cargow"
 retrieval_python := "uv run --frozen --extra dev python"
+sqlite_fd_ledger_manifest := "crates/quanta-index-sqlite-fd-ledger/Cargo.toml"
 
 default:
     @just --list
 
 install-dev:
-    python3 -m pip install -e '.[dev]'
+    uv sync --frozen --extra dev
 
 install-hooks:
-    python3 -m pre_commit install --install-hooks --hook-type pre-commit --hook-type pre-push
+    uv run --frozen --extra dev pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push
 
 cache-root:
     @bash scripts/quanta-index-env.sh
@@ -32,13 +33,13 @@ rust-profile-list:
         'dev-all-targets     widest compile rail; all targets across the workspace' \
         'validate-shared-surface contract/core/sdk/search-plane shared-surface validation rail' \
         'test-fast           default local test loop; workspace lib/bin tests, excludes daemon e2e' \
-        'test-canonical-identity P01A identity, codec, layout-security, and error-authority proof' \
-        'test-p02a-repomap-compiler legacy RepoMap compiler diagnostics' \
+        'test-canonical-identity P01 identity, codec, layout-security, and error-authority proof' \
         'test-p02b-operation-journal P02B global sequence authority and operation journal proof' \
-        'test-candidate-activation-owner P03 sealed-candidate activation, recovery, and quarantine owner proof' \
+        'test-p02b-native-journal-lib P02B Native operation replay, conflict, and rollback supplement' \
+        'test-candidate-activation-owner P03 Native Catalog activation, CAS, and recovery owner proof' \
         'test-candidate-activation-release P03 Native activation and restart on the release daemon' \
-        'test-read-view-lifetime-owner P04 read-view lifetime, pin/GC barrier owner proof' \
-        'test-search-plane-read-view-lib legacy search-plane read-view checks' \
+        'test-read-view-lifetime-owner P04 Native Catalog pin and retirement owner proof' \
+        'test-search-plane-read-view-lib P04 search-plane read-view lib proof' \
         'test-query-truth-owner P05 query outcome/cursor/oracle owner proof' \
         'test-query-truth-release P05 Native retained keysets on the release daemon' \
         'test-control-readiness-owner P09 control authorization/readiness owner proof' \
@@ -84,8 +85,8 @@ rust-profile profile:
         validate-shared-surface) ./scripts/run-rust-profile.sh "{{profile}}" rust-validate-shared-surface ;; \
         test-fast) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-fast ;; \
         test-canonical-identity) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-canonical-identity ;; \
-        test-p02a-repomap-compiler) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02a-repomap-compiler ;; \
         test-p02b-operation-journal) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02b-operation-journal ;; \
+        test-p02b-native-journal-lib) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-p02b-native-journal-lib ;; \
         test-candidate-activation-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-candidate-activation-owner ;; \
         test-candidate-activation-release) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-candidate-activation-release ;; \
         test-read-view-lifetime-owner) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-read-view-lifetime-owner ;; \
@@ -140,13 +141,23 @@ rust-profile-history-summary-json:
     source scripts/quanta-index-env.sh && python3 tools/ci/timing/rust_profile_history.py summary --json
 
 fmt:
-    QUANTA_INDEX_RUSTFMT_CARGO={{quote(cargo)}} ./scripts/run-rustfmt-owned.sh
+    bash scripts/run-rustfmt.sh write
 
 fmt-check:
-    QUANTA_INDEX_RUSTFMT_CARGO={{quote(cargo)}} ./scripts/run-rustfmt-owned.sh -- --check
+    bash scripts/run-rustfmt.sh check
 
 rust-check lane="all-targets-lane":
     {{cargo}} --lane {{lane}} check --workspace --all-targets --all-features --locked
+    {{cargo}} --lane sqlite-oracle-lane check --manifest-path {{sqlite_fd_ledger_manifest}} --all-targets --all-features --locked --offline
+
+# Verify the standalone registry SQLite 0.39.1 oracle and Unix hook.
+rust-test-sqlite-upstream-oracle lane="sqlite-oracle-lane":
+    {{cargo}} --lane {{lane}} test --manifest-path crates/quanta-index-sqlite-unix-syscall/Cargo.toml --locked --offline
+    {{cargo}} --lane {{lane}} test --manifest-path tools/sqlite-upstream-oracle/Cargo.toml --locked --offline
+
+# Compare the released Lance APIs in a separate process and lockfile.
+rust-test-lance-upstream-oracle lane="lance-oracle-lane":
+    {{cargo}} --lane {{lane}} test --manifest-path tools/lance-upstream-oracle/Cargo.toml --locked --offline
 
 # Local edit/compile loop without integration tests, examples, or benches.
 rust-check-fast:
@@ -160,9 +171,9 @@ rust-compile-shared-surface lane="shared-validation-lane":
 
 rust-validate-shared-surface:
     @just rust-compile-shared-surface shared-validation-lane
-    python3 tools/ci/run-local-test-scope.py shared-surface --lane shared-validation-lane
-    python3 tools/ci/run-local-test-scope.py integration-fast --lane shared-validation-lane
-    python3 tools/ci/run-local-test-scope.py cli-smoke --lane shared-validation-lane
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py shared-surface --lane shared-validation-lane
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py integration-fast --lane shared-validation-lane
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py cli-smoke --lane shared-validation-lane
 
 # Local Native build loop without integration tests or benches.
 rust-build-fast:
@@ -188,7 +199,8 @@ rust-build-release-daemon: rust-build-release-native-daemon
 # Native deployment candidate. Prints the verified digest and its dedicated
 # path under the Native release lane.
 rust-build-release-native-daemon:
-    set -o pipefail; {{cargo}} --lane release-native-daemon-bin-lane tree -p quanta-index-searchd-runtime --no-default-features --locked --offline --edges normal,build --prefix none | awk '$1 ~ /^tantivy([-_]|$)/ { print > "/dev/stderr"; forbidden = 1 } NF { nonempty = 1 } END { exit (!nonempty || forbidden) }'
+    python3 tools/ci/check-tantivy-retirement.py --check-release-sqlite-supply
+    set -o pipefail; {{cargo}} --lane release-native-daemon-bin-lane tree -p quanta-index-searchd-runtime --no-default-features --locked --offline --edges normal,build --prefix none | awk '$1 ~ /^(tantivy|lancedb)([-_]|$)/ { print > "/dev/stderr"; forbidden = 1 } NF { nonempty = 1 } END { exit (!nonempty || forbidden) }'
     python3 tools/ci/check-tantivy-retirement.py --build-native-daemon
 
 # The checker imports from the checkout. Install locked dependencies without rebuilding it.
@@ -198,6 +210,7 @@ tantivy-retirement-python:
 
 # Whole-workspace source and preserved-test checks for the retirement candidate.
 rust-check-tantivy-retirement: tantivy-retirement-python
+    uv run --no-sync --offline python tools/ci/check-tantivy-retirement.py --check-release-sqlite-supply
     uv run --no-sync --offline python tools/ci/check-tantivy-retirement.py --check-migrations
 
 # Record the canonical daemon or CLI/SDK release build for the shipment check.
@@ -270,9 +283,14 @@ rust-timings-update-baselines:
 
 rust-clippy:
     {{cargo}} --lane clippy-lane clippy --workspace --all-targets --all-features --locked -- -D warnings
+    {{cargo}} --lane sqlite-oracle-lane clippy --manifest-path {{sqlite_fd_ledger_manifest}} --all-targets --all-features --locked --offline -- -D warnings
 
-rust-test:
+rust-test: require-native-legacy-searchd
     {{cargo}} --lane test-workspace-lane test --workspace --all-features --locked
+    @just rust-test-sqlite-fd-ledger
+
+rust-test-sqlite-fd-ledger lane="sqlite-oracle-lane":
+    {{cargo}} --lane {{lane}} nextest run --manifest-path {{sqlite_fd_ledger_manifest}} --lib --locked --offline --no-tests fail
 
 # Audited unsafe descriptor ownership stays in this single shared package.
 # It is excluded from workspace members and needs its own explicit rail.
@@ -286,14 +304,17 @@ rust-audit-explicit-fd:
     uv run --frozen --extra dev python shared/quanta-explicit-fd-process/audit_source.py
     uv run --frozen --extra dev python -m unittest discover -s shared/quanta-explicit-fd-process -p test_audit_source.py
 
-# The codec's no_std integration binary must run without its default std feature;
-# the all-features workspace rail does not exercise that configuration.
-rust-test-ciborium-no-default:
-    {{cargo}} --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked
+# Use the standalone registry consumer for either local no-default command.
+rust-test-ciborium-no-default: rust-test-ciborium-registry-no-default
 
 # Independently verify the registry dependency without workspace feature unification.
 rust-test-ciborium-registry-no-default:
     {{cargo}} --lane test-ciborium-no-default-lane nextest run --manifest-path tools/ci/ciborium-no-default-consumer/Cargo.toml --locked --lib --no-tests fail
+    python3 tools/ci/verify_ciborium_no_default.py
+
+# Verify the pinned registry grammar set in an independent consumer.
+rust-test-tree-sitter-registry-candidate:
+    {{cargo}} --lane test-workspace-lane nextest run --manifest-path tools/ci/tree-sitter-registry-consumer/Cargo.toml --locked --lib --no-tests fail
 
 # Local test loop that keeps unit and binary coverage but skips integration/E2E.
 rust-test-fast:
@@ -303,34 +324,34 @@ rust-test-unit:
     {{cargo}} --lane test-fast-lane test --workspace --lib --bins --all-features --locked --exclude quanta-index-searchd-runtime
 
 rust-test-canonical-identity lane="test-canonical-identity-lane":
-    python3 tools/ci/run-local-test-scope.py canonical-identity --lane {{lane}}
-
-rust-test-p02a-repomap-compiler lane="test-p02a-repomap-compiler-lane":
-    python3 tools/ci/run-local-test-scope.py p02a-repomap-compiler --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py canonical-identity --lane {{lane}}
 
 rust-test-p02b-operation-journal lane="test-p02b-operation-journal-lane":
-    python3 tools/ci/run-local-test-scope.py p02b-operation-journal --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py p02b-operation-journal --lane {{lane}}
+
+rust-test-p02b-native-journal-lib lane="test-p02b-native-journal-lane":
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py p02b-native-journal-lib --lane {{lane}}
 
 rust-test-candidate-activation-owner lane="test-candidate-activation-owner-lane":
-    python3 tools/ci/run-local-test-scope.py candidate-activation-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py candidate-activation-owner --lane {{lane}}
 
 rust-test-read-view-lifetime-owner lane="test-read-view-lifetime-owner-lane":
-    python3 tools/ci/run-local-test-scope.py read-view-lifetime-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py read-view-lifetime-owner --lane {{lane}}
 
 rust-test-search-plane-read-view-lib lane="test-search-plane-read-view-lane":
-    python3 tools/ci/run-local-test-scope.py search-plane-read-view-lib --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py search-plane-read-view-lib --lane {{lane}}
 
 rust-test-query-truth-owner lane="test-query-truth-owner-lane":
-    python3 tools/ci/run-local-test-scope.py query-truth-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py query-truth-owner --lane {{lane}}
 
 rust-test-query-truth-owner-lib lane="test-query-truth-owner-lane":
-    python3 tools/ci/run-local-test-scope.py query-truth-owner-lib --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py query-truth-owner-lib --lane {{lane}}
 
 rust-test-control-readiness-owner lane="test-control-readiness-owner-lane":
-    python3 tools/ci/run-local-test-scope.py control-readiness-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py control-readiness-owner --lane {{lane}}
 
 rust-test-control-readiness-owner-lib lane="test-control-readiness-owner-lane":
-    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="${QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR:-$(./scripts/quanta-index-env.sh)/models/potion-code-16M-v2-e9d2a44}" python3 tools/ci/run-local-test-scope.py control-readiness-owner-lib --lane {{lane}} --run-ignored all
+    QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="${QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR:-$(./scripts/quanta-index-env.sh)/models/potion-code-16M-v2-e9d2a44}" uv run --frozen --extra dev python tools/ci/run-local-test-scope.py control-readiness-owner-lib --lane {{lane}} --run-ignored all
 
 # Requires the approved external Legacy searchd path and SHA-256 pin.
 rust-test-process-readiness-no-default lane="test-daemon-lane": require-native-legacy-searchd
@@ -342,7 +363,7 @@ rust-test-lexical-boot-no-default lane="test-integration-lane":
     {{cargo}} --lane {{lane}} nextest run -p quanta-index-lexical --test boot_inventory_data --no-default-features --locked --offline --no-tests fail --success-output final
 
 # Requires the approved external Legacy searchd path and SHA-256 pin.
-rust-test-f15-no-default lane="test-workspace-lane":
+rust-test-f15-no-default lane="test-workspace-lane": require-native-legacy-searchd
     #!/usr/bin/env bash
     set -euo pipefail
     package=quanta-index-lexical
@@ -379,45 +400,45 @@ rust-test-f15-no-default lane="test-workspace-lane":
         -E 'test(file_body_quarantine)'
 
 rust-test-state-migration-owner lane="test-state-migration-owner-lane":
-    python3 tools/ci/run-local-test-scope.py state-migration-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py state-migration-owner --lane {{lane}}
 
 rust-test-state-migration-owner-lib lane="test-state-migration-owner-lane":
     QUANTA_INDEX_TEST_REQUIRE_PINNED_POTION_MODEL=1 \
         QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR="${QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR:-$(./scripts/quanta-index-env.sh)/models/potion-code-16M-v2-e9d2a44}" \
-        python3 tools/ci/run-local-test-scope.py state-migration-owner-lib --lane {{lane}}
+        uv run --frozen --extra dev python tools/ci/run-local-test-scope.py state-migration-owner-lib --lane {{lane}}
 
 rust-test-state-migration-release:
-    python3 tools/ci/run-local-test-scope.py state-migration-release
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py state-migration-release
 
 rust-test-sdk-binding-owner lane="test-sdk-binding-owner-lane":
-    python3 tools/ci/run-local-test-scope.py sdk-binding-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py sdk-binding-owner --lane {{lane}}
 
 rust-test-sdk-binding-owner-lib lane="test-sdk-binding-owner-lane":
-    python3 tools/ci/run-local-test-scope.py sdk-binding-owner-lib --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py sdk-binding-owner-lib --lane {{lane}}
 
 rust-test-provider-boundary-owner lane="test-provider-boundary-owner-lane":
-    python3 tools/ci/run-local-test-scope.py provider-boundary-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py provider-boundary-owner --lane {{lane}}
 
 rust-test-runtime-supervisor-owner lane="test-runtime-supervisor-owner-lane":
-    python3 tools/ci/run-local-test-scope.py runtime-supervisor-owner --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py runtime-supervisor-owner --lane {{lane}}
 
 # Real outstanding SQLite VM close/retry without changing production unsafe policy.
 rust-test-catalog-checked-close lane="test-integration-lane":
     {{cargo}} --lane {{lane}} test --manifest-path tools/testing/catalog-checked-close/Cargo.toml --locked --offline --all-targets
 
 rust-test-integration-fast lane="test-integration-lane":
-    python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
 
 rust-test-integration-storage lane="test-integration-lane":
-    python3 tools/ci/run-local-test-scope.py integration-storage --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py integration-storage --lane {{lane}}
 
 rust-test-integration-semantic lane="test-integration-lane":
-    python3 tools/ci/run-local-test-scope.py integration-semantic --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py integration-semantic --lane {{lane}}
 
 rust-test-integration lane="test-integration-lane":
-    python3 tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
-    python3 tools/ci/run-local-test-scope.py integration-storage --lane {{lane}}
-    python3 tools/ci/run-local-test-scope.py integration-semantic --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py integration-fast --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py integration-storage --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py integration-semantic --lane {{lane}}
 
 [private]
 require-native-legacy-searchd:
@@ -451,10 +472,10 @@ require-native-legacy-searchd:
 
 # Native contract checkpoint. Legacy-backed fixtures require a pinned old-Q input.
 rust-test-native-index: require-native-legacy-searchd
-    {{cargo}} nextest run --locked --lib --test native_lifecycle --test native_bootstrap --test native_projection --test native_semantic_projection --test native_source_batch --test native_source_rebase --test native_source_resync --test native_index_uds --test native_source_owner_lookup --test native_producer_source_recovery --test native_owned_pump --test native_effort --test native_product_process --test native_fault_edges --test native_query_session --test native_query_session_real --test native_semantic_rebind --test native_noop_cost --test native_object_namespace --test native_object_namespace_process \
+    {{cargo}} nextest run --locked --lib --test native_lifecycle --test native_bootstrap --test native_projection --test native_semantic_projection --test native_semantic_certified_chunks --test native_source_batch --test native_source_rebase --test native_source_resync --test native_graph --test native_index_uds --test native_graph_uds --test native_source_owner_lookup --test native_producer_source_recovery --test native_owned_pump --test native_effort --test native_product_process --test native_fault_edges --test native_query_session --test native_query_session_real --test native_semantic_rebind --test native_noop_cost --test native_object_namespace --test native_object_namespace_process \
         -p quanta-index-contract-base -p quanta-index-contract -p quanta-index-lq-text-normalizer -p quanta-index-core -p quanta-index-storage -p quanta-index-scratch-sqlite -p quanta-index-kernel -p quanta-index-lexical -p quanta-index-repomap -p quanta-index-catalog -p quanta-index-semantic -p quanta-index-sdk -p quanta-index-ipc -p quanta-index-searchd-runtime -p quanta-index-searchctl \
         --test-threads 2 --no-tests fail --no-fail-fast \
-        -E 'package(=quanta-index-contract) | package(=quanta-index-lq-text-normalizer) | package(=quanta-index-kernel) | package(=quanta-index-storage) | package(=quanta-index-scratch-sqlite) | (package(=quanta-index-contract-base) & test(/^native_serde::tests/)) | (package(=quanta-index-core) & test(/^index::/)) | (package(=quanta-index-sdk) & test(/^native_uds::tests/)) | (package(=quanta-index-ipc) & test(/owned_connection_threads|^native_protocol::tests::|^server::tests::.*deadline|^server::tests::cancelled_stream_read_and_write_escape_codec_retry/)) | (package(=quanta-index-searchd-runtime) & (test(/^native(_|::)/) | binary(=native_index_uds) | binary(=native_source_owner_lookup) | binary(=native_producer_source_recovery) | binary(=native_owned_pump) | binary(=native_effort) | binary(=native_product_process))) | (package(=quanta-index-searchctl) & test(/^tests::native::/)) | ((package(=quanta-index-lexical) | package(=quanta-index-repomap) | package(=quanta-index-catalog) | package(=quanta-index-semantic)) & test(/^native::/))'
+        -E 'package(=quanta-index-contract) | package(=quanta-index-lq-text-normalizer) | package(=quanta-index-kernel) | package(=quanta-index-storage) | package(=quanta-index-scratch-sqlite) | (package(=quanta-index-contract-base) & test(/^native_serde::tests/)) | (package(=quanta-index-core) & test(/^index::/)) | (package(=quanta-index-sdk) & test(/^native_uds::tests/)) | (package(=quanta-index-ipc) & test(/owned_connection_threads|^native_protocol::tests::|^server::tests::.*deadline|^server::tests::cancelled_stream_read_and_write_escape_codec_retry/)) | (package(=quanta-index-searchd-runtime) & (test(/^native(_|::)/) | binary(=native_index_uds) | binary(=native_graph_uds) | binary(=native_source_owner_lookup) | binary(=native_producer_source_recovery) | binary(=native_owned_pump) | binary(=native_effort) | binary(=native_product_process))) | (package(=quanta-index-searchctl) & test(/^tests::native::/)) | ((package(=quanta-index-lexical) | package(=quanta-index-repomap) | package(=quanta-index-catalog) | package(=quanta-index-semantic)) & test(/^native::/))'
 
 # Bounded ANN store, Lance query, and small materialization regressions.
 rust-test-native-ann-read lane="test-workspace-lane":
@@ -499,6 +520,7 @@ rust-test-native-history lane="test-workspace-lane": require-native-legacy-searc
     cases=(
         "native_index_uds:$history::native_history_sdk_full_delta_retained_pages_and_reopen"
         "native_index_uds:$history::native_history_append_original_publishes_without_legacy_ack_and_reopens"
+        "native_index_uds:$history::staged_source_and_history_bootstrap_publishes_changed_profile_and_reopens"
         "native_index_uds:$history::source_and_next_history_generation_publish_in_one_view_and_reopen"
         "native_index_uds:$history::native_restore::native_history_restore_full_append_and_reopen_cross_root"
         "native_index_uds:$history::dsl_fixture::native_history_dsl_fixed_ledger_warm_cold"
@@ -513,10 +535,16 @@ rust-test-native-history lane="test-workspace-lane": require-native-legacy-searc
     for case in "${cases[@]}"; do
         filterset+="${filterset:+ | }(binary(=${case%%:*}) & test(=${case#*:}))"
     done
+    temp_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+    inventory="$(mktemp "$temp_root/quanta-history-inventory.XXXXXX")"
+    trap 'rm -f "$inventory"' EXIT
+    selection=(--locked --no-default-features -p "$package" "${targets[@]}" -E "$filterset")
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest list "${selection[@]}" \
+        --message-format json > "$inventory"
     export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
     events="$(
-        {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --no-default-features \
-            -p "$package" "${targets[@]}" --no-tests fail --no-fail-fast -E "$filterset" \
+        {{quote(cargo)}} --lane {{quote(lane)}} nextest run "${selection[@]}" \
+            --no-tests fail --no-fail-fast \
             --message-format libtest-json-plus --message-format-version 0.1 \
             --status-level pass --final-status-level fail
     )" || {
@@ -524,7 +552,8 @@ rust-test-native-history lane="test-workspace-lane": require-native-legacy-searc
         printf '%s\n' "$events" >&2
         exit "$status"
     }
-    printf '%s\n' "$events" | python3 tools/ci/history_gate_events.py "$package" test "${cases[@]}"
+    printf '%s\n' "$events" | python3 tools/ci/history_gate_events.py \
+        --inventory "$inventory" "$package" test "${cases[@]}"
 
 # Focused Catalog and Kernel History ownership checks without installed binaries.
 rust-test-native-history-owners lane="test-workspace-lane":
@@ -601,11 +630,52 @@ rust-test-native-dsl-cli:
         -p quanta-index-searchd-runtime --test native_index_uds --run-ignored only --no-tests fail \
         -E 'test(=read_sessions::dsl::native_dsl_twelve_retained_rows_match_pinned_cli_v1)'
 
+# Small Layered V2 restart case with live phase diagnostics.
+rust-test-native-lexical-local lane="test-workspace-lane":
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
+        -p quanta-index-searchd-runtime --test native_product_process \
+        --no-tests fail --no-capture \
+        -E 'test(=large_restart::native_local_lexical_publish_rank_and_reopen)'
+
+# Heavy: SDK text over a 4,097-file view is answered from Literal grams.
+rust-test-native-literal-anchor lane="test-workspace-lane":
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
+        -p quanta-index-searchd-runtime --test native_index_uds \
+        --run-ignored only --no-tests fail --test-threads 1 \
+        -E 'test(=read_sessions::query::literal_anchor::sdk_text_over_large_view_reads_only_literal_anchored_bodies) | test(=read_sessions::query::literal_anchor::structural_bound_answers_rare_and_common_and_refuses_rare_or_common)'
+
+# Heavy: the same 4,097-file Literal-anchor oracle on SegmentedLayeredV2.
+rust-test-native-layered-literal-anchor lane="test-workspace-lane":
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
+        -p quanta-index-searchd-runtime --test native_index_uds \
+        --run-ignored only --no-tests fail --test-threads 1 \
+        -E 'test(=read_sessions::query::literal_anchor::sdk_text_over_large_layered_view_reads_only_literal_anchored_bodies)'
+
+# Heavy: retained text paging read to the end over 100 and 1,000 Sources, without and with the rank-order cache (09.4a/09.4b).
+rust-test-native-page-cost lane="test-workspace-lane":
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
+        -p quanta-index-searchd-runtime --test native_index_uds \
+        --run-ignored only --no-tests fail --test-threads 1 \
+        -E 'test(=read_sessions::query::page_cost::retained_text_pages_rescan_without_the_order_cache_and_reuse_it_with_it)'
+
+# Pin a score tie across DELTA publication and recover after a hard exit.
+rust-test-native-lexical-hellgate lane="test-workspace-lane":
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
+        -p quanta-index-searchd-runtime --test native_product_process \
+        --no-tests fail --no-capture \
+        -E 'test(=large_restart::native_local_lexical_delta_interleaves_ties_and_survives_sigkill)'
+
+# Native Text reader, posting integrity, and bounded query unit tests.
+rust-test-native-lexical-unit lane="test-workspace-lane":
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
+        -p quanta-index-lexical --lib --no-tests fail --no-fail-fast --test-threads 1 \
+        -E 'test(file_contains_tests::) | test(text_literal_anchor::tests::) | test(count_integration_tests::) | test(anchored_union_uses_one_exact_grant_for_multiple_sets) | test(conjunctive_admission::) | test(structural_bound_follows_candidate_set_algebra) | test(structural_non_candidates_never_satisfy_any_source_outcome) | test(path_write_batch_trace_preserves_sql_edits_and_work) | test(shared_physical_segment_checks_each_live_partition_mask) | test(v2_frequency_scan_) | test(unanchored_universe_refuses_oversize_before_scan_and_late_corruption) | test(excluded_change_drops_window_before_root_install) | test(native_root_json_is_funded_through_put_and_refusal_preserves_wire_commitment) | test(read_capability_admits_only_its_frozen_text_instance) | test(layered_empty_root_prepares_with_a_small_memory_grant) | test(layered_two_segment_mixed_phrase_and_keyword_preserves_positional_score) | test(native_phrase_boolean_not_filters_without_duplicating_positive_term_score) | test(native_phrase_late_cancellation_discards_the_provisional_ranked_hit) | test(packed_literal_membership_reuses_authenticated_blocks) | test(packed_membership_cache_reselects_descending_fence_and_binds_root) | test(posting_scalar_window_) | test(leaf_reads_remain_uncached_and_typed_as_leaf) | test(packed_load_requires_a_checked_block)'
+
 # Native Text and Literal correctness, retained reads and recovery.
-rust-test-native-lexical lane="test-workspace-lane":
+rust-test-native-lexical lane="test-workspace-lane": (rust-test-native-lexical-unit lane)
     {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
         -p quanta-index-sdk --lib --no-tests fail --no-fail-fast --test-threads 1 \
-        -E 'test(/^native_uds::read_session::(page|path_page_v1)::tests::/) | test(/^native_uds::tests::literal_(query_rejects_malformed_pages_and_owner_cursors|continuation_requires_exact_view_before_connecting)$/)'
+        -E 'test(native_code_search::tests::) | test(observed_lexical_) | test(/^native_uds::read_session::(page|path_page_v1)::tests::/) | test(/^native_uds::tests::(literal_query_rejects_malformed_pages_and_owner_cursors|literal_continuation_requires_exact_view_before_connecting|path_query_rejects_malformed_pages_and_moving_continuations)$/)'
     {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
         -p quanta-index-kernel --test native_lifecycle --test native_bootstrap \
         --no-tests fail --no-fail-fast --test-threads 1 \
@@ -613,22 +683,22 @@ rust-test-native-lexical lane="test-workspace-lane":
     {{quote(cargo)}} --lane {{quote(lane)}} nextest run --locked --offline --no-default-features \
         -p quanta-index-searchd-runtime --test native_index_uds --test native_product_process \
         --no-tests fail --no-fail-fast --test-threads 1 \
-        -E 'test(=native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold) | test(/^read_sessions::query::(global_text_pages_keep_original_view_across_publication_and_release|text_page_refusals_preserve_session_pin_and_original_deadline)$/) | test(=read_sessions::excluded_text::excluded_binary_and_utf8_source_stay_path_only_through_update_noop_delete_and_reopen) | test(=native_kill_reopen_retains_view_and_reclaims_owned_scratch) | test(/^text_shard_contract::native_(multigeneration_delta_matches_model_and_independent_full_after_reopen|boundary_delta_matches_independent_full_and_cold_reopen|multipage_lexical_delta_survives_sigkill_and_matches_full|lexical_partial_mutation_page_recovers_after_sigkill|lexical_commit_rollback_and_truncated_published_ack_preserve_one_operation)$/) | test(/^segmented_layered::(selected_native_text_posting_page_faults_are_typed|layered_text_delta_refuses_a_corrupt_selected_base_posting_page|layered_text_sixteen_live_layers_compact_without_losing_owners)$/)'
+        -E 'test(=native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold) | test(/^read_sessions::query::(global_text_pages_keep_original_view_across_publication_and_release|text_page_refusals_preserve_session_pin_and_original_deadline)$/) | test(=read_sessions::query::code_search_frontdoor::sdk_text_cursor_keeps_its_view_after_a_later_publication_and_retention) | test(=read_sessions::excluded_text::excluded_binary_and_utf8_source_stay_path_only_through_update_noop_delete_and_reopen) | test(=native_uds_source_lifecycle_status_old_view_and_reopen) | test(=native_kill_reopen_retains_view_and_reclaims_owned_scratch) | test(=large_restart::native_local_lexical_delta_interleaves_ties_and_survives_sigkill) | test(/^text_shard_contract::native_(multigeneration_delta_matches_model_and_independent_full_after_reopen|boundary_delta_matches_independent_full_and_cold_reopen|multipage_lexical_delta_survives_sigkill_and_matches_full|lexical_partial_mutation_page_recovers_after_sigkill|lexical_commit_rollback_and_truncated_published_ack_preserve_one_operation)$/) | test(/^segmented_layered::(selected_native_text_posting_page_faults_are_typed|layered_text_delta_refuses_a_corrupt_selected_base_posting_page|layered_text_sixteen_live_layers_compact_without_losing_owners|layered_text_full_patch_pinned_views_and_restart|layered_text_last_pin_releases_old_segment_and_posting_files)$/)'
 
 rust-test-cli-smoke lane="test-cli-smoke-lane":
-    python3 tools/ci/run-local-test-scope.py cli-smoke --lane {{lane}}
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py cli-smoke --lane {{lane}}
 
 rust-bench-dsl-truth:
     {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-searchd-harness --test dsl_scenario_truth --no-default-features --locked --no-tests fail
 
-rust-verify-hellgate-fast:
+rust-verify-hellgate-fast: require-native-legacy-searchd
     @just rust-bench-dsl-truth
     {{cargo}} --lane test-daemon-lane test -p quanta-index-search-plane --lib --all-features --locked -- --nocapture
     {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test process_readiness_owner_v1 --no-default-features --locked -E 'test(/^(legacy_text_route_hellgate|legacy_structural_hellgate)::/)' --no-tests fail --success-output final
     python3 tools/benchmark/sourcegraph_parity.py --check
     python3 tools/ci/lint/check-dsl-capability-truth.py
 
-rust-verify-hellgate-broad:
+rust-verify-hellgate-broad: require-native-legacy-searchd
     {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-searchd-runtime --test runtime_fast_suite --test process_readiness_owner_v1 --no-default-features --locked -E 'test(/^(sdk_frontdoor|legacy_sdk_code_search_frontdoor|end_to_end|e2e_restart_replay_determinism|legacy_lexical_semantic_replay_sdk|e2e_perf_chaos|explain|repo_map_end_to_end)::/) | (binary(=process_readiness_owner_v1) & test(/^legacy_dirty_only_route::reopen_preserves_runtime_/))' --no-tests fail --success-output final
 
 # The signer is inherited here. Bash -p suppresses shell startup hooks.
@@ -642,30 +712,126 @@ rust-verify-hellgate-all samples="20":
     @just rust-verify-hellgate-broad
     @just rust-bench-dsl-refresh {{samples}}
 
-rust-test-e2e-fast lane="test-daemon-lane":
-    python3 tools/ci/run-local-test-scope.py daemon-fast --lane {{lane}}
+rust-test-e2e-fast lane="test-daemon-lane": require-native-legacy-searchd
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py daemon-fast --lane {{lane}}
 
-rust-test-e2e lane="test-daemon-lane":
-    python3 tools/ci/run-local-test-scope.py daemon --lane {{lane}}
+rust-test-e2e lane="test-daemon-lane": require-native-legacy-searchd
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py daemon --lane {{lane}}
 
-rust-test-e2e-all lane="test-daemon-lane":
-    python3 tools/ci/run-local-test-scope.py daemon-all --lane {{lane}}
+rust-test-e2e-all lane="test-daemon-lane": require-native-legacy-searchd
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py daemon-all --lane {{lane}}
+
+# Ordinary SDK wire behavior and retained Native File/Path and DSL over UDS.
+rust-test-native-frontdoor lane="test-workspace-lane":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdk_package=quanta-index-sdk
+    sdk_binary=sdk_native_default
+    runtime_package=quanta-index-searchd-runtime
+    runtime_binary=native_index_uds
+    preview=read_sessions::query::preview
+    dsl=read_sessions::dsl
+    sdk_cases=(
+        ordinary_sdk_requires_native_selection_before_transport_birth
+        wire::ordinary_sdk_native_reader_preserves_file_page_hybrid_and_vector_dtos
+        wire::ordinary_sdk_query_only_has_no_native_write_capability
+        wire::ordinary_sdk_native_cancel_deadline_and_zero_key_do_not_send
+        wire::ordinary_sdk_native_rejects_wrong_full_instance_spec_before_query
+        wire::ordinary_sdk_profile_failure_keeps_acknowledged_session_for_release
+        wire::ordinary_sdk_native_unknown_session_is_not_reopened_or_queried
+        wire::ordinary_sdk_native_diagnostics_follow_actual_native_send_outcomes
+        wire::ordinary_sdk_admitted_reader_keeps_owner_and_checks_captured_role_before_send
+        wire::ordinary_sdk_admitted_profile_denial_preserves_ack_and_charged_error_until_release
+    )
+    runtime_cases=(
+        repository_paths::native_uds_repository_paths_page_same_path_and_bind_cursor
+        "$preview::native_select_path_combines_path_and_body_matches_after_cold_reopen"
+        "$preview::native_text_preview_keeps_rank_and_source_coordinates_across_reopen"
+        "$preview::native_text_preview_keeps_source_byte_boundary_and_refuses_oversized"
+        "$preview::native_text_preview_work_refusal_keeps_ranked_suffix_after_cold_reopen"
+        "$preview::native_select_path_rename_and_delete_survive_published_cold_reopen"
+        "$preview::native_select_path_retained_pages_survive_successor_rename_delete_and_reopen"
+        "$dsl::native_dsl_twelve_retained_rows_match_independent_gold_v1"
+        "$dsl::native_dsl_retained_cursor_refuses_another_view_and_keeps_original_rows_v1"
+    )
+    expected=()
+    filterset=
+    register_cases() {
+        local package="$1" binary="$2" name
+        shift 2
+        for name in "$@"; do
+            expected+=("$package::$binary\$$name")
+            filterset+="${filterset:+ | }(package(=$package) & binary(=$binary) & test(=$name))"
+        done
+    }
+    register_cases "$sdk_package" "$sdk_binary" "${sdk_cases[@]}"
+    register_cases "$runtime_package" "$runtime_binary" "${runtime_cases[@]}"
+    selection=(--locked --offline --no-default-features
+        -p "$sdk_package" --test "$sdk_binary" -p "$runtime_package" --test "$runtime_binary"
+        -E "$filterset")
+    temp_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+    inventory="$(mktemp "$temp_root/quanta-frontdoor-inventory.XXXXXX")"
+    trap 'rm -f -- "$inventory"' EXIT
+    validate_frontdoor() {
+        python3 -c '
+    import sys
+    from pathlib import Path
+    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_bytes, parse_nextest_inventory
+
+    stage, inventory_path, *names = sys.argv[1:]
+    required = set(names)
+    if not required or len(names) != len(required):
+        sys.exit("Native frontdoor gate: duplicate or empty test roster")
+    try:
+        inventory = parse_nextest_inventory(Path(inventory_path))
+        if set(inventory) != required:
+            missing = sorted(required - inventory.keys())
+            unexpected = sorted(inventory.keys() - required)
+            raise NextestEvidenceError(
+                f"nextest collection differs from the required tests: missing={missing}, unexpected={unexpected}"
+            )
+        if stage == "list":
+            sys.exit(0)
+        result = parse_nextest_bytes(sys.stdin.buffer.read(), inventory)
+    except NextestEvidenceError as error:
+        sys.exit(f"Native frontdoor gate: {error}")
+    print(f"Native frontdoor: {result.passed}/{len(required)} passed")
+    ' "$1" "$inventory" "${expected[@]}"
+    }
+    {{quote(cargo)}} --lane {{quote(lane)}} nextest list "${selection[@]}" \
+        --message-format json > "$inventory"
+    validate_frontdoor list </dev/null
+    export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+    events="$(
+        {{quote(cargo)}} --lane {{quote(lane)}} nextest run "${selection[@]}" \
+            --no-tests fail --no-fail-fast --test-threads 2 \
+            --message-format libtest-json-plus --message-format-version 0.1 \
+            --status-level pass --final-status-level fail \
+    )" || {
+        status=$?
+        printf '%s\n' "$events" >&2
+        exit "$status"
+    }
+    printf '%s\n' "$events" | validate_frontdoor run
 
 # Requires a pinned old-Q debug daemon with the Legacy crash hooks enabled.
-rust-test-legacy-crash-compat lane="test-daemon-lane":
+rust-test-legacy-crash-compat lane="test-daemon-lane": require-native-legacy-searchd
     {{cargo}} --lane {{lane}} nextest run -p quanta-index-searchd-runtime --test legacy_crash_compat --no-default-features --locked --offline --run-ignored only --no-tests fail
 
-rust-test-pyramid:
+rust-test-pyramid: require-native-legacy-searchd
     @just rust-test-unit
     @just rust-test-integration
     @just rust-test-cli-smoke
+    @just rust-test-native-frontdoor
     @just rust-test-e2e
 
 rust-doc:
     RUSTDOCFLAGS="-D warnings" {{cargo}} --lane doc-lane doc --workspace --all-features --no-deps --locked
+    RUSTDOCFLAGS="-D warnings" {{cargo}} --lane sqlite-oracle-lane doc --manifest-path {{sqlite_fd_ledger_manifest}} --all-features --no-deps --locked --offline
 
 rust-msrv:
     RUSTUP_TOOLCHAIN=1.92.0 {{cargo}} --lane msrv-lane test --workspace --all-targets --all-features --locked --no-run
+    RUSTUP_TOOLCHAIN=1.92.0 {{cargo}} --lane sqlite-oracle-lane check --manifest-path {{sqlite_fd_ledger_manifest}} --all-targets --all-features --locked --offline
 
 rust-bench:
     {{cargo}} --lane bench-lane bench --workspace --all-features --locked
@@ -677,15 +843,15 @@ rust-bench-build:
 # Cargo bench target registered, no production->benchmark dependency, and no CI
 # direct producer/comparator bypass. Cheap but requires cargo metadata.
 benchmark-policy-local:
-    python3 tools/ci/lint/check-benchmark-policy.py --print-registry-digest
+    uv run --frozen --extra dev python tools/ci/lint/check-benchmark-policy.py --print-registry-digest
 
 # Print the resolved, digest-bound plan for one registered profile (no mutation).
 benchmark-plan profile:
-    python3 tools/benchmark/benchctl.py plan {{profile}}
+    uv run --frozen --extra dev python tools/benchmark/benchctl.py plan {{quote(profile)}}
 
 # Fresh-process re-validation of one immutable run (run id or run directory).
 benchmark-replay run:
-    python3 tools/benchmark/benchctl.py replay {{run}}
+    uv run --frozen --extra dev python tools/benchmark/benchctl.py replay {{quote(run)}}
 
 # Fast local PREP check for the shared benchmark control plane. Retrieval
 # contracts have their own local/proof rails and are not run here a second time.
@@ -701,12 +867,13 @@ benchmark-control-contract-local:
 
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
+    @just benchmark-policy-local
     uv run --frozen --extra dev just benchmark-control-contract-local
     uv run --frozen --extra dev python -m py_compile tools/benchmark/benchctl.py tools/benchmark/code_search_workflow.py tools/benchmark/registry.py tools/benchmark/manifest.py tools/benchmark/evidence.py tools/benchmark/evidence_bridge.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/lint/check-benchmark-policy.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/native_file_evidence.py tools/benchmark/retrieval/holdout_review.py tools/benchmark/retrieval/source_oracle.py tools/benchmark/retrieval/source_oracle_suite.py tools/benchmark/retrieval/identifier_robustness_suite.py tools/benchmark/retrieval/identifier_robustness_report.py tools/benchmark/retrieval/codesearchnet_qrels.py tools/benchmark/retrieval/codesearchnet_materialize.py tools/benchmark/retrieval/clarc_adapter.py tools/benchmark/retrieval/external_snippet_benchmark.py tools/benchmark/retrieval/identifier_robustness_multiproduct_report.py tools/benchmark/retrieval/identifier_robustness_fresh_join.py tools/benchmark/retrieval/arb_adapter.py tools/benchmark/retrieval/query_plan.py tools/benchmark/retrieval/retrieval_contract.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/lexical_file_comparison.py tools/benchmark/retrieval/lexical_external_oracle.py tools/benchmark/retrieval/lexical_five_product_oracle.py tools/benchmark/retrieval/prepare_lexical_pair.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
     {{cargo}} --lane bench-lane test -p quanta-index-bench-protocol --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
-    python3 tools/ci/lint/check-test-authority.py
+    uv run --frozen --extra dev python tools/ci/lint/check-test-authority.py
     git diff --check
 
 # Dirty-checkout retrieval edit loop. This is diagnostic only: use the proof
@@ -758,7 +925,7 @@ retrieval-host-probe out="":
 
 # Exploratory criterion view for warm scenarios. Not gate authority.
 rust-bench-dsl-warm-criterion $evidence_root:
-    python3 tools/benchmark/benchctl.py run dsl-diagnostic --evidence-root "$evidence_root"
+    uv run --frozen --extra dev python tools/benchmark/benchctl.py run dsl-diagnostic --evidence-root "$evidence_root"
 
 # Native DSL SDK diagnostic for the complete retained roster and pinned History fixture.
 rust-bench-dsl-native $mode $runner $runner_sha $daemon $daemon_sha $history $history_sha $out *options:
@@ -770,11 +937,11 @@ rust-prepare-native-dsl-history $export_root $daemon $daemon_sha256: require-nat
 
 # Authority refresh: run warm and cold producers serially, then gate against baselines.
 rust-bench-dsl-refresh samples="20":
-    python3 tools/benchmark/benchctl.py run dsl-authority --cold-samples {{samples}} --dsl-native-plan "${QUANTA_DSL_NATIVE_PLAN:?set QUANTA_DSL_NATIVE_PLAN to the frozen Native DSL plan path}"
+    uv run --frozen --extra dev python tools/benchmark/benchctl.py run dsl-authority --cold-samples {{quote(samples)}} --dsl-native-plan "${QUANTA_DSL_NATIVE_PLAN:?set QUANTA_DSL_NATIVE_PLAN to the frozen Native DSL plan path}"
 
 # Relative-regression gate. It fails typed until reviewed canonical baselines exist.
 rust-bench-dsl-compare:
-    python3 tools/benchmark/benchctl.py compare dsl-authority
+    uv run --frozen --extra dev python tools/benchmark/benchctl.py compare dsl-authority
 
 # Sourcegraph filter parity: regenerate the execution-coverage matrix and gate it.
 rust-bench-dsl-parity:
@@ -793,7 +960,7 @@ rust-bench-dsl-parity:
 # Artifacts: artifacts/search-quality/relevance/latest/{summary,query_judgments,sourcegraph-overlap}.json
 # External lexical floor (Sourcegraph overlap, J7Q-01B) is emitted as
 # `unprovisioned`, NOT a pass, until a local Sourcegraph instance exists.
-rust-verify-quality-relevance:
+rust-verify-quality-relevance: require-native-legacy-searchd
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib relevance:: --no-default-features --locked -- --include-ignored --nocapture --skip relevance::report::process::tests::pinned_hash_reference_publishes_and_scores_the_full_roster
     mkdir -p artifacts/search-quality/relevance/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --no-default-features --locked
@@ -801,7 +968,7 @@ rust-verify-quality-relevance:
 
 # Hermetic mechanical regression rail. This is not learned semantic quality and
 # cannot replace the default potion-code relevance artifact.
-rust-verify-quality-relevance-hash-dev:
+rust-verify-quality-relevance-hash-dev: require-native-legacy-searchd
     {{cargo}} --lane test-daemon-lane nextest run --locked --no-default-features -p quanta-index-searchd-harness --lib --run-ignored all --no-tests fail -E 'test(=relevance::report::process::tests::pinned_hash_reference_publishes_and_scores_the_full_roster)'
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin relevance_matrix --no-default-features --locked
     mkdir -p artifacts/search-quality/relevance/hash-dev/latest
@@ -859,7 +1026,7 @@ rust-verify-quality-scale:
 # runner). No single global threshold; verdicts carry route-local diagnostics.
 # Requires QUANTA_INDEX_LEGACY_SEARCHD_BIN and QUANTA_INDEX_LEGACY_SEARCHD_SHA256.
 # Artifacts: artifacts/search-quality/tail/latest/{summary,route_budgets}.json
-rust-verify-quality-tail:
+rust-verify-quality-tail: require-native-legacy-searchd
     python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib tail:: --no-default-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/tail/latest
@@ -892,7 +1059,7 @@ rust-verify-quality-ann:
 # client require 16 samples; fast clients continue until the slow floor is met.
 # Requires QUANTA_INDEX_LEGACY_SEARCHD_BIN and QUANTA_INDEX_LEGACY_SEARCHD_SHA256.
 # Artifacts: artifacts/search-quality/concurrency/latest/summary-c{1,8,32}.json
-rust-verify-quality-concurrency requests="80":
+rust-verify-quality-concurrency requests="80": require-native-legacy-searchd
     python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib concurrency:: --no-default-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/concurrency/latest
@@ -902,7 +1069,7 @@ rust-verify-quality-concurrency requests="80":
 # Explicit workspace file-mutation to generation-pinned lexical visibility.
 # This measures the ingest receipt through seal/activation/query path, not a watcher.
 # Requires QUANTA_INDEX_LEGACY_SEARCHD_BIN and QUANTA_INDEX_LEGACY_SEARCHD_SHA256.
-rust-verify-quality-freshness samples="20":
+rust-verify-quality-freshness samples="20": require-native-legacy-searchd
     python3 tools/ci/timing/check_host_contention.py
     mkdir -p artifacts/search-quality/freshness/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin freshness_matrix --no-default-features --locked
@@ -910,7 +1077,7 @@ rust-verify-quality-freshness samples="20":
 
 # Scheduled arrivals over pinned old-Q query IPC; record offered/achieved QPS and tails.
 # Requires QUANTA_INDEX_LEGACY_SEARCHD_BIN and QUANTA_INDEX_LEGACY_SEARCHD_SHA256.
-rust-verify-quality-open-loop:
+rust-verify-quality-open-loop: require-native-legacy-searchd
     python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin open_loop_matrix --no-default-features --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && OPEN_LOOP_BIN="$CARGO_TARGET_DIR/debug/open_loop_matrix" && test -x "$OPEN_LOOP_BIN" && "$OPEN_LOOP_BIN"'
@@ -919,7 +1086,7 @@ rust-verify-quality-open-loop:
 # head, typed query refusal, latency metrics, and daemon peak resident bytes.
 # Requires QUANTA_INDEX_LEGACY_SEARCHD_BIN and QUANTA_INDEX_LEGACY_SEARCHD_SHA256.
 # Artifacts: artifacts/search-quality/ops/latest/{summary,cli_snapshots}.json
-rust-verify-quality-ops:
+rust-verify-quality-ops: require-native-legacy-searchd
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ops:: --no-default-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/ops/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ops_matrix --no-default-features --locked
@@ -932,7 +1099,7 @@ rust-verify-quality-ops:
 # Proven across engine + contract layers (the field round-trips on the wire in
 # the contract IPC test). A missing/out-of-range/wrong anchor fails the rail.
 # Artifacts: artifacts/search-quality/ui/latest/{summary,contract_snapshots}.json
-rust-verify-quality-ui:
+rust-verify-quality-ui: require-native-legacy-searchd
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ui:: --no-default-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/ui/latest
     {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ui_matrix --no-default-features --locked
@@ -944,10 +1111,10 @@ rust-verify-quality-ui:
 # integration summary WITHOUT erasing dimension boundaries. This is not a
 # substitute for per-dimension closeout. A new dimension must have a producer,
 # manifest registration, and ticket metadata before joining the aggregate.
-rust-verify-quality-all:
-    python3 tools/benchmark/benchctl.py run quality-full
+rust-verify-quality-all: require-native-legacy-searchd
+    uv run --frozen --extra dev python tools/benchmark/benchctl.py run quality-full
     mkdir -p artifacts/search-quality/integration/latest
-    python3 tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
+    uv run --frozen --extra dev python tools/benchmark/quality_integration_summary.py --out artifacts/search-quality/integration/latest/summary.json
 
 rust-machete:
     env QUANTA_INDEX_BUILD_LANE=machete-lane bash -lc 'source scripts/quanta-index-env.sh && cargo machete --with-metadata'
@@ -956,13 +1123,13 @@ rust-miri:
     env QUANTA_INDEX_BUILD_LANE=miri-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly cargo miri setup'
     env QUANTA_INDEX_BUILD_LANE=miri-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly MIRIFLAGS="-Zmiri-strict-provenance" cargo miri test -p quanta-index-contract -p quanta-index-core --lib --all-features'
 
-rust-careful:
+rust-careful: require-native-legacy-searchd
     env QUANTA_INDEX_BUILD_LANE=careful-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly CARGO_INCREMENTAL=0 cargo careful test --workspace --all-features --locked'
 
-rust-tsan:
+rust-tsan: require-native-legacy-searchd
     env QUANTA_INDEX_BUILD_LANE=tsan-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zsanitizer=thread" cargo test -Z build-std --target $(rustc -vV | sed -n '"'"'s|host: ||p'"'"') --workspace --all-features --lib --tests'
 
-rust-asan:
+rust-asan: require-native-legacy-searchd
     env QUANTA_INDEX_BUILD_LANE=asan-lane bash -lc 'source scripts/quanta-index-env.sh && RUSTUP_TOOLCHAIN=nightly RUSTFLAGS="-Zsanitizer=address" cargo test -Z build-std --target $(rustc -vV | sed -n '"'"'s|host: ||p'"'"') --workspace --all-features --lib --tests'
 
 rust-mutants:
@@ -974,50 +1141,54 @@ rust-udeps:
 rust-deny:
     bash scripts/run-cargo-deny.sh
 
+# Audit separate tool, consumer, and fuzz lock graphs independently of the root gate.
+rust-deny-workspaces:
+    bash scripts/run-cargo-deny.sh --all-workspaces
+
 rust-workspace-lints:
-    python3 scripts/check_workspace_lints.py
+    uv run --frozen --extra dev python scripts/check_workspace_lints.py
 
 rust-no-allow:
-    bash scripts/check-rust-allow-attributes.sh
+    uv run --frozen --extra dev bash scripts/check-rust-allow-attributes.sh
 
 rust-hexagonal:
-    python3 tools/ci/lint/lint-hexagonal-boundaries.py
+    uv run --frozen --extra dev python tools/ci/lint/lint-hexagonal-boundaries.py
 
 rust-read-view-ambient:
-    python3 tools/ci/lint/check-read-view-ambient-lookup.py
+    uv run --frozen --extra dev python tools/ci/lint/check-read-view-ambient-lookup.py
 
 rust-derive-allowlist:
-    python3 tools/ci/lint/check-rust-derive-allowlist.py
+    uv run --frozen --extra dev python tools/ci/lint/check-rust-derive-allowlist.py
 
 rust-cargo-toml-hygiene:
-    python3 tools/ci/lint/check-cargo-toml-hygiene.py
+    uv run --frozen --extra dev python tools/ci/lint/check-cargo-toml-hygiene.py
 
 rust-module-discipline:
-    python3 tools/ci/lint/check-module-discipline.py
+    uv run --frozen --extra dev python tools/ci/lint/check-module-discipline.py
 
 rust-module-cycles:
-    python3 tools/ci/lint/check-module-cycles.py
+    uv run --frozen --extra dev python tools/ci/lint/check-module-cycles.py
 
 rust-error-shape:
-    python3 tools/ci/lint/check-error-shape.py
+    uv run --frozen --extra dev python tools/ci/lint/check-error-shape.py
 
 rust-digest-fallibility:
-    python3 tools/ci/lint/check-digest-fallibility.py
+    uv run --frozen --extra dev python tools/ci/lint/check-digest-fallibility.py
 
 rust-semantic-outcomes:
-    python3 tools/ci/lint/check-semantic-outcomes.py
+    uv run --frozen --extra dev python tools/ci/lint/check-semantic-outcomes.py
 
 rust-fallbacks:
-    python3 tools/ci/tests/test_check_rust_fallbacks.py
-    python3 tools/ci/lint/check-rust-fallbacks.py
+    uv run --frozen --extra dev python tools/ci/tests/test_check_rust_fallbacks.py
+    uv run --frozen --extra dev python tools/ci/lint/check-rust-fallbacks.py
 
 rust-test-authority:
-    python3 tools/ci/lint/check-lexical-test-disposition.py --inventory-only
-    python3 tools/ci/lint/check-runtime-legacy-migration.py
-    python3 tools/ci/lint/check-test-authority.py
+    uv run --frozen --extra dev python tools/ci/lint/check-lexical-test-disposition.py --inventory-only
+    uv run --frozen --extra dev python tools/ci/lint/check-runtime-legacy-migration.py
+    uv run --frozen --extra dev python tools/ci/lint/check-test-authority.py
 
 rust-ignored-test-policy:
-    python3 tools/ci/lint/check-ignored-test-policy.py
+    uv run --frozen --extra dev python tools/ci/lint/check-ignored-test-policy.py
 
 # Asset-dependent owner proof. Both tests are ignored in the ordinary suite;
 # this recipe generates the independent Python reference and selects them.
@@ -1030,13 +1201,16 @@ proof-potion-code-parity $model_dir $reference:
 # Consumer / wire inventory (plan §11): every IPC opcode and on-disk format
 # version must be listed in tools/ci/inventory/wire-surface.toml.
 rust-wire-inventory:
-    python3 tools/ci/lint/check-wire-inventory.py
+    uv run --frozen --extra dev python tools/ci/lint/check-wire-inventory.py
+
+rust-error-code-table:
+    uv run --frozen --extra dev python tools/ci/check-search-plane-error-codes.py
 
 # Stale-artifact gate (QI-BB-010, findings §9): every benchmark/relevance
 # artifact on disk must be a schema-2 BenchArtifactV1 whose git_head is the
 # checkout's HEAD (baselines: a full head). Absence passes; staleness fails.
 rust-bench-artifacts:
-    python3 tools/ci/lint/check-bench-artifacts.py
+    uv run --frozen --extra dev python tools/ci/lint/check-bench-artifacts.py
 
 rust-cargo-modules:
     python3 tools/ci/lint/check-cargo-modules-snapshot.py
@@ -1106,6 +1280,7 @@ rust-policy:
     @just rust-test-authority
     @just rust-ignored-test-policy
     @just rust-wire-inventory
+    @just rust-error-code-table
     @just proof-authority-lint
     @just rust-bench-artifacts
     @just rust-deny
@@ -1116,27 +1291,27 @@ rust-policy:
 # requires the fixed CODE_QUALIFIED proof closure; final qualification also
 # requires deployment, activation, rollback, P12, and the aggregate receipt.
 proof-authority-lint:
-    python3 tools/ci/lint/check-proof-authority.py
+    uv run --frozen --extra dev python tools/ci/lint/check-proof-authority.py
 
 proof-authority-current-gate:
-    python3 tools/ci/lint/check-proof-authority.py \
+    uv run --frozen --extra dev python tools/ci/lint/check-proof-authority.py \
         --manifest artifacts/proof-authority/p00-authority-freeze.json \
         --bind-source
 
 lane-handoff-check handoff:
-    python3 tools/ci/lint/check-lane-handoff.py --require-result-head "{{handoff}}"
+    uv run --frozen --extra dev python tools/ci/lint/check-lane-handoff.py --require-result-head {{quote(handoff)}}
 
 lane-handoff-check-historical handoff:
-    python3 tools/ci/lint/check-lane-handoff.py "{{handoff}}"
+    uv run --frozen --extra dev python tools/ci/lint/check-lane-handoff.py {{quote(handoff)}}
 
 lane-handoff-chain-check:
-    python3 tools/ci/lint/check-lane-handoff.py --product-chain artifacts/sep-21/handoffs
+    uv run --frozen --extra dev python tools/ci/lint/check-lane-handoff.py --product-chain artifacts/sep-21/handoffs
 
 proof-error-authority-inventory:
-    python3 tools/ci/write-error-authority-inventory.py
+    uv run --frozen --extra dev python tools/ci/write-error-authority-inventory.py
 
 proof-error-authority-closed:
-    python3 tools/ci/check-error-authority-closure.py
+    uv run --frozen --extra dev python tools/ci/check-error-authority-closure.py
 
 proof-p01-canonical-identity:
     @just proof-error-authority-closed
@@ -1149,22 +1324,22 @@ proof-p01-canonical-identity:
     @just rust-profile validate-shared-surface
     @just rust-profile test-daemon
 
-# P02B: the global sequence authority and operation journal proof. The
-# journal touches the ingest IPC receipt surface, so the wire inventory and
-# the IPC decoder fuzz smoke run alongside the scoped journal tests and
-# the hexagonal boundary guards.
+# P02B: generic journal tests plus exact Native Catalog replay, conflict and
+# rollback cases. Both scopes must issue source-bound raw results for one
+# manifest; wire, IPC fuzz and boundary rails cover the shared receipt surface.
 proof-p02b-operation-journal:
     @just rust-profile test-p02b-operation-journal
+    @just rust-profile test-p02b-native-journal-lib
     @just rust-hexagonal
     @just rust-wire-inventory
     @just rust-fuzz-smoke
 
 proof-p00-authority-freeze:
     @test -z "${PYTEST_ADDOPTS:-}" && test -z "${PYTEST_PLUGINS:-}" || { echo "pytest environment overrides are forbidden for proof tests" >&2; exit 2; }
-    python3 tools/ci/write-error-authority-inventory.py
-    python3 tools/ci/lint/check-proof-authority.py
-    @if [ -n "${QUANTA_PROOF_RAW_DIR:-}" ]; then mkdir -p "$QUANTA_PROOF_RAW_DIR"; python3 tools/ci/proof_execution_result.py collect-pytest --output "$QUANTA_PROOF_RAW_DIR/p00-inventory.json" tools/ci/tests/test_write_error_authority_inventory.py tools/ci/tests/test_write_proof_aggregate.py tools/ci/tests/test_write_proof_manifest.py tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_proof_operational_result.py tools/ci/tests/test_paired_cargo_resolution.py tools/ci/tests/test_paired_r5_result.py tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_check_proof_authority.py tools/ci/tests/test_check_lane_handoff.py tools/ci/tests/test_handoff_validation.py; fi
-    python3 -m pytest \
+    @just proof-error-authority-inventory
+    uv run --frozen --extra dev python tools/ci/lint/check-proof-authority.py
+    @if [ -n "${QUANTA_PROOF_RAW_DIR:-}" ]; then mkdir -p "$QUANTA_PROOF_RAW_DIR"; uv run --frozen --extra dev python tools/ci/proof_execution_result.py collect-pytest --output "$QUANTA_PROOF_RAW_DIR/p00-inventory.json" tools/ci/tests/test_write_error_authority_inventory.py tools/ci/tests/test_write_proof_aggregate.py tools/ci/tests/test_write_proof_manifest.py tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_proof_operational_result.py tools/ci/tests/test_paired_cargo_resolution.py tools/ci/tests/test_paired_r5_result.py tools/ci/tests/test_run_local_test_scope.py tools/ci/tests/test_check_proof_authority.py tools/ci/tests/test_check_lane_handoff.py tools/ci/tests/test_handoff_validation.py; fi
+    uv run --frozen --extra dev python -m pytest \
         tools/ci/tests/test_write_error_authority_inventory.py \
         tools/ci/tests/test_write_proof_aggregate.py \
         tools/ci/tests/test_write_proof_manifest.py \
@@ -1210,14 +1385,14 @@ proof-p11-rollback:
 proof-authority-final-qualification:
     @test -n "${SEMANTICA_CHECKOUT:-}" || { echo "SEMANTICA_CHECKOUT is required" >&2; exit 2; }
     @just rust-check-tantivy-shipment --publish-aggregate
-    python3 tools/ci/lint/check-proof-authority.py \
+    uv run --frozen --extra dev python tools/ci/lint/check-proof-authority.py \
         --require-all \
         --paired-checkout "github:josongmin/semantica-codegraph-v2=${SEMANTICA_CHECKOUT}" \
         --bind-source
 
 proof-authority-code-gate:
     @test -n "${SEMANTICA_CHECKOUT:-}" || { echo "SEMANTICA_CHECKOUT is required" >&2; exit 2; }
-    python3 tools/ci/lint/check-proof-authority.py \
+    uv run --frozen --extra dev python tools/ci/lint/check-proof-authority.py \
         --require-code-qualified \
         --paired-checkout "github:josongmin/semantica-codegraph-v2=${SEMANTICA_CHECKOUT}" \
         --bind-source
@@ -1226,18 +1401,22 @@ proof-authority-release-gate:
     @test -n "${SEMANTICA_CHECKOUT:-}" || { echo "SEMANTICA_CHECKOUT is required" >&2; exit 2; }
     @just rust-check-tantivy-shipment --require-aggregate
 
-verify-rust:
+verify-rust: require-native-legacy-searchd
     @just fmt-check
     @just rust-clippy
     @just rust-policy
+    @just rust-semantic-outcomes
+    @just rust-fallbacks
     @just rust-machete
+    @just benchmark-policy-local
     @just rust-bench-build
     @just rust-test
+    @just rust-test-native-frontdoor
     @just rust-doc
 
 # Heavy correctness rail. Requires nightly toolchain + cargo-careful/miri/etc.
 # Use `just verify-rust-heavy` locally before merging anything load-bearing.
-verify-rust-heavy:
+verify-rust-heavy: require-native-legacy-searchd
     @just rust-miri
     @just rust-careful
     @just rust-mutants
@@ -1264,13 +1443,13 @@ python-lint:
     source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m ruff check .
 
 python-format-check:
-    source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m ruff format --check .
+    source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m ruff format --check --output-format concise .
 
 python-test:
-    uv run --frozen --extra dev bash scripts/run-tooling-tests.sh
+    bash scripts/run-tooling-tests.sh
 
-agent-output-validate output:
-    source scripts/quanta-index-env.sh && python3 tools/ci/agent/validate_agent_output.py {{output}}
+agent-output-validate $output:
+    source scripts/quanta-index-env.sh && uv run --frozen --extra dev python tools/ci/agent/validate_agent_output.py -- "$output"
 
 lint-root-hygiene:
     bash tools/ci/lint/lint-root-hygiene.sh
@@ -1290,21 +1469,19 @@ verify:
     @just shell-lint
     @just semgrep-rule-tests
     @just semgrep
-    @just rust-semantic-outcomes
-    @just rust-fallbacks
     @just python-lint
     @just python-format-check
     @just python-test
     @just lint-prompt-drift
 
 sync-prompts:
-    python3 tools/prompt-manager/pm.py sync
+    uv run --frozen --extra dev python tools/prompt-manager/pm.py sync
 
 lint-prompt-drift:
-    python3 tools/prompt-manager/pm.py lint
+    uv run --frozen --extra dev python tools/prompt-manager/pm.py lint
 
 test-prompt-manager:
-    source scripts/quanta-index-env.sh && python3 -m pytest tools/prompt-manager/tests/test_pm.py -q -o cache_dir="$PYTEST_CACHE_DIR"
+    source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m pytest tools/prompt-manager/tests/test_pm.py -q -o cache_dir="$PYTEST_CACHE_DIR"
 
 verify-prompts:
     @just sync-prompts
@@ -1312,38 +1489,32 @@ verify-prompts:
     @just test-prompt-manager
 
 precommit-run:
-    source scripts/quanta-index-env.sh && python3 -m pre_commit run --all-files --show-diff-on-failure
+    source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m pre_commit run --all-files --show-diff-on-failure
+
+proof-p03-candidate-activation:
+    @just rust-profile test-candidate-activation-release
 
 proof-p03-candidate-activation-owner:
     @just rust-profile test-candidate-activation-owner
     @just rust-hexagonal
     @just rust-wire-inventory
-    @just rust-public-api
-    @just rust-fuzz-smoke
-
-proof-p03-candidate-activation:
-    @just rust-profile test-candidate-activation-release
 
 rust-test-candidate-activation-release:
-    python3 tools/ci/run-local-test-scope.py candidate-activation-release
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py candidate-activation-release
 
-# P04 owner proof covers pinned Native Text/Semantic views and cancellation.
+proof-p04-read-view-lifetime:
+    @just rust-profile test-read-view-lifetime
+
 proof-p04-read-view-lifetime-owner:
     @just rust-profile test-read-view-lifetime-owner
     @just rust-read-view-ambient
     @just rust-hexagonal
-    @just rust-wire-inventory
-    @just rust-public-api
-    @just rust-fuzz-smoke
-
-proof-p04-read-view-lifetime:
-    @just rust-profile test-read-view-lifetime
 
 proof-p10-state-migration:
     @just rust-profile test-state-migration-release
 
 rust-test-read-view-lifetime:
-    python3 tools/ci/run-local-test-scope.py read-view-lifetime
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py read-view-lifetime
 
 # P06 SDK binding owner proof (S21-07): the scoped rail runs the SDK
 # owner integration target (wrong-but-same-variant negative matrix over a
@@ -1365,7 +1536,7 @@ proof-p06-sdk-binding:
     @just rust-profile test-sdk-binding-release
 
 rust-test-sdk-binding-release:
-    python3 tools/ci/run-local-test-scope.py sdk-binding-release
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py sdk-binding-release
 
 # P05 query-truth owner proof (S21-06): the scoped rail runs the
 # contract-base outcome/cursor-envelope owner suite and the search-plane
@@ -1395,7 +1566,7 @@ proof-p07-provider-boundary:
     @just rust-profile test-provider-boundary-release
 
 rust-test-provider-boundary-release:
-    python3 tools/ci/run-local-test-scope.py provider-boundary-release
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py provider-boundary-release
 
 # P08 supervised runtime / bounded shutdown owner proof (S21-09): the
 # scoped rail runs the supervisor owner suite (clean drain with
@@ -1418,7 +1589,7 @@ proof-p08-runtime-supervisor:
     @just rust-profile test-runtime-supervisor-release
 
 rust-test-runtime-supervisor-release:
-    python3 tools/ci/run-local-test-scope.py runtime-supervisor-release
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py runtime-supervisor-release
 
 proof-p05-query-truth-owner:
     @just rust-profile test-query-truth-owner
@@ -1432,11 +1603,7 @@ proof-p05-query-truth:
     @just rust-profile test-query-truth-release
 
 rust-test-query-truth-release:
-    python3 tools/ci/run-local-test-scope.py query-truth-release
-
-# Dedicated P04 read-view recipe: owner-local selector first, then the
-# Linux release subrail split the prompt names (NOT_RUN off-Linux).
-rust-proof-p04-read-view: proof-p04-read-view-lifetime-owner
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py query-truth-release
 
 # P09 (S21-10) control authorization + readiness owner proof: the scoped
 # integration targets prove the capability/access matrix and real supervised
@@ -1455,7 +1622,7 @@ proof-p09-control-readiness:
     @just rust-profile test-control-readiness-release
 
 rust-test-control-readiness-release:
-    python3 tools/ci/run-local-test-scope.py control-readiness-release
+    uv run --frozen --extra dev python tools/ci/run-local-test-scope.py control-readiness-release
 
 # P10 (S21-11) offline state migration, backup and restore owner proof: the
 # scoped integration target proves the offline migrate/backup/restore/verify

@@ -37,7 +37,10 @@ fn rows(count: usize, snippet_bytes: usize) -> Vec<LexicalCandidate> {
     (0..count)
         .map(|index| {
             let mut row = candidate(&format!("cand-{index:02}"), 1.0);
-            row.snippet = "x".repeat(snippet_bytes);
+            row.excerpt
+                .as_mut()
+                .expect("fixture row carries a match excerpt")
+                .snippet = "x".repeat(snippet_bytes);
             row
         })
         .collect()
@@ -79,6 +82,7 @@ fn text(response: SearchPlaneQueryIpcResponse) -> Result<TextQueryResponse, Stri
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
@@ -404,7 +408,11 @@ fn a_page_past_the_byte_budget_is_cut_and_continued() -> TestResult {
 #[test]
 fn a_large_later_row_cannot_refuse_a_fitting_prefix() -> TestResult {
     let mut all = rows(3, 8);
-    all[2].snippet = "x".repeat(8_000);
+    all[2]
+        .excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet = "x".repeat(8_000);
     let budget = ResponsePayloadBudget::new(3_500)?;
     let dispatcher = stub_dispatcher(all.clone())?.with_response_budget(budget);
     let first = text(dispatcher.dispatch(request(3, None), &RequestBudgetV1::unbounded()))?;

@@ -7,14 +7,14 @@ use std::{fmt, io::Cursor};
 
 use quanta_index_contract::{
     index::{
-        CatalogView, IngressRef, MapRoot, ObjectRef, OperationReply, OperationStatus,
+        CatalogView, ImmutableOperation, IngressRef, MapRoot, ObjectRef, OperationReply, OperationStatus,
         OwnerMutationSet, SubmitOutcome, ViewRef,
     },
     native_protocol::{
         MAX_NATIVE_SOURCE_OWNER_LOOKUP, NativeIndexErrorCode, NativeIndexResponse,
         NativeIndexResponseEnvelope, NativeIndexWireError, NativeProducerProjectionOwnerV1,
         NativeProjectionOwnerBinding, NativeProjectionOwnerLookup, NativeProjectionRead,
-        NativeSourceOwnerBinding, NativeSourceOwnerLookup, NativeStubReply,
+        NativeSealedDslSubmitV1, NativeSourceOwnerBinding, NativeSourceOwnerLookup, NativeStubReply,
         SourceStageReplayReceiptV1,
     },
 };
@@ -372,7 +372,9 @@ impl<'a> CborScan<'a> {
                                 | "metavariable"
                                 | "pattern_kind"
                                 | "matched_node"
+                                | "chunk_ids"
                                 | "snippet"
+                                | "text"
                         )
                     )
                     || self.allow_graph
@@ -453,7 +455,7 @@ impl<'a> CborScan<'a> {
                 for _item in 0..value {
                     self.item(
                         next,
-                        if field == Some("repositories") {
+                        if matches!(field, Some("repositories" | "chunk_ids")) {
                             field
                         } else {
                             None
@@ -510,7 +512,8 @@ impl<'a> CborScan<'a> {
             index::InstanceSpec,
             native_protocol::{
                 MAX_NATIVE_READ_PROFILE_INSTANCES, MAX_NATIVE_SEMANTIC_TOP_K,
-                MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES, MAX_NATIVE_TEXT_TOP_K, NativeDslRuntimeHitV1,
+                MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES, MAX_NATIVE_TEXT_TOP_K,
+                NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1, NativeDslRuntimeHitV1,
                 NativeDslStructuralHitV1, NativeSemanticFileHit, NativeTextHit,
             },
         };
@@ -551,7 +554,21 @@ impl<'a> CborScan<'a> {
                 u64::from(MAX_NATIVE_TEXT_TOP_K),
                 std::mem::size_of::<quanta_index_contract::RepoId>(),
             ),
+            // One CodeSearch match per path-page row.
+            Some("code_search") => (
+                u64::from(MAX_NATIVE_TEXT_TOP_K),
+                std::mem::size_of::<
+                    Option<quanta_index_contract::native_protocol::NativeCodeSearchMatch>,
+                >(),
+            ),
             Some("vector_id") => (read_size(MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES)?, 1),
+            Some("chunk_ids") if self.allow_read => (
+                read_size(quanta_index_contract::native_protocol::MAX_NATIVE_DSL_STRUCTURAL_CHUNKS_PER_PAGE_V1)?,
+                std::mem::size_of::<quanta_index_contract::ChunkId>(),
+            ),
+            Some("bytes") if self.allow_read => {
+                (u64::from(NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1), 1)
+            }
             // Canonical fixed-size IDs/roots are inline fields, not heaps.
             Some(
                 "session"
@@ -584,6 +601,8 @@ impl<'a> CborScan<'a> {
                 | "policy"
                 | "format"
                 | "projection"
+                | "structural_certificate"
+                | "output"
                 | "context"
                 | "id"
                 | "payload"
@@ -615,7 +634,7 @@ impl<'a> CborScan<'a> {
         }
         if size != 0 {
             self.charge_read(
-                if field == Some("vector_id") {
+                if matches!(field, Some("vector_id" | "bytes")) {
                     count.max(8)
                 } else {
                     count
@@ -650,6 +669,7 @@ fn graph_identifier(value: &str) -> bool {
         || matches!(
             value,
             "Graph"
+                | "edges"
                 | "edge"
                 | "target"
                 | "source_supporters"
@@ -674,13 +694,18 @@ fn read_identifier(value: &str) -> bool {
         "ReadSession"
             | "ReadSessionProfile"
             | "DslPageV1"
+            | "DslRuntimeCatalogPageV1"
+            | "DslStructuralChunksPageV1"
             | "HistoryCut"
+            | "InitialHistoryCutV1"
             | "HistoryGeneration"
             | "TextRanked"
             | "TextRankedPage"
             | "TextPathRankedV1"
             | "TextPathPageV1"
             | "HybridFileRanked"
+            | "code_search"
+            | "excerpt"
     )
 }
 
@@ -690,8 +715,16 @@ fn known_identifier(value: &str) -> bool {
         "ReadSession"
             | "ReadSessionProfile"
             | "DslPageV1"
+            | "DslRuntimeCatalogPageV1"
+            | "DslStructuralChunksPageV1"
             | "Structural"
             | "RuntimeMetadata"
+            | "structural_certificate"
+            | "total_bytes"
+            | "chunk_ids"
+            | "chunk_offset"
+            | "offset"
+            | "bytes"
             | "candidate"
             | "candidate_id"
             | "bindings"
@@ -714,6 +747,7 @@ fn known_identifier(value: &str) -> bool {
             | "exact"
             | "at_least"
             | "HistoryCut"
+            | "InitialHistoryCutV1"
             | "HistoryGeneration"
             | "member"
             | "source_input"
@@ -819,6 +853,7 @@ fn known_identifier(value: &str) -> bool {
             | "Submitted"
             | "View"
             | "PublishedViewMetadata"
+            | "OperationRequestIdentityV1"
             | "RootScopedView"
             | "CandidateInstallationV1"
             | "cursor"
@@ -835,6 +870,13 @@ fn known_identifier(value: &str) -> bool {
             | "MutationsStaged"
             | "MutationsSealedForReplayV1"
             | "SealedMutationsForReplayV1"
+            | "SealedDslRequestV1"
+            | "replay"
+            | "request_ref"
+            | "basis"
+            | "Exact"
+            | "event_predecessor"
+            | "authority"
             | "InputDiscarded"
             | "StagedSources"
             | "SourceOwners"
@@ -930,6 +972,12 @@ fn known_identifier(value: &str) -> bool {
             | "CapabilityUnavailable"
             | "FocusSubjectNotFound"
             | "ProcessRssCeilingExceeded"
+            // CodeSearch match positions on retained path pages.
+            | "code_search"
+            | "Content"
+            | "Path"
+            | "excerpt"
+            | "text"
     )
 }
 
@@ -1013,6 +1061,7 @@ enum PublicationVariant {
     Submitted,
     View,
     PublishedViewMetadata,
+    OperationRequestIdentityV1,
     RootScopedView,
     CandidateInstallationV1,
     Graph,
@@ -1023,6 +1072,7 @@ enum PublicationVariant {
     MutationsStaged,
     MutationsSealedForReplayV1,
     SealedMutationsForReplayV1,
+    SealedDslRequestV1,
     InputDiscarded,
     StagedSources,
     SourceOwners,
@@ -1034,7 +1084,10 @@ enum PublicationVariant {
     ReadSession,
     ReadSessionProfile,
     DslPageV1,
+    DslRuntimeCatalogPageV1,
+    DslStructuralChunksPageV1,
     HistoryCut,
+    InitialHistoryCutV1,
     HistoryGeneration,
     TextRanked,
     TextRankedPage,
@@ -1050,6 +1103,7 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "Submitted",
     "View",
     "PublishedViewMetadata",
+    "OperationRequestIdentityV1",
     "RootScopedView",
     "CandidateInstallationV1",
     "Graph",
@@ -1060,6 +1114,7 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "MutationsStaged",
     "MutationsSealedForReplayV1",
     "SealedMutationsForReplayV1",
+    "SealedDslRequestV1",
     "InputDiscarded",
     "StagedSources",
     "SourceOwners",
@@ -1071,7 +1126,10 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "ReadSession",
     "ReadSessionProfile",
     "DslPageV1",
+    "DslRuntimeCatalogPageV1",
+    "DslStructuralChunksPageV1",
     "HistoryCut",
+    "InitialHistoryCutV1",
     "HistoryGeneration",
     "TextRanked",
     "TextRankedPage",
@@ -1098,6 +1156,7 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "Submitted" => Ok(PublicationVariant::Submitted),
                     "View" => Ok(PublicationVariant::View),
                     "PublishedViewMetadata" => Ok(PublicationVariant::PublishedViewMetadata),
+                    "OperationRequestIdentityV1" => Ok(PublicationVariant::OperationRequestIdentityV1),
                     "RootScopedView" => Ok(PublicationVariant::RootScopedView),
                     "CandidateInstallationV1" => Ok(PublicationVariant::CandidateInstallationV1),
                     "Graph" => Ok(PublicationVariant::Graph),
@@ -1112,6 +1171,7 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "SealedMutationsForReplayV1" => {
                         Ok(PublicationVariant::SealedMutationsForReplayV1)
                     }
+                    "SealedDslRequestV1" => Ok(PublicationVariant::SealedDslRequestV1),
                     "InputDiscarded" => Ok(PublicationVariant::InputDiscarded),
                     "StagedSources" => Ok(PublicationVariant::StagedSources),
                     "SourceOwners" => Ok(PublicationVariant::SourceOwners),
@@ -1125,7 +1185,10 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "ReadSession" => Ok(PublicationVariant::ReadSession),
                     "ReadSessionProfile" => Ok(PublicationVariant::ReadSessionProfile),
                     "DslPageV1" => Ok(PublicationVariant::DslPageV1),
+                    "DslRuntimeCatalogPageV1" => Ok(PublicationVariant::DslRuntimeCatalogPageV1),
+                    "DslStructuralChunksPageV1" => Ok(PublicationVariant::DslStructuralChunksPageV1),
                     "HistoryCut" => Ok(PublicationVariant::HistoryCut),
+                    "InitialHistoryCutV1" => Ok(PublicationVariant::InitialHistoryCutV1),
                     "HistoryGeneration" => Ok(PublicationVariant::HistoryGeneration),
                     "TextRanked" => Ok(PublicationVariant::TextRanked),
                     "TextRankedPage" => Ok(PublicationVariant::TextRankedPage),
@@ -1180,8 +1243,15 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     ),
                     PublicationVariant::ReadSession => NativeIndexResponse::ReadSession(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionReply>()?),
                     PublicationVariant::ReadSessionProfile => NativeIndexResponse::ReadSessionProfile(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionProfile>()?),
+                    PublicationVariant::DslStructuralChunksPageV1 => NativeIndexResponse::DslStructuralChunksPageV1(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeDslStructuralChunksPageV1>()?,
+                    ),
+                    PublicationVariant::DslRuntimeCatalogPageV1 => NativeIndexResponse::DslRuntimeCatalogPageV1(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeDslRuntimeCatalogPageV1>()?,
+                    ),
                     PublicationVariant::DslPageV1 => NativeIndexResponse::DslPageV1(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeDslPageV1>()?),
                     PublicationVariant::HistoryCut => NativeIndexResponse::HistoryCut(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionHistoryCutV1>()?),
+                    PublicationVariant::InitialHistoryCutV1 => NativeIndexResponse::InitialHistoryCutV1(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeInitialHistoryCutV1>()?),
                     PublicationVariant::HistoryGeneration => NativeIndexResponse::HistoryGeneration(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionHistoryGenerationV1>()?),
                     PublicationVariant::TextRanked => NativeIndexResponse::TextRanked(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextResult>()?),
                     PublicationVariant::TextRankedPage => NativeIndexResponse::TextRankedPage(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextPage>()?),
@@ -1193,6 +1263,9 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     }
                     PublicationVariant::PublishedViewMetadata => NativeIndexResponse::PublishedViewMetadata(
                         variant.newtype_variant::<OperationReply<CatalogView>>()?,
+                    ),
+                    PublicationVariant::OperationRequestIdentityV1 => NativeIndexResponse::OperationRequestIdentityV1(
+                        variant.newtype_variant::<OperationReply<ImmutableOperation>>()?,
                     ),
                     PublicationVariant::RootScopedView => NativeIndexResponse::RootScopedView(
                         variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRootScopedViewV1>()?,
@@ -1231,6 +1304,11 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     PublicationVariant::SealedMutationsForReplayV1 => {
                         NativeIndexResponse::SealedMutationsForReplayV1(
                             variant.newtype_variant::<Option<SourceStageReplayReceiptV1>>()?,
+                        )
+                    }
+                    PublicationVariant::SealedDslRequestV1 => {
+                        NativeIndexResponse::SealedDslRequestV1(
+                            variant.newtype_variant::<Option<NativeSealedDslSubmitV1>>()?,
                         )
                     }
                     PublicationVariant::InputDiscarded => NativeIndexResponse::InputDiscarded(
@@ -1884,6 +1962,7 @@ mod tests {
                 repository: repository.clone(),
                 path: path.into(),
             }),
+            code_search: Vec::new(),
         });
         let unpaged_body = encoded(unpaged.clone())?;
         let paged_body = encoded(paged.clone())?;
@@ -1919,6 +1998,99 @@ mod tests {
         ))?;
         assert!(
             matches!(prepare(&malformed, ReplyMode::ReadSession), Err(NativeUdsError::Protocol(message))
+            if message == "retained read array exceeds typed bound")
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "fixed wire gold and charge bounds are independent test oracles"
+    )]
+    fn admitted_path_pages_carry_and_charge_code_search_matches()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::{
+            FiniteScore, PreviewByteRange, RepoId,
+            index::IndexInstanceId,
+            native_protocol::{
+                MAX_NATIVE_TEXT_TOP_K, NativeCodeSearchExcerpt, NativeCodeSearchMatch,
+                NativeReadSessionId, NativeTextCoverage, NativeTextHit, NativeTextPathPageV1,
+                NativeTextPathRankingV1, NativeTextResult,
+            },
+        };
+
+        let view = ViewRef {
+            workspace: operation().workspace,
+            epoch: operation().epoch,
+            sequence: 1,
+            digest: Digest([9; 32]),
+        };
+        let hit = |stable: u8, path: &str| -> Result<NativeTextHit, Box<dyn std::error::Error>> {
+            Ok(NativeTextHit {
+                owner: OwnerKey {
+                    producer: operation().producer,
+                    stable_id: StableOwnerId([stable; 16]),
+                },
+                source: ObjectRef(Digest([stable; 32])),
+                score: FiniteScore::new(1.5)?,
+                path: path.into(),
+            })
+        };
+        let repository = RepoId::new("repo")?;
+        let page = |code_search: Vec<Option<NativeCodeSearchMatch>>|
+         -> Result<NativeIndexResponse, Box<dyn std::error::Error>> {
+            Ok(NativeIndexResponse::TextPathPageV1(NativeTextPathPageV1 {
+                session: NativeReadSessionId([7; 32]),
+                ranked: NativeTextPathRankingV1 {
+                    ranking: NativeTextResult {
+                        view,
+                        instance: IndexInstanceId([11; 16]),
+                        artifact: ObjectRef(Digest([12; 32])),
+                        matched: 3,
+                        exhaustive: true,
+                        coverage: NativeTextCoverage::CoreRequired,
+                        hits: vec![hit(1, "src/lib.rs")?, hit(2, "src/alpha.rs")?, hit(3, "x.rs")?],
+                    },
+                    repositories: vec![repository.clone(); 3],
+                },
+                remaining: 0,
+                after: None,
+                code_search,
+            }))
+        };
+        // "todo!()\nfn main() {}\n": `main` is 11..15 on line 2.
+        let text = "todo!()\nfn main() {}\n";
+        let matched = page(vec![
+            Some(NativeCodeSearchMatch::Content {
+                start: 11,
+                end: 15,
+                start_line: 2,
+                end_line: 2,
+                excerpt: Some(NativeCodeSearchExcerpt {
+                    context: PreviewByteRange { start: 0, end: 21 },
+                    text: text.into(),
+                }),
+            }),
+            Some(NativeCodeSearchMatch::Path { start: 4, end: 9 }),
+            None,
+        ])?;
+        let bare = page(vec![None, None, None])?;
+        let matched_body = encoded(matched.clone())?;
+        let bare_body = encoded(bare.clone())?;
+        let matched_reply = prepare(&matched_body, ReplyMode::ReadSession)?;
+        let bare_reply = prepare(&bare_body, ReplyMode::ReadSession)?;
+        assert!(
+            matched_reply.decoded_retained_limit()?
+                >= bare_reply.decoded_retained_limit()? + u64::try_from(text.len())?
+        );
+        assert_eq!(matched_reply.decode()?.payload, matched);
+        assert_eq!(bare_reply.decode()?.payload, bare);
+        // The matches are read-session data, never a publication reply.
+        assert!(prepare(&encoded(matched)?, ReplyMode::Publication).is_err());
+        let oversized = page(vec![None; usize::try_from(MAX_NATIVE_TEXT_TOP_K)? + 1])?;
+        assert!(
+            matches!(prepare(&encoded(oversized)?, ReplyMode::ReadSession), Err(NativeUdsError::Protocol(message))
             if message == "retained read array exceeds typed bound")
         );
         Ok(())

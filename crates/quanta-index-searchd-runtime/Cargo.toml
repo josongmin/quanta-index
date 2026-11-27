@@ -5,12 +5,21 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 autotests = false
+default-run = "quanta-index-searchd"
 
 [[bin]]
 name = "quanta-index-searchd"
 path = "src/bin/quanta-index-searchd.rs"
 doc = false
 bench = false
+
+[[bin]]
+name = "quanta-index-searchd-fixture"
+path = "src/bin/quanta-index-searchd-fixture.rs"
+required-features = ["native-test-fixtures"]
+doc = false
+bench = false
+test = false
 
 [[test]]
 name = "runtime_fast_suite"
@@ -63,9 +72,14 @@ path = "tests/native_product_process.rs"
 [lints]
 workspace = true
 
+[features]
+legacy-semantic-adapter = ["quanta-index-semantic/qualified-memory-uri-candidate"]
+sqlite-owner-vfs-grant = ["dep:quanta-sqlite-retained-grant"]
+qualified-memory-uri-candidate = ["legacy-semantic-adapter"]
+native-test-fixtures = []
+
 [dependencies]
 ciborium.workspace = true
-lance-io.workspace = true
 anyhow.workspace = true
 signal-hook.workspace = true
 quanta-index-catalog = { version = "0.1.0", path = "../quanta-index-catalog" }
@@ -78,7 +92,7 @@ quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical", de
 quanta-index-repomap = { version = "0.1.0", path = "../quanta-index-repomap" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
-quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
+quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic", default-features = false }
 quanta-index-storage = { version = "0.1.0", path = "../quanta-index-storage" }
 rusqlite.workspace = true
 reqwest.workspace = true
@@ -93,6 +107,8 @@ name = "dsl_query_matrix"
 harness = false
 
 [dev-dependencies]
+lance = { workspace = true }
+lance-io.workspace = true
 quanta-index-scratch-sqlite = { version = "0.1.0", path = "../quanta-index-scratch-sqlite" }
 object_store = { workspace = true }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd", features = ["test-provider-transport"] }
@@ -100,6 +116,8 @@ criterion = { workspace = true }
 quanta-index-corpus-smoke = { version = "0.1.0", path = "../quanta-index-corpus-smoke" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 quanta-index-searchctl = { version = "0.1.0", path = "../quanta-index-searchctl" }
+# The fixture API is available to integration tests through the dev graph.
+quanta-index-searchd-runtime = { version = "0.1.0", path = ".", default-features = false, features = ["native-test-fixtures"] }
 quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness", default-features = false }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false, features = ["test-runtime-barriers"] }
 rusqlite = { workspace = true }
@@ -114,13 +132,13 @@ name = "native_owned_pump"
 path = "tests/native_owned_pump.rs"
 
 [target.'cfg(unix)'.dependencies]
-libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs"] }
 nix = { workspace = true, features = ["fs"] }
+quanta-sqlite-retained-grant = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 quanta-explicit-fd-process.workspace = true
 quanta-installed-artifact-trust = { workspace = true, features = ["s-product-startup-v1"] }
 fs2.workspace = true
 
-[target.'cfg(unix)'.dev-dependencies]
-libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs-test-hooks"] }
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+quanta-state-root-quota.workspace = true

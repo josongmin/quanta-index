@@ -6,6 +6,7 @@ use crate::{ChunkId, ManifestGeneration, RepoId, RevisionId};
 use core::fmt;
 
 mod admitted;
+mod catalog_admitted;
 use admitted::{OrdinaryRuntime, RuntimeDecodePolicy};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -227,6 +228,22 @@ impl<'de> Deserialize<'de> for DirtyIngestBatch {
 // Runtime catalog ingest batch
 // =============================================================================
 
+fn read_catalog_field_once<'de, A, T>(
+    map: &mut A,
+    slot: &mut Option<T>,
+    name: &'static str,
+) -> Result<(), A::Error>
+where
+    A: MapAccess<'de>,
+    T: Deserialize<'de>,
+{
+    if slot.is_some() {
+        return Err(de::Error::duplicate_field(name));
+    }
+    *slot = Some(map.next_value()?);
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeChangedRecord {
     pub doc_id: ChunkId,
@@ -267,9 +284,9 @@ impl<'de> Visitor<'de> for RuntimeChangedRecordVisitor {
         let mut payload_hash: Option<[u8; 32]> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "doc_id" => doc_id = Some(map.next_value()?),
-                "applied_at_ms" => applied_at_ms = Some(map.next_value()?),
-                "payload_hash" => payload_hash = Some(map.next_value()?),
+                "doc_id" => read_catalog_field_once(&mut map, &mut doc_id, "doc_id")?,
+                "applied_at_ms" => read_catalog_field_once(&mut map, &mut applied_at_ms, "applied_at_ms")?,
+                "payload_hash" => read_catalog_field_once(&mut map, &mut payload_hash, "payload_hash")?,
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -341,17 +358,17 @@ impl<'de> Visitor<'de> for RuntimeDocFacetRecordVisitor {
         A: MapAccess<'de>,
     {
         let mut doc_id: Option<ChunkId> = None;
-        let mut owner: Option<String> = None;
-        let mut service: Option<String> = None;
-        let mut layer: Option<String> = None;
-        let mut surface: Option<String> = None;
+        let mut owner: Option<Option<String>> = None;
+        let mut service: Option<Option<String>> = None;
+        let mut layer: Option<Option<String>> = None;
+        let mut surface: Option<Option<String>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "doc_id" => doc_id = Some(map.next_value()?),
-                "owner" => owner = Some(map.next_value()?),
-                "service" => service = Some(map.next_value()?),
-                "layer" => layer = Some(map.next_value()?),
-                "surface" => surface = Some(map.next_value()?),
+                "doc_id" => read_catalog_field_once(&mut map, &mut doc_id, "doc_id")?,
+                "owner" => read_catalog_field_once(&mut map, &mut owner, "owner")?,
+                "service" => read_catalog_field_once(&mut map, &mut service, "service")?,
+                "layer" => read_catalog_field_once(&mut map, &mut layer, "layer")?,
+                "surface" => read_catalog_field_once(&mut map, &mut surface, "surface")?,
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -362,10 +379,10 @@ impl<'de> Visitor<'de> for RuntimeDocFacetRecordVisitor {
         }
         Ok(RuntimeDocFacetRecord {
             doc_id: doc_id.ok_or_else(|| de::Error::missing_field("doc_id"))?,
-            owner,
-            service,
-            layer,
-            surface,
+            owner: owner.flatten(),
+            service: service.flatten(),
+            layer: layer.flatten(),
+            surface: surface.flatten(),
         })
     }
 }
@@ -420,8 +437,8 @@ impl<'de> Visitor<'de> for RuntimeSnapshotRecordVisitor {
         let mut doc_ids: Option<Vec<ChunkId>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "name" => name = Some(map.next_value()?),
-                "doc_ids" => doc_ids = Some(map.next_value()?),
+                "name" => read_catalog_field_once(&mut map, &mut name, "name")?,
+                "doc_ids" => read_catalog_field_once(&mut map, &mut doc_ids, "doc_ids")?,
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -487,8 +504,8 @@ impl<'de> Visitor<'de> for RuntimeEdgeAuthorityRecordVisitor {
         let mut doc_ids: Option<Vec<ChunkId>> = None;
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
-                "key" => key = Some(map.next_value()?),
-                "doc_ids" => doc_ids = Some(map.next_value()?),
+                "key" => read_catalog_field_once(&mut map, &mut key, "key")?,
+                "doc_ids" => read_catalog_field_once(&mut map, &mut doc_ids, "doc_ids")?,
                 other => {
                     return Err(de::Error::unknown_field(
                         other,
@@ -531,6 +548,19 @@ pub struct RuntimeCatalogIngestBatch {
     pub snapshot_entries: Vec<RuntimeSnapshotRecord>,
     pub affected_entries: Vec<RuntimeEdgeAuthorityRecord>,
     pub invalidated_by_entries: Vec<RuntimeEdgeAuthorityRecord>,
+}
+
+impl RuntimeCatalogIngestBatch {
+    /// Every chunk referenced by a complete catalog, including group members.
+    pub fn referenced_chunks_v1(&self) -> impl Iterator<Item = &ChunkId> {
+        self.changed_entries
+            .iter()
+            .map(|record| &record.doc_id)
+            .chain(self.facet_entries.iter().map(|record| &record.doc_id))
+            .chain(self.snapshot_entries.iter().flat_map(|record| &record.doc_ids))
+            .chain(self.affected_entries.iter().flat_map(|record| &record.doc_ids))
+            .chain(self.invalidated_by_entries.iter().flat_map(|record| &record.doc_ids))
+    }
 }
 
 const RUNTIME_CATALOG_INGEST_BATCH_FIELDS: &[&str] = &[
@@ -603,22 +633,44 @@ impl<'de> Visitor<'de> for RuntimeCatalogIngestBatchVisitor {
         let mut invalidated_by_entries: Option<Vec<RuntimeEdgeAuthorityRecord>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "repo_id" => repo_id = Some(map.next_value()?),
-                "revision_id" => revision_id = Some(map.next_value()?),
-                "generation" => generation = Some(map.next_value()?),
-                "overlay_epoch_ms" => overlay_epoch_ms = Some(map.next_value()?),
-                "batch_digest" => batch_digest = Some(map.next_value()?),
-                "producer_head_applied_at_ms" => {
-                    producer_head_applied_at_ms = Some(map.next_value()?);
+                "repo_id" => read_catalog_field_once(&mut map, &mut repo_id, "repo_id")?,
+                "revision_id" => {
+                    read_catalog_field_once(&mut map, &mut revision_id, "revision_id")?
                 }
-                "generation_materialized_at_ms" => {
-                    generation_materialized_at_ms = Some(map.next_value()?);
+                "generation" => read_catalog_field_once(&mut map, &mut generation, "generation")?,
+                "overlay_epoch_ms" => {
+                    read_catalog_field_once(&mut map, &mut overlay_epoch_ms, "overlay_epoch_ms")?
                 }
-                "changed_entries" => changed_entries = Some(map.next_value()?),
-                "facet_entries" => facet_entries = Some(map.next_value()?),
-                "snapshot_entries" => snapshot_entries = Some(map.next_value()?),
-                "affected_entries" => affected_entries = Some(map.next_value()?),
-                "invalidated_by_entries" => invalidated_by_entries = Some(map.next_value()?),
+                "batch_digest" => {
+                    read_catalog_field_once(&mut map, &mut batch_digest, "batch_digest")?
+                }
+                "producer_head_applied_at_ms" => read_catalog_field_once(
+                    &mut map,
+                    &mut producer_head_applied_at_ms,
+                    "producer_head_applied_at_ms",
+                )?,
+                "generation_materialized_at_ms" => read_catalog_field_once(
+                    &mut map,
+                    &mut generation_materialized_at_ms,
+                    "generation_materialized_at_ms",
+                )?,
+                "changed_entries" => {
+                    read_catalog_field_once(&mut map, &mut changed_entries, "changed_entries")?
+                }
+                "facet_entries" => {
+                    read_catalog_field_once(&mut map, &mut facet_entries, "facet_entries")?
+                }
+                "snapshot_entries" => {
+                    read_catalog_field_once(&mut map, &mut snapshot_entries, "snapshot_entries")?
+                }
+                "affected_entries" => {
+                    read_catalog_field_once(&mut map, &mut affected_entries, "affected_entries")?
+                }
+                "invalidated_by_entries" => read_catalog_field_once(
+                    &mut map,
+                    &mut invalidated_by_entries,
+                    "invalidated_by_entries",
+                )?,
                 other => {
                     return Err(de::Error::unknown_field(
                         other,

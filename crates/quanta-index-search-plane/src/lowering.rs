@@ -1,21 +1,18 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{
-    CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE, CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE, LqCase, LqExpr,
-    LqFilter, LqLeaf, LqMetaVar, LqPatternType, LqPredicateArg, LqQuery, LqSelect,
-    LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
+    CodeSearchQueryError, LqExpr, LqLeaf, LqMetaVar, LqPatternType, LqQuery, LqStructuralBlock,
+    LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
     LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
-    MAX_CODE_SEARCH_TERM_BYTES, MAX_CODE_SEARCH_TERMS, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1,
-    TextQueryRequest, TextQuerySyntax, valid_code_search_component_query,
-    valid_code_search_typo_identifier,
+    MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, TextQueryRequest, TextQuerySyntax,
+    parse_code_search_query,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag,
     lower_sourcegraph_query, parse_sourcegraph, translate_query,
 };
 use quanta_index_lq_norm::{
-    LQ_VERSION_TAG, LqParseError, LqParseErrorCode, LqSpan, limits::MAX_INPUT_BYTES,
-    normalizer::normalize, parser::parse, tokenizer::tokenize,
+    LqParseError, LqParseErrorCode, normalizer::normalize, parser::parse, tokenizer::tokenize,
 };
 use quanta_index_lq_regex::{RegexErrorCode, RegexExecutor};
 
@@ -43,283 +40,22 @@ pub fn lower_lexical_text_query(request: &TextQueryRequest) -> Result<LqQuery, C
     }
 }
 
-/// Product code search lowers into the existing canonical LQ query. This
-///
-/// parser deliberately has a small, closed grammar: unqualified literal
-/// terms, quoted contiguous literals, `content:`/`path:` scopes,
-/// `regex:/.../` (also scoped), and `case:yes|no`. Native LQ remains a
-/// separate, explicit syntax.
+/// Product code search lowers through the one shared grammar into the
+/// canonical LQ query. Its refusals keep the lexical typed codes.
 pub(crate) fn lower_code_search_query_text(query_text: &str) -> Result<LqQuery, CoreError> {
-    if query_text.len() > MAX_INPUT_BYTES {
-        return Err(code_search_invalid("query exceeds the 16 KiB input limit"));
-    }
-    let words = code_search_words(query_text)?;
-    let mut terms = Vec::new();
-    let mut case = None;
-    for word in words {
-        if !word.quoted
-            && let Some(value) = word.text.strip_prefix("case:")
-        {
-            if case.is_some() {
-                return Err(code_search_invalid("case: may appear only once"));
-            }
-            case = Some(match value {
-                "yes" => LqCase::Sensitive,
-                "no" => LqCase::Insensitive,
-                _ => return Err(code_search_invalid("case: accepts only yes or no")),
-            });
-            continue;
-        }
-        if !word.quoted
-            && let Some(identifier) = word.text.strip_prefix("typo:")
-        {
-            if terms.is_empty() && valid_code_search_typo_identifier(identifier) {
-                terms.push(LqExpr::Leaf(LqLeaf::Predicate {
-                    name: CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE.to_string(),
-                    args: vec![LqPredicateArg::RawString(identifier.to_string())],
-                }));
-                continue;
-            }
-            return Err(code_search_invalid(
-                "typo: requires one ASCII identifier of 3..=64 bytes and cannot mix with other terms",
-            ));
-        }
-        if word.scope_prefix_before_quote
-            && let Some(value) = word.text.strip_prefix("components:")
-        {
-            if !terms.is_empty() || !valid_code_search_component_query(value) {
-                return Err(code_search_invalid(
-                    "components: requires 2..=32 lower-case ASCII words and cannot mix with other terms",
-                ));
-            }
-            terms.push(LqExpr::Leaf(LqLeaf::Predicate {
-                name: CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE.to_string(),
-                args: vec![LqPredicateArg::RawString(value.to_string())],
-            }));
-            continue;
-        }
-        if terms.iter().any(|term| matches!(term, LqExpr::Leaf(LqLeaf::Predicate { name, .. }) if name == CODE_SEARCH_IDENTIFIER_TYPO_PREDICATE || name == CODE_SEARCH_SYMBOL_COMPONENTS_PREDICATE)) {
-            return Err(code_search_invalid("typed search mode cannot mix with other terms"));
-        }
-        let scoped = !word.quoted || word.scope_prefix_before_quote;
-        let (scope, literal) = if scoped && let Some(value) = word.text.strip_prefix("content:") {
-            (Some("code_search.content"), value)
-        } else if scoped && let Some(value) = word.text.strip_prefix("path:") {
-            (Some("code_search.path"), value)
-        } else {
-            (None, word.text.as_str())
-        };
-        let literal = if word.regex_delimited {
-            literal
-                .strip_prefix("regex:")
-                .ok_or_else(|| code_search_invalid("regex: requires /.../"))?
-        } else {
-            literal
-        };
-        if literal.is_empty() {
-            return Err(code_search_invalid("search term must not be empty"));
-        }
-        if literal.len() > MAX_CODE_SEARCH_TERM_BYTES {
-            return Err(code_search_invalid(
-                "search term exceeds the 256-byte limit",
-            ));
-        }
-        if !word.regex_delimited
-            && scope.is_none()
-            && !word.quoted
-            && code_search_reserved_word(literal)
-        {
-            let message = if literal.starts_with("symbol:") {
-                "symbol: definition queries use the dedicated symbol route"
-            } else if literal.starts_with("regex:") {
-                "regex: requires a slash-delimited /.../ pattern"
-            } else {
-                "this operator or filter is not part of code_search; use native syntax"
-            };
-            return Err(code_search_invalid(message));
-        }
-        if !word.regex_delimited && literal.starts_with("regex:") && scope.is_some() && !word.quoted
-        {
-            return Err(code_search_invalid("regex: requires /.../"));
-        }
-        let leaf = match (scope, word.regex_delimited) {
-            (None, true) => LqLeaf::Regex(literal.to_string()),
-            (Some(name), true) => LqLeaf::Predicate {
-                name: format!("{name}_regex"),
-                args: vec![LqPredicateArg::RawString(literal.to_string())],
-            },
-            (Some(name), false) => LqLeaf::Predicate {
-                name: name.to_string(),
-                args: vec![LqPredicateArg::RawString(literal.to_string())],
-            },
-            (None, false) => LqLeaf::RawString(literal.to_string()),
-        };
-        terms.push(LqExpr::Leaf(leaf));
-        if terms.len() > MAX_CODE_SEARCH_TERMS {
-            return Err(code_search_invalid("query exceeds the 32-term limit"));
-        }
-    }
-    if terms.is_empty() {
-        return Err(code_search_invalid(
-            "code_search requires at least one search term",
-        ));
-    }
-    let mut options = quanta_index_contract::LqOptions::defaults();
-    options.pattern_type = LqPatternType::CodeSearch;
-    options.case = case;
-    let source_end = u32::try_from(query_text.len()).map_err(|error| {
-        code_search_invalid(&format!("query length exceeds source span range: {error}"))
-    })?;
-    normalize(LqQuery {
-        lq_version: LQ_VERSION_TAG,
-        expr: LqExpr::All(terms),
-        filters: vec![LqFilter::Select {
-            dim: LqSelect::File,
-        }],
-        directives: Vec::new(),
-        options,
-        source_span: LqSpan::new(0, source_end),
+    parse_code_search_query(query_text).map_err(|error| match error {
+        CodeSearchQueryError::Grammar(_) => CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+                quanta_index_contract::lex::LexicalErrorCode::UnsupportedCombo,
+            ),
+            message: error.to_string(),
+        },
+        CodeSearchQueryError::Lq(error) => map_lq_error(&error),
+        CodeSearchQueryError::NativeFanout { .. } => CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(error.lexical_code()),
+            message: error.to_string(),
+        },
     })
-    .map_err(|err| map_lq_error(&err))
-}
-
-struct CodeSearchWord {
-    text: String,
-    quoted: bool,
-    /// Whether `content:` or `path:` appeared before the opening quote.
-    scope_prefix_before_quote: bool,
-    regex_delimited: bool,
-}
-
-fn code_search_words(query_text: &str) -> Result<Vec<CodeSearchWord>, CoreError> {
-    let mut words = Vec::new();
-    let mut text = String::new();
-    let mut quoted = false;
-    let mut scope_prefix_before_quote = false;
-    let mut in_quotes = false;
-    let mut escaped = false;
-    let mut just_closed_quote = false;
-    let mut in_regex = false;
-    let mut regex_delimited = false;
-    for ch in query_text.chars() {
-        if in_regex {
-            if ch.is_control() {
-                return Err(code_search_invalid("control character in regex"));
-            }
-            if escaped {
-                text.push(ch);
-                escaped = false;
-            } else if ch == '\\' {
-                text.push(ch);
-                escaped = true;
-            } else if ch == '/' {
-                in_regex = false;
-                just_closed_quote = true;
-            } else {
-                text.push(ch);
-            }
-        } else if in_quotes {
-            if ch.is_control() {
-                return Err(code_search_invalid("control character in quoted literal"));
-            }
-            if escaped {
-                if !matches!(ch, '"' | '\\') {
-                    return Err(code_search_invalid(
-                        r#"quoted literals support only \" and \\ escapes"#,
-                    ));
-                }
-                text.push(ch);
-                escaped = false;
-            } else {
-                match ch {
-                    '\\' => escaped = true,
-                    '"' => {
-                        in_quotes = false;
-                        just_closed_quote = true;
-                    }
-                    _ => text.push(ch),
-                }
-            }
-        } else if ch.is_whitespace() {
-            if !text.is_empty() || quoted {
-                words.push(CodeSearchWord {
-                    text: std::mem::take(&mut text),
-                    quoted,
-                    scope_prefix_before_quote,
-                    regex_delimited,
-                });
-                quoted = false;
-                scope_prefix_before_quote = false;
-                regex_delimited = false;
-                just_closed_quote = false;
-            }
-        } else if just_closed_quote {
-            return Err(code_search_invalid(
-                "quoted literal must end at a term boundary",
-            ));
-        } else if ch == '/' && matches!(text.as_str(), "regex:" | "content:regex:" | "path:regex:")
-        {
-            in_regex = true;
-            regex_delimited = true;
-        } else if ch == '"' {
-            if !text.is_empty() && !matches!(text.as_str(), "content:" | "path:" | "components:") {
-                return Err(code_search_invalid(
-                    "quotes must start a term or scoped value",
-                ));
-            }
-            in_quotes = true;
-            quoted = true;
-            scope_prefix_before_quote = !text.is_empty();
-        } else if ch == '\\' {
-            return Err(code_search_invalid(
-                "escape bare backslashes with a quoted literal",
-            ));
-        } else if ch.is_control() {
-            return Err(code_search_invalid("control character in search term"));
-        } else {
-            text.push(ch);
-        }
-    }
-    if in_quotes || in_regex || escaped {
-        return Err(code_search_invalid("unterminated quoted literal or regex"));
-    }
-    if !text.is_empty() || quoted {
-        words.push(CodeSearchWord {
-            text,
-            quoted,
-            scope_prefix_before_quote,
-            regex_delimited,
-        });
-    }
-    Ok(words)
-}
-
-fn code_search_reserved_word(literal: &str) -> bool {
-    // Explicitly refuse syntax that would otherwise look like an inert
-    // literal while the user intended a filter or different search lane.
-    [
-        "select:",
-        "type:",
-        "repo:",
-        "lang:",
-        "file:",
-        "rev:",
-        "regex:",
-        "symbol:",
-        "components:",
-        "patterntype:",
-    ]
-    .iter()
-    .any(|prefix| literal.starts_with(prefix))
-}
-
-fn code_search_invalid(message: &str) -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
-            quanta_index_contract::lex::LexicalErrorCode::UnsupportedCombo,
-        ),
-        message: format!("code_search: {message}"),
-    }
 }
 
 /// The file-oriented product grammar belongs to the lexical text route.

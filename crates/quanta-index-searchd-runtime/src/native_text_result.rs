@@ -13,7 +13,7 @@ use quanta_index_contract::{
 use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, QueryCoverage, QueryOutcome,
 };
-use quanta_index_lexical::native::{NativeTextHitSource, TextReadResult};
+use quanta_index_lexical::native::{CodeSearchMatch, NativeTextHitSource, TextReadResult};
 
 use crate::native_result::{ResultValue, ScopedNativeResult, shared_value_bytes};
 
@@ -92,7 +92,7 @@ fn validate_read_shape(
         return Err(IndexError::ResourceLimited);
     }
     for hit in &result.hits {
-        if !super::native_source_path::valid_native_source_path(&hit.path) {
+        if !quanta_index_contract::index::is_canonical_source_path(&hit.path) {
             return Err(IndexError::BackendViolation(
                 "native text reader returned invalid path".into(),
             ));
@@ -112,11 +112,7 @@ fn validate_read_shape(
     if shape.groups_paths() {
         return validate_path_groups(result, reserve);
     }
-    if result
-        .hits
-        .iter()
-        .any(|hit| hit.path_group_repository_v1().is_some())
-    {
+    if result.hits.iter().any(|hit| hit.path_group_repository_v1().is_some()) {
         return Err(IndexError::BackendViolation(
             "owner-ranked text reader returned path groups".into(),
         ));
@@ -147,9 +143,7 @@ fn validate_path_groups(
         reserve(bytes, MemoryLifetime::Temporary)?
     };
     let mut groups = Vec::new();
-    groups
-        .try_reserve_exact(count)
-        .map_err(|_| IndexError::ResourceLimited)?;
+    groups.try_reserve_exact(count).map_err(|_| IndexError::ResourceLimited)?;
     if groups.capacity() > count {
         return Err(IndexError::ResourceLimited);
     }
@@ -187,12 +181,7 @@ pub(super) fn convert(
     reserve: impl Fn(u64, MemoryLifetime) -> Result<Option<MemoryLease>, IndexError>,
 ) -> Result<ScopedNativeTextResult, IndexError> {
     convert_impl(
-        outcome,
-        instance,
-        requested_top_k,
-        false,
-        ReadShape::Owners,
-        &reserve,
+        outcome, instance, requested_top_k, false, ReadShape::Owners, &reserve,
         |ranking, _, _, _| Ok((ranking, None)),
     )
 }
@@ -203,28 +192,18 @@ pub(super) fn convert_preview(
     requested_top_k: u32,
     reserve: impl Fn(u64, MemoryLifetime) -> Result<Option<MemoryLease>, IndexError>,
 ) -> Result<ScopedNativeTextPreviewResult, IndexError> {
-    convert_impl(
-        outcome,
-        instance,
-        requested_top_k,
-        true,
-        ReadShape::Owners,
-        &reserve,
-        |ranking, _, previews, _| {
-            let result = NativeTextPreviewResult {
-                ranking,
-                previews: previews.ok_or_else(|| {
-                    IndexError::BackendViolation(
-                        "native preview reader omitted preview rows".into(),
-                    )
-                })?,
-            };
-            result
-                .validate()
-                .map_err(|error| IndexError::BackendViolation(error.into()))?;
-            Ok((result, None))
-        },
-    )
+    convert_impl(outcome, instance, requested_top_k, true, ReadShape::Owners, &reserve, |ranking, _, previews, _| {
+        let result = NativeTextPreviewResult {
+            ranking,
+            previews: previews.ok_or_else(|| {
+                IndexError::BackendViolation("native preview reader omitted preview rows".into())
+            })?,
+        };
+        result
+            .validate()
+            .map_err(|error| IndexError::BackendViolation(error.into()))?;
+        Ok((result, None))
+    })
 }
 
 pub(super) fn convert_paths(
@@ -235,26 +214,25 @@ pub(super) fn convert_paths(
     reserve: impl Fn(u64, MemoryLifetime) -> Result<Option<MemoryLease>, IndexError>,
 ) -> Result<ScopedNativeTextPathResult, IndexError> {
     convert_impl(
-        outcome,
-        instance,
-        requested_top_k,
-        with_preview,
-        ReadShape::Paths,
-        &reserve,
+        outcome, instance, requested_top_k, with_preview, ReadShape::Paths, &reserve,
         |ranking, repositories, previews, _| {
             let result = NativeTextPathResultV1 {
-                ranked: NativeTextPathRankingV1 {
-                    ranking,
-                    repositories,
-                },
+                ranked: NativeTextPathRankingV1 { ranking, repositories },
                 previews,
             };
-            result
-                .validate_previews()
-                .map_err(|error| IndexError::BackendViolation(error.into()))?;
+            result.validate_previews().map_err(|error| IndexError::BackendViolation(error.into()))?;
             Ok((result, None))
         },
     )
+}
+
+/// A projected path page before its `CodeSearch` matches are attached, with
+/// the scan's representative match of each row, in row order.
+pub(super) struct ProjectedPathPage {
+    pub(super) value: ResultValue<NativeTextPathPageV1>,
+    pub(super) witnesses: Vec<Option<CodeSearchMatch>>,
+    // The witness list dies before its grant.
+    pub(super) _witness_memory: Option<MemoryLease>,
 }
 
 pub(super) fn convert_path_page(
@@ -265,14 +243,31 @@ pub(super) fn convert_path_page(
     query: Digest,
     after: Option<&NativeTextPathCursorV1>,
     reserve: impl Fn(u64, MemoryLifetime) -> Result<Option<MemoryLease>, IndexError>,
-) -> Result<ScopedNativeTextPathPage, IndexError> {
-    convert_impl(
+) -> Result<ProjectedPathPage, IndexError> {
+    let rows = outcome.result().hits.len();
+    let witness_bytes = rows
+        .checked_mul(std::mem::size_of::<Option<CodeSearchMatch>>())
+        .ok_or(IndexError::ResourceLimited)
+        .and_then(|bytes| u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited))?;
+    let witness_memory = if witness_bytes == 0 {
+        None
+    } else {
+        // The list outlives the execution reservation: the excerpt step
+        // consumes it after the projection returns.
+        reserve(witness_bytes, MemoryLifetime::Retained)?
+    };
+    let mut witnesses = Vec::new();
+    witnesses
+        .try_reserve_exact(rows)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    let value = convert_value_impl(
         outcome,
         instance,
         requested_top_k,
         false,
         ReadShape::PathPage,
         &reserve,
+        Some(&mut witnesses),
         |ranking, repositories, _, remaining| {
             if after.is_none() && remaining != ranking.matched {
                 return Err(IndexError::BackendViolation(
@@ -281,9 +276,7 @@ pub(super) fn convert_path_page(
             }
             if let Some(after) = after {
                 if after.artifact != ranking.artifact {
-                    return Err(IndexError::InvalidInput(
-                        "path page artifact differs".into(),
-                    ));
+                    return Err(IndexError::InvalidInput("path page artifact differs".into()));
                 }
                 if remaining == ranking.matched {
                     return Err(IndexError::BackendViolation(
@@ -291,48 +284,27 @@ pub(super) fn convert_path_page(
                     ));
                 }
                 if ranking.hits.iter().zip(&repositories).any(|(hit, repo)| {
-                    (repo == &after.repository && hit.path == after.path)
-                        || !compare_native_text_path_rank_v1(
-                            (after.score, &after.repository, &after.path),
-                            (hit.score, repo, &hit.path),
-                        )
-                        .is_lt()
-                }) {
-                    return Err(IndexError::BackendViolation(
-                        "path page does not follow its anchor".into(),
-                    ));
+                        (repo == &after.repository && hit.path == after.path)
+                            || !compare_native_text_path_rank_v1(
+                                (after.score, &after.repository, &after.path),
+                                (hit.score, repo, &hit.path),
+                            ).is_lt()
+                    })
+                {
+                    return Err(IndexError::BackendViolation("path page does not follow its anchor".into()));
                 }
             }
             let (cursor, memory) = if remaining > u64::from(requested_top_k) {
-                let (last, repository) =
-                    ranking
-                        .hits
-                        .last()
-                        .zip(repositories.last())
-                        .ok_or_else(|| {
-                            IndexError::BackendViolation(
-                                "empty path page has a continuation".into(),
-                            )
-                        })?;
-                let bytes = last
-                    .path
-                    .len()
-                    .checked_add(repository.as_str().len())
+                let (last, repository) = ranking.hits.last().zip(repositories.last())
+                    .ok_or_else(|| IndexError::BackendViolation("empty path page has a continuation".into()))?;
+                let bytes = last.path.len().checked_add(repository.as_str().len())
                     .and_then(|bytes| u64::try_from(bytes).ok())
                     .ok_or(IndexError::ResourceLimited)?;
                 let memory = reserve(bytes, MemoryLifetime::Retained)?;
-                (
-                    Some(NativeTextPathCursorV1 {
-                        view: ranking.view,
-                        instance,
-                        query,
-                        artifact: ranking.artifact,
-                        score: last.score,
-                        repository: repository.clone(),
-                        path: last.path.clone(),
-                    }),
-                    memory,
-                )
+                (Some(NativeTextPathCursorV1 {
+                    view: ranking.view, instance, query, artifact: ranking.artifact,
+                    score: last.score, repository: repository.clone(), path: last.path.clone(),
+                }), memory)
             } else {
                 (None, None)
             };
@@ -345,11 +317,17 @@ pub(super) fn convert_path_page(
                     },
                     remaining,
                     after: cursor,
+                    code_search: Vec::new(),
                 },
                 memory,
             ))
         },
-    )
+    )?;
+    Ok(ProjectedPathPage {
+        value,
+        witnesses,
+        _witness_memory: witness_memory,
+    })
 }
 
 fn convert_impl<R>(
@@ -366,6 +344,36 @@ fn convert_impl<R>(
         u64,
     ) -> Result<(R, Option<MemoryLease>), IndexError>,
 ) -> Result<ScopedNativeResult<R>, IndexError> {
+    convert_value_impl(
+        outcome,
+        instance,
+        requested_top_k,
+        with_preview,
+        shape,
+        reserve,
+        None,
+        make_result,
+    )
+    .map(ScopedNativeResult::new)
+}
+
+/// `witnesses`, when given, receives each row's representative `CodeSearch`
+/// match in row order; its capacity is reserved by the caller.
+fn convert_value_impl<R>(
+    outcome: QueryOutcome<TextReadResult>,
+    instance: IndexInstanceId,
+    requested_top_k: u32,
+    with_preview: bool,
+    shape: ReadShape,
+    reserve: &impl Fn(u64, MemoryLifetime) -> Result<Option<MemoryLease>, IndexError>,
+    mut witnesses: Option<&mut Vec<Option<CodeSearchMatch>>>,
+    make_result: impl FnOnce(
+        NativeTextResult,
+        Vec<RepoId>,
+        Option<Vec<NativeTextPreview>>,
+        u64,
+    ) -> Result<(R, Option<MemoryLease>), IndexError>,
+) -> Result<ResultValue<R>, IndexError> {
     validate_read_shape(&outcome, requested_top_k, shape, reserve)?;
     let view = outcome.view();
     let mut result = outcome.into_result();
@@ -392,11 +400,8 @@ fn convert_impl<R>(
                 .checked_mul(std::mem::size_of::<Option<MemoryLease>>())
                 .and_then(|leases| bytes.checked_add(leases))
         })
-        .and_then(|bytes| {
-            repository_count
-                .checked_mul(std::mem::size_of::<RepoId>())
-                .and_then(|repo_bytes| bytes.checked_add(repo_bytes))
-        })
+        .and_then(|bytes| repository_count.checked_mul(std::mem::size_of::<RepoId>())
+            .and_then(|repo_bytes| bytes.checked_add(repo_bytes)))
         .and_then(|bytes| bytes.checked_add(value_bytes))
         .ok_or(IndexError::ResourceLimited)?;
     let capacity = reserve(
@@ -417,9 +422,7 @@ fn convert_impl<R>(
         return Err(IndexError::ResourceLimited);
     }
     let mut repositories = Vec::new();
-    repositories
-        .try_reserve_exact(repository_count)
-        .map_err(|_| IndexError::ResourceLimited)?;
+    repositories.try_reserve_exact(repository_count).map_err(|_| IndexError::ResourceLimited)?;
     if repositories.capacity() > repository_count {
         return Err(IndexError::ResourceLimited);
     }
@@ -444,6 +447,14 @@ fn convert_impl<R>(
             })?;
             repositories.push(repository);
             payload_memory.push(memory);
+        }
+        if let Some(witnesses) = witnesses.as_deref_mut() {
+            if witnesses.len() == witnesses.capacity() {
+                return Err(IndexError::BackendViolation(
+                    "path page witness list exceeds its reserved rows".into(),
+                ));
+            }
+            witnesses.push(hit.code_search);
         }
         let parts = hit.into_parts();
         // A refused origin still destroys its String before its path grant.
@@ -476,9 +487,9 @@ fn convert_impl<R>(
     if cursor_memory.is_some() {
         payload_memory.push(cursor_memory);
     }
-    Ok(ScopedNativeResult::new(ResultValue {
+    Ok(ResultValue {
         result: value,
         payload_memory,
         _capacity_memory: capacity,
-    }))
+    })
 }

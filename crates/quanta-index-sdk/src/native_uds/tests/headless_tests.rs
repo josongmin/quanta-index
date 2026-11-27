@@ -285,12 +285,17 @@ fn complete_save_reply(
 fn overlay_sdk_accepts_exact_update_snapshot_and_save_ack() -> Result<(), Box<dyn std::error::Error>>
 {
     let document = overlay_document();
+    let witness = OwnerKey {
+        stable_id: StableOwnerId([38; 16]),
+        ..document.owner
+    };
     let update = NativeOverlayRequest::Update {
         document,
         expected_revision: Some(1),
         revision: 2,
         text: Some("unsaved text".into()),
         path: Some("src/unsaved.rs".into()),
+        repository_witness: Some(witness),
     };
     let updated = NativeOverlayReply::Updated {
         document,
@@ -305,6 +310,7 @@ fn overlay_sdk_accepts_exact_update_snapshot_and_save_ack() -> Result<(), Box<dy
             revision: 2,
             text: None,
             path: None,
+            repository_witness: None,
         }),
     };
     if overlay_reply(
@@ -320,6 +326,7 @@ fn overlay_sdk_accepts_exact_update_snapshot_and_save_ack() -> Result<(), Box<dy
             revision: 2,
             text: Some("unsaved text".into()),
             path: Some("src/unsaved.rs".into()),
+            repository_witness: Some(witness),
         }),
     };
     if overlay_reply(
@@ -374,12 +381,17 @@ fn overlay_sdk_sends_path_on_canonical_update_wire() -> Result<(), Box<dyn std::
     let socket = directory.path().join("native.sock");
     let listener = UnixListener::bind(&socket)?;
     let document = overlay_document();
+    let witness = OwnerKey {
+        stable_id: StableOwnerId([38; 16]),
+        ..document.owner
+    };
     let expected = NativeOverlayRequest::Update {
         document,
         expected_revision: Some(1),
         revision: 2,
         text: Some("unsaved".into()),
         path: Some("src/unsaved.rs".into()),
+        repository_witness: Some(witness),
     };
     let peer = std::thread::spawn(
         move || -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
@@ -406,6 +418,7 @@ fn overlay_sdk_sends_path_on_canonical_update_wire() -> Result<(), Box<dyn std::
         2,
         Some("unsaved".into()),
         Some("src/unsaved.rs".into()),
+        Some(witness),
         &budget,
     )?;
     if updated
@@ -421,7 +434,7 @@ fn overlay_sdk_sends_path_on_canonical_update_wire() -> Result<(), Box<dyn std::
         .map_err(|_error| std::io::Error::other("scripted overlay peer panicked"))?
         .map_err(|error| std::io::Error::other(format!("scripted overlay peer: {error}")))?;
     if !exact {
-        return Err("overlay SDK omitted or changed the path on the wire".into());
+        return Err("overlay SDK omitted or changed the path or witness on the wire".into());
     }
     Ok(())
 }
@@ -442,6 +455,7 @@ fn overlay_sdk_rejects_foreign_document_and_revision() -> Result<(), Box<dyn std
         revision: 2,
         text: Some("unsaved text".into()),
         path: None,
+        repository_witness: None,
     };
     for reply in [
         NativeOverlayReply::Updated {
@@ -471,6 +485,7 @@ fn overlay_sdk_rejects_foreign_document_and_revision() -> Result<(), Box<dyn std
                 revision: 0,
                 text: Some("invalid".into()),
                 path: None,
+                repository_witness: None,
             }),
         },
         NativeOverlayReply::Snapshot {
@@ -479,6 +494,7 @@ fn overlay_sdk_rejects_foreign_document_and_revision() -> Result<(), Box<dyn std
                 revision: 2,
                 text: Some("valid".into()),
                 path: Some("../outside.rs".into()),
+                repository_witness: None,
             }),
         },
         NativeOverlayReply::Snapshot {
@@ -487,6 +503,17 @@ fn overlay_sdk_rejects_foreign_document_and_revision() -> Result<(), Box<dyn std
                 revision: 2,
                 text: None,
                 path: Some("src/deleted.rs".into()),
+                repository_witness: None,
+            }),
+        },
+        // A repository witness only accompanies a new file's explicit path.
+        NativeOverlayReply::Snapshot {
+            document,
+            overlay: Some(NativeOverlaySnapshot {
+                revision: 2,
+                text: Some("valid".into()),
+                path: None,
+                repository_witness: Some(document.owner),
             }),
         },
     ] {
@@ -608,12 +635,14 @@ fn overlay_text_result() -> Result<NativeOverlayTextResult, Box<dyn std::error::
             NativeOverlayTextHit {
                 owner,
                 source: NativeOverlayTextSource::Overlay { revision: 3 },
+                repository: Some(quanta_index_contract::RepoId::new("repo-a")?),
                 path: "src/unsaved.rs".into(),
                 score: FiniteScore::new(1.25).map_err(|_error| "invalid fixed score")?,
             },
             NativeOverlayTextHit {
                 owner: second_owner,
                 source: NativeOverlayTextSource::Durable(durable_source),
+                repository: None,
                 path: "src/durable.rs".into(),
                 score: FiniteScore::new(1.0).map_err(|_error| "invalid fixed score")?,
             },
@@ -778,6 +807,13 @@ fn overlay_text_sdk_rejects_foreign_corpus_origin_rank_and_cardinality()
     let mut wrong_rank = valid.clone();
     wrong_rank.hits.swap(0, 1);
     malformed.push(wrong_rank);
+    // Two owners cannot be one `(repository, path)` file.
+    let mut duplicate_identity = valid.clone();
+    let first = fixture_hit_mut(&mut duplicate_identity, 0)?.clone();
+    let second = fixture_hit_mut(&mut duplicate_identity, 1)?;
+    second.repository = first.repository;
+    second.path = first.path;
+    malformed.push(duplicate_identity);
 
     for reply in malformed {
         if !matches!(
@@ -891,6 +927,7 @@ fn native_text_refuses_unbounded_zero_and_forbidden_regex_before_connect()
     let client = NativeUdsClient::new(directory.path().join("absent.sock"));
     let result = text_result();
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(2));
+    // An unbounded or zero count parses but has no Native plan.
     for source in ["needle count:all", "needle count:0"] {
         let mut query = text_query(2);
         query.query_text = source.into();
@@ -901,7 +938,12 @@ fn native_text_refuses_unbounded_zero_and_forbidden_regex_before_connect()
                 query,
                 &budget,
             ),
-            Err(NativeUdsError::Protocol(_))
+            Err(NativeUdsError::QueryRejected {
+                code: SearchPlaneErrorCodeV2::Lexical(
+                    quanta_index_contract::lex::LexicalErrorCode::UnsupportedCombo
+                ),
+                ..
+            })
         ) {
             return Err(format!("{source} was not refused before socket connection").into());
         }
@@ -1012,4 +1054,19 @@ fn admitted_graph_reply_binds_exact_reverse_adjacency() {
             &NativeIndexResponse::Graph(invalid),
         ));
     }
+}
+
+#[test]
+fn overlay_text_sdk_keeps_one_path_in_two_repositories_distinct()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut result = overlay_text_result()?;
+    let first = fixture_hit_mut(&mut result, 0)?.clone();
+    let second = fixture_hit_mut(&mut result, 1)?;
+    second.repository = Some(quanta_index_contract::RepoId::new("repo-b")?);
+    second.path = first.path;
+    let identity = result.corpus.identity;
+    if overlay_text_reply(result.clone(), Some(identity))? != result {
+        return Err("overlay SDK conflated one path in two repositories".into());
+    }
+    Ok(())
 }

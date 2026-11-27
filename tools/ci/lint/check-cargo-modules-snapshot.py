@@ -23,20 +23,19 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import json
 import os
 import platform
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
-    import tomli as tomllib  # type: ignore[no-redef]
-
+from workspace_metadata import library_target_name, load_workspace_members
 
 ROOT = Path(__file__).resolve().parents[3]
-WORKSPACE_TOML = ROOT / "Cargo.toml"
 BASELINE_DIR = ROOT / "tools" / "ci" / "lint" / "baselines" / "cargo-modules"
 
 # Contract, core and the publication kernel are structurally load-bearing;
@@ -81,28 +80,39 @@ def cargo_env(default_lane: str) -> dict[str, str]:
     return env
 
 
-def workspace_member_names() -> set[str]:
-    data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
-    members = data.get("workspace", {}).get("members", [])
-    return {Path(m).name for m in members}
-
-
-def validate_workspace_dependencies() -> None:
+def validate_workspace_dependencies() -> dict[str, dict]:
     # cargo-modules can emit a partial tree when Cargo cannot resolve the
     # workspace. Reject that state before comparing or writing any baseline.
-    result = subprocess.run(
-        [str(ROOT / "scripts" / "cargow"), "metadata", "--locked", "--format-version", "1"],
-        cwd=ROOT,
-        env=cargo_env("cargo-modules-lane"),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"workspace dependency resolution failed: {result.stderr}")
+    return load_workspace_members(ROOT, cargo_env("cargo-modules-lane"))
 
 
-def render_module_tree(package: str) -> str:
-    cmd = ["cargo", "modules", "structure", "--lib", "--package", package, "--no-fns"]
+def child_check_diagnostics(status_file: Path) -> str:
+    diagnostics: list[str] = []
+    for path in sorted(status_file.parent.glob(f"{status_file.name}.*.stdout")):
+        # With --message-format=json, build-script compiler errors arrive on stdout.
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                if '"compiler-message"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict) or record.get("reason") != "compiler-message":
+                    continue
+                message = record.get("message")
+                if isinstance(message, dict) and message.get("level") == "error":
+                    detail = message.get("rendered") or message.get("message")
+                    if isinstance(detail, str) and detail.strip():
+                        diagnostics.append(detail.rstrip())
+    for path in sorted(status_file.parent.glob(f"{status_file.name}.*.stderr")):
+        detail = path.read_text(encoding="utf-8", errors="replace").strip()
+        if detail:
+            diagnostics.append(detail)
+    return "\n".join(diagnostics)
+
+
+def render_module_tree(package: str, library_name: str) -> str:
     # The snapshot is compared byte-for-byte against a plain-text baseline, so
     # the tool must never colour its output. cargo-modules honours NO_COLOR; a
     # shell that exports CLICOLOR_FORCE (or a tool version that colours when
@@ -111,17 +121,72 @@ def render_module_tree(package: str) -> str:
     env["NO_COLOR"] = "1"
     env.pop("CLICOLOR_FORCE", None)
     env.pop("FORCE_COLOR", None)
-    result = subprocess.run(
-        cmd,
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"cargo modules structure failed for {package}: {result.stderr}")
+    cargo_home_bin = Path(env.get("CARGO_HOME", str(Path.home() / ".cargo"))).expanduser() / "bin"
+    tool_path = os.pathsep.join((env.get("PATH", ""), str(cargo_home_bin)))
+    cargo_modules = shutil.which("cargo-modules", path=tool_path)
+    cargo = shutil.which("cargo", path=tool_path)
+    if cargo_modules is None or cargo is None:
+        raise RuntimeError("cargo modules or cargo executable is unavailable")
+    # Invoking `cargo modules` via Cargo overwrites CARGO, hiding the child
+    # process from our shim. The direct binary honors CARGO. cargo-modules may
+    # return a valid-looking tree with exit 0 even when its child check fails.
+    cmd = [cargo_modules, "modules", "structure", "--lib", "--package", package, "--no-fns"]
+    with tempfile.TemporaryDirectory(prefix="quanta-cargo-modules-") as temporary:
+        shim = Path(temporary) / "cargo"
+        status_file = Path(temporary) / "check-status"
+        shim.write_text(
+            "#!/bin/sh\n"
+            'if [ "${1:-}" != "check" ]; then\n'
+            '  exec "$QUANTA_INDEX_MODULES_REAL_CARGO" "$@"\n'
+            "fi\n"
+            'log="$QUANTA_INDEX_MODULES_CHECK_STATUS.$$"\n'
+            '"$QUANTA_INDEX_MODULES_REAL_CARGO" "$@" > "$log.stdout" 2> "$log.stderr"\n'
+            "status=$?\n"
+            'if ! cat "$log.stdout" || ! cat "$log.stderr" >&2; then\n'
+            "  status=1\n"
+            "fi\n"
+            'if [ "$status" -eq 0 ]; then rm -f "$log.stdout" "$log.stderr"; fi\n'
+            'printf "%s\\n" "$status" >> "$QUANTA_INDEX_MODULES_CHECK_STATUS" || exit 1\n'
+            'exit "$status"\n',
+            encoding="utf-8",
+        )
+        shim.chmod(0o700)
+        env["CARGO"] = str(shim)
+        env["QUANTA_INDEX_MODULES_REAL_CARGO"] = cargo
+        env["QUANTA_INDEX_MODULES_CHECK_STATUS"] = str(status_file)
+        result = subprocess.run(
+            cmd,
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            diagnostics = "\n".join(
+                part
+                for part in (result.stderr.rstrip(), child_check_diagnostics(status_file))
+                if part
+            )
+            raise RuntimeError(f"cargo modules structure failed for {package}: {diagnostics}")
+        try:
+            statuses = status_file.read_text(encoding="ascii").splitlines()
+        except (FileNotFoundError, UnicodeError) as error:
+            raise RuntimeError(
+                f"cargo modules did not prove child cargo check for {package}"
+            ) from error
+        if not statuses or any(re.fullmatch(r"[0-9]+", status) is None for status in statuses):
+            raise RuntimeError(
+                f"cargo modules returned invalid child cargo check status for {package}"
+            )
+        failures = [status for status in statuses if int(status) != 0]
+        if failures:
+            summary = (
+                f"cargo modules child cargo check failed for {package}: exit {', '.join(failures)}"
+            )
+            diagnostics = child_check_diagnostics(status_file)
+            raise RuntimeError(f"{summary}\n{diagnostics}" if diagnostics else summary)
     body = "\n".join(line.rstrip() for line in result.stdout.splitlines())
-    expected_root = f"crate {package.replace(chr(45), chr(95))}"
+    expected_root = f"crate {library_name}"
     if next((line for line in body.splitlines() if line.strip()), None) != expected_root:
         raise RuntimeError(f"cargo modules returned missing or wrong crate root for {package}")
     return body + "\n"
@@ -142,7 +207,7 @@ def main() -> int:
     args = parse_args()
 
     # A removed protected crate is a structural change, not a passing snapshot.
-    present = workspace_member_names()
+    present = validate_workspace_dependencies()
     packages = [p for p in args.packages if p in present]
     missing = [p for p in args.packages if p not in present]
     for p in missing:
@@ -154,10 +219,11 @@ def main() -> int:
     if missing:
         return 1
 
-    validate_workspace_dependencies()
     # All selected producers must succeed before an update can touch even the
     # first baseline. Otherwise a later failure leaves a mixed snapshot set.
-    rendered = {pkg: render_module_tree(pkg) for pkg in packages}
+    rendered = {
+        pkg: render_module_tree(pkg, library_target_name(pkg, present[pkg])) for pkg in packages
+    }
     if args.update_baseline:
         BASELINE_DIR.mkdir(parents=True, exist_ok=True)
         for pkg, current in rendered.items():

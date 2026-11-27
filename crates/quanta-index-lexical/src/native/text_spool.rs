@@ -3,9 +3,9 @@
 
 use quanta_index_scratch_sqlite::{MapEditPage as EditPage, read_map_edit_budgeted as read_edit};
 
+pub(super) use super::text_memory::{MAX_TERM_KEY_BYTES, check_term_key};
 use super::text_inventory_descriptor::inventory_reference;
 use super::text_memory::PreparedKey;
-pub(super) use super::text_memory::{MAX_TERM_KEY_BYTES, check_term_key};
 use super::text_occurrence::positions::{MAX_POSITIONS_PER_TERM, PreparedPositions};
 use super::text_token_batch::TokenBatch;
 use quanta_index_core::index::{
@@ -1565,7 +1565,8 @@ impl TextSpool {
             rusqlite::types::ValueRef::Null => ConfirmedOccurrenceCount::Unvalidated,
             rusqlite::types::ValueRef::Integer(value)
                 if value > 0
-                    && u64::try_from(value).is_ok_and(|count| count <= MAX_POSITIONS_PER_TERM) =>
+                    && u64::try_from(value)
+                        .is_ok_and(|count| count <= MAX_POSITIONS_PER_TERM) =>
             {
                 ConfirmedOccurrenceCount::Validated(
                     u64::try_from(value).map_err(|_error| IndexError::ResourceLimited)?,
@@ -1897,7 +1898,11 @@ impl TextSpool {
         &self,
         limit: usize,
         budget: &mut WorkBudget,
-        consume: impl FnMut(PreparedKey, PreparedPositions, &mut WorkBudget) -> Result<(), IndexError>,
+        consume: impl FnMut(
+            PreparedKey,
+            PreparedPositions,
+            &mut WorkBudget,
+        ) -> Result<(), IndexError>,
     ) -> Result<(), IndexError> {
         token_groups::visit(self, limit, budget, consume)
     }
@@ -2035,11 +2040,16 @@ impl TextSpool {
             }
             Ok(())
         });
-        match &result {
-            Err(_) => self.inventory_poisoned.set(true),
-            Ok(()) => self.inventory_packet.borrow_mut().apply_delta(&delta),
+        match result {
+            Ok(()) => {
+                self.inventory_packet.borrow_mut().apply_delta(&delta);
+                Ok(())
+            }
+            Err(error) => {
+                self.inventory_poisoned.set(true);
+                Err(error)
+            }
         }
-        result
     }
 
     pub(super) fn inventory_cursor(&self, roots: usize) -> Result<InventoryCursor<'_>, IndexError> {

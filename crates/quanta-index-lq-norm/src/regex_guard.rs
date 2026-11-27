@@ -22,6 +22,12 @@ use regex_syntax::hir::{Hir, HirKind, Repetition};
 use crate::errors::{LqParseError, LqParseErrorCode, LqSpan};
 use crate::limits::MAX_NFA_STATES;
 
+/// Escape a literal so the resulting regex matches exactly its characters.
+#[must_use]
+pub fn escape_literal(literal: &str) -> String {
+    regex_syntax::escape(literal)
+}
+
 /// Pre-check a regex source string before it ever hits the `regex` crate.
 ///
 /// Returns `Ok(())` if the pattern is grammar-legal under the LQ subset

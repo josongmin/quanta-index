@@ -413,9 +413,15 @@ def check_envelope(
 
 
 def parse_artifact_bytes(raw: bytes) -> object:
-    """Parse native evidence without last-key-wins or non-finite defaults."""
+    """Parse the Rust writer's UTF-8 JSON without last-key-wins or non-finite defaults."""
     if len(raw) > CONTROL_DOCUMENT_BYTES:
         raise ValueError("native control document exceeds explicit byte limit")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("native JSON must be UTF-8") from error
+    if text.startswith("\ufeff") or "\x00" in text:
+        raise ValueError("native JSON must be UTF-8 without BOM or NUL bytes")
 
     def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
@@ -428,7 +434,22 @@ def parse_artifact_bytes(raw: bytes) -> object:
     def reject_constant(value: str) -> None:
         raise ValueError(f"non-finite native JSON value: {value}")
 
-    return json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    payload = json.loads(text, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    # Python accepts escaped lone surrogates that Rust strings cannot contain.
+    pending = [payload]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ValueError("native JSON contains an unpaired surrogate") from error
+    return payload
 
 
 def check_artifact(

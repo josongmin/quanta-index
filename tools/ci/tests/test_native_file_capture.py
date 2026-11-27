@@ -654,11 +654,12 @@ def test_controlled_native_capture_promotes_and_replays_one_raw_family(
         approved_policy_sha = hashlib.sha256(policy.read_bytes()).hexdigest()
         installation_changed = False
 
-        def verify_approval(approval, selection, selection_sha, policy_sha):
+        def verify_approval(approval, selection, selection_sha, policy_sha, *, selection_path):
             assert approval == plan[capture.SIGNED_INSTALL]
             assert selection == chosen
             assert selection_sha == plan["selection_sha256"]
             assert policy_sha == approved_policy_sha
+            assert selection_path == plan["selection_path"]
             if installation_changed:
                 raise ValueError("Native release approval installation changed")
 

@@ -54,7 +54,10 @@ impl ClauseTruth {
                     }
                     continue;
                 }
-                Clause::Contains(_) | Clause::Repo(_) => continue,
+                Clause::Contains(_)
+                | Clause::PathContains(_)
+                | Clause::PathFilters
+                | Clause::Repo(_) => continue,
             };
             *cursors.get_mut(depth).ok_or_else(bad_program)? = (children, include);
             depth = depth.checked_add(1).ok_or_else(bad_program)?;
@@ -105,6 +108,7 @@ mod tests {
             0b1101,
             1,
             1,
+            0,
             0,
             |ordinal, matched| truth.record(ordinal, matched),
             |_, _, _, _| {

@@ -234,6 +234,54 @@ def test_workspace_glob_is_expanded_and_duplicates_refused(monkeypatch, tmp_path
         MODULE.collect_facade_files()
 
 
+def test_linked_facade_directory_and_file_fail_closed(monkeypatch, tmp_path: Path):
+    import pytest
+
+    configure_workspace(monkeypatch, tmp_path, '["crates/demo"]')
+    member = tmp_path / "crates/demo"
+    src = member / "src"
+    src.mkdir(parents=True)
+    (member / "Cargo.toml").write_text('[package]\nname="demo"\n')
+    (src / "lib.rs").write_text("mod linked;\n")
+    monkeypatch.setattr(MODULE, "CONTRACT_LIB_RS", src / "lib.rs")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "mod.rs").write_text("pub fn hidden() {}\n")
+
+    linked = src / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlinked facade source"):
+        MODULE.collect_facade_files()
+    linked.unlink()
+
+    (src / "mod.rs").symlink_to(outside / "mod.rs")
+    with pytest.raises(ValueError, match="symlinked facade source"):
+        MODULE.collect_facade_files()
+
+
+def test_linked_source_root_fails_and_target_module_remains_inventoried(
+    monkeypatch, tmp_path: Path
+):
+    import pytest
+
+    configure_workspace(monkeypatch, tmp_path, '["crates/demo"]')
+    member = tmp_path / "crates/demo"
+    src = member / "src"
+    src.mkdir(parents=True)
+    (member / "Cargo.toml").write_text('[package]\nname="demo"\n')
+    (src / "lib.rs").write_text("mod target;\n")
+    target = src / "target" / "mod.rs"
+    target.parent.mkdir()
+    target.write_text("pub mod inner;\n")
+    monkeypatch.setattr(MODULE, "CONTRACT_LIB_RS", src / "lib.rs")
+    assert MODULE.collect_facade_files() == [target, src / "lib.rs"]
+
+    src.rename(member / "outside-src")
+    src.symlink_to(member / "outside-src", target_is_directory=True)
+    with pytest.raises(ValueError, match="symlinked facade source"):
+        MODULE.collect_facade_files()
+
+
 def test_invalid_inventory_returns_failure_without_green_message(
     monkeypatch, tmp_path: Path, capsys
 ):

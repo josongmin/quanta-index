@@ -68,7 +68,8 @@ pub fn semantic_source_scopes_for_chunk_records(
 /// test that points a daemon at a tempdir narrows it through here.
 pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
     use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir()?;
+    // SQLite's NOFOLLOW check also rejects symlink ancestors such as macOS /tmp.
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
     Ok(dir)
 }

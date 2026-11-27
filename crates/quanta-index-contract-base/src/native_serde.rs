@@ -28,7 +28,7 @@ impl serde::de::Visitor<'_> for KeyVisitor {
     fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
         if self.allow_identifier_bytes {
             let name = std::str::from_utf8(value)
-                .map_err(|_| E::invalid_value(serde::de::Unexpected::Bytes(value), &self))?;
+                .map_err(|_error| E::invalid_value(serde::de::Unexpected::Bytes(value), &self))?;
             self.visit_str(name)
         } else {
             Err(E::invalid_type(serde::de::Unexpected::Bytes(value), &self))
@@ -49,6 +49,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for KeyVisitor {
 
 impl ClosedFieldKeySeedV1 {
     /// Preserve matching UTF-8 byte identifiers accepted by Serde-derived DTOs.
+    #[must_use]
     pub fn serde_identifier(
         self,
     ) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = &'static str> {
@@ -73,8 +74,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for ClosedFieldKeySeedV1 {
     }
 }
 
-/// Implement a closed record codec. Fields are required by default, including
-/// nullable fields. An explicit `= default` allows omission in a named map.
+/// Implement a closed record codec.
+///
+/// Fields are required by default, including nullable fields. An explicit
+/// `= default` allows omission in a named map.
 /// Positional records always require every field in declaration order.
 /// `[serde_identifier]` preserves byte-string keys accepted by Serde derives.
 #[macro_export]
@@ -235,8 +238,10 @@ macro_rules! native_serde_newtype {
     };
 }
 
-/// Closed externally tagged enum. Explicit indices preserve the original
-/// declaration order independently of the three variant-shape groups.
+/// Closed externally tagged enum.
+///
+/// Explicit indices preserve the original declaration order independently of
+/// the three variant-shape groups.
 /// `[serde_identifier]` preserves byte-string variant and record names.
 #[macro_export]
 macro_rules! native_serde_enum {
@@ -244,12 +249,16 @@ macro_rules! native_serde_enum {
         units { $($unit:ident = $unit_index:literal),* $(,)? }
         newtypes { $($newtype:ident = $newtype_index:literal => $inner:ty),* $(,)? }
         records { $($record:ident = $record_index:literal { $($field:ident : $ty:ty),+ $(,)? }),* $(,)? }
+        $(custom_records { $($custom:ident = $custom_index:literal { $($custom_field:ident),+ $(,)? } => $codec:ident),* $(,)? })?
     }) => {
         impl serde::Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 match self {
                     $(Self::$unit => serializer.serialize_unit_variant(stringify!($name), $unit_index, stringify!($unit)),)*
                     $(Self::$newtype(value) => serializer.serialize_newtype_variant(stringify!($name), $newtype_index, stringify!($newtype), value),)*
+                    $($(Self::$custom { $($custom_field,)+ } => $codec::serialize_variant(
+                        serializer, stringify!($name), $custom_index, stringify!($custom), $($custom_field),+
+                    ),)*)?
                     $(Self::$record { $($field,)+ } => {
                         const FIELDS: &[&str] = &[$(stringify!($field)),+];
                         let mut state = serializer.serialize_struct_variant(stringify!($name), $record_index, stringify!($record), FIELDS.len())?;
@@ -261,7 +270,7 @@ macro_rules! native_serde_enum {
         }
         impl<'de> serde::Deserialize<'de> for $name {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                const VARIANTS: &[&str] = &[$(stringify!($unit),)* $(stringify!($newtype),)* $(stringify!($record),)*];
+                const VARIANTS: &[&str] = &[$(stringify!($unit),)* $(stringify!($newtype),)* $(stringify!($record),)* $($(stringify!($custom),)*)?];
                 fn key_seed(fields: &'static [&'static str]) -> impl for<'wire> serde::de::DeserializeSeed<'wire, Value = &'static str> {
                     $crate::native_serde_struct!(@key_seed fields $(, $identifier)?)
                 }
@@ -279,6 +288,10 @@ macro_rules! native_serde_enum {
                                 Ok($name::$unit)
                             },)*
                             $(stringify!($newtype) => serde::de::VariantAccess::newtype_variant::<$inner>(variant).map($name::$newtype),)*
+                            $($(stringify!($custom) => {
+                                let ($($custom_field,)+) = $codec::deserialize_variant(variant)?;
+                                Ok($name::$custom { $($custom_field,)+ })
+                            },)*)?
                             $(stringify!($record) => {
                                 const FIELDS: &[&str] = &[$(stringify!($field)),+];
                                 struct RecordVisitor;

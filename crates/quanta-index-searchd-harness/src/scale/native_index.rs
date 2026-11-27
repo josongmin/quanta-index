@@ -13,6 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::product_xfs::ProductXfsProfile;
 use anyhow::{Context as _, Result};
 use quanta_index_contract::index::{
     CatalogView, CollectionId, Digest, GroupActivation, IndexInstanceId, IndexKind, IndexProfile,
@@ -33,7 +34,6 @@ use quanta_index_sdk::native_uds::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use tempfile::TempDir;
 
 #[path = "native_index/observation.rs"]
 mod observation;
@@ -366,7 +366,30 @@ impl NativeDaemon {
             .mode(0o600)
             .open(stderr_path)
             .context("create exclusive native daemon stderr")?;
-        let mut command = Command::new(binary.path());
+        let quota_root = fs::read(config)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .map(|value| -> Result<Option<std::path::PathBuf>> {
+                if value.get("state_root_quota").is_some() {
+                    let root = value
+                        .get("state_root")
+                        .and_then(Value::as_str)
+                        .context("XFS Native config is missing state_root")?;
+                    Ok(Some(Path::new(root).to_path_buf()))
+                } else {
+                    Ok(None)
+                }
+            })
+            .transpose()?
+            .flatten();
+        let mut command = if let Some(root) = quota_root {
+            ProductXfsProfile::command(
+                binary.path(),
+                &root.join(quanta_index_searchd::app::state_root_quota::STOCK_SQLITE_TEMP_DIR_NAME),
+            )
+        } else {
+            Command::new(binary.path())
+        };
         let _arguments = command.arg("serve-native").arg("--config").arg(config);
         if let Some(trace) = trace {
             let _trace_argument = command
@@ -515,6 +538,21 @@ fn cold_source_mutations(refs: &[ObjectRef]) -> Result<impl Iterator<Item = Owne
         }))
 }
 
+/// The Literal sibling the product requires beside every Text instance; it
+/// matches the `literal` descriptor of this harness's serve config.
+fn literal_spec() -> InstanceSpec {
+    InstanceSpec {
+        instance: IndexInstanceId([7; 16]),
+        kind: IndexKind([8; 16]),
+        group: PublicationGroupId([9; 16]),
+        activation: GroupActivation::CoreRequired,
+        input_domain: InputDomain::SourceLocal,
+        schema: SchemaId([10; 16]),
+        policy: Digest([11; 32]),
+        format: StorageFormatId([12; 16]),
+    }
+}
+
 fn text_spec() -> InstanceSpec {
     InstanceSpec {
         instance: IndexInstanceId([71; 16]),
@@ -551,7 +589,7 @@ fn configure_text_index(
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec()],
+            instances: vec![literal_spec(), text_spec()],
         },
         &budget(),
     )?;
@@ -651,6 +689,14 @@ fn mixed_native_config(
         json!({"global_limit":128,"per_uid_limit":128,
             "terminal_ttl_millis":60_000,"sweep_limit":16}),
     );
+    // With retention, one reclaim round must reach every root a retired view
+    // queues: seven steps and their round byte allowance.
+    *config
+        .pointer_mut("/maintenance/max_steps_per_round")
+        .context("fixed Native config lacks reclaim steps")? = json!(7);
+    *config
+        .pointer_mut("/maintenance/work_limits/bytes")
+        .context("fixed Native config lacks reclaim byte allowance")? = json!(939_524_096_u64);
     *config
         .pointer_mut("/resources/read_ticket_lease_ms")
         .context("fixed Native config lacks read-ticket lease")? = json!(300_000);
@@ -1152,10 +1198,11 @@ fn measure_native_inner(
     let mut publication = PublicationAudit::default();
     let mut child_object_io = BTreeMap::new();
     let mut phases = BTreeMap::new();
-    let temp = TempDir::new()?;
+    let xfs = ProductXfsProfile::from_env()?;
+    let temp = xfs.tempdir()?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let root = temp.path().join("state");
-    let socket = temp.path().join("native.sock");
+    let socket = ProductXfsProfile::service_socket(temp.path(), "uds")?;
     let config = temp.path().join("native.json");
     let first_trace = child_traces
         .as_ref()
@@ -1186,12 +1233,12 @@ fn measure_native_inner(
                 sum.checked_add(u64::try_from(file.content.len())?)
                     .context("source byte sum overflow")
             })?;
-            let configured = if mixed_enabled {
+            let mut configured = if mixed_enabled {
                 mixed_native_config(&root, &socket, workload)?
             } else {
                 native_config(&root, &socket, workload)
             };
-            let canonical = if mixed_enabled {
+            let mut canonical = if mixed_enabled {
                 mixed_native_config(
                     Path::new("/fixture-state"),
                     Path::new("/fixture.sock"),
@@ -1204,10 +1251,18 @@ fn measure_native_inner(
                     workload,
                 )
             };
+            xfs.configure(&mut configured)?;
+            xfs.configure(&mut canonical)?;
+            let _sqlite_temp = xfs.prepare_root(&root, &socket)?;
             let native_config_sha256 = hex_sha256(&serde_json::to_vec(&canonical)?);
             let daemon_executable = NativeExecutable::capture(daemon_bin)?;
             fs::write(&config, serde_json::to_vec(&configured)?)?;
             fs::set_permissions(&config, fs::Permissions::from_mode(0o600))?;
+            ProductXfsProfile::preflight(
+                daemon_executable.path(),
+                &config,
+                &root.join(quanta_index_searchd::app::state_root_quota::STOCK_SQLITE_TEMP_DIR_NAME),
+            )?;
             Ok((
                 corpus_digest,
                 source_bytes,
@@ -2075,7 +2130,7 @@ mod product_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn daemon_start_refuses_a_socket_owned_by_another_process() -> Result<()> {
-        let temp = TempDir::new()?;
+        let temp = tempfile::TempDir::new()?;
         let socket = temp.path().join("foreign.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
         let executable = NativeExecutable::capture(&fs::canonicalize("/bin/true")?)?;

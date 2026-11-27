@@ -1,12 +1,12 @@
 //! Lancedb-backed durable open + search path.
 //!
-//! `open_generation` opens exactly one sealed generation's lancedb dataset
+//! `open_generation` opens exactly one sealed generation's Lance dataset
 //! (manifest validated against requested scope, row count cross-checked
 //! against the manifest) and returns a `LoadedGeneration` ready to serve
 //! `vector_search`. There is no cross-generation replay; the open cost is
-//! bounded by reopening a single lancedb dataset.
+//! bounded by reopening a single Lance dataset.
 //!
-//! The searcher returns scores as cosine similarity in `[-1, 1]` (lancedb
+//! The searcher returns scores as cosine similarity in `[-1, 1]` (Lance
 //! reports cosine *distance* in the `_distance` column; we convert
 //! `similarity = 1 - distance` so the historical query-time contract is
 //! preserved).
@@ -30,13 +30,10 @@ use arrow_array::{
 };
 use arrow_schema::DataType;
 use futures::TryStreamExt as _;
+use lance::Dataset;
+use lance::dataset::{builder::DatasetBuilder, scanner::Scanner};
 use lance::session::Session;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
-use lancedb::DistanceType;
-use lancedb::connect;
-use lancedb::query::{
-    ExecutableQuery as _, QueryBase as _, QueryExecutionOptions, Select, VectorQuery,
-};
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
@@ -57,9 +54,9 @@ use crate::budget::{
     DenseLaneBudgetV1, DenseLaneKindV1, DenseLaneTalliesV1, RowBudgetProbe, failpoint,
     race_with_budget,
 };
+use crate::control_file::receipt::refuse_if_quarantined;
 use crate::errors::lancedb_err;
 use crate::generation_contract::GenerationContract;
-use crate::integrity::refuse_if_quarantined_with_admission;
 use crate::layout::{
     self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CORPUS_KIND,
     COLUMN_EMBEDDING_ID, COLUMN_END_LINE, COLUMN_LANGUAGE, COLUMN_MEMBERSHIP_AUTHORITY_DIGEST,
@@ -67,32 +64,33 @@ use crate::layout::{
     COLUMN_MEMBERSHIP_MEMBER_COUNT, COLUMN_MEMBERSHIP_MEMBER_SYMBOL_ID, COLUMN_MEMBERSHIP_ORDINAL,
     COLUMN_OWNER_ID, COLUMN_OWNER_KIND, COLUMN_RECORD_ID, COLUMN_REPO_RELATIVE_PATH,
     COLUMN_SNIPPET, COLUMN_SOURCE_REPO_ID, COLUMN_START_LINE, COLUMN_VECTOR, TABLE_NAME,
-    dataset_uri,
 };
 use crate::manifest::{SemanticManifest, VectorIndexSealV1};
-use crate::sealed_manifest::verify_sealed_manifest_with_admission;
-use crate::semantic_row_integrity_v1::{SemanticRowFingerprintV1, semantic_row_commitment_v1};
+use crate::qualified_fs::ReadSession;
+use crate::sealed_manifest::verify_sealed_manifest;
+use crate::semantic_row_integrity_v1::{SemanticRowFingerprintV1, dataset_row_commitment_v1};
 use crate::sql::build_id_in_filter;
-use crate::vector_index::{LoadedVectorIndexV1, verify_vector_index_v1};
-use lance_io::object_store::file_admission::FileAdmission;
+use crate::vector_index::{LoadedVectorIndexV1, verify_vector_index_dataset_v1};
+use quanta_index_core::publication_admission::PublicationObjectLifetimePort;
 
 const COLUMN_DISTANCE: &str = "_distance";
 
 mod exact_tie_heap;
 use exact_tie_heap::{ExactTieHeap, ExactTieKey};
 
-const EXACT_SCAN_BATCH_ROWS: u32 = 32;
+const EXACT_SCAN_BATCH_ROWS: usize = 32;
+const DATASET_READ_BATCH_ROWS: usize = 1024;
 const COLUMN_ROW_ID: &str = "_rowid";
 
 fn load_generation_contract(
     generation_dir: &Path,
-    admission: Option<&dyn FileAdmission>,
+    control_lifetime: Option<&dyn PublicationObjectLifetimePort>,
 ) -> Result<GenerationContract, CoreError> {
     let contract_path = layout::build_contract_path(generation_dir);
-    let bytes = crate::control_file::read_bounded_with_admission(
+    let bytes = crate::control_file::read_bounded_for_generation(
         &contract_path,
         crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
-        admission,
+        control_lifetime,
     )
     .map_err(|err| crate::errors::fs_err("read generation contract", &contract_path, &err))?;
     GenerationContract::decode(&bytes)
@@ -100,25 +98,19 @@ fn load_generation_contract(
 
 fn read_scope_manifest(
     generation_dir: &Path,
-    admission: Option<&dyn FileAdmission>,
+    control_lifetime: Option<&dyn PublicationObjectLifetimePort>,
 ) -> Result<SemanticManifest, CoreError> {
     let manifest_path = layout::manifest_path(generation_dir);
-    let manifest_bytes = crate::control_file::read_bounded_with_admission(
+    let manifest_bytes = crate::control_file::read_bounded_for_generation(
         &manifest_path,
         crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
-        admission,
+        control_lifetime,
     )
     .map_err(|err| crate::errors::fs_err("read manifest", &manifest_path, &err))?;
     SemanticManifest::decode(&manifest_bytes)
 }
 
-/// One sealed generation loaded against its lancedb dataset.
-///
-/// Note: lancedb 0.30's `Table` is `Arc<dyn BaseTable>` + an injected
-/// `Arc<dyn Database>` (`connection.rs:337`, `table.rs:655-810`); it does
-/// **not** borrow from its parent `Connection`. Dropping the connection after
-/// `open_table` does not invalidate the table, so we hold only the table here
-/// and let the connection drop at end of `open_generation`.
+/// The two immutable Lance datasets of one verified sealed generation.
 pub(crate) struct LoadedGeneration {
     repo_id: RepoId,
     revision_id: RevisionId,
@@ -130,9 +122,9 @@ pub(crate) struct LoadedGeneration {
     normalization: EmbeddingNormalization,
     model_id: String,
     model_version: Option<String>,
-    table: lancedb::Table,
+    table: Dataset,
     /// The cluster-membership sidecar table every sealed generation carries.
-    cluster_membership: lancedb::Table,
+    cluster_membership: Dataset,
     /// The dense lane's index, verified against the seal at open.
     vector_index: LoadedVectorIndexV1,
     /// On-disk bytes of the dataset this handle maps, as the seal committed
@@ -239,27 +231,36 @@ pub(crate) async fn open_generation(
     generation: ManifestGeneration,
     session: Option<Arc<Session>>,
 ) -> Result<LoadedGeneration, CoreError> {
-    let (loaded, _manifest) =
-        open_generation_with_manifest(semantic_root, repo, revision, generation, session, None)
-            .await?;
+    let (loaded, _manifest) = open_generation_with_manifest(
+        semantic_root,
+        repo,
+        revision,
+        generation,
+        ReadSession::Existing(session),
+        None,
+        crate::qualified_fs::LanceUriMode::File,
+    )
+    .await?;
     Ok(loaded)
 }
 
+#[cfg(feature = "qualified-memory-uri-candidate")]
 pub(crate) async fn open_generation_admitted(
     semantic_root: &Path,
     repo: &RepoId,
     revision: &RevisionId,
     generation: ManifestGeneration,
-    session: Arc<Session>,
-    admission: Arc<dyn FileAdmission>,
+    session: ReadSession,
+    control_lifetime: &dyn PublicationObjectLifetimePort,
 ) -> Result<LoadedGeneration, CoreError> {
     let (loaded, _manifest) = open_generation_with_manifest(
         semantic_root,
         repo,
         revision,
         generation,
-        Some(session),
-        Some(admission.as_ref()),
+        session,
+        Some(control_lifetime),
+        crate::qualified_fs::LanceUriMode::AdmittedMemoryCandidate,
     )
     .await?;
     Ok(loaded)
@@ -271,8 +272,9 @@ async fn open_generation_with_manifest(
     repo: &RepoId,
     revision: &RevisionId,
     generation: ManifestGeneration,
-    session: Option<Arc<Session>>,
-    admission: Option<&dyn FileAdmission>,
+    session: ReadSession,
+    control_lifetime: Option<&dyn PublicationObjectLifetimePort>,
+    mode: crate::qualified_fs::LanceUriMode,
 ) -> Result<(LoadedGeneration, SemanticManifest), CoreError> {
     let generation_dir = layout::generation_dir(semantic_root, repo, revision, generation);
     let marker_path = layout::sealed_marker_path(&generation_dir);
@@ -289,21 +291,21 @@ async fn open_generation_with_manifest(
             revision.as_str()
         )));
     }
-    refuse_if_quarantined_with_admission(&generation_dir, admission)?;
+    refuse_if_quarantined(&generation_dir, control_lifetime)?;
     // The marker carries the identity digest, which is all the sealed
     // manifest needs: every dataset file, the scope manifest and the build
     // contract are proven against the seal before the scope manifest is
     // even decoded, so a forged manifest is refused as a corrupt sidecar
     // rather than interpreted.
-    let sealed_digest = crate::control_file::read_string_bounded_with_admission(
+    let sealed_digest = crate::control_file::read_string_for_generation(
         &marker_path,
         crate::control_file::MAX_SEALED_MARKER_BYTES,
-        admission,
+        control_lifetime,
     )
     .map_err(|err| crate::errors::fs_err("read sealed marker", &marker_path, &err))?;
     let sealed_manifest =
-        verify_sealed_manifest_with_admission(&generation_dir, &sealed_digest, admission)?;
-    let manifest = read_scope_manifest(&generation_dir, admission)?;
+        verify_sealed_manifest(&generation_dir, &sealed_digest, control_lifetime)?;
+    let manifest = read_scope_manifest(&generation_dir, control_lifetime)?;
     manifest.validate_scope(repo, revision, generation)?;
     if manifest.manifest_digest != sealed_digest {
         return Err(CoreError::Typed {
@@ -315,7 +317,10 @@ async fn open_generation_with_manifest(
             ),
         });
     }
-    manifest.validate_against(&load_generation_contract(&generation_dir, admission)?)?;
+    manifest.validate_against(&load_generation_contract(
+        &generation_dir,
+        control_lifetime,
+    )?)?;
     let normalization = manifest.normalization_contract()?;
 
     let dimension = usize::try_from(manifest.dimension).map_err(|err| {
@@ -329,24 +334,32 @@ async fn open_generation_with_manifest(
     })?;
     let expected_schema = layout::semantic_schema(manifest_dimension_i32);
 
-    let uri = dataset_uri(&generation_dir)?;
-    let mut builder = connect(&uri);
-    if let Some(session) = session {
-        builder = builder.session(session);
+    // Verify the sealed directory without following a replacement link. The
+    // qualified session binds later opens to the committed dataset artifacts.
+    let dataset_dir = layout::dataset_dir(&generation_dir);
+    let dataset_kind = std::fs::symlink_metadata(&dataset_dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: inspect sealed dataset directory {}: {error}",
+            dataset_dir.display()
+        ))
+    })?;
+    if !dataset_kind.file_type().is_dir() {
+        return Err(CoreError::Storage(format!(
+            "semantic: sealed dataset path is not a directory: {}",
+            dataset_dir.display()
+        )));
     }
-    let connection = builder
-        .execute()
-        .await
-        .map_err(|err| lancedb_err(&format!("connect {uri}"), err))?;
-    let table = connection
-        .open_table(TABLE_NAME)
-        .execute()
-        .await
-        .map_err(|err| lancedb_err(&format!("open_table {TABLE_NAME}"), err))?;
-    let live_schema = table
-        .schema()
-        .await
-        .map_err(|err| lancedb_err("read table schema", err))?;
+    let resident_bytes_estimate = sealed_manifest.dataset_bytes();
+    let session = session.resolve(&dataset_dir, sealed_manifest.artifacts)?;
+    let table_path = dataset_dir.join(format!("{TABLE_NAME}.lance"));
+    let table = open_sealed_dataset(
+        &table_path,
+        mode,
+        Arc::clone(&session),
+        "open_table semantic",
+    )
+    .await?;
+    let live_schema = arrow_schema::Schema::from(table.schema());
     for expected_field in expected_schema.fields() {
         let live_field = live_schema
             .field_with_name(expected_field.name())
@@ -386,30 +399,33 @@ async fn open_generation_with_manifest(
     }
 
     let vector_index =
-        verify_vector_index_v1(&table, &manifest.vector_index, manifest.row_count).await?;
+        verify_vector_index_dataset_v1(&table, &manifest.vector_index, manifest.row_count).await?;
 
-    let names = connection
-        .table_names()
-        .execute()
-        .await
-        .map_err(|err| lancedb_err("table_names", err))?;
-    if !names
-        .iter()
-        .any(|name| name == CLUSTER_MEMBERSHIP_TABLE_NAME)
-    {
+    let membership_path = dataset_dir.join(format!("{CLUSTER_MEMBERSHIP_TABLE_NAME}.lance"));
+    let membership_kind = match std::fs::symlink_metadata(&membership_path) {
+        Ok(metadata) => Some(metadata.file_type()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(crate::errors::fs_err(
+                "inspect sealed cluster membership table",
+                &membership_path,
+                &error,
+            ));
+        }
+    };
+    if !membership_kind.is_some_and(|kind| kind.is_dir()) {
         return Err(CoreError::Storage(
             "semantic: the sealed generation carries no cluster membership table".to_string(),
         ));
     }
-    let membership_table = connection
-        .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
-        .execute()
-        .await
-        .map_err(|error| lancedb_err("open cluster membership table", error))?;
-    let membership_schema = membership_table
-        .schema()
-        .await
-        .map_err(|error| lancedb_err("read cluster membership schema", error))?;
+    let membership_table = open_sealed_dataset(
+        &membership_path,
+        mode,
+        session,
+        "open cluster membership table",
+    )
+    .await?;
+    let membership_schema = arrow_schema::Schema::from(membership_table.schema());
     if !layout::cluster_membership_schema()
         .fields()
         .iter()
@@ -428,7 +444,6 @@ async fn open_generation_with_manifest(
     // root is never re-derived on the serving path.
     verify_cluster_membership_row_count_v1(&membership_table, &manifest).await?;
 
-    drop(connection);
     Ok((
         LoadedGeneration {
             repo_id: repo.clone(),
@@ -442,11 +457,25 @@ async fn open_generation_with_manifest(
             table,
             cluster_membership: membership_table,
             vector_index,
-            resident_bytes_estimate: sealed_manifest.dataset_bytes(),
+            resident_bytes_estimate,
             manifest_digest: sealed_digest,
         },
         manifest,
     ))
+}
+
+async fn open_sealed_dataset(
+    path: &Path,
+    mode: crate::qualified_fs::LanceUriMode,
+    session: Arc<Session>,
+    action: &str,
+) -> Result<Dataset, CoreError> {
+    let uri = crate::qualified_fs::lance_connection_uri(path, mode)?;
+    DatasetBuilder::from_uri(&uri)
+        .with_session(session)
+        .load()
+        .await
+        .map_err(|error| lancedb_err(action, error))
 }
 
 /// The inherited ANN contract and canonical row identities from one
@@ -469,18 +498,20 @@ pub(crate) async fn verified_base_vector_index_seal_v1(
     revision: &RevisionId,
     generation: ManifestGeneration,
     session: Option<Arc<Session>>,
-    admission: Option<&dyn FileAdmission>,
+    control_lifetime: Option<&dyn PublicationObjectLifetimePort>,
+    mode: crate::qualified_fs::LanceUriMode,
 ) -> Result<VerifiedInheritedVectorIndexV1, CoreError> {
     let (loaded, manifest) = open_generation_with_manifest(
         semantic_root,
         repo,
         revision,
         generation,
-        session,
-        admission,
+        ReadSession::Existing(session),
+        control_lifetime,
+        mode,
     )
     .await?;
-    let actual = semantic_row_commitment_v1(&loaded.table).await?;
+    let actual = dataset_row_commitment_v1(&loaded.table).await?;
     let row_count_matches = actual.row_count == manifest.row_count;
     let row_root_matches = actual.root_digest == manifest.semantic_row_root_digest;
     if !row_count_matches || !row_root_matches {
@@ -548,7 +579,7 @@ fn column_as<'a, T: Array + 'static>(
 }
 
 async fn verify_cluster_membership_row_count_v1(
-    table: &lancedb::Table,
+    table: &Dataset,
     manifest: &SemanticManifest,
 ) -> Result<(), CoreError> {
     let counted_rows = table
@@ -653,13 +684,18 @@ fn extract_hits(
             revision_id: revision_id.clone(),
             manifest_generation: generation,
             repo_relative_path: source_file.repo_relative_path,
-            start_line,
-            end_line,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line,
+                end_line,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet,
+                // Semantic results carry no single lexical hit anchor.
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score,
-            snippet,
-            // Semantic results carry no single lexical hit anchor.
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         };
         out.push(SemanticSearchHit {
             candidate,
@@ -711,14 +747,20 @@ fn extract_hit_at(
             revision_id: revision_id.clone(),
             manifest_generation: generation,
             repo_relative_path: source_file.repo_relative_path,
-            start_line: column_as::<UInt32Array>(batch, COLUMN_START_LINE, "UInt32")?.value(row),
-            end_line: column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?.value(row),
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: column_as::<UInt32Array>(batch, COLUMN_START_LINE, "UInt32")?
+                    .value(row),
+                end_line: column_as::<UInt32Array>(batch, COLUMN_END_LINE, "UInt32")?.value(row),
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: column_as::<StringArray>(batch, COLUMN_SNIPPET, "Utf8")?
+                    .value(row)
+                    .to_owned(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score,
-            snippet: column_as::<StringArray>(batch, COLUMN_SNIPPET, "Utf8")?
-                .value(row)
-                .to_owned(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         },
         record_id: column_as::<StringArray>(batch, COLUMN_RECORD_ID, "Utf8")?
             .value(row)
@@ -848,13 +890,22 @@ impl LoadedGeneration {
                     "semantic: cluster membership batch row budget overflow".to_string(),
                 )
             })?;
-        let mut stream = match table
-            .query()
-            .only_if(predicate)
-            .limit(maximum_rows)
-            .execute()
-            .await
-        {
+        let scan_limit = i64::try_from(maximum_rows).map_err(|error| {
+            CoreError::InvalidContract(format!(
+                "semantic: cluster membership batch row budget overflow: {error}"
+            ))
+        })?;
+        let opened = async {
+            let mut scan = table.scan();
+            scan.filter(&predicate)?
+                .limit(Some(scan_limit), None)?
+                .batch_size(DATASET_READ_BATCH_ROWS)
+                .strict_batch_size(true)
+                .try_into_stream()
+                .await
+        }
+        .await;
+        let mut stream = match opened {
             Ok(stream) => stream,
             Err(_error) => {
                 return Ok(self.cluster_membership_batch_rejection_v1(
@@ -1100,30 +1151,41 @@ impl LoadedGeneration {
         watch: DenseLaneBudgetV1<'_>,
         lane: DenseLaneKindV1,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
-        let query = self
-            .table
-            .vector_search(query_vector.to_vec())
-            .map_err(|err| lancedb_err("vector_search build", err))?
-            .distance_type(DistanceType::Cosine)
-            .limit(top_k);
-        let mut vector_query = match lane {
-            DenseLaneKindV1::Approximate => self.vector_index.apply(query, top_k)?,
-            DenseLaneKindV1::Exact => query.bypass_vector_index(),
-        };
-        if let Some(predicate) = filter {
-            vector_query = vector_query.only_if(predicate);
-        }
-        race_with_budget(
-            watch,
-            lane,
-            self.issue_and_read_back(vector_query, top_k, watch, lane),
-        )
+        race_with_budget(watch, lane, async {
+            let limit = i64::try_from(top_k).map_err(|error| {
+                CoreError::InvalidContract(format!(
+                    "semantic: vector search limit overflow: {error}"
+                ))
+            })?;
+            let key = Float32Array::from(query_vector.to_vec());
+            let mut scan = self.table.scan();
+            let scan = scan
+                .nearest(COLUMN_VECTOR, &key, top_k)
+                .map_err(|error| lancedb_err("vector_search build", error))?
+                .limit(Some(limit), None)
+                .map_err(|error| lancedb_err("vector_search execute", error))?
+                .distance_metric(LanceDistanceType::Cosine)
+                .prefilter(true)
+                .batch_size(DATASET_READ_BATCH_ROWS)
+                .strict_batch_size(true);
+            match lane {
+                DenseLaneKindV1::Approximate => self.vector_index.apply_scanner(scan, top_k)?,
+                DenseLaneKindV1::Exact => {
+                    let _ = scan.use_index(false);
+                }
+            }
+            if let Some(predicate) = filter {
+                let _filtered = scan
+                    .filter(&predicate)
+                    .map_err(|error| lancedb_err("vector_search execute", error))?;
+            }
+            self.issue_and_read_back(scan, top_k, watch, lane).await
+        })
         .await
     }
 
-    /// Scan every eligible row before the Top-K cut. LanceDB's ordinary
-    /// `query()` exposes the row identity and vector without its fork-only
-    /// exact tie option; the retained heap never holds more than K hits.
+    /// Scan every eligible row from one pinned Lance dataset before the Top-K
+    /// cut. The retained heap never holds more than K hits.
     async fn run_canonical_exact_scan(
         &self,
         query_vector: &[f32],
@@ -1134,28 +1196,34 @@ impl LoadedGeneration {
         let lane = DenseLaneKindV1::Exact;
         race_with_budget(watch, lane, async {
             failpoint::hold_dense_lane_if_armed().await;
-            let mut query = self.table.query().with_row_id().select(Select::columns(&[
-                COLUMN_VECTOR,
-                COLUMN_EMBEDDING_ID,
-                COLUMN_SOURCE_REPO_ID,
-                COLUMN_REPO_RELATIVE_PATH,
-                COLUMN_START_LINE,
-                COLUMN_END_LINE,
-                COLUMN_SNIPPET,
-                COLUMN_RECORD_ID,
-                COLUMN_OWNER_ID,
-                COLUMN_OWNER_KIND,
-                COLUMN_CORPUS_KIND,
-                COLUMN_AUTHORITY_DIGEST,
-            ]));
-            if let Some(predicate) = filter {
-                query = query.only_if(predicate);
-            }
             watch.tallies.count_query(lane);
-            let mut options = QueryExecutionOptions::default();
-            options.max_batch_length = EXACT_SCAN_BATCH_ROWS;
-            let mut stream = query
-                .execute_with_options(options)
+            let mut scan = self.table.scan();
+            let scan = scan
+                .project(&[
+                    COLUMN_VECTOR,
+                    COLUMN_EMBEDDING_ID,
+                    COLUMN_SOURCE_REPO_ID,
+                    COLUMN_REPO_RELATIVE_PATH,
+                    COLUMN_START_LINE,
+                    COLUMN_END_LINE,
+                    COLUMN_SNIPPET,
+                    COLUMN_RECORD_ID,
+                    COLUMN_OWNER_ID,
+                    COLUMN_OWNER_KIND,
+                    COLUMN_CORPUS_KIND,
+                    COLUMN_AUTHORITY_DIGEST,
+                ])
+                .map_err(|error| lancedb_err("canonical exact scan execute", error))?
+                .with_row_id()
+                .batch_size(EXACT_SCAN_BATCH_ROWS)
+                .strict_batch_size(true);
+            if let Some(predicate) = filter {
+                let _filtered = scan
+                    .filter(&predicate)
+                    .map_err(|error| lancedb_err("canonical exact scan execute", error))?;
+            }
+            let mut stream = scan
+                .try_into_stream()
                 .await
                 .map_err(|error| lancedb_err("canonical exact scan execute", error))?;
             let key = Float32Array::from(query_vector.to_vec());
@@ -1166,7 +1234,7 @@ impl LoadedGeneration {
                 .await
                 .map_err(|error| lancedb_err("canonical exact scan stream", error))?
             {
-                if batch.num_rows() > EXACT_SCAN_BATCH_ROWS as usize {
+                if batch.num_rows() > EXACT_SCAN_BATCH_ROWS {
                     return Err(CoreError::Storage(
                         "semantic: canonical exact scan exceeded output batch limit".into(),
                     ));
@@ -1237,15 +1305,15 @@ impl LoadedGeneration {
     /// stream there.
     async fn issue_and_read_back(
         &self,
-        vector_query: VectorQuery,
+        scan: &Scanner,
         top_k: usize,
         watch: DenseLaneBudgetV1<'_>,
         lane: DenseLaneKindV1,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         failpoint::hold_dense_lane_if_armed().await;
         watch.tallies.count_query(lane);
-        let mut stream = vector_query
-            .execute()
+        let mut stream = scan
+            .try_into_stream()
             .await
             .map_err(|err| lancedb_err("vector_search execute", err))?;
         let mut probe = RowBudgetProbe::new(watch, lane);
@@ -1401,22 +1469,15 @@ impl LoadedGeneration {
         self.validate_query_vector(query_vector)?;
         let mut allowed_ids = BTreeSet::new();
         let _inserted = allowed_ids.insert(candidate_id.to_owned());
-        let query_owned: Vec<f32> = query_vector.to_vec();
-        let vector_query = self
-            .table
-            .vector_search(query_owned)
-            .map_err(|err| lancedb_err("vector_search build", err))?
-            .distance_type(DistanceType::Cosine)
-            .limit(1)
-            .bypass_vector_index()
-            .only_if(build_id_in_filter(&allowed_ids));
-        let lane = DenseLaneKindV1::Exact;
-        let hits = race_with_budget(
-            watch,
-            lane,
-            self.issue_and_read_back(vector_query, 1, watch, lane),
-        )
-        .await?;
+        let hits = self
+            .run_lane(
+                query_vector,
+                1,
+                Some(build_id_in_filter(&allowed_ids)),
+                watch,
+                DenseLaneKindV1::Exact,
+            )
+            .await?;
         let Some(hit) = hits.into_iter().next() else {
             return Ok(None);
         };
@@ -1469,7 +1530,7 @@ impl LoadedGeneration {
 
 /// Searcher over a single loaded sealed generation.
 ///
-/// Bridges the sync `SemanticSearcher` port surface to the async lancedb API
+/// Bridges the sync `SemanticSearcher` port surface to the async Lance API
 /// via the adapter's shared tokio runtime — see [`crate::run_blocking`].
 /// Every search runs under the request's budget and reports what its lane
 /// observed to the adapter-wide tallies (W5 phase 3).
@@ -1477,6 +1538,8 @@ pub(crate) struct PersistedSemanticSearcher {
     loaded: Arc<LoadedGeneration>,
     runtime: Arc<tokio::runtime::Runtime>,
     tallies: Arc<DenseLaneTalliesV1>,
+    #[cfg(feature = "qualified-memory-uri-candidate")]
+    _candidate_view: Option<crate::qualified_fs::CandidateView>,
 }
 
 impl PersistedSemanticSearcher {
@@ -1484,11 +1547,16 @@ impl PersistedSemanticSearcher {
         loaded: Arc<LoadedGeneration>,
         runtime: Arc<tokio::runtime::Runtime>,
         tallies: Arc<DenseLaneTalliesV1>,
+        #[cfg(feature = "qualified-memory-uri-candidate")] candidate_view: Option<
+            crate::qualified_fs::CandidateView,
+        >,
     ) -> Self {
         Self {
             loaded,
             runtime,
             tallies,
+            #[cfg(feature = "qualified-memory-uri-candidate")]
+            _candidate_view: candidate_view,
         }
     }
 
@@ -1829,8 +1897,10 @@ pub(crate) async fn proof_rows_v1(
             ));
         }
         let mut stream = table
-            .query()
-            .execute()
+            .scan()
+            .batch_size(DATASET_READ_BATCH_ROWS)
+            .strict_batch_size(true)
+            .try_into_stream()
             .await
             .map_err(|error| lancedb_err("proof query", error))?;
         let mut rows = Vec::new();

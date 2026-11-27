@@ -145,7 +145,7 @@ The real-provider paraphrase test already exists as the ignored
 `runtime_fast_suite`. It requires the actual API key and provider grant; its
 selected execution is a proof/input gap, not missing provider test code.
 
-The [public cache matrix](../../crates/quanta-index-searchd-runtime/src/public_cache_tests.rs)
+The [public cache matrix](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-runtime/src/public_cache_tests.rs)
 uses SDK/UDS, production daemon composition, the persistent cache and real
 catalog/lexical/semantic adapters. The daemon-owned `test-provider-transport`
 feature substitutes only HTTP I/O with fixed orthogonal vectors; production

@@ -772,12 +772,17 @@ fn hybrid_explain_carries_the_row_and_both_queries() {
             revision_id: revision_id(),
             manifest_generation: ManifestGeneration::new(7),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-            start_line: 1,
-            end_line: 2,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 1,
+                end_line: 2,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: "needle".to_string(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 1.5,
-            snippet: "needle".to_string(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         },
         fused_score: 1.0 / 61.0 + 1.0 / 62.0,
         contributions: vec![
@@ -848,12 +853,17 @@ fn binding_hit(candidate_id: &str, score: f32) -> quanta_index_contract::Lexical
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        start_line: 10,
-        end_line: 20,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 10,
+            end_line: 20,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "fn sample() {}".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score,
-        snippet: "fn sample() {}".to_string(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 
@@ -894,7 +904,10 @@ fn typed_code_search_response_rejects_mismatched_source_path() {
         normalization_equivalent: false,
         unavailable_reason: None,
     });
-    row.snippet = "src/other.rs".to_string();
+    row.excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet = "src/other.rs".to_string();
     let response = SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
         selected_active_head: None,
         generation: sample_generation_pin(),

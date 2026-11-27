@@ -22,6 +22,12 @@ sha2 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+quanta-index-sqlite-unix-syscall = { version = "0.1.0", path = "../quanta-index-sqlite-unix-syscall" }
+
 [dev-dependencies]
 sha2 = { workspace = true }
 tempfile = { workspace = true }

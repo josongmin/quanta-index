@@ -86,7 +86,7 @@ fn fixture_source(path: String, body: String) -> SourceInput {
 }
 
 fn configure(client: &NativeUdsClient) -> TestResult<ViewRef> {
-    configure_instances(client, vec![text_instance()])
+    configure_instances(client, vec![literal_instance(), text_instance()])
 }
 
 fn configure_instances(
@@ -159,7 +159,36 @@ fn advance(
     mutations: impl IntoIterator<Item = OwnerMutation>,
 ) -> TestResult<ViewRef> {
     let request = prepare_advance(client, ingress, prior, mutations)?;
-    published(&client.submit(request, &budget())?)
+    submit_and_settle(client, &request)
+}
+
+fn submit_advance(
+    client: &NativeUdsClient,
+    request: UpdateRequest,
+    publish_budget: &RequestBudgetV1,
+) -> TestResult<ViewRef> {
+    let operation = request.operation;
+    let submitted = client.submit(request, publish_budget);
+    if matches!(
+        &submitted,
+        Ok(SubmitOutcome::Unknown(key)) | Err(NativeUdsError::Unknown(key)) if *key == operation
+    ) {
+        let status = client.status(operation, &budget());
+        let head = client
+            .read_view(
+                ViewSelection::Latest {
+                    workspace: operation.workspace,
+                    epoch: operation.epoch,
+                },
+                &budget(),
+            )
+            .map(|view| view.identity);
+        return Err(format!(
+            "source advance ACK unknown for {operation:?}, journal={status:?}, head={head:?}"
+        )
+        .into());
+    }
+    published(&submitted?)
 }
 
 fn prepare_advance(
@@ -420,8 +449,7 @@ fn native_multigeneration_delta_matches_model_and_independent_full_after_reopen(
             body: "commonanchor newdeltaedge",
         }),
     ];
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let delta_root = temp.path().join("multi-delta-state");
     fs::create_dir(&delta_root)?;
     fs::set_permissions(&delta_root, fs::Permissions::from_mode(0o700))?;
@@ -567,8 +595,7 @@ fn native_boundary_delta_matches_independent_full_and_cold_reopen() -> TestResul
     // wire::MAX_DOCS is 128. The 130-owner FULL and final corpus require
     // at least two physical document partitions in segmented-layered-v2.
     require(BASE_OWNERS > 128, "boundary fixture fits one Text segment")?;
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let delta_root = temp.path().join("delta-state");
     fs::create_dir(&delta_root)?;
     fs::set_permissions(&delta_root, fs::Permissions::from_mode(0o700))?;
@@ -848,7 +875,18 @@ fn publish_crash_fixture_sources(
             })
         })
         .collect::<TestResult<Vec<_>>>()?;
-    Ok((advance(client, ingress, base, mutations)?, refs))
+    let request = prepare_advance(client, ingress, base, mutations)?;
+    // Initial and reference FULLs are fixture setup for the crash tests.
+    // Keep the bounded submit budgets on the tested DELTA and recovery paths.
+    let setup_budget = RequestBudgetV1::for_duration(Duration::from_secs(120));
+    let started = Instant::now();
+    let view = submit_advance(client, request, &setup_budget)?;
+    eprintln!(
+        "crash fixture FULL with {} owners published in {:?}",
+        files.len(),
+        started.elapsed()
+    );
+    Ok((view, refs))
 }
 
 fn prepare_crash_fixture_delta(
@@ -966,7 +1004,7 @@ fn create_crash_fixture(
     Ok((config, socket))
 }
 
-fn kill_fixture_daemon(mut daemon: Daemon) -> TestResult<u32> {
+pub(super) fn kill_fixture_daemon(mut daemon: Daemon) -> TestResult<u32> {
     let pid = daemon.0.id();
     daemon.0.kill()?;
     require_equal(
@@ -1025,8 +1063,7 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
         "file.contains('secondwave secondwave')",
     ];
 
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let (config, socket) = create_crash_fixture(temp.path(), "stress-delta")?;
     let daemon = Daemon::start(&config, &socket)?;
     let client = NativeUdsClient::new(socket.clone());
@@ -1103,6 +1140,7 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
     let second_view = published(&client.submit(second, &budget())?)?;
     let third =
         prepare_crash_fixture_delta(&client, second_view, 5, ROUNDS[2], &mut files, &mut refs)?;
+    let final_operation = third.operation;
     let final_view = published(&client.submit(third, &budget())?)?;
     require_equal(
         &client.read_view(latest, &budget())?.identity,
@@ -1158,10 +1196,23 @@ fn native_multipage_lexical_delta_survives_sigkill_and_matches_full() -> TestRes
     let session = client.open_read_session(selection, [93; 32], &budget())?;
     let full_after = verify_text_page(&client, &session, &page_query, None, &full_rank, 0)?;
     let zero_after = verify_text_page(&client, &session, &zero_score_query, None, &zero_rank, 0)?;
-    let _released = client.release_read_session(&session, &budget())?;
-    reopened.stop()?;
+    let reopened_pid = kill_fixture_daemon(reopened)?;
     let cold = Daemon::start(&config, &socket)?;
+    require(
+        cold.0.id() != reopened_pid,
+        "second crash did not replace the daemon PID",
+    )?;
     let cold_client = NativeUdsClient::new(socket);
+    require_equal(
+        &cold_client.read_view(latest, &budget())?.identity,
+        &final_view,
+        "final DELTA remains current after the second SIGKILL",
+    )?;
+    require_equal(
+        &cold_client.status(final_operation, &budget())?,
+        &OperationStatus::Published(final_view),
+        "final operation remains published after the second SIGKILL",
+    )?;
     let session = cold_client.open_read_session(selection, [94; 32], &budget())?;
     for (query, rank, mut after) in [
         (&page_query, &full_rank, full_after),
@@ -1211,8 +1262,7 @@ fn native_lexical_partial_mutation_page_recovers_after_sigkill() -> TestResult {
     const ADDED_OWNER: usize = 300;
     const REMOVED_OWNERS: [usize; 3] = [0, 128, 143];
     const MUTATIONS: u64 = 145;
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let (config, socket) = create_crash_fixture(temp.path(), "page-delta")?;
     let daemon = Daemon::start(&config, &socket)?;
     let client = NativeUdsClient::new(socket.clone());
@@ -1660,8 +1710,7 @@ fn native_lexical_commit_rollback_and_truncated_published_ack_preserve_one_opera
         (128, None),
         (144, Some(("src/inserted-144.rs", "commitanchor newleaf"))),
     ];
-    let temp = tempfile::tempdir()?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let temp = quanta_index_searchd_harness::private_tempdir()?;
     let (config, socket) = create_crash_fixture(temp.path(), "commit-delta")?;
     let catalog_path = temp
         .path()
@@ -1671,7 +1720,10 @@ fn native_lexical_commit_rollback_and_truncated_published_ack_preserve_one_opera
     let client = NativeUdsClient::new(socket.clone());
     let instances = vec![literal_instance(), file_spec(), text_instance()];
     let mut files = (0..OWNERS)
-        .map(|index| (index, (fixture_path(index), "commitanchor original".into())))
+        .map(|index| {
+            let body = format!("commitanchor original fixtureowner{index:03}");
+            (index, (fixture_path(index), body))
+        })
         .collect();
     let configured = configure_instances(&client, instances.clone())?;
     let (base, mut refs) = publish_crash_fixture_sources(&client, configured, &files)?;
@@ -1708,6 +1760,22 @@ fn native_lexical_commit_rollback_and_truncated_published_ack_preserve_one_opera
     let old_literal_cursor = initial_literal
         .after
         .ok_or("missing initial Literal continuation")?;
+    let initial_paths = client.query_repository_paths(
+        latest,
+        file_spec().instance,
+        "src/".into(),
+        None,
+        128,
+        &budget(),
+    )?;
+    require_equal(
+        &initial_paths.view,
+        &base,
+        "initial path page selects the current view",
+    )?;
+    let old_path_cursor = initial_paths
+        .next_after
+        .ok_or("missing initial repository path continuation")?;
     let catalog_workspace = serde_json::to_vec(&base.workspace)?;
     let catalog_operation = serde_json::to_vec(&key)?;
     let catalog_epoch = i64::try_from(base.epoch)?;
@@ -1766,6 +1834,7 @@ fn native_lexical_commit_rollback_and_truncated_published_ack_preserve_one_opera
         &0,
         "failed terminal write rolled back the successor row",
     )?;
+    verify_commit_file_inventory(&client, base, &original_files, &original_refs)?;
     let first_pid = kill_fixture_daemon(first_daemon)?;
     rusqlite::Connection::open(&catalog_path)?
         .execute_batch("DROP TRIGGER fixture_abort_terminal")?;
@@ -1885,6 +1954,42 @@ fn native_lexical_commit_rollback_and_truncated_published_ack_preserve_one_opera
         ),
         NativeIndexErrorCode::InvalidInput,
         "Literal continuation refuses Latest after a publication",
+    )?;
+    let exact_paths = client.query_repository_paths(
+        ViewSelection::Exact(base),
+        file_spec().instance,
+        "src/".into(),
+        Some(old_path_cursor.clone()),
+        128,
+        &budget(),
+    )?;
+    let actual_paths = exact_paths
+        .entries
+        .into_iter()
+        .map(|entry| (entry.file.owner, entry.file.path))
+        .collect::<Vec<_>>();
+    require_equal(
+        &actual_paths,
+        &expected_tail,
+        "old path cursor continues against its exact view",
+    )?;
+    require(
+        !exact_paths.has_more,
+        "old path cursor did not reach its last page",
+    )?;
+    require_wire_refusal(
+        client.request(
+            NativeIndexRequest::QueryRepositoryPaths {
+                selection: latest,
+                instance: file_spec().instance,
+                prefix: "src/".into(),
+                after: Some(old_path_cursor),
+                limit: 128,
+            },
+            &budget(),
+        ),
+        NativeIndexErrorCode::InvalidInput,
+        "repository path continuation refuses Latest after a publication",
     )?;
 
     let (full_config, full_socket) = create_crash_fixture(temp.path(), "commit-full")?;

@@ -5,7 +5,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, File},
     io::Read as _,
-    num::NonZeroU64,
+    num::{NonZeroU32, NonZeroU64},
     os::unix::fs::DirBuilderExt as _,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
@@ -61,10 +61,10 @@ use crate::deployment_selection::{
     DeploymentSelectionErrorV1, DeploymentSelectionPublishedV1, LockedDeploymentSelectionV1,
 };
 use crate::native::{
-    FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativeProductStartup,
-    NativePumpConfig, NativePumpScope, NativeReclaimConfig, NativeResourcePlan,
-    NativeRetentionConfig, NativeRetentionScope, NativeSemanticStartup, NativeServiceCapabilities,
-    NativeServiceResources, NativeWalReclaimPolicy, validate_automatic_reclaim,
+    FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativePumpConfig, NativePumpScope,
+    NativeReclaimConfig, NativeResourcePlan, NativeRetentionConfig, NativeRetentionScope,
+    NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
+    validate_automatic_reclaim,
 };
 use crate::native_effort::NativeEffortConfiguration;
 
@@ -77,14 +77,24 @@ pub(crate) use boot::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 #[path = "history_checkpoint_export.rs"]
 pub mod history_checkpoint_export;
 
-pub(crate) use boot::RestoreForwardSourceRefusalV1;
+pub(crate) use boot::{
+    CatalogWatchPublicationV7, RestoreForwardSourceRefusalV1, verify_locked_source_only_catalog_v7,
+};
 
 #[path = "native_product_diagnostic.rs"]
 mod diagnostic;
 #[path = "native_product_retirement_approval_v2.rs"]
 pub(crate) mod retirement_approval_v2;
 
-use quanta_index_searchd::cli::{NativeCommandModeV1, NativeStateCommandV1};
+use quanta_index_searchd::{
+    app::{
+        runtime::StateRootLease,
+        state_root_quota::{
+            StateRootProjectQuotaV1, require_stock_sqlite_launch, restrict_stock_sqlite_writes,
+        },
+    },
+    cli::{NativeCommandModeV1, NativeStateCommandV1},
+};
 use sha2::{Digest as _, Sha256};
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -425,8 +435,32 @@ native_json_record!(
         effort: Option<EffortConfig> => default,
         overlay: Option<OverlayConfig> => default,
         stub_ast: Option<StubAstConfig> => default,
+        state_root_quota: Option<StateRootQuotaConfig> => default,
+        stock_scratch_sqlite: Option<bool> => default,
+        stock_catalog_sqlite: Option<bool> => default,
+        stock_sqlite_max_process_fds: Option<u32> => default,
     }
 );
+
+native_json_record!(
+    struct StateRootQuotaConfig {
+        verifier_socket: PathBuf => required,
+        project_id: u32 => required,
+        hard_bytes: u64 => required,
+        hard_inodes: u64 => required,
+    }
+);
+
+impl StateRootQuotaConfig {
+    fn validate(self) -> Result<StateRootProjectQuotaV1> {
+        Ok(StateRootProjectQuotaV1::new(
+            self.verifier_socket,
+            self.project_id,
+            self.hard_bytes,
+            self.hard_inodes,
+        )?)
+    }
+}
 
 native_json_record!(
     #[derive(Clone)]
@@ -1502,6 +1536,9 @@ native_json_record!(
         per_uid_limit: usize => required,
         terminal_ttl_millis: u64 => required,
         sweep_limit: usize => required,
+        // The declared share of the Interactive plan that cached text rank
+        // orders may hold; absent, no order is cached.
+        text_order_memory_bytes: Option<u64> => default,
     }
 );
 impl ReadSessionsConfig {
@@ -1511,14 +1548,21 @@ impl ReadSessionsConfig {
             per_uid_limit: self.per_uid_limit,
             terminal_ttl: Duration::from_millis(self.terminal_ttl_millis),
             sweep_limit: self.sweep_limit,
+            text_order_memory: self.text_order_memory_bytes.unwrap_or_default(),
         }
         .validate()?)
     }
 }
 
+struct StockSqliteLaunch {
+    quota: StateRootProjectQuotaV1,
+    max_process_fds: NonZeroU32,
+}
+
 struct ValidatedConfig {
     state_root: PathBuf,
     socket_path: PathBuf,
+    stock_sqlite: Option<StockSqliteLaunch>,
     legacy_repomap_selection: Option<LegacyRepoMapSelectionConfigV1>,
     socket_access: quanta_index_ipc::SocketAccessPolicy,
     limits: WorkLimits,
@@ -1542,16 +1586,25 @@ struct ValidatedConfig {
 }
 
 impl ValidatedConfig {
-    fn retained_tree(&self) -> Option<quanta_index_kernel::RetainedSourceTreePolicyV20> {
-        self.text_recipe
-            .retained_source_tree_policy_v20()
-            .map(
-                |previous| quanta_index_kernel::RetainedSourceTreePolicyV20 {
-                    descriptor: self.text,
-                    previous,
-                    current: self.text_recipe.output_policy(),
-                },
-            )
+    /// True when the configuration requests XFS quota for SQLite writes.
+    fn uses_stock_sqlite(&self) -> bool {
+        self.stock_sqlite.is_some()
+    }
+
+    fn admit_state_root_quota(
+        &self,
+        lease: &StateRootLease,
+        request: &RequestBudgetV1,
+    ) -> Result<()> {
+        if let Some(stock) = &self.stock_sqlite {
+            stock.quota.require(
+                lease,
+                &self.socket_path,
+                self.resources.physical.inventory.max_entries,
+                request,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -1653,6 +1706,34 @@ impl NativeServeConfigV1 {
         if self.state_root == self.socket_path {
             bail!("native socket cannot be the state root");
         }
+        let state_root_quota = self
+            .state_root_quota
+            .map(StateRootQuotaConfig::validate)
+            .transpose()?;
+        let stock_sqlite = if let Some(quota) = state_root_quota {
+            if self.stock_catalog_sqlite == Some(false) || self.stock_scratch_sqlite == Some(false)
+            {
+                bail!("state_root_quota requires stock Catalog and Scratch SQLite");
+            }
+            let max_process_fds = self
+                .stock_sqlite_max_process_fds
+                .and_then(NonZeroU32::new)
+                .ok_or_else(|| {
+                    anyhow!("stock SQLite requires a positive stock_sqlite_max_process_fds")
+                })?;
+            Some(StockSqliteLaunch {
+                quota,
+                max_process_fds,
+            })
+        } else {
+            if self.stock_scratch_sqlite == Some(true) {
+                bail!("stock_scratch_sqlite requires state_root_quota");
+            }
+            if self.stock_catalog_sqlite == Some(true) {
+                bail!("stock_catalog_sqlite requires state_root_quota");
+            }
+            None
+        };
         if self
             .legacy_repomap_selection
             .as_ref()
@@ -1671,6 +1752,11 @@ impl NativeServeConfigV1 {
         let limits = self.work_limits.validate()?;
         let process_rss_ceiling_bytes = self.resources.process_rss_ceiling_bytes;
         let resources = self.resources.validate()?;
+        if stock_sqlite.is_some() && resources.scratch_reserved_bytes > (4_u64 << 30) {
+            bail!(
+                "Native StateRoot quota profile requires a scratch reservation at or below 4 GiB"
+            );
+        }
         let owned_work = self.owned_work.map(OwnedWorkConfig::validate).transpose()?;
         let effort = self.effort.map(EffortConfig::validate).transpose()?;
         let overlay = self.overlay.map(OverlayConfig::validate).transpose()?;
@@ -1712,11 +1798,21 @@ impl NativeServeConfigV1 {
         if retention.is_some() && maintenance.is_none() {
             bail!("native retention requires automatic reclaim configuration");
         }
-        let read_session_bytes = read_sessions
-            .as_ref()
-            .map(crate::native_read_sessions::NativeReadSessions::required_memory)
-            .transpose()?
-            .unwrap_or(0);
+        if let (Some(retention), Some(maintenance)) = (&retention, &maintenance) {
+            crate::native::validate_release_reclaim_deadline(retention, maintenance)?;
+        }
+        let read_session_bytes = if let Some(config) = &read_sessions {
+            let bytes = crate::native_read_sessions::NativeReadSessions::required_memory(config)?;
+            resources
+                .execution
+                .validate_response_memory(bytes)
+                .context(
+                    "native read-session retained buffers exceed Interactive memory envelope",
+                )?;
+            bytes
+        } else {
+            0
+        };
         let cache_bytes = resources.catalog_writer_cache.reservation_bytes()?;
         let escaping_bytes = semantic
             .as_ref()
@@ -1736,6 +1832,9 @@ impl NativeServeConfigV1 {
         let literal = self.literal.descriptor();
         let file_map = self.file_map.descriptor();
         let text = self.text.descriptor.descriptor();
+        if text.kind != quanta_index_contract::native_protocol::NATIVE_TEXT_KIND {
+            bail!("native Text kind must be NATIVE_TEXT_KIND so clients can find the Text member");
+        }
         let unique = [literal.kind, file_map.kind, text.kind]
             .into_iter()
             .chain(semantic.as_ref().map(|config| config.descriptor.kind))
@@ -1781,6 +1880,7 @@ impl NativeServeConfigV1 {
         Ok(ValidatedConfig {
             state_root: self.state_root,
             socket_path: self.socket_path,
+            stock_sqlite,
             legacy_repomap_selection: self.legacy_repomap_selection,
             socket_access,
             limits,
@@ -2208,6 +2308,9 @@ fn register_base_builders(config: &ValidatedConfig, builders: &mut AdapterRegist
         NativeTextIndex::new(config.text_recipe),
         |delta| Ok(delta.clone()),
     )?;
+    // Text reads anchor `file.contains` on the Literal sibling, so every
+    // profile with a Text instance must publish exactly one Literal instance.
+    builders.require_companion(config.text.kind, config.literal)?;
     builders.register_history(
         AdapterDescriptor {
             kind: quanta_index_search_plane::native_history::NATIVE_HISTORY_KIND_V1,
@@ -2251,11 +2354,13 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
             Ok(readers)
         })
         .transpose()?;
+    // One reader serves ranked text and match listing, so both anchor on the
+    // pinned Literal sibling the companion rule requires.
+    let text_reader = NativeTextReader::new(config.text_recipe, config.bm25, config.text_need)?
+        .with_literal_sibling(config.literal.format);
+    let mut text_matches = QueryAdapterRegistry::new();
+    text_matches.register(config.text, config.text_need, text_reader.match_reader())?;
     let mut text = QueryAdapterRegistry::<PlannedTextRead, TextReadResult>::new();
-    let mut text_reader = NativeTextReader::new(config.text_recipe, config.bm25, config.text_need)?;
-    if config.retained_tree().is_some() {
-        text_reader = text_reader.with_previous_tree();
-    }
     text.register(config.text, config.text_need, text_reader)?;
     let reader_need = ResourceNeed {
         provider_units: 0,
@@ -2299,6 +2404,7 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
         literal,
         path,
         text,
+        text_matches,
         semantic,
         pump: config.owned_work.clone(),
         provider_attempt_pool,
@@ -2315,11 +2421,34 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
     })
 }
 
+fn prepare_unselected_authority(
+    config: &ValidatedConfig,
+    request: &RequestBudgetV1,
+) -> Result<crate::native::NativeBootAuthority> {
+    if !config.uses_stock_sqlite() && !config.state_root.exists() {
+        let mut builder = fs::DirBuilder::new();
+        let _private_mode = builder.mode(0o700);
+        builder.create(&config.state_root)?;
+    }
+    let lease = if config.uses_stock_sqlite() {
+        StateRootLease::acquire_existing(&config.state_root)?
+    } else {
+        StateRootLease::acquire(&config.state_root)?
+    };
+    config.admit_state_root_quota(&lease, request)?;
+    crate::native::prepare_native_boot_authority(
+        Arc::new(lease),
+        &config.socket_path,
+        &config.resources,
+        request,
+    )
+}
+
 fn bind(
     config: &ValidatedConfig,
     config_sha256: Digest,
     composition: NativeComposition,
-    authority: Option<crate::native::NativeBootAuthority>,
+    authority: crate::native::NativeBootAuthority,
     request: &RequestBudgetV1,
     candidate: bool,
 ) -> Result<NativeIndexService> {
@@ -2328,26 +2457,6 @@ fn bind(
         capabilities,
         provider_signals,
     } = composition;
-    if authority.is_none() && !config.state_root.exists() {
-        let mut builder = fs::DirBuilder::new();
-        let _private_mode = builder.mode(0o700);
-        builder.create(&config.state_root)?;
-    }
-    let plain_serve = authority.is_none() && !candidate;
-    let authority = match authority {
-        Some(authority) => authority,
-        None => crate::native::prepare_native_boot_authority(
-            Arc::new(quanta_index_searchd::app::runtime::StateRootLease::acquire(
-                &config.state_root,
-            )?),
-            &config.socket_path,
-            &config.resources,
-            request,
-        )?,
-    };
-    if plain_serve {
-        boot::refuse_plain_serve_on_selected_boot_v2(&authority, config, request)?;
-    }
     if candidate {
         boot::require_candidate_start_v1(&authority, config, &capabilities.builders, request)?;
     }
@@ -2359,17 +2468,6 @@ fn bind(
     } else {
         config.retention.clone()
     };
-    let semantic_startup = config
-        .semantic
-        .as_ref()
-        .map(|semantic| -> Result<_> {
-            Ok(NativeSemanticStartup {
-                scopes: semantic.scopes.as_ref(),
-                descriptor: semantic.descriptor,
-                recipe: semantic.boot_recipe()?,
-            })
-        })
-        .transpose()?;
     let service = NativeIndexService::bind_with_boot_authority(
         authority,
         crate::native::NativeSocketBinding {
@@ -2391,10 +2489,6 @@ fn bind(
                 .map(Arc::new)
             })
             .transpose()?,
-        Some(NativeProductStartup {
-            retained_tree: config.retained_tree(),
-            semantic: semantic_startup,
-        }),
     )?;
     if let Some(read_sessions) = config.read_sessions {
         service.configure_read_sessions(read_sessions)?;
@@ -2625,7 +2719,41 @@ impl NativeRecoveryContextV1<'_> {
 /// Execute one typed Native selection, offline verification or service command.
 /// Selected service startup retains the verification lease into the listener.
 pub fn run_command(command: &NativeStateCommandV1) -> Result<u8> {
-    run_command_inner(command, None)
+    run_command_inner(command, None, NativeLaunchAuthority::Production)
+}
+
+#[derive(Clone, Copy)]
+enum NativeLaunchAuthority {
+    Production,
+    #[cfg(feature = "native-test-fixtures")]
+    Fixture,
+}
+
+#[cfg(feature = "native-test-fixtures")]
+fn is_ephemeral_fixture_root(root: &Path) -> Result<bool> {
+    let temp = std::env::temp_dir().canonicalize()?;
+    let resolved = match root.canonicalize() {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = root
+                .parent()
+                .ok_or_else(|| anyhow!("Native fixture StateRoot has no parent"))?
+                .canonicalize()?;
+            parent.join(
+                root.file_name()
+                    .ok_or_else(|| anyhow!("Native fixture StateRoot has no name"))?,
+            )
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(resolved.starts_with(temp))
+}
+
+/// Runs an ephemeral process fixture through the product command lifecycle.
+/// This entrypoint is absent from release builds.
+#[cfg(feature = "native-test-fixtures")]
+pub fn run_fixture_command(command: &NativeStateCommandV1) -> Result<u8> {
+    run_command_inner(command, None, NativeLaunchAuthority::Fixture)
 }
 
 /// Run Native serve under one counted capture through boot and service drain.
@@ -2639,7 +2767,22 @@ pub fn run_command_with_capture(
         "Native capture requires serve"
     );
     let capture = diagnostic::NativeCapture::new(capture);
-    let result = run_command_inner(command, Some(&capture));
+    let result = run_command_inner(command, Some(&capture), NativeLaunchAuthority::Production);
+    capture.finish(&result);
+    result
+}
+
+#[cfg(feature = "native-test-fixtures")]
+pub fn run_fixture_command_with_capture(
+    command: &NativeStateCommandV1,
+    capture: quanta_index_searchd::DiagnosticCaptureLeaseV1,
+) -> Result<u8> {
+    anyhow::ensure!(
+        command.mode == NativeCommandModeV1::Serve,
+        "Native capture requires serve"
+    );
+    let capture = diagnostic::NativeCapture::new(capture);
+    let result = run_command_inner(command, Some(&capture), NativeLaunchAuthority::Fixture);
     capture.finish(&result);
     result
 }
@@ -2647,12 +2790,111 @@ pub fn run_command_with_capture(
 fn run_command_inner(
     command: &NativeStateCommandV1,
     capture: Option<&diagnostic::NativeCapture>,
+    launch: NativeLaunchAuthority,
 ) -> Result<u8> {
     let context = capture.and_then(diagnostic::NativeCapture::context);
     let boot = diagnostic::begin(context, quanta_index_core::DiagnosticStageV1::RuntimeBoot);
     command.validate()?;
+    anyhow::ensure!(
+        command.mode != NativeCommandModeV1::PreflightWriter
+            || matches!(launch, NativeLaunchAuthority::Production),
+        "Native writer preflight requires the product daemon"
+    );
     let (config, config_sha256) =
         read_config_observed(&command.config_path, command.config_digest)?;
+    if command.mode == NativeCommandModeV1::PreflightWriter {
+        require_native_writer_profile(&config, launch)?;
+        require_stock_sqlite_service_access(&config)?;
+        if let Some(stock) = &config.stock_sqlite {
+            require_stock_sqlite_launch(stock.max_process_fds.get())?;
+        }
+        // Existing-only custody is shared with Native boot. This command
+        // probes the held quota tree and enters write confinement in its own
+        // short-lived process without opening state adapters or publishing BOOT.
+        let lease = StateRootLease::acquire_existing(&config.state_root)?;
+        let request = RequestBudgetV1::for_duration(Duration::from_secs(60));
+        config.admit_state_root_quota(&lease, &request)?;
+        if config.stock_sqlite.is_some() {
+            restrict_stock_sqlite_writes(&lease, Some(&config.socket_path))?;
+        }
+        return Ok(0);
+    }
+    let serving = matches!(
+        command.mode,
+        NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate
+    );
+    let writing = serving || boot::writes_native_selection(command.mode);
+    if writing {
+        require_native_writer_profile(&config, launch)?;
+    }
+    let stock_service = config.uses_stock_sqlite() && serving;
+    if let Some(stock) = &config.stock_sqlite
+        && (serving || boot::writes_native_selection(command.mode))
+    {
+        require_stock_sqlite_launch(stock.max_process_fds.get())?;
+    }
+    let run = move || run_validated_command(command, capture, config, config_sha256, boot);
+    if stock_service {
+        // The kernel restriction is irreversible. Keep it within the thread
+        // that owns service construction and its descendants.
+        thread::scope(|scope| {
+            thread::Builder::new()
+                .name("native-stock-sqlite".into())
+                .spawn_scoped(scope, run)?
+                .join()
+                .map_err(|_panic| anyhow!("stock SQLite service thread panicked"))?
+        })
+    } else {
+        run()
+    }
+}
+
+fn require_native_writer_profile(
+    config: &ValidatedConfig,
+    launch: NativeLaunchAuthority,
+) -> Result<()> {
+    match launch {
+        NativeLaunchAuthority::Production => {
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = config;
+                bail!("Native SQLite writer requires Linux XFS StateRoot quota");
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if config.stock_sqlite.is_none() {
+                    bail!("Native SQLite writer requires state_root_quota");
+                }
+                Ok(())
+            }
+        }
+        #[cfg(feature = "native-test-fixtures")]
+        NativeLaunchAuthority::Fixture => {
+            if config.stock_sqlite.is_none() && !is_ephemeral_fixture_root(&config.state_root)? {
+                bail!("Native fixture without quota requires a temporary StateRoot");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn require_stock_sqlite_service_access(config: &ValidatedConfig) -> Result<()> {
+    if config.uses_stock_sqlite()
+        && config.socket_access != quanta_index_ipc::SocketAccessPolicy::Private
+    {
+        bail!("stock SQLite service requires a private socket");
+    }
+    Ok(())
+}
+
+fn run_validated_command(
+    command: &NativeStateCommandV1,
+    capture: Option<&diagnostic::NativeCapture>,
+    config: ValidatedConfig,
+    config_sha256: Digest,
+    boot: Option<quanta_index_core::DiagnosticSpanGuardV1>,
+) -> Result<u8> {
+    let context = capture.and_then(diagnostic::NativeCapture::context);
     let mut retirement_approval = if command.mode == NativeCommandModeV1::Serve
         && command
             .identity
@@ -2676,10 +2918,14 @@ fn run_command_inner(
         command.mode,
         NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate
     );
-    let offline_registry = (!serving)
-        .then(|| compose_boot_registry(&config))
+    if serving {
+        require_stock_sqlite_service_access(&config)?;
+    }
+    // Provider composition may probe a LocalCode service. Defer that I/O for
+    // quota deployments until after the held StateRoot has been admitted.
+    let composition = (serving && !config.uses_stock_sqlite())
+        .then(|| compose(&config))
         .transpose()?;
-    let composition = serving.then(|| compose(&config)).transpose()?;
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
     let signal_handle = signals.handle();
     let (tx, rx) = mpsc::channel();
@@ -2704,42 +2950,46 @@ fn run_command_inner(
         handle: signal_handle,
         join: Some(signal_thread),
     };
-    if let Some(registry) = offline_registry {
+    if !serving {
+        let registry = compose_boot_registry(&config)?;
         let authority = boot::execute(command, &config, &registry, request)?;
         if authority.is_some() {
             bail!("offline Native command returned a service authority");
         }
         return Ok(0);
     }
-    let composition = composition.ok_or_else(|| anyhow!("Native Serve composition is absent"))?;
     let mut authority = if command.identity.is_some() {
-        Some(
-            boot::execute(
-                command,
-                &config,
-                &composition.capabilities.builders,
-                request.clone(),
-            )?
-            .ok_or_else(|| anyhow!("selected Native serve has no verified authority"))?,
-        )
+        let boot_registry;
+        let registry = if let Some(composition) = &composition {
+            &composition.capabilities.builders
+        } else {
+            boot_registry = compose_boot_registry(&config)?;
+            &boot_registry
+        };
+        boot::execute(command, &config, registry, request.clone())?
+            .ok_or_else(|| anyhow!("selected Native serve has no verified authority"))?
     } else {
-        None
+        let authority = prepare_unselected_authority(&config, &request)?;
+        if !candidate {
+            boot::refuse_plain_serve_on_selected_boot_v2(&authority, &config, &request)?;
+        }
+        authority
     };
+    if config.stock_sqlite.is_some() {
+        restrict_stock_sqlite_writes(&authority.lease, Some(&config.socket_path))?;
+    }
     if let Some(policy) = command
         .identity
         .and_then(|identity| identity.retired_projection_policy)
     {
-        let selected = authority
-            .as_mut()
-            .ok_or_else(|| anyhow!("retired Native serve has no BOOT authority"))?;
         let approval = retirement_approval
             .take()
             .ok_or_else(|| anyhow!("retired Native serve lost signed approval"))?;
         let (retired_projections, retired_instances, index_memory) =
             boot::with_admitted_control_budget(&config, request.clone(), false, |budget, _| {
-                boot::read_verified_retirement_policy_v2(selected, policy, budget)
+                boot::read_verified_retirement_policy_v2(&authority, policy, budget)
             })?;
-        selected.retirement_approval = Some(crate::native::NativeRetirementAuthorityV2 {
+        authority.retirement_approval = Some(crate::native::NativeRetirementAuthorityV2 {
             approval,
             retired_projections,
             retired_instances,
@@ -2747,6 +2997,10 @@ fn run_command_inner(
             policy_ref: policy,
         });
     }
+    let composition = match composition {
+        Some(composition) => composition,
+        None => compose(&config)?,
+    };
     let service = bind(
         &config,
         config_sha256,

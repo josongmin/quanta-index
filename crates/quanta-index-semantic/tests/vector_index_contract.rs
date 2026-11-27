@@ -16,6 +16,8 @@ use std::error::Error;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
+use lance::dataset::builder::DatasetBuilder;
+use lance::index::DatasetIndexExt as _;
 use quanta_index_contract::{
     BatchIngestMode, EmbeddingRecord, GenerationSnapshot, ManifestGeneration, OwnerDocKind, RepoId,
     RevisionId, SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticReplaceScope,
@@ -235,57 +237,73 @@ struct LibraryView {
 
 /// Read the index listing and statistics straight from the sealed dataset,
 /// bypassing the adapter: the oracle for what the seal recorded.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "test-only direct library inspection of the sealed dataset; the sync seam is the test's own runtime"
-)]
 fn library_view(generation_dir: &Path) -> Result<LibraryView, Box<dyn Error>> {
     let uri = generation_dir
         .join("dataset")
+        .join("semantic.lance")
         .to_string_lossy()
         .into_owned();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let connection = lancedb::connect(&uri)
-            .execute()
+        let table = DatasetBuilder::from_uri(&uri)
+            .load()
             .await
-            .map_err(|err| format!("connect: {err}"))?;
-        let table = connection
-            .open_table("semantic")
-            .execute()
-            .await
-            .map_err(|err| format!("open_table: {err}"))?;
+            .map_err(|err| format!("open dataset: {err}"))?;
         let configs = table
-            .list_indices()
+            .load_indices()
             .await
-            .map_err(|err| format!("list_indices: {err}"))?;
+            .map_err(|err| format!("load_indices: {err}"))?;
         let mut names: Vec<String> = Vec::new();
-        for config in configs
-            .iter()
-            .filter(|config| config.columns.iter().any(|column| column == "vector"))
-        {
-            let name = if config.index_type == lancedb::index::IndexType::IvfHnswSq {
+        for config in configs.iter() {
+            let columns = config
+                .fields
+                .iter()
+                .map(|field| table.schema().field_path(*field))
+                .collect::<Result<Vec<_>, _>>()?;
+            if !columns.iter().any(|column| column == "vector") {
+                continue;
+            }
+            let raw = table.index_statistics(&config.name).await?;
+            let observed: serde_json::Value = serde_json::from_str(&raw)?;
+            let kind = observed
+                .get("index_type")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("index statistics lack index_type")?;
+            let name = if kind == "IVF_HNSW_SQ" {
                 config.name.clone()
             } else {
-                format!("{}:{}", config.name, config.index_type)
+                format!("{}:{kind}", config.name)
             };
             if !names.contains(&name) {
                 names.push(name);
             }
         }
-        let stats = match table
-            .index_stats(INDEX_NAME)
-            .await
-            .map_err(|err| format!("index_stats: {err}"))?
-        {
-            Some(stats) => Some((
-                stats.num_indexed_rows,
-                stats.num_unindexed_rows,
-                stats.num_indices,
-            )),
-            None => None,
+        let stats = match table.index_statistics(INDEX_NAME).await {
+            Ok(raw) => {
+                let value: serde_json::Value = serde_json::from_str(&raw)?;
+                let indexed = value
+                    .get("num_indexed_rows")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or("index statistics lack num_indexed_rows")?;
+                let unindexed = value
+                    .get("num_unindexed_rows")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or("index statistics lack num_unindexed_rows")?;
+                let segments = value
+                    .get("num_indices")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(u32::try_from)
+                    .transpose()?;
+                Some((
+                    usize::try_from(indexed)?,
+                    usize::try_from(unindexed)?,
+                    segments,
+                ))
+            }
+            Err(lance::Error::IndexNotFound { .. }) => None,
+            Err(error) => return Err(format!("index statistics: {error}").into()),
         };
         Ok::<LibraryView, Box<dyn Error>>(LibraryView { names, stats })
     })

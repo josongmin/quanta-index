@@ -370,6 +370,22 @@ impl<'a> LexicalNamespace<'a> {
     pub fn query_request(&self, request: TextQueryRequest) -> Result<TextQueryResponse, SdkError> {
         dispatch_text_query_request_v1(self.client, request)
     }
+
+    /// Every match of one literal or regex on a Native connection, at most
+    /// `limit` rows per page. Pass a page's `next_cursor` as `after` to read
+    /// the next page of the same view; see [`crate::NativeTextMatchesResponse`].
+    pub fn matches(
+        &self,
+        query: quanta_index_contract::native_protocol::NativeTextMatchQuery,
+        limit: u32,
+        after: Option<&quanta_index_contract::ContinuationTokenV2>,
+    ) -> Result<crate::NativeTextMatchesResponse, SdkError> {
+        let route = self
+            .client
+            .native_text_route()
+            .ok_or_else(|| SdkError::Usage("text matches require a Native connection".into()))?;
+        crate::native_text_matches::execute(&route, query, limit, after)
+    }
 }
 
 pub struct SearchCorpusNamespace<'a> {
@@ -401,6 +417,8 @@ impl<'a> SearchCorpusNamespace<'a> {
             }
             other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
             | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+
+
             | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
             | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -603,6 +621,8 @@ fn dispatch_activation_request_v1(
         SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) => Ok(ack),
         other @ (SearchPlaneControlIpcResponse::SearchCorpusGenerationReservationV1(_)
         | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+
+
         | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
         | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
         | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
@@ -755,6 +775,7 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
         | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
         | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
         | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
+
         | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)
         | SearchPlaneIngestIpcResponse::Error(_)) => Err(SdkError::unexpected_response(
@@ -1071,7 +1092,13 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 }
 
 impl LexicalQueryBuilder<'_, true, true, true> {
+    /// On a Native connection, the default code search reads one file page
+    /// of the selected repository revision's protected Source head; the
+    /// lower-level syntaxes stay on their explicit Native contracts.
     pub fn execute(self) -> Result<TextQueryResponse, SdkError> {
+        if let Some(route) = self.client.native_text_route() {
+            return crate::native_code_search::execute(&route, self.state, None);
+        }
         let request = self.state.build_request(
             self.client,
             crate::LegacyQueryCapabilityV1::Text,
@@ -1080,18 +1107,23 @@ impl LexicalQueryBuilder<'_, true, true, true> {
         dispatch_text_query_request_v1(self.client, request)
     }
 
-    /// Execute the same lexical request with request-local client IPC timing.
+    /// Execute a lexical request with request-local client IPC timing.
     /// The normal `execute` path does not collect these clocks. An error has
     /// no successful observation and retains its ordinary SDK error type.
     pub fn execute_observed(
         self,
     ) -> Result<(TextQueryResponse, ClientLexicalQueryObservationV1), SdkError> {
+        let mut observation = ClientLexicalQueryObservationV1::default();
+        if let Some(route) = self.client.native_text_route() {
+            let response =
+                crate::native_code_search::execute(&route, self.state, Some(&mut observation))?;
+            return Ok((response, observation));
+        }
         let request = self.state.build_request(
             self.client,
             crate::LegacyQueryCapabilityV1::Text,
             "lexical",
         )?;
-        let mut observation = ClientLexicalQueryObservationV1::default();
         let response =
             dispatch_text_query_request_inner(self.client, request, Some(&mut observation))?;
         Ok((response, observation))
@@ -1133,6 +1165,7 @@ fn dispatch_text_query_request_inner(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
+
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Explain(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Error(_)

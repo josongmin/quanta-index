@@ -1,10 +1,13 @@
 //! Actual read handles stay owned through read, validation and batch barriers.
 
 use std::{
+    ffi::OsStr,
     fs::{self, File},
-    io::Read as _,
     num::NonZeroUsize,
-    os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
+    os::unix::{
+        ffi::OsStrExt as _,
+        fs::{MetadataExt as _, OpenOptionsExt as _},
+    },
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -14,15 +17,17 @@ use quanta_index_core::index::{
     Digest, IndexError, MemoryLease, MemoryLifetime, NativeProtectedSnapshotPageV1, ObjectReadFile,
     ObjectReadIoPort, ObjectRef, RegisteredObject, StoredObject, WorkBudget, WorkUsage,
 };
+use rustix::fs::OFlags;
 use sha2::{Digest as _, Sha256};
 
 use super::{
     HEADER_LEN, MAX_WIRE, charge_decoded_wire, decode_wire_registration, digest_wire, hex_digit,
-    namespace::NamespaceLease, nofollow_flag, parse_wire_header, storage_error,
-    validate_private_directory, validate_private_file, validate_private_shard, wire_hasher,
+    namespace::NamespaceLease, parse_wire_header, storage_error, validate_private_directory,
+    validate_private_file, validate_private_shard, wire_hasher,
 };
 
 const STREAM_BYTES: usize = 64 * 1024;
+pub(super) const SMALL_STORED_WIRE_BYTES: usize = 512;
 
 /// Only the completed file read constructs this immutable, reference-bound wire.
 pub(super) struct ReadWire {
@@ -58,14 +63,21 @@ impl ObjectIoFile {
 fn open_reader(
     io: Option<&dyn ObjectReadIoPort>,
     path: &Path,
+    expected: &fs::Metadata,
     budget: &mut WorkBudget,
 ) -> Result<ObjectIoFile, IndexError> {
     if let Some(io) = io {
-        return io.open(path, budget).map(ObjectIoFile::Admitted);
+        return io
+            .open_after_path_metadata(path, expected, budget)
+            .map(ObjectIoFile::Admitted);
     }
-    std::fs::OpenOptions::new()
+    // A FIFO substituted after the pathname stat must not block the
+    // actual FD type and identity checks at the caller.
+    let flags = i32::try_from((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits())
+        .map_err(|_error| IndexError::Storage("object read open flags overflow".into()))?;
+    fs::OpenOptions::new()
         .read(true)
-        .custom_flags(nofollow_flag()?)
+        .custom_flags(flags)
         .open(path)
         .map(ObjectIoFile::Plain)
         .map_err(|error| {
@@ -78,14 +90,22 @@ fn open_reader(
 }
 
 pub(super) fn object_path(objects: &Path, reference: ObjectRef) -> PathBuf {
-    let bytes = (reference.0).0;
-    let mut name = String::with_capacity(64);
-    for byte in bytes {
-        name.push(hex_digit(byte >> 4));
-        name.push(hex_digit(byte & 0x0f));
+    let ObjectRef(Digest(bytes)) = reference;
+    let mut name = [0; 64];
+    for (digit, nibble) in name
+        .iter_mut()
+        .zip(bytes.into_iter().flat_map(|byte| [byte >> 4, byte & 0x0f]))
+    {
+        *digit = hex_digit(nibble);
     }
-    let shard = format!("{:02x}", bytes.first().copied().unwrap_or_default());
-    objects.join(shard).join(name)
+    let [first, second, ..] = name;
+    let shard = [first, second];
+    let suffix_bytes = shard.len().saturating_add(name.len()).saturating_add(2);
+    let mut path = PathBuf::with_capacity(objects.as_os_str().len().saturating_add(suffix_bytes));
+    path.push(objects);
+    path.push(OsStr::from_bytes(&shard));
+    path.push(OsStr::from_bytes(&name));
+    path
 }
 
 pub(super) fn read_wire(
@@ -140,10 +160,13 @@ pub(super) fn read_stored(
     reference: ObjectRef,
     budget: &mut WorkBudget,
 ) -> Result<StoredObject, IndexError> {
-    let (registration, (payload, memory)) = read_object(
-        objects,
-        namespace,
-        io,
+    let (owner, file_len) = open_wire_reader(objects, namespace, io, reference, budget)?;
+    if file_len <= SMALL_STORED_WIRE_BYTES {
+        return read_small_stored(owner, file_len, reference, budget);
+    }
+    let (registration, (payload, memory)) = read_object_from_open(
+        owner,
+        file_len,
         reference,
         budget,
         |file, payload_len, hasher, budget| {
@@ -157,6 +180,61 @@ pub(super) fn read_stored(
         },
     )?;
     Ok(StoredObject::new(registration, payload, memory))
+}
+
+fn read_small_stored(
+    owner: ObjectIoFile,
+    file_len: usize,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<StoredObject, IndexError> {
+    // One bounded read covers the header, child references and payload. The
+    // admitted file owner stays live through the digest and EOF witness.
+    let mut file = owner.file()?;
+    let mut wire = [0; SMALL_STORED_WIRE_BYTES];
+    let wire = wire
+        .get_mut(..file_len)
+        .ok_or(IndexError::ResourceLimited)?;
+    read_small_wire(&mut file, wire, reference, || budget.checkpoint())?;
+    let (payload_len, child_bytes) = parse_wire_header(
+        wire.get(..HEADER_LEN).ok_or(IndexError::ResourceLimited)?,
+        file_len,
+    )?;
+    let child_end = HEADER_LEN
+        .checked_add(child_bytes)
+        .ok_or(IndexError::ResourceLimited)?;
+    let children = wire
+        .get(HEADER_LEN..child_end)
+        .ok_or(IndexError::ResourceLimited)?;
+    let payload_bytes = wire.get(child_end..).ok_or(IndexError::ResourceLimited)?;
+    if payload_bytes.len() != payload_len {
+        return Err(IndexError::CorruptObject(
+            "encoded lengths do not match object size".into(),
+        ));
+    }
+    let memory = budget.reserve_memory(
+        StoredObject::payload_allocation_bytes(payload_len)?,
+        MemoryLifetime::Retained,
+    )?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(payload_len)
+        .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+    payload.extend_from_slice(payload_bytes);
+    charge_decoded_wire(payload_len, child_bytes, budget)?;
+    let registration = decode_wire_registration(reference, file_len, children, budget)?;
+    Ok(StoredObject::new(registration, payload, memory))
+}
+
+fn read_small_wire(
+    file: &mut impl std::io::Read,
+    wire: &mut [u8],
+    reference: ObjectRef,
+    checkpoint: impl FnOnce() -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    read_exact(file, wire)?;
+    checkpoint()?;
+    verify_wire_end(file, reference, || digest_wire(wire))
 }
 
 /// Authenticate the whole object with bounded payload scratch and retain
@@ -342,7 +420,18 @@ fn read_object<T>(
     budget: &mut WorkBudget,
     read_payload: impl FnOnce(&mut &File, usize, &mut Sha256, &WorkBudget) -> Result<T, IndexError>,
 ) -> Result<(RegisteredObject, T), IndexError> {
-    let mut prefix = open_wire_prefix(objects, namespace, io, reference, budget)?;
+    let (owner, file_len) = open_wire_reader(objects, namespace, io, reference, budget)?;
+    read_object_from_open(owner, file_len, reference, budget, read_payload)
+}
+
+fn read_object_from_open<T>(
+    owner: ObjectIoFile,
+    file_len: usize,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+    read_payload: impl FnOnce(&mut &File, usize, &mut Sha256, &WorkBudget) -> Result<T, IndexError>,
+) -> Result<(RegisteredObject, T), IndexError> {
+    let mut prefix = open_wire_prefix_from_open(owner, file_len, reference, budget)?;
     let mut file = prefix.owner.file()?;
     let payload = read_payload(&mut file, prefix.payload_len, &mut prefix.hasher, budget)?;
     verify_wire_end(&mut file, reference, || {
@@ -374,6 +463,15 @@ fn open_wire_prefix(
     budget: &mut WorkBudget,
 ) -> Result<WirePrefix, IndexError> {
     let (owner, file_len) = open_wire_reader(objects, namespace, io, reference, budget)?;
+    open_wire_prefix_from_open(owner, file_len, reference, budget)
+}
+
+fn open_wire_prefix_from_open(
+    owner: ObjectIoFile,
+    file_len: usize,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<WirePrefix, IndexError> {
     let mut file = owner.file()?;
     let mut header = [0; HEADER_LEN];
     read_exact(&mut file, &mut header)?;
@@ -483,7 +581,7 @@ fn open_wire_reader(
         }
     })?;
     validate_private_file(&metadata)?;
-    let owner = open_reader(io, &path, budget)?;
+    let owner = open_reader(io, &path, &metadata, budget)?;
     let file = owner.file()?;
     let opened = file.metadata().map_err(|error| storage_error(&error))?;
     validate_private_file(&opened)?;
@@ -522,7 +620,7 @@ fn zeroed_buffer(len: usize) -> Result<Vec<u8>, IndexError> {
     Ok(bytes)
 }
 
-fn read_exact(file: &mut &File, bytes: &mut [u8]) -> Result<(), IndexError> {
+fn read_exact(file: &mut impl std::io::Read, bytes: &mut [u8]) -> Result<(), IndexError> {
     file.read_exact(bytes).map_err(|error| {
         if error.kind() == std::io::ErrorKind::UnexpectedEof {
             IndexError::CorruptObject("object truncated during read".into())
@@ -533,7 +631,7 @@ fn read_exact(file: &mut &File, bytes: &mut [u8]) -> Result<(), IndexError> {
 }
 
 fn verify_wire_end(
-    file: &mut &File,
+    file: &mut impl std::io::Read,
     reference: ObjectRef,
     digest: impl FnOnce() -> ObjectRef,
 ) -> Result<(), IndexError> {
@@ -548,4 +646,88 @@ fn verify_wire_end(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_wire_plain_reader_opens_with_nonblocking_flag() -> Result<(), IndexError> {
+        let file = tempfile::NamedTempFile::new().map_err(|error| storage_error(&error))?;
+        let metadata = file
+            .as_file()
+            .metadata()
+            .map_err(|error| storage_error(&error))?;
+        let mut budget = WorkBudget::with_request(
+            quanta_index_core::index::WorkLimits {
+                reads: 0,
+                writes: 0,
+                bytes: 0,
+                mutations: 0,
+            },
+            RequestBudgetV1::unbounded(),
+        );
+        let owner = open_reader(None, file.path(), &metadata, &mut budget)?;
+        let flags = rustix::fs::fcntl_getfl(owner.file()?).map_err(|error| {
+            storage_error(&std::io::Error::from_raw_os_error(error.raw_os_error()))
+        })?;
+        assert!(flags.contains(OFlags::NONBLOCK));
+        Ok(())
+    }
+
+    struct CountedWire<'a> {
+        bytes: &'a [u8],
+        calls: usize,
+    }
+
+    impl std::io::Read for CountedWire<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            let count = buffer.len().min(self.bytes.len());
+            buffer[..count].copy_from_slice(&self.bytes[..count]);
+            self.bytes = &self.bytes[count..];
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn small_wire_uses_one_data_read_and_one_eof_read() -> Result<(), IndexError> {
+        let wire = b"small authenticated wire";
+        let reference = digest_wire(wire);
+        let mut reader = CountedWire {
+            bytes: wire,
+            calls: 0,
+        };
+        let mut observed = [0; 24];
+        read_small_wire(&mut reader, &mut observed, reference, || Ok(()))?;
+        assert_eq!(reader.calls, 2);
+        assert_eq!(observed, *wire);
+
+        let mut appended = CountedWire {
+            bytes: b"small authenticated wire!",
+            calls: 0,
+        };
+        assert!(matches!(
+            read_small_wire(&mut appended, &mut observed, reference, || Ok(())),
+            Err(IndexError::CorruptObject(message)) if message == "object digest or size mismatch"
+        ));
+        let mut truncated = CountedWire {
+            bytes: b"small authenticated wir",
+            calls: 0,
+        };
+        assert!(matches!(
+            read_small_wire(&mut truncated, &mut observed, reference, || Ok(())),
+            Err(IndexError::CorruptObject(message)) if message == "object truncated during read"
+        ));
+        let mut damaged = CountedWire {
+            bytes: b"small authenticated WIRE",
+            calls: 0,
+        };
+        assert!(matches!(
+            read_small_wire(&mut damaged, &mut observed, reference, || Ok(())),
+            Err(IndexError::CorruptObject(message)) if message == "object digest or size mismatch"
+        ));
+        Ok(())
+    }
 }

@@ -7,11 +7,8 @@ selection and source commitments remain on the patched grammars.
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 import time
@@ -19,13 +16,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from tools.benchmark.retrieval.projection_process import ProjectionProcessError, run_bounded
+from tools.benchmark.retrieval.projection_process import (
+    HELPER_ENV,
+    ProjectionProcessError,
+    parse_helper_json,
+    read_bounded_regular,
+    run_bounded,
+)
 
 SCHEMA = "quanta-ts-grammar-projection-v1"
 SOURCE = Path(__file__).with_suffix(".cjs")
 MAX_SOURCE_BYTES = 1 << 20
 MAX_RESPONSE_BYTES = 8 << 20
 MAX_LIBRARY_BYTES = 16 << 20
+MAX_NODE_BYTES = 256 << 20
+MAX_STAGED_BYTES = 512 << 20
+MAX_NODE_LIBRARIES = 8
 MAX_EDITS = 1 << 16
 
 
@@ -96,30 +102,29 @@ class TsProjector:
     @staticmethod
     def _read_exact(path: Path, digest: str, maximum: int) -> bytes:
         try:
-            metadata = path.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum:
-                raise TsProjectionError("binary_identity")
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, "rb") as handle:
-                blob = handle.read(maximum + 1)
+            blob = read_bounded_regular(path, maximum)
         except OSError as error:
             raise TsProjectionError("binary_identity") from error
-        if len(blob) > maximum or hashlib.sha256(blob).hexdigest() != digest:
+        if hashlib.sha256(blob).hexdigest() != digest:
             raise TsProjectionError("binary_identity")
         return blob
 
     def __enter__(self) -> TsProjector:
-        node = self._read_exact(self.node, self.node_sha256, 256 << 20)
+        if len(self.node_libraries) > MAX_NODE_LIBRARIES:
+            raise TsProjectionError("binary_identity")
+        node = self._read_exact(self.node, self.node_sha256, MAX_NODE_BYTES)
         if not node:
             raise TsProjectionError("binary_identity")
         script = self._read_exact(SOURCE, self.script_sha256, MAX_SOURCE_BYTES)
         library = self._read_exact(self.typescript_js, self.typescript_sha256, MAX_LIBRARY_BYTES)
-        libraries = [
-            (path.name, self._read_exact(path, digest, 256 << 20))
-            for path, digest in self.node_libraries
-        ]
-        if len({name for name, _blob in libraries}) != len(libraries):
-            raise TsProjectionError("binary_identity")
+        libraries = {}
+        remaining = MAX_STAGED_BYTES - len(node) - len(script) - len(library)
+        for path, digest in self.node_libraries:
+            if path.name in libraries:
+                raise TsProjectionError("binary_identity")
+            blob = self._read_exact(path, digest, min(MAX_NODE_BYTES, remaining))
+            remaining -= len(blob)
+            libraries[path.name] = blob
         try:
             self._directory = Path(tempfile.mkdtemp(prefix="quanta-ts-projection-"))
             bin_dir = self._directory / "bin"
@@ -131,7 +136,7 @@ class TsProjector:
             self._staged_library = self._directory / "typescript.js"
             self._staged_node.write_bytes(node)
             self._staged_node.chmod(0o700)
-            for name, blob in libraries:
+            for name, blob in libraries.items():
                 (lib_dir / name).write_bytes(blob)
             self._staged_script.write_bytes(script)
             self._staged_library.write_bytes(library)
@@ -173,6 +178,7 @@ class TsProjector:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=HELPER_ENV,
                 close_fds=True,
                 start_new_session=True,
             )
@@ -193,8 +199,8 @@ class TsProjector:
         if returncode != 0 or stderr:
             raise TsProjectionError("producer_defect")
         try:
-            response = json.loads(output)
-        except (ValueError, UnicodeDecodeError) as error:
+            response = parse_helper_json(output)
+        except (ValueError, UnicodeDecodeError, RecursionError) as error:
             raise TsProjectionError("producer_defect") from error
         if (
             not isinstance(response, dict)
@@ -205,6 +211,8 @@ class TsProjector:
             or response["node_version"] != self.node_version
             or response["source_sha256"] != hashlib.sha256(source).hexdigest()
         ):
+            raise TsProjectionError("producer_defect")
+        if not isinstance(response["status"], str):
             raise TsProjectionError("producer_defect")
         if response["status"] != "ok":
             if (

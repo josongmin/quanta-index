@@ -355,24 +355,37 @@ fn open_fixture_with_memory_and_batch(
         max_depth: 8,
         max_pending_frames: 1024,
     };
-    let capacity =
-        seed_publication_capacity(&lease, &root, inventory, &[], &RequestBudgetV1::unbounded())?;
-    let physical = PublicationFileCapacity::new(lease, capacity, 32, 16384, 256)?;
-    let io = NativeScratchIo::register(
-        Arc::clone(&physical),
-        std::ffi::CString::new("quanta-publication-capacity")?,
-        512,
-    )?;
-    let scratch = Arc::new(FileScratchSpace::open_managed_with_io(
-        root.join("scratch"),
-        16 * MIB,
-        io.clone(),
-    )?);
-    let catalog = Arc::new(SqliteCatalog::open_with_io_admission(
+    // This local fixture checks Catalog, scratch, object and SQL counters.
+    // Product XFS admission is exercised by the installed Native process.
+    let capacity = seed_publication_capacity_stock_catalog(
+        &lease,
         &root,
-        Duration::from_secs(2),
-        io.clone(),
-    )?);
+        inventory,
+        &[],
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let physical = PublicationFileCapacity::new_with_maintenance(
+        lease,
+        capacity,
+        32,
+        16384,
+        256,
+        512 * 1024,
+        8,
+    )?;
+    let io = NativeScratchIo::register_with_maintenance(Arc::clone(&physical), 512)?;
+    let scratch = Arc::new(
+        FileScratchSpace::open_managed_with_io(root.join("scratch"), 16 * MIB, io.clone())?
+            .into_quota_managed_stock()?,
+    );
+    let catalog = {
+        let _funding = io.enter_maintenance_scope()?;
+        Arc::new(SqliteCatalog::open_with_stock_vfs_and_io_admission(
+            &root,
+            Duration::from_secs(2),
+            io.clone(),
+        )?)
+    };
     native_catalog_profile::attach(&catalog)?;
     let object_root = root.join("object-store");
     let lock = object_root.join(".object-namespace.lease");

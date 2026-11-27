@@ -219,7 +219,7 @@ fn linux_real_uid_client_helper() -> TestResult {
         SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
         SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
         SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-        SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest,
+        SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax,
     };
     use quanta_index_ipc::{ClientIoPolicy, send_request};
 

@@ -107,10 +107,10 @@ fn independent_overlay_effort_requests_share_corpus_but_not_cancellation() -> Te
     let client = NativeUdsClient::new(socket.clone());
     let (selected, _) = setup(&client, semantic)?;
     let setup_calls = calls.load(Ordering::SeqCst);
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(30))?;
     let session = NativeOverlaySession {
         workspace: workspace(),
-        publisher,
+        publisher: live.id(),
         epoch: 1,
     };
     assert_eq!(
@@ -121,6 +121,7 @@ fn independent_overlay_effort_requests_share_corpus_but_not_cancellation() -> Te
         session,
         owner: owner(),
     };
+    live.renew()?;
     assert_eq!(
         client.update_overlay_at_path(
             document,
@@ -128,6 +129,7 @@ fn independent_overlay_effort_requests_share_corpus_but_not_cancellation() -> Te
             1,
             Some("beta".into()),
             Some("a.rs".into()),
+            None,
             &budget(),
         )?,
         NativeOverlayReply::Updated {
@@ -142,6 +144,7 @@ fn independent_overlay_effort_requests_share_corpus_but_not_cancellation() -> Te
     let cancel_handle = cancel_budget.cancel_handle();
     let survivor_budget = RequestBudgetV1::for_duration(Duration::from_secs(20));
     let (fast_tx, fast_rx) = mpsc::channel();
+    live.renew()?;
     let cancelled_socket = socket.clone();
     let cancelled_fast = fast_tx.clone();
     let cancelled = std::thread::spawn(move || {
@@ -181,6 +184,8 @@ fn independent_overlay_effort_requests_share_corpus_but_not_cancellation() -> Te
         baseline_pins.checked_add(2).ok_or("pin count overflow")?
     );
     cancel_handle.cancel();
+    // The surviving request still validates the lease after the gate opens.
+    live.renew()?;
     gate.released.store(true, Ordering::Release);
 
     let (cancelled_outcome, cancelled_deep) = cancelled

@@ -4,11 +4,11 @@ use sha2::{Digest as _, Sha256};
 
 use crate::lex::DirtyRecord;
 use crate::{
-    ChunkRecord, GenerationPin, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
+    ChunkId, ChunkRecord, GenerationPin, QueryResultWindowV1, RepoId, RepoRelativePath, RevisionId,
     RuntimeCatalogIngestBatch, StructuralCandidate, StructuralTreeRecord, TextQueryRequest,
     TextQuerySyntax,
     index::{
-        Digest, ObjectRef, OperationKey, OwnerKey, ProducerId, ProjectionId, SchemaId, SourceCut,
+        Digest, ObjectRef, OperationKey, OwnerKey, ProducerId, ProjectionId, ProjectionReplayStamp, SchemaId, SourceCut,
         StableOwnerId, StreamId, ViewRef,
     },
 };
@@ -173,6 +173,24 @@ crate::native_serde_struct!([serde_identifier] NativeDslReplayV1 {
     authority: Digest,
 });
 
+impl NativeDslReplayV1 {
+    #[must_use]
+    pub fn matches_stamp_v1(&self, stamp: ProjectionReplayStamp) -> bool {
+        let sequence = native_dsl_sequence_v1(stamp.context);
+        let same_base = match self.basis {
+            NativeDslReplayBasisV1::Exact { view, event_predecessor } =>
+                stamp.expected_view == view && event_predecessor.checked_add(1) == Some(sequence),
+            NativeDslReplayBasisV1::Source(source) => source == stamp.source,
+            NativeDslReplayBasisV1::SourceWithServingSequence { source, serving_event_sequence } =>
+                source == stamp.source && sequence <= serving_event_sequence,
+        };
+        same_base
+            && stamp.projection == self.projection
+            && sequence != 0
+            && stamp.context == native_dsl_context_v1(sequence, self.authority)
+    }
+}
+
 fn truncated_digest(hash: Sha256) -> [u8; 16] {
     let digest = hash.finalize();
     let mut identity = [0; 16];
@@ -217,6 +235,291 @@ crate::native_serde_struct!([serde_identifier] NativeDslRuntimeCatalogV1 {
     corpus_certificate: ObjectRef,
     dirty: Vec<DirtyRecord>,
     catalog: RuntimeCatalogIngestBatch,
+});
+
+const NATIVE_DSL_RUNTIME_CATALOG_FIELDS_V1: &[&str] =
+    &["corpus_certificate", "dirty", "catalog"];
+
+struct NativeDslRuntimeCatalogFieldSeedV1;
+
+impl<'de> serde::de::DeserializeSeed<'de> for NativeDslRuntimeCatalogFieldSeedV1 {
+    type Value = &'static str;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        decoder.deserialize_identifier(self)
+    }
+}
+
+impl serde::de::Visitor<'_> for NativeDslRuntimeCatalogFieldSeedV1 {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a borrowed RuntimeMetadata header field")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Self::Value, E> {
+        NATIVE_DSL_RUNTIME_CATALOG_FIELDS_V1.iter().copied()
+            .find(|field| *field == key)
+            .ok_or_else(|| E::unknown_field(key, NATIVE_DSL_RUNTIME_CATALOG_FIELDS_V1))
+    }
+
+    fn visit_bytes<E: serde::de::Error>(self, key: &[u8]) -> Result<Self::Value, E> {
+        let key = core::str::from_utf8(key)
+            .map_err(|_| E::invalid_value(serde::de::Unexpected::Bytes(key), &self))?;
+        self.visit_str(key)
+    }
+
+    fn visit_string<E: serde::de::Error>(self, _key: String) -> Result<Self::Value, E> {
+        Err(E::custom("admitted RuntimeMetadata field must be borrowed"))
+    }
+}
+
+struct NativeDslRuntimeCatalogSeedV1<'a, A: ?Sized> {
+    admission: &'a A,
+    limits: crate::CorpusDecodeLimitsV1,
+}
+
+struct NativeDslRuntimeCatalogVisitorV1<'a, A: ?Sized> {
+    admission: &'a A,
+    limits: crate::CorpusDecodeLimitsV1,
+}
+
+impl<'de, A: quanta_index_contract_base::SourceIdentityDecodeAdmissionV1 + ?Sized>
+    serde::de::Visitor<'de> for NativeDslRuntimeCatalogVisitorV1<'_, A>
+{
+    type Value = NativeDslRuntimeCatalogV1;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a NativeDslRuntimeCatalogV1 map")
+    }
+
+    fn visit_map<M: serde::de::MapAccess<'de>>(
+        self, mut map: M,
+    ) -> Result<Self::Value, M::Error> {
+        let (mut corpus_certificate, mut dirty, mut catalog) = (None, None, None);
+        while let Some(field) = map.next_key_seed(NativeDslRuntimeCatalogFieldSeedV1)? {
+            match field {
+                "corpus_certificate" => {
+                    if corpus_certificate.replace(map.next_value()?).is_some() {
+                        return Err(serde::de::Error::duplicate_field("corpus_certificate"));
+                    }
+                }
+                "dirty" => {
+                    if dirty.replace(map.next_value_seed(
+                        quanta_index_contract_base::AdmittedSequenceSeedV1::new(
+                            self.admission, self.limits.collection_items,
+                            || DirtyRecord::deserialize_seed_with_admission_v1(
+                                self.admission, self.limits.text_bytes,
+                            ),
+                        ),
+                    )?).is_some() {
+                        return Err(serde::de::Error::duplicate_field("dirty"));
+                    }
+                }
+                "catalog" => {
+                    if catalog.replace(map.next_value_seed(
+                        RuntimeCatalogIngestBatch::deserialize_seed_with_admission_v1(
+                            self.admission, self.limits,
+                        ),
+                    )?).is_some() {
+                        return Err(serde::de::Error::duplicate_field("catalog"));
+                    }
+                }
+                _ => return Err(serde::de::Error::unknown_field(
+                    field, NATIVE_DSL_RUNTIME_CATALOG_FIELDS_V1,
+                )),
+            }
+        }
+        Ok(NativeDslRuntimeCatalogV1 {
+            corpus_certificate: corpus_certificate.ok_or_else(||
+                serde::de::Error::missing_field("corpus_certificate"))?,
+            dirty: dirty.ok_or_else(|| serde::de::Error::missing_field("dirty"))?,
+            catalog: catalog.ok_or_else(|| serde::de::Error::missing_field("catalog"))?,
+        })
+    }
+}
+
+impl<'de, A: quanta_index_contract_base::SourceIdentityDecodeAdmissionV1 + ?Sized>
+    serde::de::DeserializeSeed<'de> for NativeDslRuntimeCatalogSeedV1<'_, A>
+{
+    type Value = NativeDslRuntimeCatalogV1;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        let result = decoder.deserialize_struct(
+            "NativeDslRuntimeCatalogV1", NATIVE_DSL_RUNTIME_CATALOG_FIELDS_V1,
+            NativeDslRuntimeCatalogVisitorV1 { admission: self.admission, limits: self.limits },
+        );
+        if result.is_err() {
+            self.admission.abort_decode();
+        }
+        result
+    }
+}
+
+impl NativeDslRuntimeCatalogV1 {
+    /// The caller must retain the admission owner with the decoded header.
+    pub fn deserialize_seed_with_admission_v1<'a, A>(
+        admission: &'a A, limits: crate::CorpusDecodeLimitsV1,
+    ) -> impl for<'de> serde::de::DeserializeSeed<'de, Value = Self> + 'a
+    where A: quanta_index_contract_base::SourceIdentityDecodeAdmissionV1 + ?Sized {
+        NativeDslRuntimeCatalogSeedV1 { admission, limits }
+    }
+}
+
+pub const NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1: u32 = 4 * 1024 * 1024;
+pub const NATIVE_DSL_RUNTIME_CATALOG_MAX_BYTES_V1: u32 = 16 * 1024 * 1024;
+pub const NATIVE_DSL_STRUCTURAL_CHUNK_PAGE_ITEMS_V1: usize = 256;
+pub const NATIVE_DSL_STRUCTURAL_CHUNK_PAGE_TEXT_BYTES_V1: usize = 1024 * 1024;
+
+/// Continuation within one authenticated Structural owner contribution.
+/// Offset zero resumes after the owner; a positive offset resumes its chunks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeDslStructuralChunkCursorV1 {
+    pub view: ViewRef,
+    pub projection: ObjectRef,
+    pub certificate: ObjectRef,
+    pub owner: OwnerKey,
+    pub offset: u32,
+}
+crate::native_serde_struct!(NativeDslStructuralChunkCursorV1 {
+    view: ViewRef,
+    projection: ObjectRef,
+    certificate: ObjectRef,
+    owner: OwnerKey,
+    offset: u32,
+});
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDslStructuralChunkPageV1 {
+    pub session: NativeReadSessionId,
+    pub view: ViewRef,
+    pub source: SourceCut,
+    pub projection: ObjectRef,
+    pub structural_certificate: ObjectRef,
+    pub chunks: Vec<crate::ChunkId>,
+    pub next: Option<NativeDslStructuralChunkCursorV1>,
+}
+crate::native_serde_struct!(NativeDslStructuralChunkPageV1 {
+    session: NativeReadSessionId,
+    view: ViewRef,
+    source: SourceCut,
+    projection: ObjectRef,
+    structural_certificate: ObjectRef,
+    chunks: Vec<crate::ChunkId>,
+    next: Option<NativeDslStructuralChunkCursorV1>,
+});
+
+impl NativeDslStructuralChunkPageV1 {
+    #[must_use]
+    pub fn matches_request_v1(
+        &self, session: NativeReadSessionId, view: ViewRef,
+        after: Option<&NativeDslStructuralChunkCursorV1>,
+    ) -> bool {
+        let bound = |cursor: &NativeDslStructuralChunkCursorV1| {
+            cursor.view == self.view
+                && cursor.projection == self.projection
+                && cursor.certificate == self.structural_certificate
+        };
+        self.session == session
+            && self.view == view
+            && after.is_none_or(bound)
+            && self.next.as_ref().is_none_or(bound)
+            && self.chunks.len() <= NATIVE_DSL_STRUCTURAL_CHUNK_PAGE_ITEMS_V1
+            && self.chunks.iter().try_fold(0_usize, |bytes, chunk| {
+                bytes.checked_add(chunk.as_str().len())
+            }).is_some_and(|bytes| bytes <= NATIVE_DSL_STRUCTURAL_CHUNK_PAGE_TEXT_BYTES_V1)
+    }
+}
+
+/// Bound page of the canonical retained RuntimeMetadata header bytes. All
+/// pages of a seed carry the same exact view, Source and immutable identities.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDslRuntimeCatalogPageV1 {
+    pub session: NativeReadSessionId,
+    pub view: ViewRef,
+    pub source: SourceCut,
+    pub structural_certificate: ObjectRef,
+    pub projection: ObjectRef,
+    pub output: ObjectRef,
+    pub total_bytes: u32,
+    pub offset: u32,
+    pub bytes: Vec<u8>,
+}
+crate::native_serde_struct!(NativeDslRuntimeCatalogPageV1 {
+    session: NativeReadSessionId,
+    view: ViewRef,
+    source: SourceCut,
+    structural_certificate: ObjectRef,
+    projection: ObjectRef,
+    output: ObjectRef,
+    total_bytes: u32,
+    offset: u32,
+    bytes: Vec<u8>,
+});
+
+impl NativeDslRuntimeCatalogPageV1 {
+    #[must_use]
+    pub fn matches_offset_v1(&self, offset: u32) -> bool {
+        let page = NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1;
+        self.offset == offset
+            && offset.is_multiple_of(page)
+            && self.total_bytes <= NATIVE_DSL_RUNTIME_CATALOG_MAX_BYTES_V1
+            && self.total_bytes.checked_sub(offset).is_some_and(|remaining| {
+                remaining != 0 && usize::try_from(remaining.min(page)).ok() == Some(self.bytes.len())
+            })
+    }
+}
+
+pub const MAX_NATIVE_DSL_STRUCTURAL_CHUNKS_PER_PAGE_V1: usize = 128;
+pub const MAX_NATIVE_DSL_STRUCTURAL_CHUNK_BYTES_V1: usize = 4 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeDslStructuralChunksCursorV1 {
+    pub view: ViewRef,
+    pub projection: ObjectRef,
+    pub structural_certificate: ObjectRef,
+    pub owner: OwnerKey,
+    /// A position inside this owner, or the start of the next owner.
+    pub chunk_offset: Option<u32>,
+}
+crate::native_serde_struct!(NativeDslStructuralChunksCursorV1 {
+    view: ViewRef,
+    projection: ObjectRef,
+    structural_certificate: ObjectRef,
+    owner: OwnerKey,
+    chunk_offset: Option<u32>,
+});
+
+/// One membership entry from the exact Structural projection. The owner
+/// is the projection file key derived by `native_dsl_file_owner_v1`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDslStructuralChunkMemberV1 {
+    pub owner: OwnerKey,
+    pub chunk_id: ChunkId,
+}
+crate::native_serde_struct!(NativeDslStructuralChunkMemberV1 {
+    owner: OwnerKey,
+    chunk_id: ChunkId,
+});
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDslStructuralChunksPageV1 {
+    pub session: NativeReadSessionId,
+    pub view: ViewRef,
+    pub source: SourceCut,
+    pub projection: ObjectRef,
+    pub structural_certificate: ObjectRef,
+    pub chunks: Vec<NativeDslStructuralChunkMemberV1>,
+    pub after: Option<NativeDslStructuralChunksCursorV1>,
+}
+crate::native_serde_struct!(NativeDslStructuralChunksPageV1 {
+    session: NativeReadSessionId,
+    view: ViewRef,
+    source: SourceCut,
+    projection: ObjectRef,
+    structural_certificate: ObjectRef,
+    chunks: Vec<NativeDslStructuralChunkMemberV1>,
+    after: Option<NativeDslStructuralChunksCursorV1>,
 });
 
 #[derive(Clone, Debug, Eq, PartialEq)]

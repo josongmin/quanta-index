@@ -153,7 +153,7 @@ pub(super) fn validate_hybrid_reply_with_memory(
                 .map(|row| (row.path.as_str(), Some(row.vector_id.as_slice()))),
         )
     {
-        if !super::super::valid_native_source_path(path)
+        if !super::super::is_canonical_source_path(path)
             || constraints
                 .repo_relative_path_exact
                 .as_ref()

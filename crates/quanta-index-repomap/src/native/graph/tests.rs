@@ -113,6 +113,7 @@ fn rank_policy_requires_a_projection_for_each_searchable_node()
 
 #[cfg(test)]
 mod projection_retention {
+    use super::node_key;
     use std::{
         collections::BTreeMap,
         sync::{
@@ -149,8 +150,8 @@ mod projection_retention {
             load_owner, load_support,
         },
     };
-    use super::Digest;
     use super::node_key;
+    use super::Digest;
 
     fn reference(byte: u8) -> ObjectRef {
         ObjectRef(Digest([byte; 32]))
@@ -643,9 +644,8 @@ mod projection_retention {
             identity: super::file("src/a.rs"),
             payload_digest: Digest(hash.finalize().into()),
         };
-        let mut check = |facts: &NativeRepoMapFileFactsV1,
-                         graph: &super::GraphNode|
-         -> Result<bool, Box<dyn std::error::Error>> {
+        let mut check = |facts: &NativeRepoMapFileFactsV1, graph: &super::GraphNode|
+            -> Result<bool, Box<dyn std::error::Error>> {
             let facts_ref = objects.store(&serde_json::to_vec(facts)?, &[])?.reference;
             let output = super::GraphOwnerOutput {
                 nodes: vec![graph.clone()],
@@ -798,9 +798,9 @@ mod projection_retention {
         // Independently assembled from the v20 six-field JSON schema and the
         // fixed fixture IDs above, including its SHA-256 projection context.
         const BASE_ROOT_SHA256: [u8; 32] = [
-            0xc1, 0x7e, 0x86, 0xce, 0x7a, 0x2b, 0x55, 0x0f, 0x1a, 0x42, 0x75, 0x6d, 0x4e, 0x43,
-            0xb5, 0xcf, 0x20, 0x5c, 0x06, 0xb3, 0x4f, 0x5f, 0x36, 0x76, 0x78, 0xce, 0x5f, 0x70,
-            0x30, 0x9b, 0x11, 0x57,
+            0xc1, 0x7e, 0x86, 0xce, 0x7a, 0x2b, 0x55, 0x0f, 0x1a, 0x42, 0x75, 0x6d, 0x4e,
+            0x43, 0xb5, 0xcf, 0x20, 0x5c, 0x06, 0xb3, 0x4f, 0x5f, 0x36, 0x76, 0x78, 0xce,
+            0x5f, 0x70, 0x30, 0x9b, 0x11, 0x57,
         ];
         let old_digest: [u8; 32] = Sha256::digest(&old_bytes).into();
         check_equal(&old_digest, &BASE_ROOT_SHA256, "v20 root wire digest")?;
@@ -1125,24 +1125,23 @@ mod projection_retention {
             producer: before.producer,
             ..super::owner(1)
         };
-        let contribution =
-            |stamp, has_output: bool| -> Result<ObjectRef, Box<dyn std::error::Error>> {
-                let contribution = ProjectionOwnerContribution {
-                    projection: before.projection,
-                    producer: before.producer,
-                    owner,
-                    source_owner: None,
-                    source: None,
-                    dependency_stamp: Digest([stamp; 32]),
-                    output: has_output.then_some(output_ref),
-                };
-                Ok(objects
-                    .store(
-                        &serde_json::to_vec(&contribution)?,
-                        &contribution.object_children(),
-                    )?
-                    .reference)
+        let contribution = |stamp, has_output| -> Result<ObjectRef, Box<dyn std::error::Error>> {
+            let contribution = ProjectionOwnerContribution {
+                projection: before.projection,
+                producer: before.producer,
+                owner,
+                source_owner: None,
+                source: None,
+                dependency_stamp: Digest([stamp; 32]),
+                output: has_output.then_some(output_ref),
             };
+            Ok(objects
+                .store(
+                    &serde_json::to_vec(&contribution)?,
+                    &contribution.object_children(),
+                )?
+                .reference)
+        };
         let (previous, next) = (contribution(1, true)?, contribution(2, !legacy)?);
         let old_record = OwnerGraphRecord {
             owner,
@@ -1187,16 +1186,8 @@ mod projection_retention {
             projection: before,
             owners: MapRoot(Some(reference(31))),
             nodes: MapRoot(Some(reference(32))),
-            edges: if legacy {
-                MapRoot(None)
-            } else {
-                MapRoot(Some(reference(33)))
-            },
-            incoming: if legacy {
-                MapRoot(None)
-            } else {
-                MapRoot(Some(reference(34)))
-            },
+            edges: if legacy { MapRoot(None) } else { MapRoot(Some(reference(33))) },
+            incoming: if legacy { MapRoot(None) } else { MapRoot(Some(reference(34))) },
         };
         let mutation = OwnerMutation {
             owner,
@@ -1303,11 +1294,14 @@ mod projection_retention {
             incoming: graph_roots.3,
         };
         let mut stale_root = serde_json::to_value(old_root)?;
-        let _removed_epoch = stale_root
+        let removed = stale_root
             .as_object_mut()
             .ok_or("graph root must serialize as a record")?
-            .remove("facts_epoch")
-            .ok_or("graph root must serialize its facts epoch")?;
+            .remove("facts_epoch");
+        let epoch = serde_json::Value::from(super::super::TYPED_FACTS_ROOT_EPOCH);
+        if removed != Some(epoch) {
+            return Err("graph root wire must carry its typed-facts epoch".into());
+        }
         if serde_json::from_value::<GraphRoot>(stale_root).is_ok() {
             return Err("graph root accepted old wire without typed-facts epoch".into());
         }

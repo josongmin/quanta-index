@@ -2436,14 +2436,18 @@ mod tests {
             Some(expected)
         );
         for rejected in names {
-            let missing = lexical_pool_write_limits_from_lookup(&|name| {
-                Ok((name != rejected).then(|| "1".into()))
-            });
-            assert!(missing.is_err());
-            let invalid = lexical_pool_write_limits_from_lookup(&|name| {
-                Ok(Some(if name == rejected { "0" } else { "1" }.into()))
-            });
-            assert!(invalid.is_err());
+            assert!(
+                lexical_pool_write_limits_from_lookup(&|name| Ok(
+                    (name != rejected).then(|| "1".into())
+                ))
+                .is_err()
+            );
+            assert!(
+                lexical_pool_write_limits_from_lookup(&|name| Ok(Some(
+                    if name == rejected { "0" } else { "1" }.into()
+                )))
+                .is_err()
+            );
         }
     }
 
@@ -2535,6 +2539,15 @@ mod tests {
             ("QUANTA_INDEX_EMBED_DIM", "256"),
             ("QUANTA_INDEX_EMBED_MODEL", "text-embedding-3-large"),
             ("QUANTA_INDEX_EMBED_MODEL_REVISION", "rev-2026-09"),
+            ("QUANTA_INDEX_LOCAL_CODE_ORIGIN", "http://127.0.0.1:12345"),
+            (
+                "QUANTA_INDEX_LOCAL_CODE_MANIFEST",
+                "/opt/models/local-code/manifest.json",
+            ),
+            (
+                "QUANTA_INDEX_LOCAL_CODE_MANIFEST_SHA256",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
             ("OPENAI_API_KEY", "sk-fence"),
             ("QUANTA_INDEX_EMBED_BATCH", "7"),
             ("QUANTA_INDEX_EMBED_MAX_EST_TOKENS", "1234"),
@@ -3073,18 +3086,30 @@ mod tests {
 
     #[test]
     fn local_code_profile_requires_explicit_binding_even_with_openai_key() {
-        let error = semantic_embedder_profile_from_lookup(&|name| {
-            Ok(match name {
-                "QUANTA_INDEX_EMBEDDER" => Some("local-code-jina-v2".to_string()),
-                "OPENAI_API_KEY" => Some("unrelated-key".to_string()),
-                _ => None,
-            })
-        })
-        .expect_err("local model requires its own artifact and endpoint binding");
-        assert!(
-            error.to_string().contains("QUANTA_INDEX_LOCAL_CODE_ORIGIN"),
-            "{error}"
-        );
+        let bindings = [
+            "QUANTA_INDEX_LOCAL_CODE_ORIGIN",
+            "QUANTA_INDEX_LOCAL_CODE_MANIFEST",
+            "QUANTA_INDEX_LOCAL_CODE_MANIFEST_SHA256",
+        ];
+        let knobs = every_knob_non_default();
+        for missing in bindings {
+            let lookup = |name: &str| {
+                Ok(match name {
+                    "QUANTA_INDEX_EMBEDDER" => Some("local-code-jina-v2".to_string()),
+                    "QUANTA_INDEX_STATE_ROOT" => Some("/tmp/quanta-index-local-code-env".into()),
+                    name if name == missing => None,
+                    name => knobs.get(name).map(|value| (*value).to_string()),
+                })
+            };
+            for root in [
+                None,
+                Some(PathBuf::from("/tmp/quanta-index-local-code-explicit")),
+            ] {
+                let error = SearchdConfig::from_lookup(root, &lookup)
+                    .expect_err("local model requires its own artifact and endpoint binding");
+                assert!(format!("{error:#}").contains(missing), "{error:#}");
+            }
+        }
     }
 
     #[test]
@@ -3792,14 +3817,16 @@ mod tests {
             }
         })?;
         assert_eq!(reviewed, live);
-        let missing_api_key = semantic_embedder_profile_from_lookup(&|name| {
-            if name == "OPENAI_API_KEY" {
-                Ok(None)
-            } else {
-                review_lookup(name)
-            }
-        });
-        assert!(missing_api_key.is_err());
+        assert!(
+            semantic_embedder_profile_from_lookup(&|name| {
+                if name == "OPENAI_API_KEY" {
+                    Ok(None)
+                } else {
+                    review_lookup(name)
+                }
+            })
+            .is_err()
+        );
         Ok(())
     }
 

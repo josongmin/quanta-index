@@ -301,6 +301,7 @@ fn map_sdk_error(error: SdkError) -> CliError {
         SdkError::Usage(message) => CliError::usage(message),
         SdkError::UnsupportedNativeQuery { capability } => CliError::unsupported(capability),
         SdkError::Protocol(message) => CliError::protocol(message),
+        SdkError::Native(error) => CliError::remote(format!("native: {error}")),
         SdkError::Serialization(message) => {
             CliError::protocol(format!("ipc serialization failed: {message}"))
         }
@@ -470,7 +471,9 @@ quanta-index-searchctl
 
 Native subcommands (default; optional `native` prefix):
   read-view        --socket PATH --workspace HEX --epoch N [--output pretty|json]
+  code-search      --socket PATH --repo ID --revision ID --query-text TEXT --top-k N [--syntax code_search] [--language CODE]... [--instance HEX] [--generation N --after TOKEN] [--output pretty|json]
   search-text      --socket PATH --workspace HEX --epoch N --instance HEX --query-text TEXT --top-k N [--syntax native|sourcegraph] [--output pretty|json]
+  matches          --socket PATH --workspace HEX --epoch N (--literal TEXT | --regex TEXT) [--ignore-case] --limit 1..1024 [--instance HEX] [--after TOKEN] [--output pretty|json]
   query-repository-paths --socket PATH --workspace HEX --epoch N --instance HEX --prefix PATH --limit 1..128 [--after-json JSON] [--output json]
   read-session-open|read-session-renew|read-session-status|read-session-profile
   read-session-release|read-session-settlement

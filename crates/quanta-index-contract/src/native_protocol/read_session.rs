@@ -1,7 +1,10 @@
 //! Product read leases reference the Catalog-owned ticket retained by the daemon.
 
 pub(super) use super::NativeReadSessionId;
-use super::{NativeDslQueryV1, NativeSemanticChunk, NativeSemanticTraversal, NativeTextHit};
+use super::{
+    NativeDslQueryV1, NativeDslScopeV1, NativeDslStructuralChunksCursorV1, NativeSemanticChunk,
+    NativeSemanticTraversal, NativeTextHit, NativeTextMatchesRequest,
+};
 use crate::{
     FiniteScore, HistoryQueryRequest, RepoId, SemanticQueryRequest, TextQueryRequest,
     index::{
@@ -51,6 +54,8 @@ pub struct NativeReadSessionHistoryCutV1 {
     pub view: ViewRef,
     pub instance: IndexInstanceId,
     pub member: ObjectRef,
+    /// Exact source input root authenticated by the pinned History manifest.
+    pub source_input: ObjectRef,
     pub cut: HistorySourceCutV1,
 }
 
@@ -59,6 +64,7 @@ quanta_index_contract_base::native_serde_struct!(NativeReadSessionHistoryCutV1 {
     view: ViewRef,
     instance: IndexInstanceId,
     member: ObjectRef,
+    source_input: ObjectRef,
     cut: HistorySourceCutV1
 });
 
@@ -281,6 +287,22 @@ pub enum NativeReadSessionRequest {
         session: NativeReadSessionId,
         query: NativeDslQueryV1,
     },
+    ReadDslRuntimeCatalogV1 {
+        session: NativeReadSessionId,
+        scope: NativeDslScopeV1,
+        offset: u32,
+    },
+    ReadDslStructuralChunksV1 {
+        session: NativeReadSessionId,
+        scope: NativeDslScopeV1,
+        after: Option<NativeDslStructuralChunksCursorV1>,
+    },
+    /// One match page over the session's retained view; `request.selection`
+    /// must name that view exactly.
+    SearchTextMatches {
+        session: NativeReadSessionId,
+        request: NativeTextMatchesRequest,
+    },
     Release(NativeReadSessionId),
     Settlement(NativeReadSessionId),
 }
@@ -312,7 +334,7 @@ quanta_index_contract_base::native_serde_struct!(NativeReadSessionSettlement {
     state: NativeReadSettlementState,
     has_remaining_target_pins: bool
 });
-quanta_index_contract_base::native_serde_enum!(NativeReadSessionRequest { units { } newtypes { Status = 2 => NativeReadSessionId, Release = 4 => NativeReadSessionId, Settlement = 5 => NativeReadSessionId } records { Open = 0 { selection: ViewSelection, open_key: [u8; 32] }, Renew = 1 { session: NativeReadSessionId, revision: u64 }, ReadProfile = 8 { session: NativeReadSessionId }, SearchText = 3 { session: NativeReadSessionId, instance: IndexInstanceId, query: TextQueryRequest }, SearchTextPage = 6 { session: NativeReadSessionId, instance: IndexInstanceId, query: TextQueryRequest, after: Option<NativeTextCursor> }, SearchHybridFile = 7 { session: NativeReadSessionId, text_instance: IndexInstanceId, semantic_instance: IndexInstanceId, text_query: TextQueryRequest, semantic_query: SemanticQueryRequest, file_top_k: u32 }, SearchHistory = 9 { session: NativeReadSessionId, instance: IndexInstanceId, query: HistoryQueryRequest, after: Option<NativeHistoryCursor> }, ReadHistoryCut = 10 { session: NativeReadSessionId, instance: IndexInstanceId }, ReadHistoryGeneration = 11 { session: NativeReadSessionId, instance: IndexInstanceId }, SearchTextPathPageV1 = 12 { session: NativeReadSessionId, instance: IndexInstanceId, query: TextQueryRequest, after: Option<NativeTextPathCursorV1> }, SearchDslV1 = 16 { session: NativeReadSessionId, query: NativeDslQueryV1 } } });
+quanta_index_contract_base::native_serde_enum!(NativeReadSessionRequest { units { } newtypes { Status = 2 => NativeReadSessionId, Release = 4 => NativeReadSessionId, Settlement = 5 => NativeReadSessionId } records { Open = 0 { selection: ViewSelection, open_key: [u8; 32] }, Renew = 1 { session: NativeReadSessionId, revision: u64 }, ReadProfile = 8 { session: NativeReadSessionId }, SearchText = 3 { session: NativeReadSessionId, instance: IndexInstanceId, query: TextQueryRequest }, SearchTextPage = 6 { session: NativeReadSessionId, instance: IndexInstanceId, query: TextQueryRequest, after: Option<NativeTextCursor> }, SearchHybridFile = 7 { session: NativeReadSessionId, text_instance: IndexInstanceId, semantic_instance: IndexInstanceId, text_query: TextQueryRequest, semantic_query: SemanticQueryRequest, file_top_k: u32 }, SearchHistory = 9 { session: NativeReadSessionId, instance: IndexInstanceId, query: HistoryQueryRequest, after: Option<NativeHistoryCursor> }, ReadHistoryCut = 10 { session: NativeReadSessionId, instance: IndexInstanceId }, ReadHistoryGeneration = 11 { session: NativeReadSessionId, instance: IndexInstanceId }, SearchTextPathPageV1 = 12 { session: NativeReadSessionId, instance: IndexInstanceId, query: TextQueryRequest, after: Option<NativeTextPathCursorV1> }, SearchDslV1 = 16 { session: NativeReadSessionId, query: NativeDslQueryV1 }, ReadDslRuntimeCatalogV1 = 17 { session: NativeReadSessionId, scope: NativeDslScopeV1, offset: u32 }, ReadDslStructuralChunksV1 = 18 { session: NativeReadSessionId, scope: NativeDslScopeV1, after: Option<NativeDslStructuralChunksCursorV1> }, SearchTextMatches = 19 { session: NativeReadSessionId, request: NativeTextMatchesRequest } } });
 quanta_index_contract_base::native_serde_enum!(NativeReadSessionReply { units { } newtypes { Status = 0 => NativeReadSessionStatus, Settlement = 2 => NativeReadSessionSettlement } records { Released = 1 { status: NativeReadSessionStatus, has_remaining_target_pins: bool } } });
 
 #[cfg(test)]

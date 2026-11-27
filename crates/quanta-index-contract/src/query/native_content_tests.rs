@@ -86,6 +86,45 @@ fn unsupported_engine_tokens_refuse_before_engine_specific_parse() {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed contract gold assertions are independent test oracles"
+)]
+fn native_path_contains_parses_beside_file_contains() -> TestResult {
+    let leaf = |name: &str| {
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: name.into(),
+            args: vec![LqPredicateArg::RawString("needle".into())],
+        })
+    };
+    assert_eq!(
+        parse_native_content_query("file.contains('needle') OR path.contains('needle')")?.expr,
+        LqExpr::Any(vec![leaf("file.contains"), leaf("path.contains")])
+    );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed contract gold assertions are independent test oracles"
+)]
+fn native_path_regex_parses_beside_a_content_regex() -> TestResult {
+    // Canonical LQ orders a predicate leaf before a regex leaf.
+    assert_eq!(
+        parse_native_content_query("/a[.]b/ OR path.regex('a[.]b')")?.expr,
+        LqExpr::Any(vec![
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "path.regex".into(),
+                args: vec![LqPredicateArg::RawString("a[.]b".into())],
+            }),
+            LqExpr::Leaf(LqLeaf::Regex("a[.]b".into())),
+        ])
+    );
+    Ok(())
+}
+
+#[test]
 fn native_file_contains_preserves_raw_substring_and_boolean_shape() -> TestResult {
     let atom = LqExpr::Leaf(LqLeaf::Predicate {
         name: "file.contains".into(),

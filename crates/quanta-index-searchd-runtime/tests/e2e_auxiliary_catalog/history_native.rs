@@ -569,9 +569,9 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
         ..full_transition.clone()
     };
     let snapshot_from_pages =
-        build.verify_history(&spec(), None, &snapshot_transition, &mut context)?;
+        build.verify_history(&spec(), None, &snapshot_transition, 1, &mut context)?;
     assert_eq!(snapshot_from_pages, snapshot_member);
-    let prior_member = build.verify_history(&spec(), None, &full_transition, &mut context)?;
+    let prior_member = build.verify_history(&spec(), None, &full_transition, 1, &mut context)?;
     assert_eq!(prior_member.artifact, prepared.artifact());
     assert_ne!(prior_member.artifact, full_source_input);
     let wrong_mode = HistoryTransition {
@@ -580,7 +580,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
     };
     assert!(
         build
-            .verify_history(&spec(), None, &wrong_mode, &mut context)
+            .verify_history(&spec(), None, &wrong_mode, 1, &mut context)
             .is_err()
     );
 
@@ -834,7 +834,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
         profile,
     };
     let verified_next =
-        build.verify_history(&spec(), Some(&prior_member), &transition, &mut context)?;
+        build.verify_history(&spec(), Some(&prior_member), &transition, 2, &mut context)?;
     assert_eq!(verified_next.artifact, next.artifact());
     assert_ne!(verified_next.artifact, delta_source_input);
     assert_eq!(
@@ -850,7 +850,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
     };
     assert!(
         build
-            .verify_history(&spec(), None, &fake_full, &mut context)
+            .verify_history(&spec(), None, &fake_full, 2, &mut context)
             .is_err()
     );
     let fake_delta = HistoryTransition {
@@ -859,7 +859,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
     };
     assert!(
         build
-            .verify_history(&spec(), Some(&prior_member), &fake_delta, &mut context)
+            .verify_history(&spec(), Some(&prior_member), &fake_delta, 2, &mut context)
             .is_err()
     );
     let mut forged_prior = prior_member.clone();
@@ -870,7 +870,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
     };
     assert!(
         build
-            .verify_history(&spec(), Some(&forged_prior), &forged_expected, &mut context)
+            .verify_history(&spec(), Some(&forged_prior), &forged_expected, 2, &mut context)
             .is_err()
     );
     // The rows and ACK are unchanged, and the carrier, fence and requested cut
@@ -903,6 +903,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
                 &spec(),
                 Some(&prior_member),
                 &forged_transition,
+                2,
                 &mut context
             ),
         Err(IndexError::InvalidInput(message))
@@ -937,6 +938,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
                 &spec(),
                 Some(&prior_member),
                 &false_transition,
+                2,
                 &mut context
             )
             .is_err()
@@ -951,6 +953,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
                 &spec(),
                 Some(&prior_member),
                 &artifact_as_source,
+                2,
                 &mut context
             )
             .is_err()
@@ -1102,10 +1105,7 @@ fn native_history_full_delta_query_old_view_and_reopen() -> TestResult {
         &mut work,
     )?;
     assert!(removed_tag.page().commits.is_empty());
-    assert_eq!(
-        (removed_tag.page().matched, removed_tag.page().remaining),
-        (0, 0)
-    );
+    assert_eq!((removed_tag.page().matched, removed_tag.page().remaining), (0, 0));
     assert!(removed_tag.page().next_cursor.is_none());
     drop(removed_tag);
     assert_eq!(live.load(Ordering::SeqCst), before_empty_read);
@@ -1286,6 +1286,7 @@ fn large_original_full_delta_reopens(wire: LargeReplayWire) -> TestResult {
                 input: full_input,
                 profile,
             },
+            1,
             &mut context,
         )?;
         let second = build.verify_history(
@@ -1298,6 +1299,7 @@ fn large_original_full_delta_reopens(wire: LargeReplayWire) -> TestResult {
                 input: delta_input,
                 profile,
             },
+            2,
             &mut context,
         )?;
         (first, second)

@@ -1105,7 +1105,7 @@ pub struct TreeScrubStepV1 {
 /// step, whatever the cursor. `open` owns each reader for its entire hash;
 /// a caller using external file admission can keep its inode lease in that
 /// reader until the read ends.
-pub fn scrub_tree_commitment_v1<R: Read>(
+pub fn scrub_tree_commitment_v1<R: TreeReaderSettlement>(
     root: &Path,
     prefix: &str,
     committed: &[SealedArtifactCommitmentV1],
@@ -1162,7 +1162,7 @@ pub fn hash_committed_step_v1(
 /// resolved again after the descriptor is acquired.
 ///
 /// A missing file is a content mismatch; other open/read errors prove nothing.
-pub fn hash_committed_step_opened_v1<R: Read>(
+pub fn hash_committed_step_opened_v1<R: TreeReaderSettlement>(
     open: &dyn Fn(&str) -> std::io::Result<R>,
     committed: &[SealedArtifactCommitmentV1],
     start_artifact: u64,
@@ -1181,7 +1181,72 @@ enum OpenCommittedError {
     File(std::io::Error),
 }
 
-fn hash_committed_step_opened_impl<R: Read>(
+/// A tree reader whose physical read lifetime settles before a hash result
+/// can be published. Qualified adapters report exact FD close failures here.
+pub trait TreeReaderSettlement: Read {
+    fn settle(self) -> std::io::Result<()>;
+}
+
+impl TreeReaderSettlement for std::fs::File {
+    fn settle(self) -> std::io::Result<()> {
+        // The unqualified filesystem path retains its existing drop contract.
+        drop(self);
+        Ok(())
+    }
+}
+
+impl<T: AsRef<[u8]>> TreeReaderSettlement for std::io::Cursor<T> {
+    fn settle(self) -> std::io::Result<()> {
+        drop(self);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct HashAndRetirementError {
+    hash: std::io::Error,
+    retirement: std::io::Error,
+}
+
+impl std::fmt::Display for HashAndRetirementError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}; tree reader retirement failed: {}",
+            self.hash, self.retirement
+        )
+    }
+}
+
+impl std::error::Error for HashAndRetirementError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.hash)
+    }
+}
+
+fn hash_and_settle<R: TreeReaderSettlement>(
+    mut reader: R,
+    limit: Option<u64>,
+) -> std::io::Result<(u64, [u8; 32])> {
+    let hash = match limit {
+        Some(limit) => sha256_of_reader(&mut (&mut reader).take(limit)),
+        None => sha256_of_reader(&mut reader),
+    };
+    let settled = reader.settle();
+    match (hash, settled) {
+        (Ok(hash), Ok(())) => Ok(hash),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(retirement)) => Err(std::io::Error::new(
+            primary.kind(),
+            HashAndRetirementError {
+                hash: primary,
+                retirement,
+            },
+        )),
+    }
+}
+
+fn hash_committed_step_opened_impl<R: TreeReaderSettlement>(
     open: &dyn Fn(&str) -> Result<R, OpenCommittedError>,
     committed: &[SealedArtifactCommitmentV1],
     start_artifact: u64,
@@ -1239,7 +1304,7 @@ fn hash_committed_step_opened_impl<R: Read>(
         // One extra byte distinguishes a grown file without hashing an
         // unbounded tail after the layout check's length observation.
         let read_limit = artifact.bytes.saturating_add(1);
-        let (bytes, sha256) = sha256_of_reader(&mut file.take(read_limit))?;
+        let (bytes, sha256) = hash_and_settle(file, Some(read_limit))?;
         step.bytes_read = step.bytes_read.saturating_add(bytes);
         if bytes != artifact.bytes {
             step.verdict = TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Length {
@@ -1328,7 +1393,7 @@ fn committed_path_v1(root: &Path, prefix: &str, name: &str) -> std::io::Result<P
 /// file has since been replaced or the platform reports no identity, the
 /// file is hashed like any other, and the report says so.
 /// `open` owns each reader through hashing, including a qualified inode lease.
-pub fn commit_tree_inheriting_v1<R: Read>(
+pub fn commit_tree_inheriting_v1<R: TreeReaderSettlement>(
     root: &Path,
     prefix: &str,
     base: Option<(&Path, &[SealedArtifactCommitmentV1])>,
@@ -1365,7 +1430,7 @@ pub fn commit_tree_inheriting_v1<R: Read>(
             commitment.inherited_files = commitment.inherited_files.saturating_add(1);
             sha256
         } else {
-            let (bytes, sha256) = sha256_of_reader(&mut open(&entry.path)?)?;
+            let (bytes, sha256) = hash_and_settle(open(&entry.path)?, None)?;
             if bytes != entry.bytes {
                 return Err(std::io::Error::other(format!(
                     "{} changed length while being committed ({} then {bytes} bytes)",
@@ -1466,6 +1531,13 @@ mod tree_commitment_tests {
             }
         }
 
+        impl super::TreeReaderSettlement for OwnedReader {
+            fn settle(self) -> io::Result<()> {
+                drop(self);
+                Ok(())
+            }
+        }
+
         impl Drop for OwnedReader {
             fn drop(&mut self) {
                 self.retired.set(self.retired.get() + 1);
@@ -1534,6 +1606,12 @@ mod tree_commitment_tests {
             }
         }
 
+        impl super::TreeReaderSettlement for FailingRead {
+            fn settle(self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
         let committed = vec![super::SealedArtifactCommitmentV1 {
             name: "dataset/a.lance".into(),
             bytes: 5,
@@ -1569,6 +1647,12 @@ mod tree_commitment_tests {
             }
         }
 
+        impl super::TreeReaderSettlement for GrowingRead {
+            fn settle(self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
         let consumed = Rc::new(Cell::new(0));
         let committed = vec![super::SealedArtifactCommitmentV1 {
             name: "dataset/a.lance".into(),
@@ -1597,6 +1681,45 @@ mod tree_commitment_tests {
                 committed: 5,
             })
         );
+    }
+
+    #[test]
+    fn scrub_refuses_result_when_reader_retirement_fails_after_bounded_hash() {
+        struct UnsettledReader {
+            remaining: usize,
+        }
+
+        impl Read for UnsettledReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let amount = buffer.len().min(self.remaining);
+                buffer
+                    .get_mut(..amount)
+                    .ok_or_else(|| io::Error::other("reader exceeded buffer"))?
+                    .fill(b'x');
+                self.remaining -= amount;
+                Ok(amount)
+            }
+        }
+
+        impl super::TreeReaderSettlement for UnsettledReader {
+            fn settle(self) -> io::Result<()> {
+                Err(io::Error::other("exact reader FD close failed"))
+            }
+        }
+
+        let committed = vec![super::SealedArtifactCommitmentV1 {
+            name: "dataset/a.lance".into(),
+            bytes: 5,
+            sha256: [0; 32],
+        }];
+        let error = super::hash_committed_step_opened_impl(
+            &|_name| Ok(UnsettledReader { remaining: 100 }),
+            &committed,
+            0,
+            u64::MAX,
+        )
+        .expect_err("a bounded hash cannot publish before checked retirement");
+        assert!(error.to_string().contains("exact reader FD close failed"));
     }
 
     #[test]

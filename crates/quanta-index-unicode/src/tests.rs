@@ -63,6 +63,12 @@ impl ScratchAdmission for Trace {
         Ok(())
     }
 
+    fn checkpoint_prepaid(&mut self) -> Result<(), ()> {
+        // Predecessor goldens cover the legacy debit and backing trace.
+        // The paid-sort cancellation test independently checks new bulk polls.
+        Ok(())
+    }
+
     fn birth(
         &mut self,
         demand: ScratchDemand,
@@ -432,5 +438,196 @@ fn malformed_birth_protocol_is_rejected_without_publishing_a_result() {
             admission.releases,
             [ScratchOwner::Decomposition, ScratchOwner::Recomposition]
         );
+    }
+}
+
+#[test]
+fn long_stream_cancels_during_paid_sort_and_keeps_backing_v1() {
+    struct StopInsideSort {
+        trace: Trace,
+        checkpoints_after_sort_birth: usize,
+        stop_at: Option<usize>,
+    }
+
+    impl ScratchAdmission for StopInsideSort {
+        type Error = &'static str;
+
+        fn checkpoint(&mut self, units: u64) -> Result<(), Self::Error> {
+            if units == 0 && self.trace.live[slot(ScratchOwner::Sort)] != 0 {
+                self.checkpoints_after_sort_birth += 1;
+                if self.stop_at == Some(self.checkpoints_after_sort_birth) {
+                    return Err("sort interrupted");
+                }
+            }
+            self.trace.checkpoint(units).map_err(|()| "work")
+        }
+
+        fn birth(
+            &mut self,
+            demand: ScratchDemand,
+            birth: &mut dyn FnMut() -> bool,
+        ) -> Result<bool, Self::Error> {
+            self.trace.birth(demand, birth).map_err(|()| "birth")
+        }
+
+        fn release(&mut self, owner: ScratchOwner) {
+            self.trace.release(owner);
+        }
+    }
+
+    let input = format!("A{}B", "\u{315}\u{300}".repeat(800));
+    let admission = |stop_at| StopInsideSort {
+        trace: Trace::new(None, None),
+        checkpoints_after_sort_birth: 0,
+        stop_at,
+    };
+    let mut output = String::new();
+    // 1,600 marks take four chunks for each sort pass. Stop inside
+    // initialization, the census, the stable scatter and the copy back.
+    for stop_at in [3, 7, 11, 15] {
+        let mut cancelled = admission(Some(stop_at));
+        let mut data = NormalizationDataV1::new_v1();
+        assert_eq!(
+            for_each_nfc_into_v1(&input, &mut data, &mut cancelled, |scalar| {
+                output.push(scalar);
+                Ok(())
+            }),
+            Err(NormalizationDataRefusalV1::OperationRefused)
+        );
+        assert_eq!(
+            data.result_v1(),
+            Some(Err(&NfcError::Admission("sort interrupted")))
+        );
+        assert!(output.is_empty());
+        assert_eq!(cancelled.checkpoints_after_sort_birth, stop_at);
+        assert!(cancelled.trace.live[slot(ScratchOwner::Sort)] > 0);
+        assert!(cancelled.trace.released.is_empty());
+        data.release_scratch_v1(&mut cancelled);
+        assert_eq!(cancelled.trace.live, [0; 3]);
+    }
+
+    let mut retry = admission(None);
+    let mut retry_data = NormalizationDataV1::new_v1();
+    for_each_nfc_into_v1(&input, &mut retry_data, &mut retry, |scalar| {
+        output.push(scalar);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(output, input.nfc().collect::<String>());
+    retry_data.release_scratch_v1(&mut retry);
+    assert_eq!(retry.trace.live, [0; 3]);
+}
+
+#[test]
+fn uncapped_borrowed_compare_preserves_verdict_and_terminal_refusal_v1() {
+    struct CompareAdmission {
+        trace: Trace,
+        checkpoints: usize,
+        stop_at: Option<usize>,
+    }
+
+    impl ScratchAdmission for CompareAdmission {
+        type Error = &'static str;
+
+        fn checkpoint(&mut self, units: u64) -> Result<(), Self::Error> {
+            self.checkpoints += 1;
+            if self.stop_at == Some(self.checkpoints) {
+                assert_eq!(units, 0);
+                return Err("before canonical verdict");
+            }
+            self.trace.checkpoint(units).map_err(|()| "work")
+        }
+
+        fn birth(
+            &mut self,
+            demand: ScratchDemand,
+            birth: &mut dyn FnMut() -> bool,
+        ) -> Result<bool, Self::Error> {
+            self.trace.birth(demand, birth).map_err(|()| "birth")
+        }
+
+        fn release(&mut self, owner: ScratchOwner) {
+            self.trace.release(owner);
+        }
+    }
+
+    let input = format!("A{}B", "\u{315}\u{300}".repeat(800));
+    let canonical = input.nfc().collect::<String>();
+    for (source, expected) in [(&input, false), (&canonical, true)] {
+        let mut capped = NormalizationDataV1::new_v1();
+        let mut capped_admission = Trace::new(None, None);
+        assert_eq!(
+            is_nfc_into_v1(source, &mut capped, &mut capped_admission),
+            Err(NormalizationDataRefusalV1::OperationRefused)
+        );
+        assert_eq!(capped.result_v1(), Some(Err(&NfcError::InputTooLong)));
+
+        let scalars = source.nfd().count();
+        let admission = |stop_at| CompareAdmission {
+            trace: Trace::new(None, Some(40 * scalars)),
+            checkpoints: 0,
+            stop_at,
+        };
+        let mut measured = admission(None);
+        let mut data = NormalizationDataV1::new_v1();
+        assert_eq!(
+            is_nfc_unbounded_into_v1(source, &mut data, &mut measured),
+            Ok(())
+        );
+        assert_eq!(
+            data.result_v1(),
+            Some(Ok(NormalizationOutcomeV1::IsNfc(expected)))
+        );
+        assert!(measured.trace.live.iter().any(|bytes| *bytes > 0));
+        data.release_scratch_v1(&mut measured);
+        assert_eq!(measured.trace.live, [0; 3]);
+
+        let mut stopped = admission(Some(measured.checkpoints));
+        let mut cancelled = NormalizationDataV1::new_v1();
+        assert_eq!(
+            is_nfc_unbounded_into_v1(source, &mut cancelled, &mut stopped),
+            Err(NormalizationDataRefusalV1::OperationRefused)
+        );
+        assert_eq!(
+            cancelled.result_v1(),
+            Some(Err(&NfcError::Admission("before canonical verdict")))
+        );
+        assert_eq!(stopped.trace.work, measured.trace.work);
+        assert!(stopped.trace.live.iter().any(|bytes| *bytes > 0));
+        assert!(stopped.trace.released.is_empty());
+        cancelled.release_scratch_v1(&mut stopped);
+        assert_eq!(stopped.trace.live, [0; 3]);
+    }
+}
+
+#[test]
+fn prepaid_borrowed_comparison_keeps_stop_and_capacity_distinct_v1() {
+    let canonical = format!("x{}B", "\u{301}".repeat(1600));
+    let different = format!("A{}B", "\u{315}\u{300}\u{301}".repeat(535));
+    for source in [&canonical, &different] {
+        let expected = source.chars().eq(source.nfc());
+        let reserve = 40 * source.nfd().count();
+        assert_eq!(
+            try_is_nfc_with_prepaid_scratch_v1(source, reserve, || Ok::<(), &str>(())),
+            Ok(expected)
+        );
+        assert_eq!(
+            try_is_nfc_with_prepaid_scratch_v1(source, 0, || Ok::<(), &str>(())),
+            Err(PrepaidNfcError::ScratchLimitExceeded)
+        );
+        let mut polls = 0;
+        assert_eq!(
+            try_is_nfc_with_prepaid_scratch_v1(source, reserve, || {
+                polls += 1;
+                if polls == 300 {
+                    return Err("exact request refusal");
+                }
+                Ok(())
+            }),
+            Err(PrepaidNfcError::Normalization(NfcError::Admission(
+                "exact request refusal"
+            )))
+        );
+        assert_eq!(polls, 300);
     }
 }

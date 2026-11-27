@@ -70,12 +70,22 @@ def sign_statement(key: str, proof_id: str, message: bytes, **_kwargs) -> bytes:
         ).stdout
 
 
+def nextest_suite_id(package: str, binary: str, kind: str) -> str:
+    if kind in {"lib", "proc-macro"}:
+        return package
+    if kind == "test":
+        return f"{package}::{binary}"
+    return f"{package}::{kind}/{binary}"
+
+
 def nextest_bytes(package: str, binary: str, kind: str, test: str) -> tuple[bytes, bytes]:
     import json
 
+    binary_id = nextest_suite_id(package, binary, kind)
     meta = {"crate": package, "test_binary": binary, "kind": kind}
     suite = {
         "package-name": package,
+        "binary-id": binary_id,
         "binary-name": binary,
         "kind": kind,
         "status": "listed",
@@ -88,9 +98,9 @@ def nextest_bytes(package: str, binary: str, kind: str, test: str) -> tuple[byte
         {"type": "test", "event": "ok", "name": name},
         {"type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "nextest": meta},
     ]
-    return json.dumps(
-        {"test-count": 1, "rust-suites": {f"{package}::{binary}": suite}}
-    ).encode(), b"".join(json.dumps(row).encode() + b"\n" for row in events)
+    return json.dumps({"test-count": 1, "rust-suites": {binary_id: suite}}).encode(), b"".join(
+        json.dumps(row).encode() + b"\n" for row in events
+    )
 
 
 def pytest_bytes(selectors: list[str]) -> tuple[bytes, bytes]:

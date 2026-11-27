@@ -160,12 +160,17 @@ pub(crate) fn candidate(id: &str, score: f32) -> LexicalCandidate {
             .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(9),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        start_line: 1,
-        end_line: 1,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 1,
+            end_line: 1,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: String::new(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score,
-        snippet: String::new(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 
@@ -232,6 +237,7 @@ pub(crate) fn ipc_error_from(
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)) => {

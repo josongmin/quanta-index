@@ -250,7 +250,7 @@ fn product_native_ann_selected_lexical_scopes_match_independent_filtered_gold() 
     let profile = client.stage_profile(
         ingress,
         IndexProfile {
-            instances: vec![text_spec(), semantic.clone()],
+            instances: vec![literal_spec(), text_spec(), semantic.clone()],
         },
         &budget(),
     )?;

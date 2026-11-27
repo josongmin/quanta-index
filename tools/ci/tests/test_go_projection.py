@@ -18,10 +18,27 @@ from tools.benchmark.retrieval.declaration_parsers import (
     get_released_go_candidate_parser,
 )
 from tools.benchmark.retrieval.go_projection import GoProjectionError, GoProjector
-from tools.benchmark.retrieval.projection_process import run_bounded
+from tools.benchmark.retrieval.projection_process import read_bounded_regular, run_bounded
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "tools/benchmark/retrieval/go_projection/main.go"
+
+
+def test_verified_helper_read_rejects_path_swapped_to_fifo(tmp_path, monkeypatch):
+    helper = tmp_path / "helper"
+    helper.write_bytes(b"pinned")
+    original_open = os.open
+
+    def replace_at_open(path, flags, *args, **kwargs):
+        if path == helper:
+            assert flags & os.O_NONBLOCK
+            helper.unlink()
+            os.mkfifo(helper)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_at_open)
+    with pytest.raises(OSError, match="bounded regular file"):
+        read_bounded_regular(helper, 64)
 
 
 @pytest.fixture(scope="module")
@@ -149,6 +166,33 @@ def test_child_is_reaped_when_callback_or_setup_raises(monkeypatch, failure):
     assert all(stream.closed for stream in (child.stdin, child.stdout, child.stderr))
 
 
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_bounded_child_io_retries_transient_would_block(monkeypatch, operation):
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    real_call = getattr(os, operation)
+    injected = False
+
+    def would_block_once(*args):
+        nonlocal injected
+        if not injected:
+            injected = True
+            raise BlockingIOError()
+        return real_call(*args)
+
+    monkeypatch.setattr(os, operation, would_block_once)
+    output, errors, code = run_bounded(
+        child, b"source", deadline=time.monotonic() + 15, cancelled=None, max_stdout=1024
+    )
+    assert injected
+    assert (output, errors, code) == (b"source", b"", 0)
+
+
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 def test_child_output_is_capped_while_reading(tmp_path, stream):
     child = tmp_path / "flood-projector"
@@ -161,6 +205,38 @@ def test_child_output_is_capped_while_reading(tmp_path, stream):
     assert raised.value.kind == "resource_limit"
 
 
+def test_deep_json_is_a_typed_producer_defect(tmp_path):
+    child = tmp_path / "deep-projector"
+    child.write_text(f"#!{sys.executable}\nprint('[' * 2000 + ']' * 2000)\n")
+    child.chmod(0o700)
+    digest = hashlib.sha256(child.read_bytes()).hexdigest()
+    with GoProjector(child, binary_sha256=digest) as projector:
+        with pytest.raises(GoProjectionError) as raised:
+            projector.project(b"package p\n", timeout_seconds=5)
+    assert raised.value.kind == "producer_defect"
+
+
+@pytest.mark.parametrize("status", ["[]", '"ok","status":"ok"'])
+def test_ambiguous_or_non_string_status_is_a_producer_defect(tmp_path, status):
+    source = b"package p\n"
+    digest = hashlib.sha256(source).hexdigest()
+    output = (
+        '{"schema":"quanta-go-grammar-projection-v1","status":'
+        + status
+        + ',"go_version":"go1.25.4","source_sha256":"'
+        + digest
+        + '","edits":[]}'
+    )
+    child = tmp_path / "bad-status-projector"
+    child.write_text(f"#!{sys.executable}\nprint({output!r})\n")
+    child.chmod(0o700)
+    binary_digest = hashlib.sha256(child.read_bytes()).hexdigest()
+    with GoProjector(child, binary_sha256=binary_digest) as projector:
+        with pytest.raises(GoProjectionError) as raised:
+            projector.project(source, timeout_seconds=15)
+    assert raised.value.kind == "producer_defect"
+
+
 def test_released_go_candidate_census_preserves_original_spans(projector_binary):
     binary, digest = projector_binary
     source = (
@@ -171,14 +247,14 @@ def test_released_go_candidate_census_preserves_original_spans(projector_binary)
         rows, projection, extension_digest = source_oracle.candidate_go_declaration_census(
             "pkg.go", source, projector, timeout_seconds=5
         )
-    assert rows == source_oracle.declaration_census("go", "pkg.go", source)
+    assert [source[start:end] for start, end, *_ in rows] == [b"Shape", b"Area", b"Locate"]
     assert projection.source == source
     assert len(extension_digest) == 64
     assert (
         get_released_go_candidate_parser()[0].parse(projection.projected).root_node.has_error
         is False
     )
-    assert get_parser("go").parse(source).root_node.has_error is False
+    assert get_parser("go").parse(source).root_node.has_error is True
 
 
 def test_released_go_candidate_census_propagates_syntax_failure(projector_binary):

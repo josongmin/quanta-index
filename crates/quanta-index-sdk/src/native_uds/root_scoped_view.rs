@@ -64,13 +64,24 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         revision_id: RevisionId,
         budget: &RequestBudgetV1,
     ) -> Result<NativeRootScopedViewV1, NativeUdsError> {
+        self.resolve_protected_source_head_with_observation(repo_id, revision_id, budget, None)
+    }
+
+    pub(crate) fn resolve_protected_source_head_with_observation(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        budget: &RequestBudgetV1,
+        observation: Option<&mut ClientLexicalQueryObservationV1>,
+    ) -> Result<NativeRootScopedViewV1, NativeUdsError> {
         read_session::admitted_budget_checkpoint(budget)?;
-        let NativeIndexResponse::RootScopedView(observed) = self.request(
+        let NativeIndexResponse::RootScopedView(observed) = self.request_lexical(
             NativeIndexRequest::ResolveProtectedSourceHead {
                 repo_id,
                 revision_id,
             },
             budget,
+            observation,
         )?
         else {
             return Err(NativeUdsError::Protocol(
@@ -78,6 +89,53 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             ));
         };
         validate_reply(ViewSelection::Exact(observed.view.identity), &observed)?;
+        read_session::admitted_budget_checkpoint(budget)?;
+        Ok(observed)
+    }
+
+    /// Resolve a retained protected Source revision on the serving root.
+    /// `view` is an untrusted lookup hint; the daemon checks its selected
+    /// route and exact historical binding before returning the authority.
+    pub fn resolve_protected_source_view_v1(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        view: quanta_index_contract::index::ViewRef,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeRootScopedViewV1, NativeUdsError> {
+        self.resolve_protected_source_view_with_observation(
+            repo_id,
+            revision_id,
+            view,
+            budget,
+            None,
+        )
+    }
+
+    pub(crate) fn resolve_protected_source_view_with_observation(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        view: quanta_index_contract::index::ViewRef,
+        budget: &RequestBudgetV1,
+        observation: Option<&mut ClientLexicalQueryObservationV1>,
+    ) -> Result<NativeRootScopedViewV1, NativeUdsError> {
+        read_session::admitted_budget_checkpoint(budget)?;
+        let NativeIndexResponse::RootScopedView(observed) = self.request_lexical(
+            NativeIndexRequest::ResolveProtectedSourceViewV1 {
+                repo_id,
+                revision_id,
+                view,
+            },
+            budget,
+            observation,
+        )?
+        else {
+            return Err(NativeUdsError::Protocol(
+                "unexpected protected Source view reply".into(),
+            ));
+        };
+        validate_reply(ViewSelection::Exact(view), &observed)?;
         read_session::admitted_budget_checkpoint(budget)?;
         Ok(observed)
     }

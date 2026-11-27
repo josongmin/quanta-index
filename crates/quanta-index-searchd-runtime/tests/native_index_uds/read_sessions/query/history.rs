@@ -12,17 +12,22 @@ use quanta_index_contract::{
     index::{
         AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1,
         HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
+        NativeHistoryInitialInputV1,
         HistorySnapshotCheckpointV1, HistorySnapshotPageV1, HistorySnapshotRowV1,
         HistorySourceCutV1, HistorySourceInputV1, HistoryTransition, Refusal,
-        SourceHistoryTransitionV1, ViewRef,
+        SourceHistoryBootstrapV1, SourceHistoryTransitionV1, ViewRef,
+        native_update_request_object_ref_with_work_v1,
     },
     lex::{CommitRecord, CommitSha, DiffHunkRecord},
-    native_protocol::{NativeHistoryCursor, NativeHistoryPage, NativeReadSessionRequest},
+    native_protocol::{NativeHistoryCursor, NativeHistoryPage, NativeIndexRequest,
+        NativeIndexResponse, NativeReadSessionRequest, SourceStageHistoryRefsV1,
+        SourceStageReplayContextV1},
 };
 use quanta_index_ipc::{
     encode_cbor_payload, history_replay_advance_with_progress_v1,
     history_replay_genesis_with_progress_v1, stamp_batch_digest_v1,
 };
+use quanta_index_core::index::ports::PersistentMapPort as _;
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 use quanta_index_search_plane::native_history::{
     NATIVE_HISTORY_FORMAT_V1, NATIVE_HISTORY_KIND_V1, NATIVE_HISTORY_SCHEMA_V1,
@@ -36,6 +41,8 @@ mod dsl_fixture;
 mod native_protected;
 #[path = "history/native_restore.rs"]
 mod native_restore;
+#[path = "history/staged_replay.rs"]
+mod staged_replay;
 
 fn history_spec() -> InstanceSpec {
     InstanceSpec {
@@ -85,7 +92,7 @@ fn history_service(
         work_limits(),
         capabilities,
         &resources,
-        Some(test_reclaim_config()),
+        Some(release_bounded_reclaim_config()),
         Some(NativeRetentionConfig {
             scopes: vec![NativeRetentionScope {
                 workspace: workspace(),
@@ -491,6 +498,553 @@ fn stage_history<P: AsRef<std::path::Path>>(
     })
 }
 
+#[test]
+fn source_and_history_bootstrap_publish_first_source_in_one_view_and_reopen() -> TestResult {
+    exercise_source_and_history_bootstrap(false)
+}
+
+#[test]
+fn staged_source_and_history_bootstrap_publishes_changed_profile_and_reopens() -> TestResult {
+    if let Some(root) = staged_replay::child_root() {
+        return staged_replay::run_child(&root);
+    }
+    exercise_source_and_history_bootstrap(true)
+}
+
+fn exercise_source_and_history_bootstrap(use_staged_submit: bool) -> TestResult {
+    let (full, _, full_input, _) = publish_in_legacy_child()?;
+    let full_cut = cut(&full, None, full_input.fence.final_replay)?;
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let (child, running) = if use_staged_submit {
+        (Some(staged_replay::start_child(root.path())?), None)
+    } else {
+        let service = history_service(root.path(), &socket)?;
+        (None, Some(NativeServiceGuard::start(service)))
+    };
+    let first = (|| -> TestResult<_> {
+        let client = NativeUdsClient::new(&socket);
+        let configured = create_text_workspace(&client)?;
+        let baseline = client.read_view(ViewSelection::Exact(configured), &budget())?;
+        let prepare = |sequence| -> TestResult<_> {
+            let key = operation(sequence);
+            let ingress = client.begin_input(key, &budget())?;
+            let profile = client.stage_profile(
+                ingress,
+                IndexProfile {
+                    instances: vec![native_text_spec(), history_spec()],
+                },
+                &budget(),
+            )?;
+            let input = client.stage_projection_output_with_children(
+                ingress,
+                &serde_json::to_vec(&full_input)?,
+                &[],
+                &budget(),
+            )?;
+            let (source_request, source_ref) = prepare_text_owner_in_ingress(
+                &client, configured, ingress, 1, "first.rs", "needle first source",
+            )?;
+            let UpdateKind::SourceAdvance(mut source) = source_request.kind else {
+                return Err("expected first Source fixture request".into());
+            };
+            let [event] = source.events.as_mut_slice() else {
+                return Err("expected one first Source event".into());
+            };
+            (event.predecessor, event.sequence) = (0, 1);
+            Ok((UpdateRequest {
+                operation: key,
+                expected_view: configured,
+                kind: UpdateKind::SourceHistoryBootstrap(Box::new(SourceHistoryBootstrapV1 {
+                    source,
+                    history: HistoryTransition {
+                        instance: history_spec().instance,
+                        expected: None,
+                        next: full_cut.clone(),
+                        input,
+                        profile,
+                    },
+                })),
+            }, source_ref, ingress))
+        };
+        let (mut invalid, _, _) = prepare(2)?;
+        let UpdateKind::SourceHistoryBootstrap(transition) = &mut invalid.kind else {
+            return Err("expected SourceHistoryBootstrap request".into());
+        };
+        transition.history.next.snapshot_digest = Digest([99; 32]);
+        assert!(matches!(
+            client.submit(invalid, &budget())?,
+            SubmitOutcome::Terminal(OperationStatus::Refused(_))
+        ));
+        assert_eq!(
+            client.read_view(ViewSelection::Latest { workspace: workspace(), epoch: 1 }, &budget())?,
+            baseline
+        );
+        assert!(client.list_producer_source_owners(
+            ViewSelection::Exact(configured), operation(2).producer, None, 2, &budget(),
+        )?.rows.as_slice().is_empty());
+
+        let (request, source_ref, ingress) = prepare(3)?;
+        let UpdateKind::SourceHistoryBootstrap(transition) = &request.kind else {
+            return Err("expected SourceHistoryBootstrap request".into());
+        };
+        let history_input = transition.history.input;
+        let (published_view, staged_request) = if use_staged_submit {
+            let target_profile = transition.history.profile;
+            assert_ne!(target_profile, baseline.profile);
+            let owners = transition.source.owners;
+            let context = SourceStageReplayContextV1 {
+                correlation: Digest([96; 32]),
+                history: Some(SourceStageHistoryRefsV1 {
+                    profile: target_profile,
+                    root: history_input,
+                }),
+            };
+            let response = client.request(
+                NativeIndexRequest::SealMutationsForReplayV1 {
+                    ingress,
+                    root: owners.root,
+                    count: owners.count,
+                    context,
+                },
+                &budget(),
+            )?;
+            let NativeIndexResponse::MutationsSealedForReplayV1(receipt) = response else {
+                return Err(format!("expected sealed Source stage, got {response:?}").into());
+            };
+            assert_eq!(receipt.ingress, ingress);
+            assert_eq!(receipt.owners, owners);
+            assert_eq!(receipt.context, context);
+            let (view, staged) =
+                staged_replay::publish_with_unread_reply(&client, &socket, &request, receipt)?;
+            (view, Some(staged))
+        } else {
+            (published(&client.submit(request.clone(), &budget())?)?, None)
+        };
+        assert_eq!(published_view.sequence, configured.sequence + 1);
+        // Leave the staged view untouched after Status sees publication, so
+        // the parent can kill its server before any replay or further read.
+        if staged_request.is_none() {
+            let live = client.read_view(ViewSelection::Exact(published_view), &budget())?;
+            assert_ne!(live.source, baseline.source);
+            assert_ne!(live.profile, baseline.profile);
+            let owners = client.list_producer_source_owners(
+                ViewSelection::Exact(published_view), operation(3).producer, None, 2, &budget(),
+            )?;
+            assert!(matches!(owners.rows.as_slice(), [owner] if owner.source == source_ref));
+            let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
+                &socket, ViewSelection::Exact(published_view),
+            ))?;
+            let mut session = sdk.reader().native()?.open([94; 32], &budget())?;
+            assert_eq!(session.load_profile(&budget())?.profile.instances,
+                vec![native_text_spec(), history_spec()]);
+            let history = session.history_cut(&history_spec(), &budget())?;
+            assert_eq!(history.view, published_view);
+            assert_eq!(history.source_input, history_input);
+            assert_eq!(history.cut, full_cut);
+            let _released = session.release(&budget())?;
+        }
+        Ok((
+            request.operation,
+            published_view,
+            source_ref,
+            history_input,
+            staged_request,
+            baseline,
+        ))
+    })();
+    let stopped = if let Some(child) = child {
+        staged_replay::kill_child(child)
+    } else {
+        running.expect("in-process History service").stop()
+    };
+    let (source_operation, view, source_ref, history_input, staged_request, baseline) = first?;
+    stopped?;
+
+    let reopened = NativeServiceGuard::start(history_service(root.path(), &socket)?);
+    let result = (|| -> TestResult {
+        let client = NativeUdsClient::new(&socket);
+        if let Some(staged) = staged_request {
+            assert_eq!(
+                client.status(source_operation, &budget())?,
+                OperationStatus::Published(view)
+            );
+            staged_replay::retry_published(&client, staged, source_operation, view)?;
+        }
+        assert_eq!(published(&client.resume(source_operation, &budget())?)?, view);
+        let live = client.read_view(ViewSelection::Latest {
+            workspace: workspace(), epoch: 1,
+        }, &budget())?;
+        assert_eq!(live.identity, view);
+        assert_ne!(live.source, baseline.source);
+        assert_ne!(live.profile, baseline.profile);
+        let owners = client.list_producer_source_owners(
+            ViewSelection::Exact(view), source_operation.producer, None, 2, &budget(),
+        )?;
+        assert!(matches!(owners.rows.as_slice(), [owner] if owner.source == source_ref));
+        let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
+            &socket, ViewSelection::Exact(view),
+        ))?;
+        let mut session = sdk.reader().native()?.open([95; 32], &budget())?;
+        assert_eq!(
+            session.load_profile(&budget())?.profile.instances,
+            vec![native_text_spec(), history_spec()]
+        );
+        let history = session.history_cut(&history_spec(), &budget())?;
+        assert_eq!(history.view, view);
+        assert_eq!(history.source_input, history_input);
+        assert_eq!(history.cut, full_cut);
+        let _released = session.release(&budget())?;
+        Ok(())
+    })();
+    let stopped = reopened.stop();
+    result?;
+    stopped?;
+
+    // A separate current view has a real Source owner but no History. The
+    // bootstrap source precondition must reject it without a second publish.
+    let nonempty_root = private_root()?;
+    let nonempty_socket = nonempty_root.path().join("native.sock");
+    let running = NativeServiceGuard::start(history_service(
+        nonempty_root.path(), &nonempty_socket,
+    )?);
+    let result = (|| -> TestResult {
+        let client = NativeUdsClient::new(&nonempty_socket);
+        let configured = create_text_workspace(&client)?;
+        let (source_view, original_source) = publish_text_owner(
+            &client, configured, 2, 1, "existing.rs", "needle existing source",
+        )?;
+        let baseline = client.read_view(ViewSelection::Exact(source_view), &budget())?;
+        let key = operation(3);
+        let ingress = client.begin_input(key, &budget())?;
+        let profile = client.stage_profile(
+            ingress,
+            IndexProfile { instances: vec![native_text_spec(), history_spec()] },
+            &budget(),
+        )?;
+        let input = client.stage_projection_output_with_children(
+            ingress, &serde_json::to_vec(&full_input)?, &[], &budget(),
+        )?;
+        let (source_request, _) = prepare_text_owner_in_ingress(
+            &client, source_view, ingress, 2, "new.rs", "needle second source",
+        )?;
+        let UpdateKind::SourceAdvance(source) = source_request.kind else {
+            return Err("expected second Source fixture request".into());
+        };
+        let request = UpdateRequest {
+            operation: key,
+            expected_view: source_view,
+            kind: UpdateKind::SourceHistoryBootstrap(Box::new(SourceHistoryBootstrapV1 {
+                source,
+                history: HistoryTransition {
+                    instance: history_spec().instance,
+                    expected: None,
+                    next: full_cut.clone(),
+                    input,
+                    profile,
+                },
+            })),
+        };
+        assert!(matches!(
+            client.submit(request, &budget())?,
+            SubmitOutcome::Terminal(OperationStatus::Refused(_))
+        ));
+        assert_eq!(client.read_view(ViewSelection::Latest {
+            workspace: workspace(), epoch: 1,
+        }, &budget())?, baseline);
+        let owners = client.list_producer_source_owners(
+            ViewSelection::Exact(source_view), key.producer, None, 2, &budget(),
+        )?;
+        assert!(matches!(owners.rows.as_slice(), [owner] if owner.source == original_source));
+        let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
+            &nonempty_socket, ViewSelection::Exact(source_view),
+        ))?;
+        let mut session = sdk.reader().native()?.open([96; 32], &budget())?;
+        assert_eq!(session.load_profile(&budget())?.profile.instances,
+            vec![native_text_spec()]);
+        let _released = session.release(&budget())?;
+        Ok(())
+    })();
+    let stopped = running.stop();
+    result?;
+    stopped?;
+    Ok(())
+}
+
+#[test]
+fn initial_history_preview_requires_exact_ingress_profile_and_current_view() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let running = NativeServiceGuard::start(history_service(root.path(), &socket)?);
+    let result = (|| -> TestResult<_> {
+        let client = NativeUdsClient::new(&socket);
+        let configured = create_text_workspace(&client)?;
+        let baseline = client.read_view(ViewSelection::Exact(configured), &budget())?;
+        let key = operation(2);
+        let ingress = client.begin_input(key, &budget())?;
+        let profile = client.stage_profile(
+            ingress,
+            IndexProfile { instances: vec![native_text_spec(), history_spec()] },
+            &budget(),
+        )?;
+        assert_ne!(profile, baseline.profile);
+        let mut first_commit = commit(1, 1000, "first Native history", "alice");
+        first_commit.tags.clear();
+        let mut original = HistoryIngestBatch {
+            repo_id: RepoId::new("preview-repo")?,
+            revision_id: RevisionId::new("main")?,
+            generation: ManifestGeneration::new(1),
+            manifest_digest: Some("preview-manifest".into()),
+            batch_digest: String::new(),
+            commits: vec![first_commit],
+            refs: Vec::new(), tags: Vec::new(), diff_hunks: Vec::new(),
+        };
+        stamp_batch_digest_v1(&mut original)?;
+        let original_ref = client.stage_projection_output_with_children(
+            ingress, &serde_json::to_vec(&original)?, &[], &budget(),
+        )?;
+        let mut recency = RepoCommitRecencyIngestBatch {
+            repo_id: original.repo_id.clone(),
+            revision_id: original.revision_id.clone(),
+            generation: original.generation,
+            batch_digest: String::new(),
+            entries: vec![RepoCommitRecencyEntry {
+                source_repo_id: original.repo_id.clone(),
+                latest_committer_time_ms: 1000,
+            }],
+        };
+        stamp_batch_digest_v1(&mut recency)?;
+        let recency_ref = client.stage_projection_output_with_children(
+            ingress, &serde_json::to_vec(&recency)?, &[], &budget(),
+        )?;
+        let initial = NativeHistoryInitialInputV1 {
+            wire_version: NativeHistoryInitialInputV1::WIRE_VERSION,
+            original: original_ref,
+            repo_commit_recency: Some(recency_ref),
+            file_contributor: None,
+        };
+        let mut children = vec![original_ref, recency_ref];
+        children.sort_unstable();
+        let input = client.stage_projection_output_with_children(
+            ingress, &serde_json::to_vec(&initial)?, &children, &budget(),
+        )?;
+        let preview = |ingress, expected_view, input, profile| {
+            client.request(NativeIndexRequest::PreviewInitialHistoryCutV1 {
+                ingress, expected_view, input, profile,
+            }, &budget())
+        };
+        let NativeIndexResponse::InitialHistoryCutV1(first) = preview(
+            ingress, configured, input, profile,
+        )? else { return Err("first History preview was not admitted".into()); };
+        assert_eq!(first.instance, history_spec().instance);
+        assert_eq!(first.cut.generation.repo_id, original.repo_id);
+        assert_eq!(first.cut.durable_epoch, AuxEpochV1::new(1));
+        let active = Arc::new(AtomicU64::new(0));
+        let memory = MemoryScope::new(Arc::new(CountedNativeTestMemory(Arc::clone(&active))));
+        let admitted = client.preview_initial_history_cut_admitted_v1(
+            ingress, configured, input, profile, &budget(), &memory,
+        )?;
+        assert_eq!(
+            admitted.response(),
+            &NativeIndexResponse::InitialHistoryCutV1(first.clone()),
+        );
+        assert!(active.load(Ordering::SeqCst) > 0);
+        drop(admitted);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+
+        let foreign_ingress = client.begin_input(operation(3), &budget())?;
+        let foreign_input = client.stage_projection_output_with_children(
+            foreign_ingress, b"foreign initial root", &[], &budget(),
+        )?;
+        let foreign_profile = client.stage_profile(
+            foreign_ingress, IndexProfile { instances: vec![native_text_spec()] },
+            &budget(),
+        )?;
+        for response in [
+            preview(ingress, configured, foreign_input, profile),
+            preview(ingress, configured, input, foreign_profile),
+            preview(IngressRef { fence: ingress.fence + 1, ..ingress }, configured, input, profile),
+            preview(ingress, ViewRef { digest: Digest([77; 32]), ..configured }, input, profile),
+        ] {
+            assert!(matches!(response, Err(NativeUdsError::Refused(_))));
+        }
+        assert_eq!(client.status(key, &budget())?, OperationStatus::Unknown);
+        assert_eq!(
+            client.read_view(ViewSelection::Latest { workspace: workspace(), epoch: 1 }, &budget())?.identity,
+            configured,
+        );
+
+        let (source_request, source_ref) =
+            prepare_text_owner_in_ingress(&client, configured, ingress, 1, "first.rs", "needle first source")?;
+        let UpdateKind::SourceAdvance(mut source) = source_request.kind else {
+            return Err("expected Source fixture request".into());
+        };
+        let [event] = source.events.as_mut_slice() else {
+            return Err("expected one first Source event".into());
+        };
+        (event.predecessor, event.sequence) = (0, 1);
+        assert_eq!(preview(ingress, configured, input, profile)?,
+            NativeIndexResponse::InitialHistoryCutV1(first.clone()));
+        let owners = source.owners;
+        let stage_context = SourceStageReplayContextV1 {
+            correlation: Digest([96; 32]),
+            history: Some(SourceStageHistoryRefsV1 { profile, root: input }),
+        };
+        let sealed = client.seal_mutations_for_replay_admitted_v1(
+            ingress, owners.root, owners.count, stage_context, &budget(), &memory,
+        )?;
+        let NativeIndexResponse::MutationsSealedForReplayV1(receipt) = sealed.response() else {
+            return Err(format!("expected sealed Source stage, got {:?}", sealed.response()).into());
+        };
+        let receipt = *receipt;
+        assert_eq!(receipt.owners, owners);
+        drop(sealed);
+
+        let request = UpdateRequest {
+            operation: key,
+            expected_view: configured,
+            kind: UpdateKind::SourceHistoryBootstrap(Box::new(SourceHistoryBootstrapV1 {
+                source,
+                history: HistoryTransition {
+                    instance: first.instance,
+                    expected: None,
+                    next: first.cut.clone(),
+                    input,
+                    profile,
+                },
+            })),
+        };
+        let submitted = client.submit_staged_source_borrowed_admitted_v1(
+            &request, receipt, &budget(), &memory,
+        )?;
+        let NativeIndexResponse::Submitted(reply) = submitted.response() else {
+            return Err(
+                format!("expected staged Source submission, got {:?}", submitted.response()).into(),
+            );
+        };
+        assert_eq!(reply.operation, key);
+        let view = published(&reply.payload)?;
+        drop(submitted);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(view.sequence, configured.sequence + 1);
+        let owners = client.list_producer_source_owners(
+            ViewSelection::Exact(view), key.producer, None, 2, &budget(),
+        )?;
+        assert!(matches!(owners.rows.as_slice(), [owner] if owner.source == source_ref));
+        let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
+            &socket, ViewSelection::Exact(view),
+        ))?;
+        let mut session = sdk.reader().native()?.open([93; 32], &budget())?;
+        assert_eq!(
+            session.load_profile(&budget())?.profile.instances,
+            vec![native_text_spec(), history_spec()]
+        );
+        let history = session.history_cut(&history_spec(), &budget())?;
+        assert_eq!(history.source_input, input);
+        assert_eq!(history.cut, first.cut);
+        let _released = session.release(&budget())?;
+
+        let mut predecessor = (view, history.clone());
+        let mut intermediate = None;
+        for (sequence, id) in [(4, 2), (5, 3)] {
+            let key = operation(sequence);
+            let ingress = client.begin_input(key, &budget())?;
+            original.commits = vec![commit(id, u64::from(id) * 1000, "Native same-slot append", "alice")];
+            stamp_batch_digest_v1(&mut original)?;
+            let input = client.stage_projection_output_with_children(
+                ingress, &serde_json::to_vec(&original)?, &[], &budget(),
+            )?;
+            let appended = published(&client.submit(UpdateRequest {
+                operation: key,
+                expected_view: predecessor.0,
+                kind: UpdateKind::HistoryAppend(HistoryAppendV1 {
+                    instance: first.instance,
+                    expected: predecessor.1.cut.clone(),
+                    input,
+                    profile,
+                }),
+            }, &budget())?)?;
+            let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
+                &socket, ViewSelection::Exact(appended),
+            ))?;
+            let mut session = sdk.reader().native()?.open([id; 32], &budget())?;
+            let _profile = session.load_profile(&budget())?;
+            let witness = session.history_cut(&history_spec(), &budget())?;
+            let _released = session.release(&budget())?;
+            assert_eq!(witness.cut.durable_epoch, AuxEpochV1::new(u64::from(id)));
+            assert_ne!(witness.member, predecessor.1.member);
+            if id == 2 {
+                intermediate = Some(witness.member);
+            }
+            predecessor = (appended, witness);
+        }
+        let current = client.read_view(ViewSelection::Exact(predecessor.0), &budget())?;
+        let intermediate = intermediate.ok_or("missing first append member")?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if native_objects_absent_nofollow(root.path(), &[intermediate])? {
+                break;
+            }
+            assert!(Instant::now() < deadline, "expired append member was not reclaimed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(matches!(client.read_view(ViewSelection::Exact(view), &budget()),
+            Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::SnapshotUnavailable));
+        assert_ne!(history.member, predecessor.1.member);
+        Ok((current, history, predecessor.1, initial))
+    })();
+    let stopped = running.stop();
+    let (current, first, latest, initial) = result?;
+    stopped?;
+
+    // Verify the actual boot proof after the original query view and the
+    // intermediate append were reclaimed. The current member keeps only the
+    // initial origin, whose physical rows must still match the original cut.
+    let objects = FileObjectStore::open(root.path().join("native-objects"))?;
+    let mut work = WorkBudget::with_request(work_limits(), budget());
+    let reference = objects.lookup_object(
+        current.members, &quanta_index_core::index::member_map_key(first.instance), &mut work,
+    )?.ok_or("missing current History member")?;
+    let binding = objects.get(reference, &mut work)?;
+    let member = quanta_index_core::index::decode_member_binding(&binding.payload, &mut work)?;
+    assert_eq!(member.artifact, latest.member);
+    let artifact = objects.get(member.artifact, &mut work)?;
+    assert_eq!(artifact.registration.children.get(2), Some(&first.member));
+    let source = objects.get(first.source_input, &mut work)?;
+    let verify = |operation, work: &mut WorkBudget| {
+        quanta_index_search_plane::native_history::verify_retained_native_initial_history_boot_member_v1(
+            &member, &artifact, &first.cut, &source.registration, initial,
+            operation, first.view.sequence, |reference, work| objects.get(reference, work), work,
+        )
+    };
+    let prepared = verify(operation(2), &mut work)?;
+    assert_eq!(prepared.verify_boot_rows_v1(
+        |reference, work| objects.get(reference, work),
+        |root, after, limit, work| objects.scan(root, after, limit, work),
+        &mut work,
+    )?, first.member);
+    assert!(verify(operation(4), &mut work).is_err());
+    drop(objects);
+
+    let reopened = NativeServiceGuard::start(history_service(root.path(), &socket)?);
+    let result = (|| -> TestResult {
+        let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
+            &socket, ViewSelection::Exact(current.identity),
+        ))?;
+        let mut session = sdk.reader().native()?.open([94; 32], &budget())?;
+        let _profile = session.load_profile(&budget())?;
+        let current_history = session.history_cut(&history_spec(), &budget())?;
+        assert_eq!(current_history.cut, latest.cut);
+        assert_eq!(current_history.member, latest.member);
+        let _released = session.release(&budget())?;
+        Ok(())
+    })();
+    let stopped = reopened.stop();
+    result?;
+    stopped?;
+    Ok(())
+}
+
 fn query(text: &str, order: HistoryOrderV1, top_k: u32) -> HistoryQueryRequest {
     HistoryQueryRequest {
         text_query: TextQueryRequest {
@@ -592,6 +1146,13 @@ fn native_history_sdk_full_delta_retained_pages_and_reopen() -> TestResult {
         assert_eq!(
             captured.profile.instances,
             vec![native_text_spec(), history_spec()]
+        );
+        let UpdateKind::HistoryAdvance(transition) = &full_request.kind else {
+            return Err("expected History FULL request".into());
+        };
+        assert_eq!(
+            session.history_cut(&history_spec(), &budget())?.source_input,
+            transition.input
         );
         let recency = query("type:commit needle", HistoryOrderV1::Recency, 2);
         let first = session.history(&history_spec(), recency.clone(), None, &budget())?;
@@ -934,6 +1495,7 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
     let result = (|| -> TestResult<_> {
         let client = NativeUdsClient::new(&socket);
         let configured = create_text_workspace(&client)?;
+        let foreign_profile = client.read_view(ViewSelection::Exact(configured), &budget())?.profile;
         let full_operation = operation(2);
         let ingress = client.begin_input(full_operation, &budget())?;
         let profile = client.stage_profile(
@@ -1025,21 +1587,70 @@ fn native_history_append_original_publishes_without_legacy_ack_and_reopens() -> 
             SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::Conflict))
         ));
         let request = append(4, full_cut.clone())?;
+        let request_ref = native_update_request_object_ref_with_work_v1(
+            &request,
+            &mut || Ok::<_, std::convert::Infallible>(()),
+        )?.ok_or("History request identity unavailable")?;
         let after = published(&client.submit(request.clone(), &budget())?)?;
         assert_eq!(after.sequence, before.sequence + 1);
         let published_view = client.read_view(ViewSelection::Exact(after), &budget())?;
         assert_eq!(published_view.source, baseline.source);
         assert_eq!(published_view.profile, baseline.profile);
-        Ok((request, after, original))
+        assert_ne!(foreign_profile, baseline.profile);
+        Ok((request_ref, request, configured, foreign_profile, after, original))
     })();
     let stopped = running.stop();
-    let (request, after, mut original) = result?;
+    let (request_ref, request, foreign_view, foreign_profile, after, mut original) = result?;
     stopped?;
 
     let reopened = NativeServiceGuard::start(history_service(root.path(), &socket)?);
     let result = (|| -> TestResult {
         let client = NativeUdsClient::new(&socket);
-        assert_eq!(published(&client.submit(request, &budget())?)?, after);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .ok_or("History request retirement deadline overflow")?;
+        while !native_objects_absent_nofollow(root.path(), &[request_ref])?
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(native_objects_absent_nofollow(root.path(), &[request_ref])?);
+        let catalog = rusqlite::Connection::open_with_flags(
+            quanta_index_catalog::catalog_dir(root.path())
+                .join(quanta_index_catalog::CATALOG_FILE_NAME),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let retained: i64 = catalog.query_row(
+            "SELECT COUNT(*) FROM native_operation_object_v1 WHERE object=?1",
+            [request_ref.0.0.as_slice()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(retained, 0);
+        drop(catalog);
+        assert_eq!(published(&client.resume(operation(4), &budget())?)?, after);
+        assert_eq!(published(&client.submit(request.clone(), &budget())?)?, after);
+        let mut wrong_view = request.clone();
+        wrong_view.expected_view = foreign_view;
+        let mut wrong_profile = request;
+        let UpdateKind::HistoryAppend(append) = &mut wrong_profile.kind else {
+            return Err("expected retained History append request".into());
+        };
+        append.profile = foreign_profile;
+        for wrong_request in [wrong_view, wrong_profile] {
+            assert!(matches!(
+                client.submit(wrong_request, &budget()),
+                Err(NativeUdsError::Refused(error))
+                    if error.code == NativeIndexErrorCode::DigestConflict
+            ));
+            assert_eq!(published(&client.resume(operation(4), &budget())?)?, after);
+        }
+        let latest = client.read_view(
+            ViewSelection::Latest { workspace: after.workspace, epoch: after.epoch },
+            &budget(),
+        )?;
+        assert_eq!(latest.identity, after);
+        assert!(native_objects_absent_nofollow(root.path(), &[request_ref])?);
+        assert_eq!(client.read_view(ViewSelection::Exact(after), &budget())?.identity, after);
         let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
             &socket,
             ViewSelection::Exact(after),
@@ -1112,24 +1723,23 @@ fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
         instance: IndexInstanceId([88; 16]),
         ..history_spec()
     };
-    let setup =
-        (|| -> TestResult<_> {
-            let client = NativeUdsClient::new(&socket);
-            let configured = create_text_workspace(&client)?;
-            let (source_view, old_source_ref) =
-                publish_text_owner(&client, configured, 2, 1, "old.rs", "needle old source")?;
-            let live = published(&client.submit(
-                stage_history(&client, source_view, 3, &full_input, None, full_cut.clone())?,
-                &budget(),
-            )?)?;
-            let old = client.read_view(ViewSelection::Exact(live), &budget())?;
-            let next = ManifestGeneration::new(
-                full.generation
-                    .get()
-                    .checked_add(1)
-                    .ok_or("generation overflow")?,
-            );
-            let prepare = |sequence,
+    let setup = (|| -> TestResult<_> {
+        let client = NativeUdsClient::new(&socket);
+        let configured = create_text_workspace(&client)?;
+        let (source_view, old_source_ref) =
+            publish_text_owner(&client, configured, 2, 1, "old.rs", "needle old source")?;
+        let live = published(&client.submit(
+            stage_history(&client, source_view, 3, &full_input, None, full_cut.clone())?,
+            &budget(),
+        )?)?;
+        let old = client.read_view(ViewSelection::Exact(live), &budget())?;
+        let next = ManifestGeneration::new(
+            full.generation
+                .get()
+                .checked_add(1)
+                .ok_or("generation overflow")?,
+        );
+        let prepare = |sequence,
                        generation,
                        forged_recency|
          -> TestResult<(UpdateRequest, HistoryGenerationInputV1, ObjectRef)> {
@@ -1269,66 +1879,62 @@ fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
             };
             Ok((request, closure, next_source))
         };
-            assert!(matches!(
-                client.submit(prepare(4, full.generation, false)?.0, &budget())?,
-                SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
-            ));
-            assert!(matches!(
-                client.submit(prepare(5, next, true)?.0, &budget())?,
-                SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
-            ));
-            let (mut wrong_prior, _, _) = prepare(6, next, false)?;
-            let transition = match &mut wrong_prior.kind {
-                UpdateKind::SourceHistoryAdvance(transition)
-                | UpdateKind::SourceHistoryResync { transition, .. } => transition,
-                _ => return Err("expected a combined publication to test the prior cut".into()),
+        assert!(matches!(
+            client.submit(prepare(4, full.generation, false)?.0, &budget())?,
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
+        ));
+        assert!(matches!(
+            client.submit(prepare(5, next, true)?.0, &budget())?,
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
+        ));
+        let (mut wrong_prior, _, _) = prepare(6, next, false)?;
+        let transition = match &mut wrong_prior.kind {
+            UpdateKind::SourceHistoryAdvance(transition)
+            | UpdateKind::SourceHistoryResync { transition, .. } => transition,
+            _ => return Err("expected a combined publication to test the prior cut".into()),
+        };
+        transition.history.expected.generation.revision_id = next_revision.clone();
+        assert!(matches!(
+            client.submit(wrong_prior, &budget())?,
+            SubmitOutcome::Terminal(OperationStatus::Refused(_))
+        ));
+        if resync {
+            let (mut stale, _, _) = prepare(7, next, false)?;
+            let UpdateKind::SourceHistoryResync { prior_epoch, .. } = &mut stale.kind else {
+                return Err("expected a resync to test the prior Source epoch".into());
             };
-            transition.history.expected.generation.revision_id = next_revision.clone();
+            *prior_epoch = 0;
             assert!(matches!(
-                client.submit(wrong_prior, &budget())?,
-                SubmitOutcome::Terminal(OperationStatus::Refused(_))
+                client.submit(stale, &budget()),
+                Err(quanta_index_sdk::native_uds::NativeUdsError::Refused(error))
+                    if error.code == NativeIndexErrorCode::Conflict
             ));
-            if resync {
-                let (mut stale, _, _) = prepare(7, next, false)?;
-                let UpdateKind::SourceHistoryResync { prior_epoch, .. } = &mut stale.kind else {
-                    return Err("expected a resync to test the prior Source epoch".into());
-                };
-                *prior_epoch = 0;
-                assert!(matches!(
-                    client.submit(stale, &budget()),
-                    Err(quanta_index_sdk::native_uds::NativeUdsError::Refused(error))
-                        if error.code == NativeIndexErrorCode::Conflict
-                ));
-            }
-            let latest = ViewSelection::Latest {
-                workspace: workspace(),
-                epoch: 1,
+        }
+        let latest = ViewSelection::Latest {
+            workspace: workspace(),
+            epoch: 1,
+        };
+        assert_eq!(client.read_view(latest, &budget())?, old);
+        if resync {
+            let page = client.list_producer_source_owners(
+                ViewSelection::Exact(live), operation(2).producer, None, 2, &budget(),
+            )?;
+            assert_eq!(page.source_epoch, Some(1));
+            let [owner] = page.rows.as_slice() else {
+                return Err("refused History must retain exactly the old Source owner".into());
             };
-            assert_eq!(client.read_view(latest, &budget())?, old);
-            if resync {
-                let page = client.list_producer_source_owners(
-                    ViewSelection::Exact(live),
-                    operation(2).producer,
-                    None,
-                    2,
-                    &budget(),
-                )?;
-                assert_eq!(page.source_epoch, Some(1));
-                let [owner] = page.rows.as_slice() else {
-                    return Err("refused History must retain exactly the old Source owner".into());
-                };
-                assert_eq!(owner.owner.stable_id, StableOwnerId([1; 16]));
-                assert_eq!(owner.source, old_source_ref);
-            }
-            let (request, expected_inputs, next_source) =
-                prepare(if resync { 8 } else { 7 }, next, false)?;
-            let view = published(&client.submit(request.clone(), &budget())?)?;
-            assert_eq!(view.sequence, live.sequence + 1);
-            let published_view = client.read_view(latest, &budget())?;
-            assert_eq!(published_view.identity, view);
-            assert_ne!(published_view.source, old.source);
-            Ok((request, published_view, next, expected_inputs, next_source))
-        })();
+            assert_eq!(owner.owner.stable_id, StableOwnerId([1; 16]));
+            assert_eq!(owner.source, old_source_ref);
+        }
+        let (request, expected_inputs, next_source) =
+            prepare(if resync { 8 } else { 7 }, next, false)?;
+        let view = published(&client.submit(request.clone(), &budget())?)?;
+        assert_eq!(view.sequence, live.sequence + 1);
+        let published_view = client.read_view(latest, &budget())?;
+        assert_eq!(published_view.identity, view);
+        assert_ne!(published_view.source, old.source);
+        Ok((request, published_view, next, expected_inputs, next_source))
+    })();
     let stopped = running.stop();
     let (request, published_view, next, expected_inputs, next_source) = setup?;
     stopped?;
@@ -1347,25 +1953,16 @@ fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
             OperationStatus::Published(observed) if observed == view
         ));
         assert_eq!(client.read_view(latest, &budget())?, published_view);
-        let expected_source_input = request
-            .kind
-            .history_generation_advance_v1()
-            .ok_or("expected the combined publication request")?
-            .input;
+        let expected_source_input = request.kind.history_generation_advance_v1()
+            .ok_or("expected the combined publication request")?.input;
         if resync {
             let page = client.list_producer_source_owners(
-                ViewSelection::Exact(view),
-                request.operation.producer,
-                None,
-                2,
-                &budget(),
+                ViewSelection::Exact(view), request.operation.producer, None, 2, &budget(),
             )?;
             assert_eq!(page.source_epoch, Some(2));
             assert_eq!(page.source, published_view.source);
             let [owner] = page.rows.as_slice() else {
-                return Err(
-                    "recovered SourceResync must retain exactly the replacement owner".into(),
-                );
+                return Err("recovered SourceResync must retain exactly the replacement owner".into());
             };
             assert_eq!(owner.owner.stable_id, StableOwnerId([2; 16]));
             assert_eq!(owner.source, next_source);
@@ -1389,6 +1986,7 @@ fn source_and_next_history_generation_round_trip(resync: bool) -> TestResult {
         };
         assert_eq!((output.view, output.member), (view, current.member));
         assert_eq!(output.source_input, expected_source_input);
+        assert_eq!(current.source_input, expected_source_input);
         assert_eq!(output.inputs, expected_inputs);
         assert_eq!(output.predecessor_context, full_cut.input_context_v1()?);
         assert_eq!(current.cut.generation.generation, next);

@@ -78,6 +78,7 @@ pub(super) fn dispatch(
         | NativeIndexRequest::BindOverlaySave(_)
         | NativeIndexRequest::CompleteOverlaySave(_)
         | NativeIndexRequest::QueryGraph { .. }
+
         | NativeIndexRequest::LookupSourceOwners { .. }
         | NativeIndexRequest::ListProducerSourceOwners { .. }
         | NativeIndexRequest::DiffProjectionSourceOwners { .. }
@@ -93,16 +94,20 @@ pub(super) fn dispatch(
         | NativeIndexRequest::StageProfile { .. }
         | NativeIndexRequest::StageProjectionOutput { .. }
         | NativeIndexRequest::StageImmutableObject { .. }
+        | NativeIndexRequest::SealStagedDslRequestV1 { .. }
+        | NativeIndexRequest::PreviewInitialHistoryCutV1 { .. }
         | NativeIndexRequest::StageProjectionOwner { .. }
         | NativeIndexRequest::StageProjectionCertificate { .. }
         | NativeIndexRequest::StageMutationPage { .. }
         | NativeIndexRequest::SealMutations { .. }
         | NativeIndexRequest::SealMutationsForReplayV1 { .. }
         | NativeIndexRequest::ReadSealedMutationsForReplayV1 { .. }
+        | NativeIndexRequest::ReadSealedDslV1(_)
         | NativeIndexRequest::DiscardInput(_)
         | NativeIndexRequest::SearchLiteral { .. }
         | NativeIndexRequest::QueryPaths { .. }
         | NativeIndexRequest::QueryRepositoryPaths { .. }
+        | NativeIndexRequest::TextMatches(_)
         | NativeIndexRequest::SearchOverlayText(_)
         | NativeIndexRequest::ReadSession(_)
         | NativeIndexRequest::SearchText { .. }
@@ -110,13 +115,19 @@ pub(super) fn dispatch(
         | NativeIndexRequest::SearchSemantic { .. }
         | NativeIndexRequest::QueryEffortStream { .. }
         | NativeIndexRequest::Submit(_)
+        | NativeIndexRequest::SubmitStagedSourceV1 { .. }
         | NativeIndexRequest::Resume(_)
         | NativeIndexRequest::ReplayDslV1(_)
+        | NativeIndexRequest::SubmitSealedDslV1(_)
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
         | NativeIndexRequest::ObserveCandidateInstallationV1
+
         | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+        | NativeIndexRequest::ResolveProtectedSourceViewV1 { .. }
+
         | NativeIndexRequest::PublishedViewMetadata(_)
+        | NativeIndexRequest::OperationRequestIdentityV1(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }
         | NativeIndexRequest::ListProducerProjectionOwnersV1 { .. }

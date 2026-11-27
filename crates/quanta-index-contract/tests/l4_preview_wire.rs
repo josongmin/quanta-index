@@ -64,7 +64,10 @@ fn lexical_cbor_rejects_invalid_highlight_boundaries() {
     let _highlights = fields.insert("highlights".into(), json!([{"start": 3, "len": 6}]));
     let row: LexicalCandidate =
         ciborium::de::from_reader(cbor(&valid).as_slice()).expect("valid excerpt");
-    assert_eq!(row.snippet, "é needle");
+    assert_eq!(
+        row.excerpt.as_ref().map(|excerpt| excerpt.snippet.as_str()),
+        Some("é needle")
+    );
     for (pointer, forged) in [
         ("/highlights/0/start", json!(1)),
         ("/highlights/0/len", json!(7)),

@@ -51,7 +51,7 @@ pub(in crate::native_history) fn load_history_contributor_object(
     decode_history_contributor_object(reference, &stored, context.budget)
 }
 
-pub(super) fn decode_history_contributor_object(
+pub(in crate::native_history) fn decode_history_contributor_object(
     reference: ObjectRef,
     stored: &StoredObject,
     budget: &mut WorkBudget,
@@ -61,7 +61,7 @@ pub(super) fn decode_history_contributor_object(
     decode_history_object_inner(reference, stored, budget, false, Some(backing))
 }
 
-pub(super) fn decode_history_batch_object(
+pub(in crate::native_history) fn decode_history_batch_object(
     reference: ObjectRef,
     stored: &StoredObject,
     budget: &mut WorkBudget,

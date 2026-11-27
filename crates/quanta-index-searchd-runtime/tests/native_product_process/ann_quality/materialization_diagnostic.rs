@@ -378,7 +378,7 @@ fn run_phase_diagnostic(rows: u64, materialize: bool, prefix_target: Option<usiz
         let profile = client.stage_profile(
             ingress,
             IndexProfile {
-                instances: vec![text_spec(), semantic.clone()],
+                instances: vec![literal_spec(), text_spec(), semantic.clone()],
             },
             &budget(),
         )?;

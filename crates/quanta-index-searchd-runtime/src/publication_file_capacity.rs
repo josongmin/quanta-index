@@ -16,7 +16,6 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use crate::owned_fd_close::close_owned_file;
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::publication_capacity::{
     InodeKey, OutputTicket, PendingId, PublicationAllowance, PublicationCapacity, ResizeTicket,
@@ -27,6 +26,7 @@ use quanta_index_core::{
     index::ObjectWriteSyncDirectories,
 };
 use quanta_index_searchd::app::runtime::{StateRootDirectoryV1, StateRootLease};
+use crate::owned_fd_close::close_owned_file;
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, RenameFlags, linkat, mkdirat, openat, renameat_with, statat,
     unlinkat,
@@ -73,6 +73,19 @@ fn existing_target(context: &str) -> CoreError {
         raw_os_error: None,
         message: format!("publication file capacity {context}: target already exists"),
     }
+}
+
+fn private_temp_nonce() -> Result<String, CoreError> {
+    let mut nonce = [0_u8; 16];
+    File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut nonce))
+        .map_err(|error| storage_io("private temp nonce", error))?;
+    let mut hex = String::with_capacity(32);
+    for byte in nonce {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}").map_err(|error| storage("temp nonce format", error))?;
+    }
+    Ok(hex)
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum MissingDisposition {
@@ -203,6 +216,10 @@ impl InodeObservation {
         let metadata = file
             .metadata()
             .map_err(|error| storage_io("fstat", error))?;
+        Self::from_metadata(&metadata)
+    }
+
+    pub(crate) fn from_metadata(metadata: &std::fs::Metadata) -> Result<Self, CoreError> {
         if !metadata.is_file() {
             return Err(contract("owned FD is not a regular file"));
         }
@@ -215,6 +232,13 @@ impl InodeObservation {
             links: metadata.nlink(),
         })
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ListPrefixMode {
+    Validate,
+    RequireDirectory,
+    DirectoryOrEmpty,
 }
 
 struct Anchor {
@@ -347,11 +371,11 @@ impl Anchor {
     }
 
     fn stat(&self) -> Result<Option<InodeObservation>, CoreError> {
-        match statat(
-            &self.parent,
-            Path::new(&self.name),
-            AtFlags::SYMLINK_NOFOLLOW,
-        ) {
+        self.stat_sibling(&self.name)
+    }
+
+    fn stat_sibling(&self, name: &std::ffi::OsStr) -> Result<Option<InodeObservation>, CoreError> {
+        match statat(&self.parent, Path::new(name), AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => {
                 if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
                     return Err(contract("anchored entry is not a regular file"));
@@ -382,15 +406,18 @@ impl Anchor {
     fn open_reader(&self) -> Result<File, CoreError> {
         self.open_with_missing(MissingDisposition::NotFound)
     }
-    fn open_with_missing(&self, missing: MissingDisposition) -> Result<File, CoreError> {
-        let opened = openat(
+    fn open_fd_with_missing(&self, missing: MissingDisposition) -> Result<File, CoreError> {
+        openat(
             &self.parent,
             Path::new(&self.name),
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         )
-        .map_err(|error| path_error("open anchored file", error, missing))?;
-        let file = File::from(opened);
+        .map(File::from)
+        .map_err(|error| path_error("open anchored file", error, missing))
+    }
+    fn open_with_missing(&self, missing: MissingDisposition) -> Result<File, CoreError> {
+        let file = self.open_fd_with_missing(missing)?;
         let checked = (|| {
             let observed = InodeObservation::from_file(&file)?;
             if self.stat()? != Some(observed) {
@@ -565,7 +592,8 @@ fn pending_path_matches(root: &StateRootDirectoryV1, relative: &Path, born: Inod
             return FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
                 && stat.st_uid == rustix::process::getuid().as_raw()
                 && stat.st_mode & 0o022 == 0
-                && checked_device_id(stat.st_dev).is_ok_and(|device| device == born.device)
+                && checked_device_id(stat.st_dev)
+                    .is_ok_and(|device| device == born.device)
                 && stat.st_ino == born.inode;
         }
         let Ok(next) = openat(
@@ -720,6 +748,10 @@ impl Drop for Shared {
 }
 #[path = "publication_file_capacity/read_only_tree.rs"]
 mod read_only_tree;
+#[cfg(feature = "legacy-semantic-adapter")]
+#[path = "publication_file_capacity/work_listing.rs"]
+mod work_listing;
+mod protected_catalog_read;
 pub(crate) use read_only_tree::ExistingTreeReadIoV1;
 
 #[derive(Clone)]
@@ -1419,6 +1451,28 @@ impl PublicationFileCapacity {
     where
         E: From<CoreError>,
     {
+        let mode = if require_directory {
+            ListPrefixMode::RequireDirectory
+        } else {
+            ListPrefixMode::Validate
+        };
+        self.with_list_prefix(path, mode, |directory| {
+            let directory = directory.ok_or_else(|| contract("list prefix lacks its held FD"))?;
+            inspect(directory)
+        })
+    }
+
+    fn with_list_prefix<T, E>(
+        &self,
+        path: &Path,
+        mode: ListPrefixMode,
+        inspect: impl FnOnce(Option<&File>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<CoreError>,
+    {
+        let require_directory = mode != ListPrefixMode::Validate;
+        let allow_empty = mode == ListPrefixMode::DirectoryOrEmpty;
         self.shared.root.require_current_v1()?;
         let relative = if path.as_os_str() == self.state_root().as_os_str() {
             PathBuf::new()
@@ -1457,12 +1511,15 @@ impl PublicationFileCapacity {
                     Ok(stat) => stat,
                     Err(rustix::io::Errno::NOENT) => {
                         self.shared.root.require_current_v1()?;
+                        if allow_empty {
+                            return inspect(None);
+                        }
                         if require_directory {
                             return Err(
                                 CoreError::NotFound("existing directory is absent".into()).into()
                             );
                         }
-                        return inspect(&held);
+                        return inspect(Some(&held));
                     }
                     Err(error) => {
                         return Err(storage_io("stat list prefix component", error).into());
@@ -1470,7 +1527,9 @@ impl PublicationFileCapacity {
                 };
                 let kind = FileType::from_raw_mode(stat.st_mode);
                 let ancestor = components.peek().is_some();
+                let empty_file_leaf = allow_empty && !ancestor && kind == FileType::RegularFile;
                 if kind != FileType::Directory
+                    && !empty_file_leaf
                     && (require_directory || ancestor || kind != FileType::RegularFile)
                 {
                     return Err(
@@ -1479,6 +1538,10 @@ impl PublicationFileCapacity {
                 }
                 if stat.st_uid != rustix::process::getuid().as_raw() || stat.st_mode & 0o022 != 0 {
                     return Err(contract("list prefix component has insecure owner or mode").into());
+                }
+                if empty_file_leaf {
+                    self.shared.root.require_current_v1()?;
+                    return inspect(None);
                 }
                 if ancestor || require_directory {
                     let next = File::from(
@@ -1523,7 +1586,7 @@ impl PublicationFileCapacity {
                 }
             }
             self.shared.root.require_current_v1()?;
-            inspect(&held)
+            inspect(Some(&held))
         })();
         if let Err(error) = close_owned_file(held) {
             self.mark_close_unwitnessed();
@@ -1548,6 +1611,23 @@ impl PublicationFileCapacity {
         directories: Option<ObjectWriteSyncDirectories>,
     ) -> Result<Anchor, CoreError> {
         self.shared.root.require_current_v1()?;
+        let anchor = self.walk_anchor(path, missing, directories)?;
+        self.shared.root.require_current_v1()?;
+        Ok(anchor)
+    }
+    fn anchor_native_reader(&self, path: &Path) -> Result<Anchor, CoreError> {
+        // This walk only opens directories below the held root FD. Verify
+        // the live root and lock before using its result.
+        let anchor = self.walk_anchor(path, MissingDisposition::Storage, None);
+        self.shared.root.require_current_v1()?;
+        anchor
+    }
+    fn walk_anchor(
+        &self,
+        path: &Path,
+        missing: MissingDisposition,
+        directories: Option<ObjectWriteSyncDirectories>,
+    ) -> Result<Anchor, CoreError> {
         let relative = self.relative(path)?;
         if directories.is_some()
             && relative
@@ -1558,13 +1638,7 @@ impl PublicationFileCapacity {
             return Err(contract("objects directory must be below the private root"));
         }
         let mut components = relative.components();
-        let mut parent = File::from(
-            self.shared
-                .root
-                .as_fd()
-                .try_clone_to_owned()
-                .map_err(|error| storage_io("clone leased root FD", error))?,
-        );
+        let mut parent: Option<File> = None;
         let mut name = None;
         while let Some(component) = components.next() {
             let Component::Normal(part) = component else {
@@ -1574,8 +1648,11 @@ impl PublicationFileCapacity {
                 name = Some(part.to_os_string());
                 break;
             }
+            let parent_fd = parent
+                .as_ref()
+                .map_or_else(|| self.shared.root.as_fd(), File::as_fd);
             let child = openat(
-                &parent,
+                parent_fd,
                 Path::new(part),
                 OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
                 Mode::empty(),
@@ -1585,12 +1662,24 @@ impl PublicationFileCapacity {
             if let Some(directories) = directories
                 && components.as_path().parent() == Some(Path::new(""))
             {
-                require_synced_directory(&parent, directories.objects, "objects ancestor")?;
+                let ancestor = parent
+                    .as_ref()
+                    .ok_or_else(|| contract("synced objects ancestor is absent"))?;
+                require_synced_directory(ancestor, directories.objects, "objects ancestor")?;
                 require_synced_directory(&child, directories.shard, "object shard")?;
             }
-            parent = child;
+            parent = Some(child);
         }
-        self.shared.root.require_current_v1()?;
+        let parent = match parent {
+            Some(parent) => parent,
+            None => File::from(
+                self.shared
+                    .root
+                    .as_fd()
+                    .try_clone_to_owned()
+                    .map_err(|error| storage_io("clone leased root FD", error))?,
+            ),
+        };
         Ok(Anchor {
             shared: Arc::clone(&self.shared),
             parent,
@@ -1794,10 +1883,20 @@ impl PublicationFileCapacity {
         observed: InodeObservation,
         reserved: bool,
     ) -> Result<(), CoreError> {
+        let mut state = lock(&self.shared.state)?;
+        self.track_retained_locked(&mut state, retained, observed, reserved)
+    }
+
+    fn track_retained_locked(
+        &self,
+        state: &mut Tracking,
+        retained: RetainedId,
+        observed: InodeObservation,
+        reserved: bool,
+    ) -> Result<(), CoreError> {
         if retained.inode() != observed.inode {
             return Err(contract("retained inode mismatch"));
         }
-        let mut state = lock(&self.shared.state)?;
         if reserved && state.reserved_inode_slots == 0 {
             return Err(contract("retirement inode slot reservation missing"));
         }
@@ -1840,10 +1939,54 @@ impl PublicationFileCapacity {
                 .checked_sub(1)
                 .ok_or_else(|| contract("retirement inode slot underflow"))?;
         }
-        drop(state);
         Ok(())
     }
-    fn pin(&self, observed: InodeObservation, file: File) -> Result<ReaderLease, CoreError> {
+    fn register_reader_pin(
+        &self,
+        retained: RetainedId,
+        observed: InodeObservation,
+        opening: Option<&Path>,
+        ceiling_message: &'static str,
+    ) -> Result<(), CoreError> {
+        let mut state = lock(&self.shared.state)?;
+        // Retained admission and the pin share one transition. Retirement
+        // must not mark an admitted inode between the two updates.
+        self.track_retained_locked(&mut state, retained, observed, false)?;
+        if state.total_pins >= self.shared.max_open_handles {
+            return Err(capacity(ceiling_message));
+        }
+        let Tracking {
+            inodes,
+            opening_readers,
+            total_opening_readers,
+            total_pins,
+            ..
+        } = &mut *state;
+        let entry = inodes
+            .get_mut(&observed.inode)
+            .ok_or_else(|| contract("pin inode disappeared"))?;
+        let pins = entry
+            .pins
+            .checked_add(1)
+            .ok_or_else(|| capacity("pin count overflow"))?;
+        let next_total = total_pins
+            .checked_add(1)
+            .ok_or_else(|| capacity("total pin count overflow"))?;
+        // The already-admitted opening becomes a pin under this lock. No
+        // fallible operation follows removal of the opening reservation.
+        if let Some(path) = opening {
+            Self::release_opening_count(opening_readers, total_opening_readers, path)?;
+        }
+        entry.pins = pins;
+        *total_pins = next_total;
+        Ok(())
+    }
+    fn pin(
+        &self,
+        observed: InodeObservation,
+        file: File,
+        opening: Option<&Path>,
+    ) -> Result<ReaderLease, CoreError> {
         let mut file = Some(file);
         let result = (|| {
             let retained = self
@@ -1851,24 +1994,7 @@ impl PublicationFileCapacity {
                 .authority
                 .retained_inode(observed.inode, observed.bytes)?
                 .ok_or_else(|| contract("opened FD inode absent from sealed authority"))?;
-            self.track_retained(retained, observed)?;
-            let mut state = lock(&self.shared.state)?;
-            if state.total_pins >= self.shared.max_open_handles {
-                return Err(capacity("owned FD pin ceiling exceeded"));
-            }
-            let inode = state
-                .inodes
-                .get_mut(&observed.inode)
-                .ok_or_else(|| contract("pin inode disappeared"))?;
-            inode.pins = inode
-                .pins
-                .checked_add(1)
-                .ok_or_else(|| capacity("pin count overflow"))?;
-            state.total_pins = state
-                .total_pins
-                .checked_add(1)
-                .ok_or_else(|| capacity("total pin count overflow"))?;
-            drop(state);
+            self.register_reader_pin(retained, observed, opening, "owned FD pin ceiling exceeded")?;
             Ok(ReaderLease {
                 shared: Arc::clone(&self.shared),
                 inode: observed.inode,
@@ -1962,8 +2088,13 @@ impl PublicationFileCapacity {
         &self,
         path: &Path,
         observed: InodeObservation,
+        completes_opening: bool,
     ) -> Result<NativeReaderLease, CoreError> {
-        let anchor = self.anchor(path)?;
+        let anchor = if completes_opening {
+            self.anchor_native_reader(path)?
+        } else {
+            self.anchor(path)?
+        };
         if anchor.stat()? != Some(observed) {
             return Err(contract("native pin witness and anchored path differ"));
         }
@@ -1972,24 +2103,12 @@ impl PublicationFileCapacity {
             .authority
             .retained_inode(observed.inode, observed.bytes)?
             .ok_or_else(|| contract("native pin inode absent from sealed authority"))?;
-        self.track_retained(retained, observed)?;
-        let mut state = lock(&self.shared.state)?;
-        if state.total_pins >= self.shared.max_open_handles {
-            return Err(capacity("native pin ceiling exceeded"));
-        }
-        let entry = state
-            .inodes
-            .get_mut(&observed.inode)
-            .ok_or_else(|| contract("native pin inode disappeared"))?;
-        entry.pins = entry
-            .pins
-            .checked_add(1)
-            .ok_or_else(|| capacity("native pin overflow"))?;
-        state.total_pins = state
-            .total_pins
-            .checked_add(1)
-            .ok_or_else(|| capacity("total native pin count overflow"))?;
-        drop(state);
+        self.register_reader_pin(
+            retained,
+            observed,
+            completes_opening.then_some(anchor.relative.as_path()),
+            "native pin ceiling exceeded",
+        )?;
         Ok(NativeReaderLease {
             shared: Arc::clone(&self.shared),
             inode: observed.inode,
@@ -1997,7 +2116,15 @@ impl PublicationFileCapacity {
         })
     }
     pub fn begin_native_reader_open(&self, path: &Path) -> Result<NativeOpenGuard, CoreError> {
-        let anchor = self.anchor(path)?;
+        self.begin_native_reader_open_with_expected(path, None)
+    }
+
+    pub(crate) fn begin_native_reader_open_with_expected(
+        &self,
+        path: &Path,
+        expected: Option<InodeObservation>,
+    ) -> Result<NativeOpenGuard, CoreError> {
+        let anchor = self.anchor_native_reader(path)?;
         {
             let mut state = lock(&self.shared.state)?;
             require_publication_open(&state)?;
@@ -2026,6 +2153,12 @@ impl PublicationFileCapacity {
                 .ok_or_else(|| capacity("native opening-reader count overflow"))?;
         }
         let expected = (|| {
+            // The caller's observation is only an expectation. The opening
+            // slot is already reserved, and pinning must still authenticate
+            // the actual FD and current anchored leaf against sealed custody.
+            if let Some(expected) = expected {
+                return Ok(expected);
+            }
             let observed = anchor
                 .stat()?
                 .ok_or_else(|| contract("native reader pathname absent"))?;
@@ -2159,27 +2292,41 @@ impl PublicationFileCapacity {
         let released = (|| {
             let relative = self.relative(path)?;
             let mut state = lock(&self.shared.state)?;
-            let count = state
-                .opening_readers
-                .get_mut(&relative)
-                .ok_or_else(|| contract("opening reader path missing"))?;
-            *count = count
-                .checked_sub(1)
-                .ok_or_else(|| contract("opening reader count underflow"))?;
-            let remove = *count == 0;
-            state.total_opening_readers = state
-                .total_opening_readers
-                .checked_sub(1)
-                .ok_or_else(|| contract("total opening reader count underflow"))?;
-            if remove && state.opening_readers.remove(&relative).is_none() {
-                return Err(contract("opening reader path disappeared"));
-            }
-            drop(state);
-            Ok::<(), CoreError>(())
+            let Tracking {
+                opening_readers,
+                total_opening_readers,
+                ..
+            } = &mut *state;
+            Self::release_opening_count(opening_readers, total_opening_readers, &relative)
         })();
         if released.is_err() {
             self.mark_close_unwitnessed();
         }
+    }
+
+    fn release_opening_count(
+        openings: &mut BTreeMap<PathBuf, usize>,
+        total: &mut usize,
+        path: &Path,
+    ) -> Result<(), CoreError> {
+        let next_total = total
+            .checked_sub(1)
+            .ok_or_else(|| contract("total opening reader count underflow"))?;
+        let count = openings
+            .get_mut(path)
+            .ok_or_else(|| contract("opening reader path missing"))?;
+        let next_count = count
+            .checked_sub(1)
+            .ok_or_else(|| contract("opening reader count underflow"))?;
+        if next_count == 0 {
+            if openings.remove(path).is_none() {
+                return Err(contract("opening reader path disappeared"));
+            }
+        } else {
+            *count = next_count;
+        }
+        *total = next_total;
+        Ok(())
     }
     pub fn begin_create(&self, final_path: &Path) -> Result<FileMutation, CoreError> {
         self.begin_create_with_bound(final_path, 1, CreatePolicy::SafeReplace, None, None)
@@ -2236,6 +2383,24 @@ impl PublicationFileCapacity {
             CreatePolicy::SafeReplace,
             Some(allowance),
             None,
+        )
+    }
+
+    /// Subdivide held work and report a witnessed conflict without replacing it.
+    #[cfg(feature = "legacy-semantic-adapter")]
+    pub(crate) fn begin_create_if_absent_with_allowance(
+        &self,
+        final_path: &Path,
+        max_bytes: u64,
+        allowance: Arc<PublicationAllowance>,
+    ) -> Result<Option<FileMutation>, CoreError> {
+        self.try_begin_create_with_bound(
+            final_path,
+            max_bytes,
+            CreatePolicy::SafeIfAbsent,
+            Some(allowance),
+            None,
+            false,
         )
     }
     /// Reserve a safe create-once file that is visible before termination.
@@ -2997,10 +3162,26 @@ impl PublicationFileCapacity {
     /// Return one bounded, opted-in Control create whose original writer has
     /// been physically retired. This is discovery only, not a success proof.
     pub fn next_retired_control_create(&self) -> Result<Option<PathBuf>, CoreError> {
+        self.next_retired_control_create_in(None)
+    }
+
+    pub(super) fn next_retired_control_create_in(
+        &self,
+        directory: Option<&Path>,
+    ) -> Result<Option<PathBuf>, CoreError> {
         self.shared.root.require_current_v1()?;
+        let directory = directory
+            .map(|directory| self.relative(directory))
+            .transpose()?;
         let state = lock(&self.shared.state)?;
         require_publication_open(&state)?;
         let next = state.pending.iter().find_map(|(path, pending)| {
+            if directory
+                .as_ref()
+                .is_some_and(|directory| !path.starts_with(directory))
+            {
+                return None;
+            }
             pending.control_create.as_ref().and_then(|control| {
                 (!control.recovering
                     && !pending.external_writer_live
@@ -3531,10 +3712,16 @@ impl PublicationFileCapacity {
                 return Err(storage_io("close pending writer pin", error));
             }
             let retained = match kind {
-                PendingKind::Create => self
-                    .shared
-                    .authority
-                    .confirmed_pending_committed_and_synced(id, observed.inode, observed.bytes)?,
+                PendingKind::Create => {
+                    self.reconcile_inode_before_create_commit(observed.inode)?;
+                    self.shared
+                        .authority
+                        .confirmed_pending_committed_and_synced(
+                            id,
+                            observed.inode,
+                            observed.bytes,
+                        )?
+                }
                 PendingKind::Resize { inode } if inode == observed.inode => self
                     .shared
                     .authority
@@ -3600,6 +3787,19 @@ impl PublicationFileCapacity {
         }
         outcome
     }
+    fn reconcile_inode_before_create_commit(&self, inode: InodeKey) -> Result<(), CoreError> {
+        if !lock(&self.shared.state)?.inodes.contains_key(&inode) {
+            return Ok(());
+        }
+        // A filesystem can recycle an inode number as soon as the last FD
+        // closes. Retire any witnessed old charge before committing the birth.
+        self.sweep_retired()?;
+        if lock(&self.shared.state)?.inodes.contains_key(&inode) {
+            return Err(capacity("new inode number is still tracked"));
+        }
+        Ok(())
+    }
+
     pub fn sweep_retired(&self) -> Result<(), CoreError> {
         loop {
             let candidate = {
@@ -3739,7 +3939,7 @@ impl FileMutation {
         let cloned = file
             .try_clone()
             .map_err(|error| storage_io("clone settled FD for lease", error))?;
-        let lease = self.binder.pin(observed, cloned)?;
+        let lease = self.binder.pin(observed, cloned, None)?;
         let original = self
             .pin
             .take()
@@ -3786,7 +3986,7 @@ impl FileMutation {
             .ok_or_else(|| contract("native writer lacks witness"))?;
         let lease = self
             .binder
-            .pin_native_witness(&self.anchor.relative, observed)?;
+            .pin_native_witness(&self.anchor.relative, observed, false)?;
         self.native_covered = true;
         Ok(lease)
     }
@@ -3942,6 +4142,7 @@ impl FileMutation {
     /// live authentication. No filesystem operation intervenes; growth may
     /// retain its own maintenance checks. Independent `reserve_end` and `start`
     /// calls retain their own live checks.
+    #[cfg(test)]
     pub(crate) fn reserve_end_and_start(&mut self, target_end: u64) -> Result<(), CoreError> {
         if !self.is_native() {
             return Err(contract(
@@ -3988,6 +4189,7 @@ impl FileMutation {
             None => Err(contract("mutation already settled")),
         }
     }
+    #[cfg(test)]
     fn start_already_validated(&mut self) -> Result<(), CoreError> {
         match self.ticket.as_ref() {
             Some(MutationTicket::Create(_)) => self.creation_started_already_validated(),
@@ -4113,15 +4315,7 @@ impl FileMutation {
     /// This method does not create the file. The owned ticket must cross into
     /// the blocking I/O task before calling `creation_started` and create.
     pub fn allocate_private_temp_path(&mut self) -> Result<PathBuf, CoreError> {
-        let mut nonce = [0_u8; 16];
-        File::open("/dev/urandom")
-            .and_then(|mut source| source.read_exact(&mut nonce))
-            .map_err(|error| storage_io("private temp nonce", error))?;
-        let mut hex = String::with_capacity(32);
-        for byte in nonce {
-            use std::fmt::Write as _;
-            write!(&mut hex, "{byte:02x}").map_err(|error| storage("temp nonce format", error))?;
-        }
+        let hex = private_temp_nonce()?;
         let path = self.binder.state_root().join(format!(".qiv-pub-{hex}"));
         self.declare_temp_path(&path)?;
         Ok(path)
@@ -4313,7 +4507,9 @@ impl FileMutation {
             .declared_temp
             .as_ref()
             .ok_or_else(|| contract("declared temporary is absent"))?;
-        self.require_declared_parents_current()?;
+        if replace {
+            self.require_declared_parents_current()?;
+        }
         let observed = InodeObservation::from_file(writer)?;
         if self.observed.map(|prior| prior.inode) != Some(observed.inode)
             || observed.links != 1
@@ -4325,6 +4521,8 @@ impl FileMutation {
         if replace {
             self.before_replace(final_path)?;
         }
+        // The no-replace path only inspected the held descriptors. Check the
+        // live parents once here, immediately before the namespace mutation.
         self.require_declared_parents_current()?;
         let flags = if replace && self.replaced_old.is_some() {
             RenameFlags::empty()
@@ -4691,6 +4889,11 @@ impl FileMutation {
             self.binder.mark_close_unwitnessed();
             return Err(storage_io("close settled safe pin", error));
         }
+        if self.busy_inode.is_some() {
+            // A safe replacement can finish without transferring a reader
+            // lease. Retire its checked-close tombstone on this path as well.
+            self.binder.sweep_retired()?;
+        }
         Ok(())
     }
     /// Cancel only the declared original temporary while its writer is available.
@@ -4826,7 +5029,11 @@ impl FileMutation {
             .as_mut()
             .ok_or_else(|| contract("mutation ticket absent"))?;
         let retained = match ticket {
-            MutationTicket::Create(ticket) => ticket.committed(observed.inode, observed.bytes)?,
+            MutationTicket::Create(ticket) => {
+                self.binder
+                    .reconcile_inode_before_create_commit(observed.inode)?;
+                ticket.committed(observed.inode, observed.bytes)?
+            }
             MutationTicket::Resize(ticket) => ticket.settled(observed.inode, observed.bytes)?,
         };
         if self.reserved_inode_slot {
@@ -5149,6 +5356,29 @@ pub struct OpenGuard {
     finished: bool,
 }
 impl OpenGuard {
+    /// Retain the already-anchored FD as the reader lease. This avoids a
+    /// second pathname open for immutable copy sources.
+    #[cfg(feature = "legacy-semantic-adapter")]
+    pub(crate) fn into_held_reader(mut self) -> Result<ReaderLease, CoreError> {
+        let observed = InodeObservation::from_file(
+            self.file
+                .as_ref()
+                .ok_or_else(|| contract("reader FD absent"))?,
+        )?;
+        if observed != self.expected || self.anchor.stat()? != Some(observed) {
+            return Err(contract("held reader changed inode or width"));
+        }
+        let file = self
+            .file
+            .take()
+            .ok_or_else(|| contract("reader pin absent"))?;
+        let lease = self
+            .binder
+            .pin(observed, file, Some(&self.anchor.relative))?;
+        self.finished = true;
+        Ok(lease)
+    }
+
     /// Transfer the actual caller-opened FD into this lease. A borrowed
     /// witness would let the caller silently close its original FD later.
     pub fn opened_owned(mut self, opened: File) -> Result<ReaderLease, CoreError> {
@@ -5166,10 +5396,11 @@ impl OpenGuard {
                 .file
                 .take()
                 .ok_or_else(|| contract("reader pin absent"))?;
-            let mut lease = self.binder.pin(observed, file)?;
+            let mut lease = self
+                .binder
+                .pin(observed, file, Some(&self.anchor.relative))?;
             lease.actual = actual.take();
             self.finished = true;
-            self.binder.release_opening(&self.anchor.relative);
             Ok(lease)
         })();
         if let Some(opened) = actual.take()
@@ -5291,11 +5522,22 @@ impl NativeReaderLease {
         self.inode
     }
     pub fn retire(mut self) -> Result<(), CoreError> {
-        self.release()
+        self.release().map(|_| ())
     }
-    fn release(&mut self) -> Result<(), CoreError> {
+
+    pub(crate) fn retire_and_sweep(mut self) -> Result<(), CoreError> {
+        if self.release()? {
+            PublicationFileCapacity {
+                shared: Arc::clone(&self.shared),
+            }
+            .sweep_retired()?;
+        }
+        Ok(())
+    }
+
+    fn release(&mut self) -> Result<bool, CoreError> {
         if !self.live {
-            return Ok(());
+            return Ok(false);
         }
         let mut state = lock(&self.shared.state)?;
         let total_before = state.total_pins;
@@ -5316,9 +5558,12 @@ impl NativeReaderLease {
         if last_tombstone_pin {
             state.retirement_scan_needed = true;
         }
+        // Read the sweep hint while we already hold the pin ledger. A later
+        // retirement is re-armed by its owner under this same lock.
+        let needs_sweep = state.retirement_scan_needed || state.close_unwitnessed;
         drop(state);
         self.live = false;
-        Ok(())
+        Ok(needs_sweep)
     }
 }
 impl Drop for NativeReaderLease {
@@ -5335,18 +5580,43 @@ pub struct NativeOpenGuard {
     finished: bool,
 }
 impl NativeOpenGuard {
+    pub(crate) fn open_file(&mut self) -> Result<(File, NativeReaderLease), CoreError> {
+        self.require_unfinished()?;
+        // Resolve against the admitted parent without blocking on a replaced
+        // leaf. The FD still needs the live pathname witness before use.
+        let file = self.anchor.open_fd_with_missing(MissingDisposition::NotFound)?;
+        let pinned = InodeObservation::from_file(&file)
+            .and_then(|observed| self.opened_witness(observed));
+        match pinned {
+            Ok(lease) => Ok((file, lease)),
+            Err(error) => {
+                if close_owned_file(file).is_err() {
+                    self.binder.mark_close_unwitnessed();
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn require_unfinished(&self) -> Result<(), CoreError> {
+        if self.finished {
+            return Err(contract("native reader opening already finished"));
+        }
+        Ok(())
+    }
+
     pub fn opened_witness(
         &mut self,
         observed: InodeObservation,
     ) -> Result<NativeReaderLease, CoreError> {
+        self.require_unfinished()?;
         if observed != self.expected {
             return Err(contract("native open inode/width changed"));
         }
         let lease = self
             .binder
-            .pin_native_witness(&self.anchor.relative, observed)?;
+            .pin_native_witness(&self.anchor.relative, observed, true)?;
         self.finished = true;
-        self.binder.release_opening(&self.anchor.relative);
         Ok(lease)
     }
 }
@@ -5362,6 +5632,8 @@ impl Drop for NativeOpenGuard {
 pub enum PathAction {
     Link,
     Move,
+    MoveCreate,
+    CopyOverwrite,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5369,6 +5641,13 @@ pub enum PathRecovery {
     Changed,
     Unchanged,
 }
+
+struct CopyAlias {
+    name: OsString,
+    relative: PathBuf,
+    linked: bool,
+}
+
 pub struct PathTicket {
     binder: PublicationFileCapacity,
     from: Anchor,
@@ -5378,6 +5657,7 @@ pub struct PathTicket {
     target_before: Option<InodeObservation>,
     replaced_target: Option<(File, RetainedId)>,
     action: PathAction,
+    copy_alias: Option<CopyAlias>,
     sidecar_private_parents: bool,
     settled: bool,
     started: bool,
@@ -5419,6 +5699,23 @@ impl PublicationFileCapacity {
         if from.relative == to.relative {
             return Err(contract("source equals destination"));
         }
+        let copy_alias = if action == PathAction::CopyOverwrite {
+            let name = OsString::from(format!(".qiv-copy-{}", private_temp_nonce()?));
+            let relative = to.relative.with_file_name(&name);
+            if relative == from.relative
+                || relative == to.relative
+                || to.stat_sibling(&name)?.is_some()
+            {
+                return Err(contract("copy alias collides with an existing path"));
+            }
+            Some(CopyAlias {
+                name,
+                relative,
+                linked: false,
+            })
+        } else {
+            None
+        };
         let mut source = Some(from.open()?);
         let mut target_file = None;
         let result = (|| {
@@ -5439,6 +5736,9 @@ impl PublicationFileCapacity {
             let replaced_retained = match target_before {
                 Some(_) if matches!(action, PathAction::Link) => {
                     return Err(existing_target("link"));
+                }
+                Some(_) if matches!(action, PathAction::MoveCreate) => {
+                    return Err(existing_target("create-mode move"));
                 }
                 Some(prior) => {
                     if prior.inode == expected.inode {
@@ -5464,9 +5764,15 @@ impl PublicationFileCapacity {
             };
             let mut state = lock(&self.shared.state)?;
             require_publication_open(&state)?;
-            if state.paths_busy.len().saturating_add(2) > self.shared.max_tracked_entries
+            let path_claims = 2 + usize::from(copy_alias.is_some());
+            if state.paths_busy.len().saturating_add(path_claims) > self.shared.max_tracked_entries
                 || state.paths_busy.contains(&from.relative)
                 || state.paths_busy.contains(&to.relative)
+                || copy_alias.as_ref().is_some_and(|alias| {
+                    state.paths_busy.contains(&alias.relative)
+                        || state.opening_readers.contains_key(&alias.relative)
+                        || directory_scope_busy(&state, &alias.relative)
+                })
                 || directory_scope_busy(&state, &from.relative)
                 || directory_scope_busy(&state, &to.relative)
                 || state.opening_readers.contains_key(&from.relative)
@@ -5478,6 +5784,9 @@ impl PublicationFileCapacity {
             }
             if !state.paths_busy.insert(from.relative.clone())
                 || !state.paths_busy.insert(to.relative.clone())
+                || copy_alias
+                    .as_ref()
+                    .is_some_and(|alias| !state.paths_busy.insert(alias.relative.clone()))
                 || !state.inodes_busy.insert(expected.inode)
                 || target_before.is_some_and(|prior| !state.inodes_busy.insert(prior.inode))
             {
@@ -5505,6 +5814,7 @@ impl PublicationFileCapacity {
                     None => None,
                 },
                 action,
+                copy_alias,
                 sidecar_private_parents,
                 settled: false,
                 started: false,
@@ -5530,6 +5840,14 @@ impl PublicationFileCapacity {
     pub fn begin_move(&self, from: &Path, to: &Path) -> Result<PathTicket, CoreError> {
         self.begin_path_change(from, to, PathAction::Move, false)
     }
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
+    pub(crate) fn begin_copy_overwrite(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<PathTicket, CoreError> {
+        self.begin_path_change(from, to, PathAction::CopyOverwrite, false)
+    }
     pub(crate) fn begin_sidecar_move(
         &self,
         from: &Path,
@@ -5540,11 +5858,7 @@ impl PublicationFileCapacity {
     /// Admit a move only when its destination is absent. The resulting ticket
     /// keeps the absent-target witness and uses `RENAME_NOREPLACE` at the syscall.
     pub fn begin_move_if_absent(&self, from: &Path, to: &Path) -> Result<PathTicket, CoreError> {
-        let ticket = self.begin_path_change(from, to, PathAction::Move, false)?;
-        if ticket.target_before.is_some() {
-            return Err(existing_target("create-mode move"));
-        }
-        Ok(ticket)
+        self.begin_path_change(from, to, PathAction::MoveCreate, false)
     }
     pub fn begin_delete(&self, path: &Path) -> Result<DeleteTicket, CoreError> {
         self.begin_delete_with_parent_policy(path, false)
@@ -5794,6 +6108,9 @@ impl PathTicket {
     fn release_claims(&self) {
         self.binder.release_path(&self.from.relative);
         self.binder.release_path(&self.to.relative);
+        if let Some(alias) = &self.copy_alias {
+            self.binder.release_path(&alias.relative);
+        }
         self.binder.release_busy_inode(self.expected.inode);
         if let Some(prior) = self.target_before {
             self.binder.release_busy_inode(prior.inode);
@@ -5806,6 +6123,11 @@ impl PathTicket {
         }
         if self.from.stat()? != Some(self.expected) || self.to.stat()? != self.target_before {
             return Err(contract("path changed before operation"));
+        }
+        if let Some(alias) = &self.copy_alias
+            && self.to.stat_sibling(&alias.name)?.is_some()
+        {
+            return Err(contract("copy alias appeared before operation"));
         }
         if InodeObservation::from_file(
             self.source
@@ -5846,7 +6168,7 @@ impl PathTicket {
                 AtFlags::empty(),
             )
             .map_err(|error| storage_io("linkat", error))?,
-            PathAction::Move => {
+            PathAction::Move | PathAction::MoveCreate => {
                 let flags = if self.target_before.is_some() {
                     RenameFlags::empty()
                 } else {
@@ -5861,9 +6183,95 @@ impl PathTicket {
                 )
                 .map_err(|error| storage_io("renameat", error))?;
             }
+            PathAction::CopyOverwrite => {
+                self.link_copy_alias()?;
+                let alias = self
+                    .copy_alias
+                    .as_ref()
+                    .ok_or_else(|| contract("copy alias is absent"))?;
+                let linked = self.linked_source()?;
+                if self.from.stat()? != Some(linked)
+                    || self.to.stat_sibling(&alias.name)? != Some(linked)
+                    || self.to.stat()? != self.target_before
+                {
+                    return Err(contract("copy namespace changed before install"));
+                }
+                let flags = if self.target_before.is_some() {
+                    RenameFlags::empty()
+                } else {
+                    RenameFlags::NOREPLACE
+                };
+                renameat_with(
+                    &self.to.parent,
+                    Path::new(&alias.name),
+                    &self.to.parent,
+                    Path::new(&self.to.name),
+                    flags,
+                )
+                .map_err(|error| storage_io("publish copy alias", error))?;
+            }
         }
         Ok(())
     }
+
+    fn linked_source(&self) -> Result<InodeObservation, CoreError> {
+        let links = self
+            .expected
+            .links
+            .checked_add(1)
+            .ok_or_else(|| contract("linked source count overflow"))?;
+        Ok(InodeObservation {
+            links,
+            ..self.expected
+        })
+    }
+
+    fn link_copy_alias(&mut self) -> Result<(), CoreError> {
+        let alias = self
+            .copy_alias
+            .as_mut()
+            .ok_or_else(|| contract("copy alias is absent"))?;
+        if !self.started || alias.linked {
+            return Err(contract("copy alias creation is out of order"));
+        }
+        match linkat(
+            &self.from.parent,
+            Path::new(&self.from.name),
+            &self.to.parent,
+            Path::new(&alias.name),
+            AtFlags::empty(),
+        ) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::EXIST) => {
+                return Err(contract("reserved staging copy alias is occupied"));
+            }
+            Err(error) => return Err(storage_io("link copy alias", error)),
+        }
+        alias.linked = true;
+        Ok(())
+    }
+
+    fn recover_copy_alias(&self) -> Result<(), CoreError> {
+        let Some(alias) = &self.copy_alias else {
+            return Ok(());
+        };
+        if !alias.linked {
+            return Ok(());
+        }
+        let Some(staged) = self.to.stat_sibling(&alias.name)? else {
+            return Ok(());
+        };
+        let linked = self.linked_source()?;
+        if staged != linked
+            || self.from.stat()? != Some(linked)
+            || self.to.stat()? != self.target_before
+        {
+            return Err(contract("pending copy alias or its original paths changed"));
+        }
+        unlinkat(&self.to.parent, Path::new(&alias.name), AtFlags::empty())
+            .map_err(|error| storage_io("unlink uninstalled copy alias", error))
+    }
+
     pub fn changed_and_synced(&mut self) -> Result<(), CoreError> {
         self.require_current_parents()?;
         if !self.started {
@@ -5876,7 +6284,9 @@ impl PathTicket {
         if target.inode != self.expected.inode || target.bytes != self.expected.bytes {
             return Err(contract("target path witness differs"));
         }
-        if matches!(self.action, PathAction::Move) && self.from.stat()?.is_some() {
+        if matches!(self.action, PathAction::Move | PathAction::MoveCreate)
+            && self.from.stat()?.is_some()
+        {
             return Err(contract("move source remains"));
         }
         let source = InodeObservation::from_file(
@@ -5886,6 +6296,19 @@ impl PathTicket {
         )?;
         if source.inode != self.expected.inode || source.bytes != self.expected.bytes {
             return Err(contract("source FD changed"));
+        }
+        if let Some(alias) = &self.copy_alias {
+            let linked = self.linked_source()?;
+            if !alias.linked
+                || self.to.stat_sibling(&alias.name)?.is_some()
+                || self.from.stat()? != Some(linked)
+                || source != linked
+                || target != linked
+            {
+                return Err(contract(
+                    "copy install lacks exact link and alias witnesses",
+                ));
+            }
         }
         self.from.sync_parent()?;
         self.to.sync_parent()?;
@@ -6000,6 +6423,7 @@ impl PathTicket {
             ));
         }
         self.require_current_parents()?;
+        self.recover_copy_alias()?;
         let from = self.from.stat()?;
         let to = self.to.stat()?;
         let source = InodeObservation::from_file(
@@ -6016,33 +6440,32 @@ impl PathTicket {
             && to == self.target_before
             && source == self.expected
             && prior_file == self.target_before;
+        let old_after = self
+            .target_before
+            .map(|prior| {
+                let links = prior
+                    .links
+                    .checked_sub(1)
+                    .ok_or_else(|| contract("replaced target link count underflow"))?;
+                Ok::<_, CoreError>(InodeObservation { links, ..prior })
+            })
+            .transpose()?;
         let changed = match self.action {
             PathAction::Link => {
-                let links = self
-                    .expected
-                    .links
-                    .checked_add(1)
-                    .ok_or_else(|| contract("linked source count overflow"))?;
-                let linked = InodeObservation {
-                    links,
-                    ..self.expected
-                };
+                let linked = self.linked_source()?;
                 from == Some(linked) && to == Some(linked) && source == linked
             }
-            PathAction::Move => {
-                let old_after = self
-                    .target_before
-                    .map(|prior| {
-                        let links = prior
-                            .links
-                            .checked_sub(1)
-                            .ok_or_else(|| contract("replaced target link count underflow"))?;
-                        Ok::<_, CoreError>(InodeObservation { links, ..prior })
-                    })
-                    .transpose()?;
+            PathAction::Move | PathAction::MoveCreate => {
                 from.is_none()
                     && to == Some(self.expected)
                     && source == self.expected
+                    && prior_file == old_after
+            }
+            PathAction::CopyOverwrite => {
+                let linked = self.linked_source()?;
+                from == Some(linked)
+                    && to == Some(linked)
+                    && source == linked
                     && prior_file == old_after
             }
         };

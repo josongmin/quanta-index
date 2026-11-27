@@ -21,6 +21,11 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
 lock = Path(os.environ["QUANTA_INDEX_CACHE_ROOT"]) / "resource-admission/build-test.lock"
 held = False
 if lock.exists():
@@ -34,6 +39,13 @@ if lock.exists():
 record = {"argv": sys.argv[1:], "held": held,
           "target": os.environ["CARGO_TARGET_DIR"],
           "pin": os.environ.get("QUANTA_INDEX_SEARCHD_BIN")}
+for argument in sys.argv[1:]:
+    if argument == "--":
+        break
+    if argument.startswith("quanta-index-cargow-store:"):
+        config_path = Path(argument.split(":", 1)[1])
+        record["store_config"] = str(config_path)
+        record["store"] = tomllib.loads(config_path.read_text())["store"]["dir"]
 print(json.dumps(record), flush=True)
 with Path(os.environ["FAKE_CARGO_RECORDS"]).open("a") as log:
     log.write(json.dumps(record) + "\n")
@@ -47,7 +59,10 @@ if release:
         if time.monotonic() >= deadline:
             raise SystemExit(91)
         time.sleep(0.01)
-if sys.argv[1:2] == ["build"] and "quanta-index-searchd-runtime" in sys.argv:
+if any(
+    sys.argv[index:index + 3] == ["build", "-p", "quanta-index-searchd-runtime"]
+    for index in range(1, len(sys.argv))
+):
     binary = Path(record["target"]) / "debug/quanta-index-searchd"
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text("#!/bin/sh\nexit 0\n")
@@ -143,6 +158,45 @@ def test_leaf_failure_exit_code_survives_admission(cargo_env):
     assert records(cargo_env)[0]["held"] is True
 
 
+def test_running_wrapper_keeps_leaf_status_during_an_in_place_edit(cargo_env, tmp_path):
+    wrapper = tmp_path / "cargow"
+    env_script = CARGOW.with_name("quanta-index-env.sh")
+    (tmp_path / env_script.name).write_bytes(env_script.read_bytes())
+    lines = CARGOW.read_text().splitlines(keepends=True)
+    tail = next(index for index, line in enumerate(lines) if line.lstrip().startswith("end_ms="))
+    # Keep the tail beyond any shell read-ahead while the leaf is running.
+    lines.insert(tail, "# padding\n" * 8000)
+    wrapper.write_text("".join(lines))
+    wrapper.chmod(0o755)
+
+    started = tmp_path / "started"
+    release = tmp_path / "release"
+    cargo_env.update(
+        {
+            "QUANTA_INDEX_RESOURCE_ADMISSION": "0",
+            "QUANTA_INDEX_TARGET_GC": "0",
+            "FAKE_CARGO_STARTED": str(started),
+            "FAKE_CARGO_RELEASE": str(release),
+            "FAKE_CARGO_EXIT": "7",
+        }
+    )
+    with subprocess.Popen(
+        [str(wrapper), "build"], cwd=ROOT, env=cargo_env, stderr=subprocess.PIPE, text=True
+    ) as process:
+        try:
+            deadline = time.monotonic() + 10
+            while not started.exists():
+                assert process.poll() is None, process.communicate()[1]
+                assert time.monotonic() < deadline, "fake Cargo did not start"
+                time.sleep(0.01)
+            wrapper.write_text("exit 97\n" * 12000)
+        finally:
+            release.touch()
+        _, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 7, stderr
+
+
 def test_cargo_history_duration_uses_monotonic_clock(cargo_env, tmp_path):
     clock_calls = tmp_path / "clock-calls"
     fake_python = tmp_path / "bin" / "python3"
@@ -233,12 +287,16 @@ def test_distinct_lanes_share_one_resource_slot_with_a_live_marker_oracle(cargo_
             first.communicate(timeout=12)
 
 
-def test_workspace_daemon_preparation_and_main_each_acquire_without_recursion(cargo_env):
-    result = run(cargo_env, "--lane", "test-workspace-lane", "nextest", "run", "--workspace")
+@pytest.mark.parametrize("prefix", [[], ["+nightly", "--offline"]])
+def test_workspace_daemon_preparation_and_main_each_acquire_without_recursion(cargo_env, prefix):
+    result = run(
+        cargo_env, "--lane", "test-workspace-lane", *prefix, "nextest", "run", "--workspace"
+    )
     assert result.returncode == 0, result.stderr
     observed = records(cargo_env)
     assert len(observed) == 2 and all(row["held"] for row in observed)
     assert observed[0]["argv"] == [
+        *prefix,
         "build",
         "-p",
         "quanta-index-searchd-runtime",
@@ -246,14 +304,75 @@ def test_workspace_daemon_preparation_and_main_each_acquire_without_recursion(ca
         "quanta-index-searchd",
         "--locked",
     ]
-    assert observed[1]["argv"] == ["nextest", "run", "--workspace"]
+    assert observed[1]["argv"][: len(prefix) + 3] == [*prefix, "nextest", "run", "--workspace"]
     assert observed[1]["pin"] == str(Path(observed[1]["target"]) / "debug/quanta-index-searchd")
     assert result.stderr.count("resource admission: admitted") == 2
     assert result.stderr.count("resource admission: released") == 2
 
 
-@pytest.mark.parametrize("arguments", [["+stable", "build"], ["--locked", "build"]])
-def test_global_options_and_toolchain_prefixes_cannot_bypass_admission(cargo_env, arguments):
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["nextest", "run", "--help"],
+        ["nextest", "run", "--workspace", "--help"],
+        ["nextest", "list", "-h"],
+        ["test", "--workspace", "--help"],
+        ["+nightly", "--offline", "test", "--workspace", "--help"],
+    ],
+)
+def test_cargo_help_never_acquires_admission_or_prepares_searchd(cargo_env, arguments):
+    result = run(cargo_env, *arguments)
+
+    assert result.returncode == 0, result.stderr
+    [observed] = records(cargo_env)
+    assert observed["argv"] == arguments
+    assert observed["held"] is False
+    assert observed["pin"] is None
+
+
+@pytest.mark.parametrize("command", [["test"], ["nextest", "run"]])
+def test_harness_arguments_do_not_request_workspace_preparation_or_cargo_help(cargo_env, command):
+    arguments = [*command, "--", "--workspace", "--help"]
+    result = run(cargo_env, *arguments)
+
+    assert result.returncode == 0, result.stderr
+    [observed] = records(cargo_env)
+    assert observed["held"] is True
+    assert observed["pin"] is None
+    assert observed["argv"][-3:] == arguments[-3:]
+
+
+@pytest.mark.parametrize("prefix", [[], ["--config", "net.offline = true"]])
+def test_nextest_store_uses_the_external_lane_and_preserves_user_arguments(
+    cargo_env, tmp_path, prefix
+):
+    cargo_env["QUANTA_INDEX_CACHE_ROOT"] = str(tmp_path / 'cache "with spaces"')
+    user_args = ["--config-file", "project.toml", "--tool-config-file", "caller:/custom.toml"]
+    test_args = ["--", "--skip", "example"]
+
+    result = run(cargo_env, *prefix, "nextest", "run", *user_args, *test_args)
+
+    assert result.returncode == 0, result.stderr
+    observed = records(cargo_env)[0]
+    config_path = Path(observed["store_config"])
+    assert observed["argv"] == [
+        *prefix,
+        "nextest",
+        "run",
+        *user_args,
+        "--tool-config-file",
+        f"quanta-index-cargow-store:{config_path}",
+        *test_args,
+    ]
+    assert Path(observed["store"]) == Path(observed["target"]).resolve() / "nextest"
+    assert not config_path.exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["+stable", "build"], ["--locked", "build"], ["project-probe", "--help"]],
+)
+def test_commands_with_unknown_syntax_use_normal_admission(cargo_env, arguments):
     result = run(cargo_env, *arguments)
     assert result.returncode == 0, result.stderr
     assert records(cargo_env)[0]["held"] is True

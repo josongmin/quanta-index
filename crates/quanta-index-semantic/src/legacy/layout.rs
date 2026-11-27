@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub const SEALED_MANIFEST_FILE_NAME: &str = "semantic-sealed-manifest.cbor";
 
 pub const DATASET_DIR_NAME: &str = "dataset";
+pub const DATASET_STAGING_DIR_NAME: &str = "dataset.staging";
 pub const BUILD_CONTRACT_FILE_NAME: &str = "semantic-build-contract.cbor";
 pub const MANIFEST_FILE_NAME: &str = "semantic-manifest.cbor";
 pub const MARKER_READY_FILE_NAME: &str = "MARKER_READY";

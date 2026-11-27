@@ -564,14 +564,19 @@ pub(crate) fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidat
             .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(9),
         repo_relative_path: RepoRelativePath::new("src/a.rs"),
-        start_line: 1,
-        end_line: 1,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 1,
+            end_line: 1,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: candidate_id.to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score: 1.0,
-        snippet: candidate_id.to_string(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
         source: None,
         preview: None,
+        native_source: None,
     }
 }
 
@@ -637,9 +642,22 @@ fn symbol_fixture_candidate(candidate: &LexicalCandidate) -> SymbolCandidate {
     row.revision_id = candidate.revision_id.clone();
     row.manifest_generation = candidate.manifest_generation;
     row.repo_relative_path = candidate.repo_relative_path.clone();
-    row.start_line = candidate.start_line;
-    row.end_line = candidate.end_line;
-    row.snippet = candidate.snippet.clone();
+    row.start_line = candidate
+        .lines
+        .as_ref()
+        .expect("fixture row carries match lines")
+        .start_line;
+    row.end_line = candidate
+        .lines
+        .as_ref()
+        .expect("fixture row carries match lines")
+        .end_line;
+    row.snippet = candidate
+        .excerpt
+        .as_ref()
+        .expect("fixture row carries a match excerpt")
+        .snippet
+        .clone();
     row.source = candidate.source.clone();
     row.preview = candidate.preview.clone();
     row

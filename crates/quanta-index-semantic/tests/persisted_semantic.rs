@@ -304,9 +304,9 @@ fn exact_canonical_ties_are_selected_before_lance_top_k_cut() -> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(809);
-    // Insert in reverse path order: Lance's physical row-id tie break would
-    // otherwise include file_25 and exclude canonical-first file_00 at k=25.
-    let replace_scopes = (0..26)
+    // Reverse path order puts canonical-first file_00 beyond both the
+    // physical Top-K and the first 32-row exact scan batch.
+    let replace_scopes = (0..34)
         .rev()
         .map(|index| {
             let path = format!("src/file_{index:02}.go");
@@ -368,7 +368,7 @@ fn exact_canonical_ties_are_selected_before_lance_top_k_cut() -> TestResult {
             .all(|row| row.score.to_bits() == 1.0_f32.to_bits())
     );
     let exact_path = QueryConstraintSetV1::from_exact_repo_relative_path(
-        ExactRepoRelativePathV1::new("src/file_25.go").map_err(str::to_string)?,
+        ExactRepoRelativePathV1::new("src/file_33.go").map_err(str::to_string)?,
     );
     let filtered = searcher.search_constrained_canonical_ties(
         &[1.0, 0.0, 0.0],
@@ -377,8 +377,8 @@ fn exact_canonical_ties_are_selected_before_lance_top_k_cut() -> TestResult {
         &RequestBudgetV1::unbounded(),
     )?;
     assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].repo_relative_path.as_str(), "src/file_25.go");
-    let insufficient = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(77)?;
+    assert_eq!(filtered[0].repo_relative_path.as_str(), "src/file_33.go");
+    let insufficient = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(101)?;
     assert!(matches!(
         searcher.search_constrained_canonical_ties(
             &[1.0, 0.0, 0.0],
@@ -392,7 +392,7 @@ fn exact_canonical_ties_are_selected_before_lance_top_k_cut() -> TestResult {
         })
     ));
     assert_eq!(insufficient.semantic_work_consumed_v1()?, Some(0));
-    let sufficient = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(78)?;
+    let sufficient = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(102)?;
     let bounded = searcher.search_constrained_canonical_ties(
         &[1.0, 0.0, 0.0],
         &QueryConstraintSetV1::unconstrained(),
@@ -400,7 +400,30 @@ fn exact_canonical_ties_are_selected_before_lance_top_k_cut() -> TestResult {
         &sufficient,
     )?;
     assert_eq!(bounded, got);
-    assert_eq!(sufficient.semantic_work_consumed_v1()?, Some(78));
+    assert_eq!(sufficient.semantic_work_consumed_v1()?, Some(102));
+
+    // The selected IDs and order must survive a fresh connection, not just
+    // reuse the writer's in-memory table state.
+    let reopened = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let reopened_searcher = reopened.open(&repo_id(), &revision_id(), generation)?;
+    let reopened_hits = reopened_searcher.search_constrained_canonical_ties(
+        &[1.0, 0.0, 0.0],
+        &QueryConstraintSetV1::unconstrained(),
+        25,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(reopened_hits, got);
+
+    let absent_path = QueryConstraintSetV1::from_exact_repo_relative_path(
+        ExactRepoRelativePathV1::new("src/absent.go").map_err(str::to_string)?,
+    );
+    let empty = reopened_searcher.search_constrained_canonical_ties(
+        &[1.0, 0.0, 0.0],
+        &absent_path,
+        25,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert!(empty.is_empty());
     Ok(())
 }
 
@@ -1098,14 +1121,10 @@ fn a_raw_generation_serves_any_finite_non_zero_query() -> TestResult {
 /// from the sealed dataset, past the adapter; the policy is decoded from
 /// the scope manifest's own bytes.
 #[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "test-only direct library read of the sealed dataset; the sync seam is the test's own runtime"
-)]
 fn every_persisted_row_of_an_l2_unit_generation_is_unit() -> TestResult {
     use arrow_array::{Array, FixedSizeListArray, Float32Array};
     use futures::TryStreamExt;
-    use lancedb::query::ExecutableQuery;
+    use lance::dataset::builder::DatasetBuilder;
 
     const ROWS: u32 = 40;
     let temp = tempfile::tempdir()?;
@@ -1139,23 +1158,22 @@ fn every_persisted_row_of_an_l2_unit_generation_is_unit() -> TestResult {
         return Err(format!("the manifest must name l2_unit, names {normalization:?}").into());
     }
 
-    let uri = dir.join("dataset").to_string_lossy().into_owned();
+    let uri = dir
+        .join("dataset")
+        .join("semantic.lance")
+        .to_string_lossy()
+        .into_owned();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let batches = runtime.block_on(async {
-        let connection = lancedb::connect(&uri)
-            .execute()
+        let table = DatasetBuilder::from_uri(&uri)
+            .load()
             .await
-            .map_err(|err| format!("connect: {err}"))?;
-        let table = connection
-            .open_table("semantic")
-            .execute()
-            .await
-            .map_err(|err| format!("open_table: {err}"))?;
+            .map_err(|err| format!("open dataset: {err}"))?;
         let stream = table
-            .query()
-            .execute()
+            .scan()
+            .try_into_stream()
             .await
             .map_err(|err| format!("query: {err}"))?;
         stream
@@ -1233,6 +1251,8 @@ fn missing_lancedb_dataset_open_fails_closed() -> TestResult {
     // Build a sealed generation, then delete its entire lancedb dataset
     // directory. Open must fail closed (the seal marker still says the gen is
     // sealed, but the underlying lancedb table is gone — a corruption signal).
+    // This checks stable absence, not a concurrent path replacement between
+    // the product's metadata check and LanceDB connect.
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let adapter = SemanticAdapter::with_state_root(root.clone())?;
@@ -1259,6 +1279,68 @@ fn missing_lancedb_dataset_open_fails_closed() -> TestResult {
         return Err("missing lancedb dataset must fail closed".into());
     };
     assert!(matches!(err, CoreError::Storage(_)));
+    assert!(
+        !dataset_dir.exists(),
+        "cold open must not recreate the missing LanceDB namespace"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test asserts a file or symlink cannot become a sealed dataset directory"
+)]
+fn file_or_symlink_lancedb_dataset_open_fails_closed() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(7);
+    build_resident_batch_v1(
+        &adapter,
+        &sealed_batch(
+            generation,
+            "src/main.rs",
+            vec![embedding_record(
+                "emb-1",
+                "src/main.rs",
+                vec![1.0, 0.0, 0.0],
+            )?],
+            3,
+        ),
+    )?;
+
+    let dataset_dir = generation_dir(&root, generation).join("dataset");
+    let original_dir = dataset_dir.with_file_name("dataset-original");
+    std::fs::rename(&dataset_dir, &original_dir)?;
+    std::fs::write(&dataset_dir, b"not-a-directory")?;
+    let reopened = SemanticAdapter::with_state_root(root.clone())?;
+    let Err(error) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("regular file at sealed dataset path must fail closed".into());
+    };
+    assert!(matches!(error, CoreError::Storage(_)));
+    assert_eq!(std::fs::read(&dataset_dir)?, b"not-a-directory");
+
+    std::fs::remove_file(&dataset_dir)?;
+    std::os::unix::fs::symlink(&original_dir, &dataset_dir)?;
+    let reopened = SemanticAdapter::with_state_root(root)?;
+    let Err(error) = reopened.open(&repo_id(), &revision_id(), generation) else {
+        return Err("symlink at sealed dataset path must fail closed".into());
+    };
+    assert!(matches!(&error, CoreError::Storage(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("semantic: sealed dataset path is not a directory"),
+        "the seal's directory listing follows the root symlink, so the cold-open preflight must refuse it: {error}"
+    );
+    assert!(
+        std::fs::symlink_metadata(&dataset_dir)?
+            .file_type()
+            .is_symlink()
+    );
+    assert!(original_dir.is_dir());
     Ok(())
 }
 

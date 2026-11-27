@@ -22,6 +22,8 @@ quanta-index-lq-regex = { version = "0.1.0", path = "../quanta-index-lq-regex" }
 quanta-index-lq-text-normalizer = { version = "0.1.0", path = "../quanta-index-lq-text-normalizer" }
 quanta-index-lq-trigram = { version = "0.1.0", path = "../quanta-index-lq-trigram" }
 quanta-index-scratch-sqlite = { version = "0.1.0", path = "../quanta-index-scratch-sqlite" }
+regex = { workspace = true }
+regex-automata = { workspace = true }
 regex-syntax = { workspace = true }
 roaring = { workspace = true }
 rusqlite = { workspace = true, features = ["cache"] }
@@ -30,13 +32,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+unicode-normalization = { workspace = true }
+
+[build-dependencies]
+quanta-index-lq-text-normalizer = { version = "0.1.0", path = "../quanta-index-lq-text-normalizer" }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 nix = { workspace = true, features = ["resource"] }
-regex = { workspace = true }
 quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness", default-features = false }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk", default-features = false }
-
-[target.'cfg(unix)'.dev-dependencies]
-# Owned-FD retirement fixtures must not depend on Runtime feature unification.
-libsqlite3-sys = { workspace = true, features = ["quanta-capacity-vfs"] }

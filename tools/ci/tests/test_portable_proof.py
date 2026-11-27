@@ -709,6 +709,14 @@ def proof_actor_environment(monkeypatch: pytest.MonkeyPatch):
 def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_environment):
     out = tmp_path / "proof"
     target = tmp_path / "target"
+    # Keep the simulated compiler and target independent of the local tooling runner.
+    for key in (
+        "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR",
+        "QUANTA_INDEX_SCCACHE",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+    ):
+        monkeypatch.delenv(key, raising=False)
     runner = target / "debug" / "quanta-index-retrieval-bench"
     searchd = target / "debug" / "quanta-index-searchd"
     compiled_test = target / "debug" / "deps" / "compiled-test-fixture"
@@ -829,12 +837,14 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
         assert kwargs["cwd"] == portable_proof.ROOT
         assert kwargs["timeout"] == 7200
         calls.append((argv, kwargs["env"]))
-        fresh_target = kwargs["env"].get("CARGO_TARGET_DIR")
-        if fresh_target is not None:
+        environment = kwargs["env"]
+        # cargow uses its own lane unless the fresh build explicitly preserves its target.
+        if environment.get("QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR") == "1":
             profile_dir = (
                 "release" if "--release" in argv or built["profile_dir"] == "release" else "debug"
             )
-            active_target = Path(fresh_target)
+            active_target = Path(environment["CARGO_TARGET_DIR"])
+            assert active_target == out / "target"
             built.update(
                 target=active_target,
                 runner=active_target / profile_dir / portable_proof.PACKAGE,
@@ -962,6 +972,20 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
 
     monkeypatch.setattr(portable_proof, "execute", run)
     return out, runner, calls
+
+
+def test_sdk_fixture_keeps_ambient_cargo_target_untouched(fake_execution, monkeypatch, tmp_path):
+    out, runner, _ = fake_execution
+    ambient_target = tmp_path / "ambient-target"
+    ambient_runner = ambient_target / "debug" / runner.name
+    ambient_runner.parent.mkdir(parents=True)
+    ambient_runner.write_bytes(b"existing build")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(ambient_target))
+
+    context = json.loads(portable_proof.produce("sdk", out).read_bytes())
+
+    assert ambient_runner.read_bytes() == b"existing build"
+    assert context["binaries"]["runner"]["path"] == str(runner)
 
 
 def test_debug_sdk_proof_binds_explicit_legacy_searchd_features(fake_execution) -> None:

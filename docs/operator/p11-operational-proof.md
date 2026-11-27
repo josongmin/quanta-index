@@ -54,7 +54,11 @@ observation carrying the same run/phase/target and typed observed state. Action
 completion alone cannot issue success: the independent post-state must satisfy
 the registered transition.
 
-The runner validates current prerequisites before mutation. The CLI holds the
+The runner validates current prerequisites before mutation. On the live host it
+resolves the binary, config and state-root paths before starting any actor and
+rechecks them at each phase boundary, including after the pre-action hook.
+Identical or nested resolved paths are refused. Archive replay validates the
+registered paths without resolving them on the replay host. The CLI holds the
 proof store's write lock from prerequisite resolution through manifest
 publication. Each phase checks the source pair, committed contract/actor bytes,
 host and bound prerequisite and output bytes. The existing process owner

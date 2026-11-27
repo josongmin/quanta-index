@@ -1,0 +1,15 @@
+[package]
+name = "quanta-index-sqlite-upstream-oracle"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Run the SQLite oracle independently of the product workspace.
+[workspace]
+
+[dev-dependencies]
+libc = "0.2"
+quanta-index-sqlite-unix-syscall = { path = "../../crates/quanta-index-sqlite-unix-syscall" }
+quanta-index-sqlite-fd-ledger = { path = "../../crates/quanta-index-sqlite-fd-ledger" }
+rusqlite = { version = "=0.41.0", features = ["bundled"] }
+tempfile = "3"

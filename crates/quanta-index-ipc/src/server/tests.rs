@@ -7,13 +7,15 @@ use super::{
     WatchObserver, connect_before_deadline, connect_requires_completion_wait,
     connect_stream_before_budget, create_connect_socket, decode_response, encode_request,
     handle_connection, send_request, send_request_negotiated, send_request_observed,
-    send_request_with_budget, wait_for_connect, wait_for_stream_connect,
+    send_request_with_budget, send_request_with_budget_observed_v1, wait_for_connect,
+    wait_for_stream_connect,
 };
 use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
 use rustix::fs::{OFlags, fcntl_getfl};
 use rustix::io::{Errno, FdFlags, fcntl_getfd};
 #[cfg(target_os = "linux")]
 use rustix::net::SocketAddrUnix;
+use std::cell::Cell;
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
@@ -718,7 +720,7 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
     let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
     let (status_tx, status_rx) = mpsc::channel();
     let server = thread::spawn(move || -> TestRes {
-        for _ in 0..2 {
+        for _ in 0..3 {
             let result = (|| -> TestRes {
                 let (mut stream, _address) =
                     listener.accept().map_err(|error| error.to_string())?;
@@ -767,6 +769,17 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
         .map_err(|error| format!("observed server did not finish: {error}"))??;
     let (observed, timing): (TestResponseEnvelope, _) =
         observed_result.map_err(|error| format!("observed IPC request failed: {error}"))?;
+    let budgeted_result = send_request_with_budget_observed_v1(
+        &socket,
+        &request,
+        &RequestBudgetV1::for_duration(Duration::from_secs(2)),
+        None,
+    );
+    status_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|error| format!("budgeted observed server did not finish: {error}"))??;
+    let (budgeted, budgeted_timing): (TestResponseEnvelope, _) = budgeted_result
+        .map_err(|error| format!("budgeted observed IPC request failed: {error}"))?;
     server
         .join()
         .map_err(|_panic_payload| "server panicked".to_string())??;
@@ -776,6 +789,7 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
             payload: 24,
         })
         || observed != plain
+        || budgeted != plain
     {
         return Err(format!(
             "observed response changed: {plain:?} vs {observed:?}"
@@ -789,6 +803,34 @@ fn observed_client_request_preserves_wire_result_and_nested_read_clock() -> Test
         .ok_or_else(|| "client timing children overflowed".to_string())?;
     if timing.read_io > timing.decode_call || disjoint > timing.total {
         return Err(format!("client timing hierarchy is invalid: {timing:?}"));
+    }
+    if budgeted_timing.read_io > budgeted_timing.decode_call
+        || budgeted_timing.decode_call > budgeted_timing.total
+    {
+        return Err(format!(
+            "budgeted client timing hierarchy is invalid: {budgeted_timing:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn budgeted_observed_client_respects_original_preconnect_cancellation() -> TestRes {
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    budget.cancel_handle().cancel();
+    let result = send_request_with_budget_observed_v1::<_, TestResponseEnvelope>(
+        Path::new("/path/that/must/not/be-connected.sock"),
+        &TestRequestEnvelope {
+            request_id: 17,
+            payload: 23,
+        },
+        &budget,
+        None,
+    );
+    if !matches!(&result, Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::Other) {
+        return Err(format!(
+            "original cancellation did not gate observed IPC: {result:?}"
+        ));
     }
     Ok(())
 }
@@ -1229,8 +1271,7 @@ fn long_socket_path_preserves_the_bound_inode_and_both_client_deadlines() -> Tes
     let deadline = Instant::now() + Duration::from_secs(1);
     let ordinary = connect_before_deadline(&path, deadline).map_err(|error| error.to_string())?;
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(1));
-    let budgeted =
-        connect_stream_before_budget(&path, &budget).map_err(|error| error.to_string())?;
+    let budgeted = connect_stream_before_budget(&path, &budget).map_err(|error| error.to_string())?;
     if !first.still_owns(&path).map_err(|error| error.to_string())? {
         return Err("second bind or client dial replaced the socket".into());
     }
@@ -1733,9 +1774,7 @@ impl IpcDispatcher<u64, u64> for DeadlineConsistencyDispatcher {
         u64::from(
             context.deadline == budget.deadline()
                 && context.deadline > Instant::now()
-                && self
-                    .0
-                    .is_none_or(|client_deadline| budget.deadline() <= client_deadline),
+                && self.0.is_none_or(|client_deadline| budget.deadline() <= client_deadline),
         )
     }
 }
@@ -1796,9 +1835,7 @@ fn dispatch_context_uses_the_admitted_budget_deadline() -> TestRes {
     let responses = [
         send_request::<_, TestResponseEnvelope>(&socket_path, &request, ClientIoPolicy::default()),
         super::send_request_with_commit_deadline_v1(
-            &socket_path,
-            &request,
-            &RequestBudgetV1::until(deadline),
+            &socket_path, &request, &RequestBudgetV1::until(deadline),
         ),
     ];
     for response in responses {
@@ -1809,12 +1846,8 @@ fn dispatch_context_uses_the_admitted_budget_deadline() -> TestRes {
     }
     let io_error = |error: std::io::Error| error.to_string();
     let mut client = UnixStream::connect(&socket_path).map_err(io_error)?;
-    client
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .map_err(io_error)?;
-    client
-        .write_all(&super::REQUEST_DEADLINE_PREFACE_V1)
-        .map_err(io_error)?;
+    client.set_read_timeout(Some(Duration::from_secs(3))).map_err(io_error)?;
+    client.write_all(&super::REQUEST_DEADLINE_PREFACE_V1).map_err(io_error)?;
     let mut ack = [0; 4];
     client.read_exact(&mut ack).map_err(io_error)?;
     if ack != super::REQUEST_DEADLINE_ACK_V1 {
@@ -2143,13 +2176,29 @@ impl ResponseEnvelope<u64> for TestResponseEnvelope {
 #[derive(Debug)]
 struct DelayedTestResponseEnvelope;
 
+thread_local! {
+    static LATE_DECODE_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    static LATE_DECODE_STARTED_BEFORE_DEADLINE: Cell<bool> = const { Cell::new(false) };
+}
+
 impl<'de> Deserialize<'de> for DelayedTestResponseEnvelope {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let _response = TestResponseEnvelope::deserialize(deserializer)?;
-        thread::sleep(Duration::from_millis(60));
+        let deadline = LATE_DECODE_DEADLINE
+            .with(Cell::get)
+            .ok_or_else(|| de::Error::custom("late-decode fixture has no deadline"))?;
+        if Instant::now() >= deadline {
+            return Err(de::Error::custom(
+                "response decode began after the client deadline",
+            ));
+        }
+        LATE_DECODE_STARTED_BEFORE_DEADLINE.with(|started| started.set(true));
+        thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(10),
+        );
         Ok(Self)
     }
 }
@@ -2159,8 +2208,32 @@ fn absolute_client_deadline_rejects_response_completed_after_decode() -> TestRes
     let dir = private_tempdir()?;
     let socket_path = dir.path().join("late-decode.sock");
     let listener = UnixListener::bind(&socket_path).map_err(|error| error.to_string())?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
     let server = thread::spawn(move || -> TestRes {
-        let (stream, _address) = listener.accept().map_err(|error| error.to_string())?;
+        let accept_deadline = Instant::now() + Duration::from_secs(4);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _address)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= accept_deadline {
+                        return Err("client did not connect before accept deadline".into());
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let policy = ServerAdmissionPolicy::new(
+            1,
+            1,
+            1,
+            Duration::from_secs(1),
+            Duration::from_secs(4),
+            Duration::from_secs(4),
+        )
+        .map_err(|error| error.to_string())?;
         let reason = handle_connection::<
             TestRequestEnvelope,
             u64,
@@ -2170,8 +2243,8 @@ fn absolute_client_deadline_rejects_response_completed_after_decode() -> TestRes
         >(
             stream,
             &TestDispatcher,
-            &test_slots(),
-            test_policy(),
+            &DispatchSlots::for_policy(policy),
+            policy,
             super::IpcPlane::Query,
             super::PeerCredentials {
                 uid: 1000,
@@ -2189,14 +2262,23 @@ fn absolute_client_deadline_rejects_response_completed_after_decode() -> TestRes
         Ok(())
     });
 
-    let deadline = Instant::now() + Duration::from_millis(30);
+    let deadline = Instant::now() + Duration::from_secs(2);
     let policy = ClientIoPolicy::try_with_deadline(deadline).map_err(|error| error.to_string())?;
+    LATE_DECODE_DEADLINE.with(|cell| cell.set(Some(deadline)));
+    LATE_DECODE_STARTED_BEFORE_DEADLINE.with(|cell| cell.set(false));
     let result =
         send_request::<_, DelayedTestResponseEnvelope>(&socket_path, &test_request(17, 4), policy);
+    LATE_DECODE_DEADLINE.with(|cell| cell.set(None));
+    let decode_started_before_deadline = LATE_DECODE_STARTED_BEFORE_DEADLINE.with(Cell::get);
     let server_result = server
         .join()
         .map_err(|_panic_payload| "server panicked".to_string())?;
     server_result?;
+    if !decode_started_before_deadline {
+        return Err(format!(
+            "response decode did not begin before the deadline: {result:?}"
+        ));
+    }
     if !matches!(
         result,
         Err(IpcError::Timeout {

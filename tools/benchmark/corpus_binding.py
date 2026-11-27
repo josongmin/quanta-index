@@ -407,9 +407,10 @@ def _validated_split_manifest(
             ):
                 raise EvidenceError("split manifest repository commit or source differs")
             prior_side = url_sides.get(url)
-            if (prior_side is not None and prior_side != entry["split"]) or entry[
-                "repository_commit"
-            ] in commits:
+            if (
+                (prior_side is not None and prior_side != entry["split"])
+                or entry["repository_commit"] in commits
+            ):
                 raise EvidenceError("split manifest repeats one upstream repository")
             url_sides[url] = entry["split"]
             commits.add(entry["repository_commit"])
@@ -555,16 +556,25 @@ def _gold_producer_source_digests() -> dict[str, str]:
     from tools.benchmark.retrieval import (
         declaration_census_audit,
         declaration_parsers,
+        go_projection,
         gold_oracle,
+        projection_process,
         source_oracle,
+        symbol_coverage,
+        ts_projection,
     )
 
     owners = {
         "corpus_binding": Path(__file__),
         "declaration_census_audit": Path(declaration_census_audit.__file__),
         "declaration_parsers": Path(declaration_parsers.__file__),
+        "go_projection": Path(go_projection.__file__),
         "gold_oracle": Path(gold_oracle.__file__),
+        "projection_process": Path(projection_process.__file__),
         "source_oracle": Path(source_oracle.__file__),
+        "symbol_coverage": Path(symbol_coverage.__file__),
+        "ts_projection": Path(ts_projection.__file__),
+        "ts_projection_script": ts_projection.SOURCE,
     }
     return {
         **{name: digest_bytes(_read_regular_file(path)) for name, path in sorted(owners.items())},
@@ -659,9 +669,22 @@ def _gold_material(
     *,
     validated_manifest: dict | None = None,
     validated_document: dict | None = None,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
 ) -> dict[str, bytes]:
     """Re-derive labels from a validated release, never captured product rows."""
-    from tools.benchmark.retrieval import gold_oracle
+    from tools.benchmark.retrieval import gold_oracle, source_oracle, symbol_coverage
+
+    if (candidate_manifest_path is None) != (candidate_manifest_sha256 is None):
+        raise EvidenceError("gold candidate manifest requires path and digest")
+    candidate_manifest_raw = None
+    if candidate_manifest_path is not None:
+        source_oracle.validate_candidate_manifest(
+            candidate_manifest_path, candidate_manifest_sha256
+        )
+        candidate_manifest_raw = symbol_coverage.regular_bytes(
+            candidate_manifest_path, max_bytes=1 << 20
+        )
 
     runtime = require_gold_runtime()
     producer_sources = _gold_producer_source_digests()
@@ -684,7 +707,13 @@ def _gold_material(
     if digest_bytes(manifest_raw) != metadata["manifest_digest"]:
         raise EvidenceError("gold manifest differs from selected release")
     view = root / "views" / selection["repository"] / selection["view"]
-    gold, blind = gold_oracle.derive(recipe, _json(manifest_raw), view)
+    gold, blind = gold_oracle.derive(
+        recipe,
+        _json(manifest_raw),
+        view,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    )
     if _gold_producer_source_digests() != producer_sources:
         raise EvidenceError("gold producer source changed during derivation")
     context = {
@@ -703,6 +732,8 @@ def _gold_material(
         "blind.json": canonical_json(blind).encode() + b"\n",
         **split_material,
     }
+    if candidate_manifest_raw is not None:
+        material["candidate-manifest.json"] = candidate_manifest_raw
     _require_gold_material_bounds(material)
     identity = {
         "schema_version": 2,
@@ -718,11 +749,16 @@ def _gold_material(
             "unicode": unicodedata.unidata_version,
             "tree_sitter": runtime["tree-sitter"],
             "tree_sitter_language_pack": runtime["tree-sitter-language-pack"],
+            "tree_sitter_go": runtime["tree-sitter-go"],
+            "tree_sitter_javascript": runtime["tree-sitter-javascript"],
             "tree_sitter_python": runtime["tree-sitter-python"],
             "tree_sitter_rust": runtime["tree-sitter-rust"],
+            "tree_sitter_typescript": runtime["tree-sitter-typescript"],
         },
         "files": {name: digest_bytes(raw) for name, raw in sorted(material.items())},
     }
+    if candidate_manifest_sha256 is not None:
+        identity["candidate_manifest_sha256"] = candidate_manifest_sha256
     material["identity.json"] = canonical_json(identity).encode() + b"\n"
     return material
 
@@ -733,6 +769,9 @@ def capture_gold(
     recipe_raw: bytes,
     target: Path,
     split: tuple[bytes, dict[str, Path]] | None = None,
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
 ) -> dict:
     """Publish a fresh, external gold capsule and label-free runner pack.
 
@@ -752,7 +791,14 @@ def capture_gold(
     stage = target.with_name(target.name + ".staging")
     if stage.exists() or stage.is_symlink():
         raise EvidenceError("gold staging target already exists")
-    material = _gold_material(root, selection, recipe_raw, split)
+    material = _gold_material(
+        root,
+        selection,
+        recipe_raw,
+        split,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    )
     stage.mkdir(parents=True)
     for name, raw in material.items():
         with (stage / name).open("xb") as output:
@@ -771,6 +817,9 @@ def capture_gold_batch(
     recipes: dict[str, bytes],
     target: Path,
     split: tuple[bytes, dict[str, Path]],
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
 ) -> dict[str, dict]:
     """Publish one capsule per repository with one corpus-wide split replay.
 
@@ -852,6 +901,8 @@ def capture_gold_batch(
                 split,
                 validated_manifest=manifest,
                 validated_document=document,
+                candidate_manifest_path=candidate_manifest_path,
+                candidate_manifest_sha256=candidate_manifest_sha256,
             )
             capsule = stage / name
             capsule.mkdir()
@@ -894,9 +945,8 @@ def validate_gold(target: Path) -> dict:
     names = corpus.regular_tree(target)
     expected = {"selection.json", "recipe.json", "gold.json", "blind.json", "identity.json"}
     split_names = {"split-manifest.json", "split-releases.json"}
-    if names == expected | split_names:
-        expected = names
-    elif names != expected:
+    candidate_names = {"candidate-manifest.json"} if "candidate-manifest.json" in names else set()
+    if names not in (expected | candidate_names, expected | split_names | candidate_names):
         raise EvidenceError("gold capsule inventory differs")
     selection = _json(_read_control_file(target / "selection.json"))
     _selection(selection)
@@ -907,5 +957,18 @@ def validate_gold(target: Path) -> dict:
             _read_control_file(target / "split-manifest.json"),
             _split_releases(_json(_read_control_file(target / "split-releases.json"))),
         )
-    material = _gold_material(Path(selection["release_path"]), selection, recipe_raw, split)
+    candidate_path = target / "candidate-manifest.json" if candidate_names else None
+    candidate_sha = (
+        hashlib.sha256(_read_control_file(candidate_path)).hexdigest()
+        if candidate_path is not None
+        else None
+    )
+    material = _gold_material(
+        Path(selection["release_path"]),
+        selection,
+        recipe_raw,
+        split,
+        candidate_manifest_path=candidate_path,
+        candidate_manifest_sha256=candidate_sha,
+    )
     return _verify_gold_material(target, material, names)

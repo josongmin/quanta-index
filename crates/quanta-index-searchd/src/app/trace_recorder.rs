@@ -1645,6 +1645,18 @@ mod tests {
                 "managed_object_guarded_repeated_external_children",
             ),
             (
+                DiagnosticCounterV1::ManagedObjectCrossGroupExternalChildOverlap,
+                "managed_object_cross_group_external_child_overlap",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectCrossGroupRepeatedChildPathChecks,
+                "managed_object_cross_group_repeated_child_path_checks",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectChildPathChecks,
+                "managed_object_child_path_checks",
+            ),
+            (
                 DiagnosticCounterV1::ManagedObjectReusedExternalChildValidations,
                 "managed_object_reused_external_child_validations",
             ),
@@ -1789,6 +1801,14 @@ mod tests {
             assert_eq!(known_counter_name(variant), Some(name));
         }
         let mut actual: Vec<_> = counter_golden.into_iter().map(|(_, name)| name).collect();
+        // The V5 reader still accepts these four retired SQLite cache keys;
+        // current producer counters intentionally have no enum variants.
+        actual.extend([
+            "sqlite_cache_hits",
+            "sqlite_cache_misses",
+            "sqlite_cache_writes",
+            "sqlite_cache_spills",
+        ]);
         actual.sort_unstable();
         let mut expected: Vec<_> = json_path(&schema, &["$defs", "counterKey", "enum"])
             .as_array()

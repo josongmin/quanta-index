@@ -28,6 +28,7 @@ pub(crate) type SealedManifestRowV1 = (
 );
 
 impl SemanticSealedManifestV1 {
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn to_row(&self) -> SealedManifestRowV1 {
         (
             self.format_version,
@@ -61,6 +62,7 @@ impl SemanticSealedManifestV1 {
 
     /// Total committed dataset bytes; the resident-size estimate an open
     /// reports without walking the tree a second time.
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn dataset_bytes(&self) -> u64 {
         self.artifacts.iter().fold(0_u64, |total, artifact| {
             total.saturating_add(artifact.bytes)
@@ -68,6 +70,7 @@ impl SemanticSealedManifestV1 {
     }
 
     /// Committed dataset files.
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn dataset_files(&self) -> u64 {
         quanta_index_core::count_from_usize(self.artifacts.len())
     }
@@ -131,6 +134,95 @@ mod tests {
         bytes.extend([0_u8; 32]);
         bytes.push(0x80);
         bytes
+    }
+
+    // Captured with the pre-retirement Ciborium fork from Git tree
+    // 74cd6a99c3eccf1372da9ff77e8a69b2d940411b. This is a codec fixture,
+    // not a recovered physical generation.
+    const LEGACY_VENDOR_POPULATED_SEALED_ROW: [u8; 200] = [
+        0x85, 0x01, 0x78, 0x40, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
+        0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
+        0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
+        0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
+        0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x82, 0x18, 0x27, 0x98, 0x20, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x82, 0x18, 0x33, 0x98, 0x20, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x81, 0x83, 0x72, 0x64, 0x61, 0x74, 0x61, 0x73,
+        0x65, 0x74, 0x2f, 0x30, 0x30, 0x30, 0x31, 0x2e, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x19, 0x10,
+        0x00, 0x98, 0x20, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+        0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+        0x03, 0x03, 0x03, 0x03, 0x03,
+    ];
+
+    #[test]
+    fn legacy_vendor_populated_sealed_row_reads_and_preserves_wire() -> Result<(), CoreError> {
+        let old_bytes = LEGACY_VENDOR_POPULATED_SEALED_ROW;
+        let value = decode_sealed_manifest_bytes(Path::new("fixture"), &old_bytes)?;
+        assert_eq!(value.format_version, 1);
+        assert_eq!(value.manifest_digest, "a".repeat(64));
+        assert_eq!(value.scope_manifest, (39, [1; 32]));
+        assert_eq!(value.build_contract, (51, [2; 32]));
+        assert_eq!(value.artifacts.len(), 1);
+        assert_eq!(value.artifacts[0].name, "dataset/0001.lance");
+        assert_eq!(value.artifacts[0].bytes, 4096);
+        assert_eq!(value.artifacts[0].sha256, [3; 32]);
+
+        let mut current_bytes = Vec::new();
+        ciborium::into_writer(&value.to_row(), &mut current_bytes)
+            .expect("current writer must encode the old sealed row");
+        assert_eq!(current_bytes, old_bytes);
+
+        let mut foreign = old_bytes;
+        foreign[1] = 2;
+        assert!(matches!(
+            decode_sealed_manifest_bytes(Path::new("fixture"), &foreign),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                ..
+            })
+        ));
+        let mut trailing = old_bytes.to_vec();
+        trailing.push(0);
+        assert!(matches!(
+            decode_sealed_manifest_bytes(Path::new("fixture"), &trailing),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_vendor_sealed_row_opens_via_product_control_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let generation = directory.path().join("generation-v1-fixture/g1");
+        std::fs::create_dir_all(&generation)?;
+        let seal_path = crate::sealed_manifest::sealed_manifest_path(&generation);
+        std::fs::write(&seal_path, LEGACY_VENDOR_POPULATED_SEALED_ROW)?;
+
+        crate::sealed_manifest::inspect_sealed_manifest_identity(
+            &generation,
+            &"a".repeat(64),
+            None,
+        )?;
+
+        std::fs::write(&seal_path, [0xff])?;
+        assert!(matches!(
+            crate::sealed_manifest::inspect_sealed_manifest_identity(
+                &generation,
+                &"a".repeat(64),
+                None,
+            ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
+        Ok(())
     }
 
     #[test]

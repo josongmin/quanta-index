@@ -2,16 +2,30 @@
 
 **최종 감사 · 2026-11-23 KST.** B의 결합 실행은 ANN4K 1 PASS와 Product4K 1 FAIL이다. B 제품은 초기 게시 후 materialization에서 1,200초 watchdog이 만료됐다. 별도 Root NoFeatures 후속 제품 본문은 그보다 앞선 초기 `SourceAdvance`의 30초 요청 기한에서 실패했다. 후기 Record 재접수는 admission 대기 중 `ENOSPC`로 본문 0건이었다. 현재 후보의 정식 제품 수용은 **NOT_RUN**이다. [B 실행 결과](04-product-acceptance.md#기존-실행기-결과) · [Root 후속 실행](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann-재시작-후속-실행)
 
+**11월 26일 현재.** 마지막 Record 컨트롤러가 본문 시작 전에 종료했고 공용 잠금은 비어 있다. 기존 preflight는 **BLOCKED**, 현 후보의 후기 Record·ANN4K·Off Product4K 본문은 **NOT_RUN**이다. [최신 실행 판정](04-product-acceptance.md#현재-코드와-실행-판정)
+
+## 코드 감사와 남은 확인
+
+| 경계 | 적용 내용과 기존 검증 | 남은 확인 |
+| --- | --- | --- |
+| Semantic 조회·저장 | 파일 신원을 Core에 통합했다. 선택 멤버 디코딩 재사용과 예약 전 캐시 해제, exact/delta 분기, Lance 리전별 후보 예산·refill·hydration을 수정했다. Lance 통계 JSON 네 타입의 codec 집중 2/2 및 derive allowlist 위반 0건을 확인했다. [파일 신원](../../../crates/quanta-index-core/src/index/existing_file.rs) · [캐시 로드](../../../crates/quanta-index-semantic/src/native/embedding/ann_query.rs#L263) · [집중 회귀](04-product-acceptance.md#적용한-수정과-남은-수용-기준) | 현재 후보의 독립 exact oracle 및 실제 제품 검색·재시작에서 Lance 파일셋을 확인한다. |
+| Catalog·Kernel·Runtime | worker는 소유권 검증에서 얻은 operation 상태를 실행 진입에서 사용한다. 실행 전 재조회는 원 요청 예산과 취소·자원 제한을 전달한다. Catalog 소유 작업 7/7·조회 기한 1/1, Kernel 최신 오류 재조회 3/3, Runtime overlay 1/1의 기존 결과를 확인했다. [실행 진입](../../../crates/quanta-index-kernel/src/update.rs#L2475) · [오류 회귀](04-product-acceptance.md#실행-전-조회-취소-재감사) | 초기 게시·owner 처리량의 실제 4K 효과와 커밋 이후 상태 회복을 원 조건에서 확인한다. |
+| 4K 실행기·oracle | 기존 runner와 admission을 유지했다. controller의 단일 예약·terminal 복구, 본문·exit, 공통 소스·resolver·drift 검사를 보강했다. 제품의 준비·영수증·재시작 집중 3/3을 확인했다. [실행기 반례](#실행기-반례와-회귀-기준) · [Runtime 결과](#검색-결과-메모리와-재시작-검증) | 원 두 selector의 전체 본문을 동일 후보에서 실행한다. 오버레이 종료와 두 번째 재시작은 제품 본문에서 확인한다. |
+| Materialization 계측 | operation과 grant에서 queue·worker·게시·정산을 연결한다. Rust 집중 2/2, Python 리포터·ingest 45/45를 확인했다. [계측과 한계](04-product-acceptance.md#후기-worker-계측-준비) | 채널 전달 전 ready·assignment와 worker 내부 비용을 분리한다. 누락 이벤트 또는 열린 span이 있으면 해당 비용의 귀속을 보류한다. |
+| Trace 판독기·capture 회귀 | `closed-workers`의 옵션 검증을 qtrace open 앞으로 옮겼다. 판독기와 capture 관련 재검증 190 PASS·2 skip. 앞서 실패한 timeout·interrupt도 이 실행에서 통과했다. [후속 회귀](04-product-acceptance.md#후기-worker-계측-준비) | 추가 판독기 수정 근거는 없다. capture fixture가 재실패하면 자식 시작 요건과 deadline·정리 검사를 분리해 원인을 확인한다. |
+
 ## 작업과 종료 조건
 
-제품 RCA·수리·재검증은 기존 B 단일 큐에서 진행한다. 실행기 판독·복구와 공통 입력 비교의 기존 회귀는 아래 기록을 재사용한다. [채팅별 실행권](README.md#채팅별-실행권과-재사용-범위)
+**B의 다음 실행은 기존 Record 한 건이다.** 보존 prefix는 닫힌 worker 134개(정상 133·중단 1)와 누락 이벤트 17,858개를 기록했다. 후기 materialization의 생산 코드 수정은 첫 실패와 관측 비용으로 범위를 정한다. 이미 통과한 집중 회귀는 해당 입력의 증거로 재사용한다. [Prefix 범위](01-attribution.md#prefix-실측-결과) · [채팅별 실행권](README.md#채팅별-실행권과-재사용-범위)
 
 | 순서·담당 | 근거와 작업 | 완료 증거 |
 | --- | --- | --- |
-| 1 · B 계측 | 초기 SourceAdvance와 게시 이후 owner 파이프라인을 같은 Record에서 판독할 수 있도록 빠진 계측만 준비한다. 기존 controller의 PID·잠금·terminal과 입장을 확인해 진단 한 건을 인수하거나 접수한다. | 초기 실패는 같은 operation의 기한·비용·durable 상태를 연결한다. 초기 게시 성공 시 후기 owner의 grant·게시·정산까지 연결한다. [첫 실패 경계](04-product-acceptance.md#가장-먼저-실패한-경계로-분기) |
-| 2 · B + 해당 생산자 | 재현된 첫 실패 경계의 지배 비용 하나를 수리한다. 초기 게시가 실패하면 초기 경계를, materialization에 도달하면 단일 슬롯의 비용을 확인한다. | 같은 집중 회귀에서 원 view·오류·예산과 비용 차이를 대조한다. [수정 결정표](04-product-acceptance.md#측정으로-고를-단일-슬롯-수정) |
-| 3 · B 제품 검증 | 원 실행기와 admission으로 같은 후보의 ANN4K와 tracing Off Product4K를 검증한다. | 각각 본문 1 PASS·exit 0, 공통 소스·resolver 일치와 실행 중 drift 없음, 오버레이 종료·두 번째 재시작을 확인한다. [원 4K 수용](04-product-acceptance.md#최종-감사-판정과-실행-순서) |
-| 4 · B 결과 인수 | 정확한 selector·run ID·본문 수·exit와 공통 입력 판정을 기존 원장에 연결한다. | [07.5](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann과-hybrid)에 두 결과를 한 번 인수한다. |
+| 1 · B 진단 | 미시작 Record 슬롯은 보존한다. 접수 직전 PID·argv·본문·terminal·공용 잠금을 다시 확인하고 기존 controller와 admission에서 한 건만 진행한다. | 초기 실패는 같은 operation의 기한·비용·durable 상태를 연결한다. 초기 게시 성공 시 후기 owner의 grant·게시·정산과 마지막 진행 상태를 연결한다. [첫 실패 경계](04-product-acceptance.md#가장-먼저-실패한-경계로-분기) |
+| 2 · B + 해당 생산자 | 초기 게시가 실패하면 `build_members`의 Text·Semantic 비용을 같은 요청에서 분리한다. 게시 후 실패하면 owner별 provider·객체 설치·CoverageSave·Catalog 게시와 제어 시간을 대조한다. ready·배정 공백이 RCA를 막을 때만 Pump 계측을 추가한다. | 확인된 비용 경계 하나의 집중 회귀에서 전후 비용과 기존 view·오류·예산·내구성을 대조한다. [Pump 조회와 배정](../../../crates/quanta-index-searchd-runtime/src/native_pump.rs#L1077) · [worker 큐 시작](../../../crates/quanta-index-searchd-runtime/src/native_worker.rs#L1353) · [수정 결정표](04-product-acceptance.md#측정으로-고를-단일-슬롯-수정) |
+| 3 · B 제품 검증 | 진단 슬롯을 반납한 뒤 원 실행기와 admission으로 ANN4K → tracing Off Product4K를 직렬 실행한다. 원 4,096×64·Q64/K10, 단일 SourceAdvance 30초, 읽기 100만, 전체 1,200초, 단일 슬롯을 유지한다. | 각각 본문 1 PASS·exit 0. ANN 필터별 Recall@10 ≥0.95·빈 구간 0건, 제품의 오버레이 종료·두 번째 재시작 후 이전/변경 뷰, 공통 소스·resolver 일치와 drift 없음을 확인한다. [원 두 selector](04-product-acceptance.md#고정한-실행과-판정) |
+| 4 · Root/F 07.5 통합 | B가 두 본문의 selector·run ID·본문 수·exit·입력 판정을 기존 원장에 한 번 기록한다. Root/F는 기존 생산자의 물리 reclaim·reopen과 build/search/restore fallback 0, D의 07.1 서명 설치 신원을 인수한다. | [07.5](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#ann과-hybrid)의 증거가 동일 출하 후보로 결속된다. |
+
+**공용 Contract 출하 게이트 · 기존 FD6 작성 범위.** `just rust-module-cycles`는 `index::native_source_restore ↔ native_cutover_evidence_v1`로 **FAILED · exit 1**을 기록했다. 11월 26일 소스에도 양방향 참조가 있다. 기존 C-04/D의 Source restore·evidence 경계에서 공용 binding과 digest validator를 하위 모듈로 두고 기존 공개 재수출을 보존한다. 완료 기준은 같은 cycle 검사와 기존 4-field binding wire·imported restore 회귀다. B는 출하 후보 합류 결과를 인수한다. 실제 해당 수정의 착수나 통과는 확인되지 않았다. `just rust-derive-allowlist`는 **VERIFIED · exit 0**이다. [Restore 참조](../../../crates/quanta-index-contract/src/index/native_source_restore.rs#L7) · [Evidence 참조](../../../crates/quanta-index-contract/src/native_cutover_evidence_v1.rs#L7) · [기존 FD6 배정](../nov-23-repomap-retirement/04-integration-acceptance.md#2026-11-24-채팅-배정)
 
 ## 실행기 반례와 회귀 기준
 

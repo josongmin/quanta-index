@@ -109,7 +109,7 @@ commit and compaction on the same input under existing durability and GC.
 - [ ] corpus-sized Vec/inline manifest·숨은 전수 scan·매 tiny delta 즉시 전역 compaction 없이 bounded construction/scratch와 지속 churn/debt 수용.
 - [ ] 원 profile의 파일/s·MiB/s·증분 latency와 실제 제품 gold를 E07에 전달. elapsed만 낮아지고 실패/누락이 늘어난 결과는 거절.
 
-성능 실험의 계수·하드웨어·profile은 실행 전에 고정하고 구현과 독립된 gold를 유지한다. 원 lexical/ADR 사양은 [RFC 9절](../../rfc/oct-10-native-incremental-vnext.md#9-concrete-index-work-packages)와 [보존 lexical 계약](../../history/oct-10-index-closeout/LEXICAL-STORE-CONTRACT.md)을 따른다. 기존 구현 완료와 전체 운영/성능 수용을 구분한다.
+성능 실험의 계수·하드웨어·profile은 실행 전에 고정하고 구현과 독립된 gold를 유지한다. Native lexical 사양은 [RFC 9절](../../rfc/oct-10-native-incremental-vnext.md#9-concrete-index-work-packages)과 [Native 인덱싱 ADR](../../adr/NOV-07-001-native-index-execution-and-custody.md)을 따른다. 전환 전 legacy 비교 범위에는 [legacy lexical ADR](../../adr/OCT-10-002-shared-paged-lexical-authorities.md)이 적용된다. 기존 구현 완료와 전체 운영/성능 수용을 구분한다.
 
 ## Previous work mapping
 

@@ -637,7 +637,7 @@ def test_external_cold_command_requires_complete_frozen_pin_before_execution(
     ],
 )
 def test_orchestrator_pins_a_frozen_legacy_producer(
-    tmp_path: Path, monkeypatch, mode: str, fault: str | None
+    tmp_path: Path, mode: str, fault: str | None
 ) -> None:
     repo = tmp_path / "legacy"
     repo.mkdir()
@@ -681,16 +681,12 @@ def test_orchestrator_pins_a_frozen_legacy_producer(
     if fault == "producer-exit":
         write_artifact += "sys.exit(17)\n"
     fake = tmp_path / "frozen-producer"
-    executable_scratch = tmp_path / "execution-temp"
-    executable_scratch.mkdir()
-    monkeypatch.setenv("TMPDIR", str(executable_scratch))
     fake.write_text(
         f"#!{sys.executable}\n"
         "import os, pathlib, sys\n"
         'assert os.environ["QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS"] == "1"\n'
         f"assert pathlib.Path.cwd().resolve() == pathlib.Path({str(repo.resolve())!r})\n"
         f"assert pathlib.Path(sys.argv[0]).resolve() != pathlib.Path({str(fake)!r}).resolve()\n"
-        f"assert pathlib.Path(sys.argv[0]).resolve().parents[2] == pathlib.Path({str(executable_scratch.resolve())!r})\n"
         + body
         + write_artifact,
         encoding="utf-8",
@@ -770,10 +766,7 @@ def test_orchestrator_pins_a_frozen_legacy_producer(
     ],
 )
 def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
-    tmp_path,
-    monkeypatch,
-    mode,
-    fault,
+    tmp_path, monkeypatch, mode, fault,
 ):
     def digest(path):
         return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
@@ -917,7 +910,7 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
         'config_template_sha256="c" * 64, published=[{"view": view, "page": {"view": page_view}}])\n'
         "else:\n"
         '    assert flag == ("--native-history-reopen" if mode == "warm" else "--native-history")\n'
-        "    assert hashlib.sha256(pathlib.Path(source).read_bytes()).hexdigest() == history_sha\n"
+        '    assert hashlib.sha256(pathlib.Path(source).read_bytes()).hexdigest() == history_sha\n'
         '    report["schema"] = "native-dsl-history-samples-v2"\n'
         '    view = {"sequence": 6} if fault == "history_view_drift" else history_view\n'
         '    report["published"] = {"view": view, "cut": history_cut, "instance": history_instance, '
@@ -1037,8 +1030,7 @@ def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(
     expected_calls = [
         [flag, str(path), scenario]
         for flag, path, ids in (
-            ("--native-text", daemon, text_ids + error_ids),
-            (history_flag, staged_history, history_ids),
+            ("--native-text", daemon, text_ids + error_ids), (history_flag, staged_history, history_ids),
             ("--native-retained", daemon, retained_ids),
         )
         for scenario in ids

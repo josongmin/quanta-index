@@ -5843,6 +5843,15 @@ mod tests {
             let _previous = self.releases.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
         }
+        fn abandon_ticket(
+            &self,
+            _session: Arc<dyn ReadSessionLease>,
+            _ticket: quanta_index_core::index::ReadTicketLease,
+        ) -> Result<(), IndexError> {
+            Err(IndexError::BackendViolation(
+                "unexpected test pin abandonment".into(),
+            ))
+        }
         fn recover_read_sessions(
             &self,
             _after: Option<quanta_index_core::index::ReadSessionRef>,

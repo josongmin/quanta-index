@@ -13,7 +13,8 @@ const MAX_EXPR_DEPTH: usize = 64;
 const MAX_CHILDREN: usize = 64;
 const MAX_LITERAL_GRAMS: usize = 32;
 const MAX_PREFIX_BYTES: usize = 4_096;
-const MAX_FINAL_EXPR_NODES: usize = 512;
+/// Node ceiling of one necessary-gram condition a regex plan keeps.
+pub const MAX_NECESSARY_GRAM_NODES: usize = 512;
 
 /// Extract a bounded necessary condition. Resource exhaustion weakens the
 /// condition; it never excludes an exact match.
@@ -26,11 +27,11 @@ pub(crate) fn from_hir(hir: &Hir) -> NecessaryGramExpr {
     // can safely strengthen independent structural conditions.
     let prefix = prefix_condition(hir);
     let combined = simplify_and(vec![structural.clone(), prefix.clone()]);
-    if expr_node_count(&combined) <= MAX_FINAL_EXPR_NODES {
+    if expr_node_count(&combined) <= MAX_NECESSARY_GRAM_NODES {
         combined
-    } else if expr_node_count(&structural) <= MAX_FINAL_EXPR_NODES {
+    } else if expr_node_count(&structural) <= MAX_NECESSARY_GRAM_NODES {
         structural
-    } else if expr_node_count(&prefix) <= MAX_FINAL_EXPR_NODES {
+    } else if expr_node_count(&prefix) <= MAX_NECESSARY_GRAM_NODES {
         prefix
     } else {
         NecessaryGramExpr::AllDocs
@@ -164,7 +165,7 @@ fn simplify_or(mut conditions: Vec<NecessaryGramExpr>) -> NecessaryGramExpr {
 mod tests {
     use quanta_index_lq_trigram::NecessaryGramExpr;
 
-    use super::MAX_FINAL_EXPR_NODES;
+    use super::MAX_NECESSARY_GRAM_NODES;
     use crate::RegexExecutor;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -251,7 +252,7 @@ mod tests {
         let executor = RegexExecutor::compile(&literal)?;
         let expr = executor.necessary_gram_expr();
         assert!(satisfied(&expr, literal.as_bytes()));
-        assert!(count_nodes(&expr) <= MAX_FINAL_EXPR_NODES);
+        assert!(count_nodes(&expr) <= MAX_NECESSARY_GRAM_NODES);
         Ok(())
     }
 
@@ -270,7 +271,7 @@ mod tests {
         let pattern = branches.join("|");
         let prepared = RegexExecutor::prepare(&pattern)?;
         let expr = prepared.necessary_gram_expr();
-        assert!(count_nodes(&expr) <= MAX_FINAL_EXPR_NODES);
+        assert!(count_nodes(&expr) <= MAX_NECESSARY_GRAM_NODES);
         for n in [0, 17, 79] {
             let text = format!("a{n:03} middle b{n:03}");
             assert!(satisfied(&expr, text.as_bytes()));

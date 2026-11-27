@@ -22,40 +22,169 @@ use tree_sitter::{Language, Node, Parser, QueryCursor, StreamingIterator};
 
 use crate::sha256_hex;
 
+// The candidate JSON shapes are strict and fully required. Keep Serde's
+// field typing, duplicate-key rejection, and sequence decoding without
+// proc-macro derives in the benchmark producer.
+#[cfg(any(unix, not(tree_sitter_registry_consumer)))]
+struct StrictSymbolFieldSeed(&'static [&'static str]);
+
+#[cfg(any(unix, not(tree_sitter_registry_consumer)))]
+struct StrictSymbolFieldVisitor(&'static [&'static str]);
+
+#[cfg(any(unix, not(tree_sitter_registry_consumer)))]
+impl serde::de::Visitor<'_> for StrictSymbolFieldVisitor {
+    type Value = &'static str;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a declared symbol record field")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        self.0
+            .iter()
+            .copied()
+            .find(|field| *field == value)
+            .ok_or_else(|| E::unknown_field(value, self.0))
+    }
+
+    fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+        let name = std::str::from_utf8(value)
+            .map_err(|_error| E::invalid_value(serde::de::Unexpected::Bytes(value), &self))?;
+        self.visit_str(name)
+    }
+}
+
+#[cfg(any(unix, not(tree_sitter_registry_consumer)))]
+impl<'de> serde::de::DeserializeSeed<'de> for StrictSymbolFieldSeed {
+    type Value = &'static str;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_identifier(StrictSymbolFieldVisitor(self.0))
+    }
+}
+
+#[cfg(any(unix, not(tree_sitter_registry_consumer)))]
+macro_rules! strict_symbol_object {
+    ($name:ident { $($field:ident: $ty:ty),+ $(,)? }) => {
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                struct ObjectVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        formatter.write_str(concat!("a ", stringify!($name), " with declared fields"))
+                    }
+
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(key) = map.next_key_seed($crate::symbols::StrictSymbolFieldSeed(FIELDS))? {
+                            match key {
+                                $(stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value()?);
+                                },)+
+                                _ => unreachable!("field seed returns only declared names"),
+                            }
+                        }
+                        Ok($name {
+                            $($field: $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?,)+
+                        })
+                    }
+
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                        self,
+                        mut sequence: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        $(
+                            let $field: $ty = sequence.next_element()?.ok_or_else(|| {
+                                serde::de::Error::missing_field(stringify!($field))
+                            })?;
+                        )+
+                        if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(serde::de::Error::invalid_length(
+                                FIELDS.len().saturating_add(1),
+                                &self,
+                            ));
+                        }
+                        Ok($name { $($field,)+ })
+                    }
+                }
+
+                deserializer.deserialize_struct(stringify!($name), FIELDS, ObjectVisitor)
+            }
+        }
+    };
+}
+
+#[cfg(tree_sitter_registry_consumer)]
+#[path = "symbols/candidate_control.rs"]
+mod candidate_control;
+#[path = "symbols/definition_query.rs"]
 mod definition_query;
+#[cfg(unix)]
+#[path = "symbols/go_candidate_process.rs"]
+mod go_candidate_process;
+#[cfg(all(unix, not(tree_sitter_registry_consumer)))]
+#[path = "symbols/official_candidate_process.rs"]
+mod official_candidate_process;
+#[cfg(not(tree_sitter_registry_consumer))]
+#[path = "symbols/preflight.rs"]
 mod preflight;
+#[cfg(unix)]
+#[path = "symbols/syntax_candidate_process.rs"]
+mod syntax_candidate_process;
+#[cfg(tree_sitter_registry_consumer)]
+use candidate_control::ExtractionControl;
+#[cfg(unix)]
+pub use go_candidate_process::{GoCandidateSession, extract_go_candidate_symbols_from_helper};
+#[cfg(all(unix, not(tree_sitter_registry_consumer)))]
+pub use official_candidate_process::preflight_corpus_symbols_from_candidate_manifest;
+#[cfg(not(tree_sitter_registry_consumer))]
 use preflight::ExtractionControl;
+#[cfg(not(tree_sitter_registry_consumer))]
 pub use preflight::{
-    SymbolCoveragePolicy, SymbolFileDiagnostic, SymbolFileReport, SymbolPreflight,
-    SymbolPreflightOptions, SymbolPreflightPolicy, SymbolPreflightReport, preflight_corpus_symbols,
+    CandidateSymbolInventory, SymbolCoveragePolicy, SymbolFileDiagnostic, SymbolFileReport,
+    SymbolPreflight, SymbolPreflightOptions, SymbolPreflightPolicy, SymbolPreflightReport,
+    preflight_corpus_symbols, preflight_corpus_symbols_with_candidate,
+};
+#[cfg(unix)]
+pub use syntax_candidate_process::{
+    SyntaxBatchSource, SyntaxCandidateSession, SyntaxHelperArtifacts, SyntaxHelperLibrary,
+    extract_syntax_candidate_symbols_from_helper,
 };
 
 /// Pinned grammar identity bound into every producer policy. The
 /// versions mirror the workspace lockfile; changing a grammar changes the
 /// digest and invalidates frozen evidence.
+#[cfg(not(tree_sitter_registry_consumer))]
 pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
     "tree-sitter@0.25.10;",
     "rust@0.24.2;registry-checksum=",
     env!("QI_RUST_GRAMMAR_SHA256"),
     ";",
-    "go@0.25.0+quanta-go-compatibility-1;vendored-source-sha256=",
+    "go@0.25.0;registry-checksum=",
     env!("QI_GO_GRAMMAR_SHA256"),
     ";",
-    "javascript@0.25.0+quanta-javascript-export-names-1;vendored-source-sha256=",
+    "javascript@0.25.0;registry-checksum=",
     env!("QI_JAVASCRIPT_GRAMMAR_SHA256"),
     ";",
     "python@0.25.0;registry-checksum=",
     env!("QI_PYTHON_GRAMMAR_SHA256"),
     ";",
-    "typescript@0.23.2+quanta-typescript-compatibility-2;vendored-source-sha256=",
+    "typescript@0.23.2;registry-checksum=",
     env!("QI_TYPESCRIPT_GRAMMAR_SHA256"),
 );
-
-// Refuse compilation against an unpatched registry dependency. Hashing a local
-// vendor directory alone must not claim that those bytes were linked.
-const _: &str = tree_sitter_typescript::QUANTA_COMPATIBILITY_PATCH_ID;
-const _: &str = tree_sitter_go::QUANTA_COMPATIBILITY_PATCH_ID;
-const _: &str = tree_sitter_javascript::QUANTA_GRAMMAR_BUILD_ID;
 
 /// Producer identity for batch digests.
 pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
@@ -69,18 +198,11 @@ pub struct SymbolNameSpan {
     pub name: String,
 }
 
-impl Serialize for SymbolNameSpan {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("SymbolNameSpan", 3)?;
-        state.serialize_field("start_byte", &self.start_byte)?;
-        state.serialize_field("end_byte", &self.end_byte)?;
-        state.serialize_field("name", &self.name)?;
-        state.end()
-    }
-}
+quanta_index_contract::native_serde_struct!([serde_identifier] SymbolNameSpan {
+    start_byte: usize,
+    end_byte: usize,
+    name: String,
+});
 
 #[derive(Default)]
 struct ExtractedSymbols {
@@ -186,6 +308,12 @@ impl SymbolLanguage {
             "tsx" => Some(Self::TypeScript { is_tsx: true }),
             _ => None,
         }
+    }
+
+    /// The benchmark requires a verified helper for these source languages.
+    #[must_use]
+    pub const fn requires_projection(self) -> bool {
+        matches!(self, Self::Go | Self::JavaScript | Self::TypeScript { .. })
     }
 
     fn grammar(self) -> Language {
@@ -890,40 +1018,53 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
     Ok(extract_parsed_symbols(language, path, source, &tree, None, None)?.records)
 }
 
-/// A Go helper result supplied explicitly for released-grammar evaluation.
-/// It is never selected by the default symbol producer.
+/// A verified Go helper edit that preserves original source coordinates.
 #[derive(Clone, Debug)]
 pub struct GoCandidateEdit {
-    pub start: usize,
-    pub end: usize,
-    pub replacement: String,
+    start: usize,
+    end: usize,
+    replacement: String,
 }
 
 impl Serialize for GoCandidateEdit {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("GoCandidateEdit", 3)?;
-        state.serialize_field("start", &self.start)?;
-        state.serialize_field("end", &self.end)?;
-        state.serialize_field("replacement", &self.replacement)?;
-        state.end()
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_candidate_edit(
+            serializer,
+            "GoCandidateEdit",
+            self.start,
+            self.end,
+            &self.replacement,
+        )
     }
+}
+
+fn serialize_candidate_edit<S: Serializer>(
+    serializer: S,
+    name: &'static str,
+    start: usize,
+    end: usize,
+    replacement: &str,
+) -> Result<S::Ok, S::Error> {
+    let mut state = serializer.serialize_struct(name, 3)?;
+    state.serialize_field("start", &start)?;
+    state.serialize_field("end", &end)?;
+    state.serialize_field("replacement", replacement)?;
+    state.end()
 }
 
 #[derive(Clone, Debug)]
 pub struct GoCandidateProjection {
-    pub projected: String,
-    pub source_sha256: String,
-    pub projected_sha256: String,
-    pub helper_binary_sha256: String,
-    pub edits: Vec<GoCandidateEdit>,
+    projected: String,
+    source_sha256: String,
+    projected_sha256: String,
+    helper_binary_sha256: String,
+    edits: Vec<GoCandidateEdit>,
 }
 
 #[derive(Clone, Debug)]
 pub struct GoCandidateSymbols {
     pub records: Vec<SymbolRecord>,
+    pub names: BTreeMap<String, SymbolNameSpan>,
     pub source_sha256: String,
     pub projected_sha256: String,
     pub helper_binary_sha256: String,
@@ -999,6 +1140,7 @@ pub fn extract_go_candidate_symbols(
     let edit_bytes = serde_json::to_vec(&projection.edits).map_err(|_| defect())?;
     Ok(GoCandidateSymbols {
         records: extracted.records,
+        names: extracted.names,
         source_sha256: projection.source_sha256.clone(),
         projected_sha256: projection.projected_sha256.clone(),
         helper_binary_sha256: projection.helper_binary_sha256.clone(),
@@ -1009,38 +1151,38 @@ pub fn extract_go_candidate_symbols(
 /// Candidate-only TypeScript compiler edit, in original UTF-8 byte offsets.
 #[derive(Clone, Debug)]
 pub struct SyntaxCandidateEdit {
-    pub start: usize,
-    pub end: usize,
-    pub replacement: String,
+    start: usize,
+    end: usize,
+    replacement: String,
 }
 
 impl Serialize for SyntaxCandidateEdit {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("SyntaxCandidateEdit", 3)?;
-        state.serialize_field("start", &self.start)?;
-        state.serialize_field("end", &self.end)?;
-        state.serialize_field("replacement", &self.replacement)?;
-        state.end()
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_candidate_edit(
+            serializer,
+            "SyntaxCandidateEdit",
+            self.start,
+            self.end,
+            &self.replacement,
+        )
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct SyntaxCandidateProjection {
-    pub projected: String,
-    pub source_sha256: String,
-    pub projected_sha256: String,
-    pub node_sha256: String,
-    pub typescript_sha256: String,
-    pub helper_script_sha256: String,
-    pub edits: Vec<SyntaxCandidateEdit>,
+    projected: String,
+    source_sha256: String,
+    projected_sha256: String,
+    node_sha256: String,
+    typescript_sha256: String,
+    helper_script_sha256: String,
+    edits: Vec<SyntaxCandidateEdit>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SyntaxCandidateSymbols {
     pub records: Vec<SymbolRecord>,
+    pub names: BTreeMap<String, SymbolNameSpan>,
     pub source_sha256: String,
     pub projected_sha256: String,
     pub node_sha256: String,
@@ -1049,13 +1191,22 @@ pub struct SyntaxCandidateSymbols {
     pub edits_sha256: String,
 }
 
-/// Evaluate an explicitly supplied released JS/TS grammar against a checked
-/// compiler projection. The default vendor grammar remains unchanged.
+/// Run a released JS/TS grammar against a checked compiler projection.
 pub fn extract_syntax_candidate_symbols(
     path: &str,
     source: &str,
     projection: &SyntaxCandidateProjection,
     grammar: Language,
+) -> Result<SyntaxCandidateSymbols, SymbolExtractError> {
+    extract_syntax_candidate_symbols_with_control(path, source, projection, grammar, None)
+}
+
+fn extract_syntax_candidate_symbols_with_control(
+    path: &str,
+    source: &str,
+    projection: &SyntaxCandidateProjection,
+    grammar: Language,
+    control: Option<&ExtractionControl<'_>>,
 ) -> Result<SyntaxCandidateSymbols, SymbolExtractError> {
     let language = SymbolLanguage::from_path(path)
         .ok_or_else(|| SymbolExtractError::Unsupported { path: path.into() })?;
@@ -1109,7 +1260,7 @@ pub fn extract_syntax_candidate_symbols(
     if rebuilt != projection.projected.as_bytes() {
         return Err(defect());
     }
-    let tree = parse_tree_with_grammar(grammar.clone(), path, &projection.projected, None)?;
+    let tree = parse_tree_with_grammar(grammar.clone(), path, &projection.projected, control)?;
     if tree.root_node().has_error() {
         return Err(SymbolExtractError::ParseFailure { path: path.into() });
     }
@@ -1118,7 +1269,7 @@ pub fn extract_syntax_candidate_symbols(
             detail: format!("candidate syntax grammar/query mismatch for {path}: {error}"),
         }
     })?;
-    let extracted = extract_parsed_symbols(language, path, source, &tree, None, Some(&query))?;
+    let extracted = extract_parsed_symbols(language, path, source, &tree, control, Some(&query))?;
     if extracted.names.values().any(|name| {
         projection
             .edits
@@ -1130,6 +1281,7 @@ pub fn extract_syntax_candidate_symbols(
     let edit_bytes = serde_json::to_vec(&projection.edits).map_err(|_| defect())?;
     Ok(SyntaxCandidateSymbols {
         records: extracted.records,
+        names: extracted.names,
         source_sha256: projection.source_sha256.clone(),
         projected_sha256: projection.projected_sha256.clone(),
         node_sha256: projection.node_sha256.clone(),
@@ -1280,10 +1432,12 @@ fn extract_parsed_symbols(
 ///
 /// Unsupported admitted files and parse failures abort the run before any
 /// batch is assembled or published.
+#[cfg(not(tree_sitter_registry_consumer))]
 pub struct CorpusSymbolExtraction {
     pub symbols: std::collections::BTreeMap<String, Vec<SymbolRecord>>,
 }
 
+#[cfg(not(tree_sitter_registry_consumer))]
 pub fn extract_corpus_symbols(
     files: &std::collections::BTreeMap<String, crate::corpus::SourceFile>,
 ) -> crate::BenchResult<CorpusSymbolExtraction> {
@@ -1305,32 +1459,67 @@ pub fn extract_corpus_symbols(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(tree_sitter_registry_consumer)))]
 mod tests {
     use super::*;
 
     #[test]
-    fn candidate_edit_digest_input_keeps_fixed_field_order() {
-        const GOLD: &[u8] = br#"[{"start":1,"end":3,"replacement":"x"}]"#;
+    fn candidate_edit_serialization_preserves_digest_input_bytes() {
         let go = GoCandidateEdit {
-            start: 1,
-            end: 3,
-            replacement: "x".into(),
+            start: 5,
+            end: 9,
+            replacement: "한\n\"".into(),
         };
         let syntax = SyntaxCandidateEdit {
-            start: 1,
-            end: 3,
-            replacement: "x".into(),
+            start: go.start,
+            end: go.end,
+            replacement: go.replacement.clone(),
         };
-        assert_eq!(serde_json::to_vec(&[go]).expect("Go edit JSON"), GOLD);
+        let expected = r#"[{"start":5,"end":9,"replacement":"한\n\""}]"#.as_bytes();
+        assert_eq!(serde_json::to_vec(&[go]).expect("Go edit bytes"), expected);
         assert_eq!(
-            serde_json::to_vec(&[syntax]).expect("syntax edit JSON"),
-            GOLD
+            serde_json::to_vec(&[syntax]).expect("syntax edit bytes"),
+            expected
         );
     }
 
     #[test]
-    fn explicit_go_candidate_keeps_original_symbol_records() {
+    fn candidate_json_records_keep_closed_fields_and_positional_decoding() {
+        let span: SymbolNameSpan =
+            serde_json::from_str(r#"{"start_byte":3,"end_byte":5,"name":"é"}"#).expect("name span");
+        assert_eq!(
+            serde_json::to_string(&span).expect("name span bytes"),
+            r#"{"start_byte":3,"end_byte":5,"name":"é"}"#
+        );
+        let positional: SymbolNameSpan =
+            serde_json::from_str(r#"[3,5,"é"]"#).expect("positional name span");
+        assert_eq!(positional, span);
+        for malformed in [
+            r#"{"start_byte":3,"end_byte":5}"#,
+            r#"{"start_byte":3,"end_byte":5,"name":"é","extra":1}"#,
+            r#"{"start_byte":3,"start_byte":4,"end_byte":5,"name":"é"}"#,
+            r#"{"start_byte":3.0,"end_byte":5,"name":"é"}"#,
+        ] {
+            assert!(serde_json::from_str::<SymbolNameSpan>(malformed).is_err());
+        }
+
+        let inventory: CandidateSymbolInventory =
+            serde_json::from_str(r#"{"records":[],"names":{}}"#).expect("candidate inventory");
+        assert!(inventory.records.is_empty() && inventory.names.is_empty());
+        let positional: CandidateSymbolInventory =
+            serde_json::from_str(r#"[[],{}]"#).expect("positional candidate inventory");
+        assert!(positional.records.is_empty() && positional.names.is_empty());
+        for malformed in [
+            r#"{"records":[]}"#,
+            r#"{"records":[],"names":{},"extra":1}"#,
+            r#"{"records":[],"records":[],"names":{}}"#,
+        ] {
+            assert!(serde_json::from_str::<CandidateSymbolInventory>(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn go_projection_with_registry_grammar_keeps_original_symbol_records() {
         let source = "package p\n// café\ntype Rect struct{W float64}\n\
                       type Shape interface{ Area() float64 }\n\
                       func (r *Rect) Area() float64 { return r.W }\n\
@@ -1352,12 +1541,21 @@ mod tests {
             "p.go",
             source,
             &projection,
-            tree_sitter_go_official::LANGUAGE.into(),
+            tree_sitter_go::LANGUAGE.into(),
         )
         .expect("explicit candidate");
+        let names: BTreeSet<_> = candidate.records.iter().map(qualified).collect();
         assert_eq!(
-            candidate.records,
-            extract_symbols("p.go", source).expect("vendor baseline")
+            names,
+            BTreeSet::from(["Rect", "Rect.Area", "Run", "Shape", "Shape.Area"])
+        );
+        let run = find(&candidate.records, "Run");
+        assert_eq!(run.definition_span.line_start, 6);
+        let span = usize::try_from(run.definition_span.byte_start).expect("span start")
+            ..usize::try_from(run.definition_span.byte_end).expect("span end");
+        assert_eq!(
+            source.get(span),
+            Some("func Run(){_=new(1);_=make([]int,2)}")
         );
         assert_eq!(candidate.source_sha256, sha256_hex(source.as_bytes()));
         assert_eq!(candidate.projected_sha256, projection.projected_sha256);
@@ -1370,49 +1568,65 @@ mod tests {
                 "p.go",
                 source,
                 &malformed,
-                tree_sitter_go_official::LANGUAGE.into()
+                tree_sitter_go::LANGUAGE.into()
             ),
             Err(SymbolExtractError::ProducerDefect { .. })
         ));
     }
 
     #[test]
-    fn explicit_syntax_candidates_keep_vendor_symbol_records() {
-        let fixtures: [(&str, &str, &str, &str, Language); 5] = [
+    fn syntax_projection_with_registry_grammar_keeps_original_symbol_records() {
+        let generic = include_str!("../tests/fixtures/l5_parser/generic_import_trailing_comma.ts");
+        let type_reexport = include_str!("../tests/fixtures/l5_parser/type_namespace_export.ts");
+        let fixtures: [(&str, &str, &str, &str, Language); 7] = [
             (
                 "alias.js",
                 "// café\r\nfunction local() {} export { local as const };",
                 "const",
                 "aaaaa",
-                tree_sitter_javascript_official::LANGUAGE.into(),
+                tree_sitter_javascript::LANGUAGE.into(),
             ),
             (
                 "star.ts",
-                "export type * as HttpProxy from './basic'\nfunction sentinel() {}",
+                type_reexport,
                 "type",
                 "    ",
-                tree_sitter_typescript_official::LANGUAGE_TYPESCRIPT.into(),
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             ),
             (
                 "generic.ts",
-                "runnerImport<typeof import('./basic')>(fixture('cjs.js'),)\nfunction sentinel() {}",
+                generic,
                 "typeof import('./basic')",
                 "any                     ",
-                tree_sitter_typescript_official::LANGUAGE_TYPESCRIPT.into(),
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            ),
+            (
+                "generic.tsx",
+                generic,
+                "typeof import('./basic')",
+                "any                     ",
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
+            ),
+            (
+                "star_plain.tsx",
+                type_reexport,
+                "type",
+                "    ",
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
             ),
             (
                 "signature.ts",
                 "type Overloads = { <T>(): T\n<T>(): T };\nfunction sentinel() {}",
                 ": T",
                 ";  ",
-                tree_sitter_typescript_official::LANGUAGE_TYPESCRIPT.into(),
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             ),
             (
                 "star.tsx",
                 "export type * as HttpProxy from './basic'\nfunction sentinel() { return <div/> }",
                 "type",
                 "    ",
-                tree_sitter_typescript_official::LANGUAGE_TSX.into(),
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
             ),
         ];
         for (path, source, needle, replacement, grammar) in fixtures {
@@ -1439,11 +1653,44 @@ mod tests {
             };
             let candidate = extract_syntax_candidate_symbols(path, source, &projection, grammar)
                 .expect("released syntax candidate");
+            let expected_name = if path == "alias.js" {
+                "local"
+            } else {
+                "sentinel"
+            };
+            let expected_count = if path == "signature.ts" { 2 } else { 1 };
+            assert_eq!(candidate.records.len(), expected_count, "{path}");
+            let record = find(&candidate.records, expected_name);
+            let prefix = format!("function {expected_name}()");
+            let start = source.find(&prefix).expect("definition start");
+            let definition = source.get(start..).expect("definition bound");
+            let width = definition.find('}').expect("definition end");
+            let end = start
+                .checked_add(width)
+                .and_then(|end| end.checked_add(1))
+                .expect("definition end bound");
             assert_eq!(
-                candidate.records,
-                extract_symbols(path, source).expect("vendor baseline"),
+                usize::try_from(record.definition_span.byte_start).expect("start"),
+                start,
                 "{path}"
             );
+            assert_eq!(
+                usize::try_from(record.definition_span.byte_end).expect("end"),
+                end,
+                "{path}"
+            );
+            assert_eq!(
+                usize::try_from(record.definition_span.line_start).expect("line"),
+                source
+                    .get(..start)
+                    .expect("prefix bound")
+                    .lines()
+                    .count()
+                    .saturating_add(1),
+                "{path}"
+            );
+            assert_eq!(record.symbol_kind.as_str(), "function", "{path}");
+            assert_eq!(record.repo_relative_path.as_str(), path);
         }
     }
 
@@ -1595,6 +1842,37 @@ mod tests {
         );
     }
 
+    fn go_records_with_fixture_projection(
+        path: &str,
+        source: &str,
+        calls: &[(&str, &str)],
+    ) -> Vec<SymbolRecord> {
+        let mut projected = source.to_string();
+        let edits = calls
+            .iter()
+            .map(|(call, replacement)| {
+                let start = source.rfind(call).expect("call being projected");
+                let end = start.checked_add(replacement.len()).expect("edit bound");
+                projected.replace_range(start..end, replacement);
+                GoCandidateEdit {
+                    start,
+                    end,
+                    replacement: (*replacement).into(),
+                }
+            })
+            .collect();
+        let projection = GoCandidateProjection {
+            source_sha256: sha256_hex(source.as_bytes()),
+            projected_sha256: sha256_hex(projected.as_bytes()),
+            helper_binary_sha256: "a".repeat(64),
+            edits,
+            projected,
+        };
+        extract_go_candidate_symbols(path, source, &projection, tree_sitter_go::LANGUAGE.into())
+            .expect("Go fixture projection")
+            .records
+    }
+
     #[test]
     fn go_functions_methods_and_types() {
         let source = "package geom\n\n\
@@ -1602,7 +1880,11 @@ mod tests {
                       type Shape interface {\n\tArea() float64\n}\n\n\
                       func (r *Rect) Area() float64 { return r.W }\n\n\
                       func NewRect(w float64) *Rect { _ = new(w > 0); _ = new(1); _ = new(int); _ = make([]int, 2); return &Rect{W: w} }\n";
-        let records = extract_symbols("geom/rect.go", source).expect("go parses");
+        let records = go_records_with_fixture_projection(
+            "geom/rect.go",
+            source,
+            &[("new(w > 0)", "foo"), ("new(1)", "foo")],
+        );
         let method = records
             .iter()
             .find(|record| qualified(record) == "Rect.Area")
@@ -1638,16 +1920,24 @@ mod tests {
                 "package p\nfunc new(a ...int) int { return len(a) }\nfunc Locate() { values:=[]int{1,2}; _=new(values...) }\n",
             ),
         ] {
-            let records = extract_symbols("shadowed.go", shadowed).expect("valid Go shadowing");
+            let call = format!("{callee}(");
+            let replacement = if callee == "new" { "foo" } else { "fooo" };
+            let records = go_records_with_fixture_projection(
+                "shadowed.go",
+                shadowed,
+                &[(&call, replacement)],
+            );
             assert_eq!(records.len(), 2);
             for name in [callee, "Locate"] {
                 assert_eq!(find(&records, name).symbol_kind.as_str(), "function");
             }
         }
         // Symbol extraction is syntax-based, not Go operand type checking.
-        let syntax_only =
-            extract_symbols("arity.go", "package p\nfunc Locate() { _ = new(1, 2) }\n")
-                .expect("syntactically valid call");
+        let syntax_only = go_records_with_fixture_projection(
+            "arity.go",
+            "package p\nfunc Locate() { _ = new(1, 2) }\n",
+            &[("new(", "foo")],
+        );
         assert_eq!(syntax_only.len(), 1);
         assert_eq!(
             find(&syntax_only, "Locate").symbol_kind.as_str(),
@@ -1724,8 +2014,34 @@ mod tests {
             "debugger", "new",
         ] {
             let source = format!("function local() {{}} export {{ local as {exported} }};");
-            let definitions = extract_symbols("exports.js", &source)
-                .expect("reserved words are valid exported names");
+            let start = source.rfind(exported).expect("export alias");
+            let end = start
+                .checked_add(exported.len())
+                .expect("export alias bound");
+            let replacement = "a".repeat(exported.len());
+            let mut projected = source.clone();
+            projected.replace_range(start..end, &replacement);
+            let projection = SyntaxCandidateProjection {
+                source_sha256: sha256_hex(source.as_bytes()),
+                projected_sha256: sha256_hex(projected.as_bytes()),
+                node_sha256: "a".repeat(64),
+                typescript_sha256: "b".repeat(64),
+                helper_script_sha256: "c".repeat(64),
+                edits: vec![SyntaxCandidateEdit {
+                    start,
+                    end,
+                    replacement,
+                }],
+                projected,
+            };
+            let definitions = extract_syntax_candidate_symbols(
+                "exports.js",
+                &source,
+                &projection,
+                tree_sitter_javascript::LANGUAGE.into(),
+            )
+            .expect("reserved words are valid exported names")
+            .records;
             assert_eq!(definitions.len(), 1, "an export alias is not a declaration");
             assert_eq!(find(&definitions, "local").local_name.as_ref(), "local");
         }

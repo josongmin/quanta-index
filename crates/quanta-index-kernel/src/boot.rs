@@ -2,18 +2,17 @@
 //! The caller authenticates their physical object bytes and selected catalog row.
 
 use quanta_index_core::index::{
-    CatalogView, Digest, GroupActivation, HistoryTransition, ImmutableOperation, IndexError,
-    IndexInstanceId, IndexProfile, InputDomain, InstanceSpec, MemoryLifetime, StoredObject,
-    UpdateKind, WorkBudget,
+    CatalogView, Digest, HistoryTransition, ImmutableOperation, IndexError, IndexInstanceId,
+    IndexProfile, InputDomain, InstanceSpec, MapRoot, MemoryLifetime, ObjectRef, RegisteredObject,
+    StoredObject, UpdateKind, ViewRef, WorkBudget,
 };
 
 use crate::{AdapterDescriptor, AdapterRegistry, profile, request_decode, request_preparation};
 
-/// The exact earlier v20 Tree policy, bound to the installed Text descriptor.
-/// It can authenticate a held predecessor or an already selected live view;
-/// new candidate publications retain the current policy.
+/// One previously admitted Text identity accepted only while authenticating a
+/// held predecessor as a Source witness. Candidate and listener stay strict.
 #[derive(Clone, Copy)]
-pub struct RetainedSourceTreePolicyV20 {
+pub struct RetainedSourceTextPolicyV20 {
     pub descriptor: AdapterDescriptor,
     pub previous: Digest,
     pub current: Digest,
@@ -62,6 +61,54 @@ pub fn with_native_boot_history_full_v1<T>(
     verify_source(transition, budget)
 }
 
+/// Borrow an authenticated first Source/History publication for independent
+/// Native Original and installed-member verification by the BOOT reader.
+pub fn with_native_boot_source_history_initial_v1<T>(
+    operation: &ImmutableOperation,
+    publication: &CatalogView,
+    request: &StoredObject,
+    target_profile: &StoredObject,
+    budget: &mut WorkBudget,
+    verify_source: impl FnOnce(&HistoryTransition, &mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<Option<T>, IndexError> {
+    verify_immutable_publication(operation, publication, request)?;
+    let decoded = request_decode::decode(&request.payload, budget)?;
+    verify_immutable_request(operation, publication, request, &decoded)?;
+    let history = match &decoded.kind {
+        UpdateKind::SourceHistoryBootstrap(transition) => {
+            if transition.source.expected_source.owners != quanta_index_core::index::MapRoot(None)
+                || transition.source.expected_source.paths != quanta_index_core::index::MapRoot(None)
+                || transition.source.expected_source.frontiers != quanta_index_core::index::MapRoot(None)
+            {
+                return Err(IndexError::DigestConflict);
+            }
+            &transition.history
+        }
+        UpdateKind::HistoryAdvance(transition) if transition.expected.is_none() => transition,
+        _ => return Ok(None),
+    };
+    if history.expected.is_some()
+        || history.profile != publication.profile
+        || target_profile.registration.reference != publication.profile
+        || !target_profile.registration.children.is_empty()
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    let profile = profile::decode_payload(&target_profile.payload, budget)?;
+    let mut history_specs = profile
+        .instances
+        .iter()
+        .filter(|spec| spec.input_domain == quanta_index_core::index::InputDomain::History);
+    let first = history_specs.next().ok_or(IndexError::DigestConflict)?;
+    if history_specs.next().is_some()
+        || first.instance != history.instance
+        || first.activation != quanta_index_core::index::GroupActivation::CoreRequired
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    verify_source(history, budget).map(Some)
+}
+
 /// Validate the original request binding and current publication profile.
 ///
 /// This proves neither historical source availability nor the physical closure
@@ -87,18 +134,18 @@ pub fn verify_native_boot_inputs(
     .map(|_| ())
 }
 
-/// Return the historical Text instance only after the original immutable
-/// request/profile and the complete current registry shape have been checked.
-/// The caller must also authenticate that member's old policy binding.
+/// Return a retained Text instance and its actual signed policy only after
+/// the original immutable request/profile and the current registry shape are
+/// checked. The caller must also authenticate that member's physical binding.
 pub fn verify_native_boot_retained_source_inputs_v20(
     operation: &ImmutableOperation,
     publication: &CatalogView,
     request: &StoredObject,
     profile: &StoredObject,
     registry: &AdapterRegistry,
-    tree: RetainedSourceTreePolicyV20,
+    text: RetainedSourceTextPolicyV20,
     budget: &mut WorkBudget,
-) -> Result<Option<IndexInstanceId>, IndexError> {
+) -> Result<Option<(IndexInstanceId, Digest)>, IndexError> {
     verify_native_boot_inputs_with_policy(
         operation,
         publication,
@@ -106,59 +153,9 @@ pub fn verify_native_boot_retained_source_inputs_v20(
         profile,
         registry,
         false,
-        Some(tree),
+        Some(text),
         budget,
     )
-}
-
-/// Authenticate an already selected live Native Tree view written with the
-/// earlier v20 policy. The immutable request and every other profile member
-/// retain the candidate BOOT rules; the caller must verify the old Text member
-/// binding and provide a reader for its persisted layout before serving.
-pub fn verify_native_boot_live_tree_inputs_v20(
-    operation: &ImmutableOperation,
-    publication: &CatalogView,
-    request: &StoredObject,
-    profile: &StoredObject,
-    registry: &AdapterRegistry,
-    tree: RetainedSourceTreePolicyV20,
-    budget: &mut WorkBudget,
-) -> Result<Option<IndexInstanceId>, IndexError> {
-    verify_native_boot_inputs_with_policy(
-        operation,
-        publication,
-        request,
-        profile,
-        registry,
-        true,
-        Some(tree),
-        budget,
-    )
-}
-
-/// Validate the profile of the Catalog's currently selected workspace head.
-/// The BOOT publication may be historical and its member map may be retired;
-/// callers must obtain this view from a held read-only Catalog transaction and
-/// verify the returned old instance against that view's physical member map.
-pub fn verify_native_boot_current_tree_profile_v20(
-    view: &CatalogView,
-    profile: &StoredObject,
-    registry: &AdapterRegistry,
-    tree: RetainedSourceTreePolicyV20,
-    live: bool,
-    budget: &mut WorkBudget,
-) -> Result<Option<IndexInstanceId>, IndexError> {
-    budget.checkpoint()?;
-    if profile.registration.reference != view.profile || !profile.registration.children.is_empty() {
-        return Err(IndexError::CorruptObject(
-            "current Tree profile reference or edges mismatch".into(),
-        ));
-    }
-    let loaded = profile::decode_payload(&profile.payload, budget)?;
-    if live {
-        crate::update::reject_retired_repomap_profile(&loaded, budget)?;
-    }
-    validate_profile_with_retained_tree_v20(registry, &loaded, Some(tree), budget)
 }
 
 /// Authenticate a new candidate's selected BOOT. A retained predecessor uses
@@ -191,9 +188,9 @@ fn verify_native_boot_inputs_with_policy(
     profile: &StoredObject,
     registry: &AdapterRegistry,
     candidate: bool,
-    retained_tree: Option<RetainedSourceTreePolicyV20>,
+    retained_text: Option<RetainedSourceTextPolicyV20>,
     budget: &mut WorkBudget,
-) -> Result<Option<IndexInstanceId>, IndexError> {
+) -> Result<Option<(IndexInstanceId, Digest)>, IndexError> {
     budget.checkpoint()?;
     verify_immutable_publication(operation, publication, request)?;
     let decoded = request_decode::decode(&request.payload, budget)?;
@@ -212,51 +209,37 @@ fn verify_native_boot_inputs_with_policy(
     if candidate {
         crate::update::reject_retired_repomap_profile(&loaded, budget)?;
     }
-    let historical =
-        validate_profile_with_retained_tree_v20(registry, &loaded, retained_tree, budget)?;
-    budget.checkpoint()?;
-    Ok(historical)
-}
-
-/// Validate one fixed previous Tree instance without changing persisted profile
-/// data. The caller must independently authenticate the member's input binding
-/// and restrict which operation is allowed to retain this old profile.
-pub(crate) fn validate_profile_with_retained_tree_v20(
-    registry: &AdapterRegistry,
-    profile: &IndexProfile,
-    retained_tree: Option<RetainedSourceTreePolicyV20>,
-    budget: &mut WorkBudget,
-) -> Result<Option<IndexInstanceId>, IndexError> {
-    let historical = if let Some(tree) = retained_tree {
-        if tree.previous == tree.current {
+    let historical = if let Some(text) = retained_text {
+        if candidate {
             return Err(IndexError::InvalidInput(
-                "invalid retained Tree policy gate".into(),
+                "invalid retained Text policy gate".into(),
             ));
         }
         let mut found = None;
-        for instance in &profile.instances {
-            if instance.kind == tree.descriptor.kind && instance.policy == tree.previous {
-                if instance.schema != tree.descriptor.schema
-                    || instance.format != tree.descriptor.format
-                    || instance.activation != GroupActivation::CoreRequired
-                    || instance.input_domain != InputDomain::SourceLocal
-                    || found.replace(instance.instance).is_some()
-                {
-                    return Err(IndexError::InvalidInput(
-                        "retained Tree profile identity mismatch".into(),
-                    ));
+        if text.previous != text.current {
+            for instance in &loaded.instances {
+                if instance.kind == text.descriptor.kind && instance.policy == text.previous {
+                    if instance.schema != text.descriptor.schema
+                        || instance.format != text.descriptor.format
+                        || instance.input_domain != InputDomain::SourceLocal
+                        || found.replace(instance.instance).is_some()
+                    {
+                        return Err(IndexError::InvalidInput(
+                            "retained Text profile identity mismatch".into(),
+                        ));
+                    }
                 }
             }
         }
         if let Some(instance_id) = found {
-            if profile.instances.iter().any(|instance| {
-                instance.kind == tree.descriptor.kind && instance.instance != instance_id
+            if loaded.instances.iter().any(|instance| {
+                instance.kind == text.descriptor.kind && instance.instance != instance_id
             }) {
                 return Err(IndexError::InvalidInput(
-                    "retained Tree profile has another Text instance".into(),
+                    "retained Text profile has another instance".into(),
                 ));
             }
-            let bytes = profile
+            let bytes = loaded
                 .instances
                 .len()
                 .checked_mul(std::mem::size_of::<InstanceSpec>())
@@ -269,23 +252,46 @@ pub(crate) fn validate_profile_with_retained_tree_v20(
                 .ok_or(IndexError::ResourceLimited)?;
             let mut validation = Vec::new();
             validation
-                .try_reserve_exact(profile.instances.len())
+                .try_reserve_exact(loaded.instances.len())
                 .map_err(|_| IndexError::ResourceLimited)?;
-            validation.extend(profile.instances.iter().cloned());
+            validation.extend(loaded.instances.iter().cloned());
             let item = validation
                 .iter_mut()
                 .find(|item| item.instance == instance_id)
                 .ok_or(IndexError::BackendViolation(
-                    "retained Tree instance disappeared".into(),
+                    "retained Text instance disappeared".into(),
                 ))?;
-            item.policy = tree.current;
-            registry.validate_profile(&validation, budget)?;
+            item.policy = text.current;
+            registry.validate_retained_text_profile_v20(&validation, instance_id, budget)?;
+            Some((instance_id, text.previous))
         } else {
-            registry.validate_profile(&profile.instances, budget)?;
+            let current = loaded.instances.iter().find(|instance| {
+                instance.kind == text.descriptor.kind
+                    && instance.policy == text.current
+                    && instance.schema == text.descriptor.schema
+                    && instance.format == text.descriptor.format
+                    && instance.input_domain == InputDomain::SourceLocal
+            });
+            if let Some(current) = current.filter(|current| {
+                registry.retained_text_companion_absent_v20(
+                    &loaded.instances,
+                    text.descriptor.kind,
+                    current.instance,
+                )
+            }) {
+                registry.validate_retained_text_profile_v20(
+                    &loaded.instances,
+                    current.instance,
+                    budget,
+                )?;
+                Some((current.instance, text.current))
+            } else {
+                registry.validate_profile(&loaded.instances, budget)?;
+                None
+            }
         }
-        found
     } else {
-        registry.validate_profile(&profile.instances, budget)?;
+        registry.validate_profile(&loaded.instances, budget)?;
         None
     };
     budget.checkpoint()?;
@@ -402,7 +408,10 @@ pub fn verify_native_published_full_target_v1(
     budget: &WorkBudget,
 ) -> Result<(), IndexError> {
     budget.checkpoint()?;
-    if target.event_predecessor != 0 || target.event_sequence != 1 {
+    if target.source_mode != quanta_index_core::index::SourceOperationMode::Advance
+        || target.event_predecessor != 0
+        || target.event_sequence != 1
+    {
         return Err(IndexError::DigestConflict);
     }
     verify_native_published_source_target_v1(
@@ -416,10 +425,9 @@ pub fn verify_native_published_full_target_v1(
     )
 }
 
-/// Bind the independently identified current SourceAdvance request to its
-/// actual Published metadata. This supports the current FULL/DELTA reservation;
-/// Original FULL remains the strict initial-event predicate above. No Source,
-/// activation, installation or deployment permission is issued here.
+/// Bind an independently identified SourceAdvance or SourceResync request to
+/// its actual Published metadata. Original FULL uses the stricter predicate
+/// above. This check issues no Source, installation or deployment permission.
 pub fn verify_native_published_source_target_v1(
     target: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceTargetV1,
     source_request: &quanta_index_core::index::UpdateRequest,
@@ -429,22 +437,131 @@ pub fn verify_native_published_source_target_v1(
     identified_request: quanta_index_core::index::ObjectRef,
     budget: &WorkBudget,
 ) -> Result<(), IndexError> {
+    if !matches!(
+        &source_request.kind,
+        UpdateKind::SourceAdvance(_) | UpdateKind::SourceResync { .. }
+    )
+        || selected_profile != target.expected_profile
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    verify_native_source_event(
+        target,
+        source_request,
+        operation,
+        published,
+        identified_request,
+        budget,
+    )
+}
+
+/// Bind a combined publication to the signed Source reservation and its exact
+/// Catalog predecessor. The retained result profile is the History request's
+/// profile. The signed target identifies the profile before publication.
+pub fn verify_native_published_source_history_target_v1(
+    target: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceTargetV1,
+    source_request: &quanta_index_core::index::UpdateRequest,
+    operation: &ImmutableOperation,
+    published: &CatalogView,
+    prior: &CatalogView,
+    identified_request: ObjectRef,
+    budget: &WorkBudget,
+) -> Result<(), IndexError> {
+    verify_native_source_event(
+        target,
+        source_request,
+        operation,
+        published.identity,
+        identified_request,
+        budget,
+    )?;
+    let profile = match &source_request.kind {
+        UpdateKind::SourceHistoryBootstrap(pair)
+            if pair.history.expected.is_none()
+                && target.event_predecessor == 0
+                && target.event_sequence == 1
+                && prior.source.owners == MapRoot(None)
+                && prior.source.paths == MapRoot(None)
+                && prior.source.frontiers == MapRoot(None)
+                && pair.history.profile != prior.profile =>
+        {
+            pair.history.profile
+        }
+        UpdateKind::SourceHistoryAdvance(pair)
+        | UpdateKind::SourceHistoryResync { transition: pair, .. } => pair.history.profile,
+        _ => return Err(IndexError::DigestConflict),
+    };
+    if prior.identity != target.expected_view
+        || prior.profile != target.expected_profile
+        || prior.source != target.expected_source
+        || prior.projections != published.projections
+        || published.profile != profile
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    budget.checkpoint()
+}
+
+/// Sequence zero has no Published operation row. Verify the exact deterministic
+/// Catalog genesis created by the Kernel, including the canonical empty profile.
+pub fn native_boot_source_genesis_v1(
+    expected: ViewRef,
+    budget: &mut WorkBudget,
+    identify: impl FnOnce(&[u8], &[ObjectRef], &mut WorkBudget) -> Result<RegisteredObject, IndexError>,
+) -> Result<CatalogView, IndexError> {
+    if expected.sequence != 0 {
+        return Err(IndexError::DigestConflict);
+    }
+    let empty = IndexProfile {
+        instances: Vec::new(),
+    };
+    let payload = crate::binding_metadata::encode_profile(&empty, budget)?;
+    let object = identify(&payload.bytes, &[], budget)?;
+    let genesis =
+        crate::identity::genesis_view(expected.workspace, expected.epoch, object.reference)?;
+    if !object.children.is_empty() || genesis.identity != expected {
+        return Err(IndexError::DigestConflict);
+    }
+    budget.checkpoint()?;
+    Ok(genesis)
+}
+
+fn verify_native_source_event(
+    target: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceTargetV1,
+    source_request: &quanta_index_core::index::UpdateRequest,
+    operation: &ImmutableOperation,
+    published: ViewRef,
+    identified_request: ObjectRef,
+    budget: &WorkBudget,
+) -> Result<(), IndexError> {
     use quanta_index_core::index::SourceOperationMode;
     budget.checkpoint()?;
-    let UpdateKind::SourceAdvance(transition) = &source_request.kind else {
-        return Err(IndexError::DigestConflict);
-    };
+    let transition = source_request
+        .kind
+        .source_transition_v1()
+        .ok_or(IndexError::DigestConflict)?;
     let [event] = transition.events.as_slice() else {
         return Err(IndexError::DigestConflict);
+    };
+    let valid_mode = match target.source_mode {
+        SourceOperationMode::Advance => true,
+        SourceOperationMode::Resync { prior_epoch } => {
+            prior_epoch.checked_add(1) == Some(target.operation.stream_epoch)
+                && target.event_predecessor == 0
+                && target.event_sequence == 1
+        }
+        SourceOperationMode::Unchanged => false,
     };
     if target.operation != operation.key
         || source_request.operation != operation.key
         || identified_request != operation.request
-        || target.source_mode != SourceOperationMode::Advance
+        || !valid_mode
+        || source_request.kind.source_mode() != target.source_mode
         || operation.source_mode != target.source_mode
         || source_request.expected_view != target.expected_view
         || transition.expected_source != target.expected_source
-        || selected_profile != target.expected_profile
+        || target.expected_view.workspace != target.operation.workspace
+        || target.expected_view.epoch != target.operation.epoch
         || published.workspace != target.operation.workspace
         || published.epoch != target.operation.epoch
         || published.digest.0 == [0; 32]
@@ -583,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_v20_tree_profile_authenticates_predecessor_and_selected_views()
+    fn retained_v20_tree_profile_is_only_a_prior_source_witness()
     -> Result<(), Box<dyn std::error::Error>> {
         let request = request_rows()
             .into_iter()
@@ -609,6 +726,13 @@ mod tests {
         };
         let mut registry = AdapterRegistry::new();
         registry.register(descriptor, CurrentTreeOnly(current), |_| Ok(()))?;
+        let literal = AdapterDescriptor {
+            kind: IndexKind([82; 16]),
+            schema: SchemaId([84; 16]),
+            format: StorageFormatId([85; 16]),
+        };
+        registry.register(literal, CurrentTreeOnly(current), |_| Ok(()))?;
+        registry.require_companion(descriptor.kind, literal)?;
         let stored_profile = object(
             publication.profile,
             serde_json::to_vec(&IndexProfile {
@@ -616,7 +740,7 @@ mod tests {
             })?,
             Vec::new(),
         )?;
-        let gate = RetainedSourceTreePolicyV20 {
+        let gate = RetainedSourceTextPolicyV20 {
             descriptor,
             previous,
             current,
@@ -643,7 +767,7 @@ mod tests {
             )
             .is_err(),
         )?;
-        require(matches!(
+        require(
             verify_native_boot_retained_source_inputs_v20(
                 &operation,
                 &publication,
@@ -652,70 +776,7 @@ mod tests {
                 &registry,
                 gate,
                 &mut budget()?,
-            ),
-            Err(IndexError::ResourceLimited)
-        ))?;
-        let (mut admitted_budget, _) = scoped(1_000_000, false)?;
-        require(
-            verify_native_boot_retained_source_inputs_v20(
-                &operation,
-                &publication,
-                &stored_request,
-                &stored_profile,
-                &registry,
-                gate,
-                &mut admitted_budget,
-            )? == Some(instance.instance),
-        )?;
-        let (mut live_budget, _) = scoped(1_000_000, false)?;
-        require(
-            verify_native_boot_live_tree_inputs_v20(
-                &operation,
-                &publication,
-                &stored_request,
-                &stored_profile,
-                &registry,
-                gate,
-                &mut live_budget,
-            )? == Some(instance.instance),
-        )?;
-        let (mut current_budget, _) = scoped(1_000_000, false)?;
-        require(
-            verify_native_boot_current_tree_profile_v20(
-                &publication,
-                &stored_profile,
-                &registry,
-                gate,
-                true,
-                &mut current_budget,
-            )? == Some(instance.instance),
-        )?;
-        // A later Reconfigure may retire the old member map while its BOOT
-        // request/profile stay protected. The current head then has no old
-        // Text member to open during restart.
-        let mut reconfigured_view = publication.clone();
-        reconfigured_view.profile = ObjectRef(Digest([99; 32]));
-        let reconfigured_profile = object(
-            reconfigured_view.profile,
-            serde_json::to_vec(&IndexProfile {
-                instances: vec![InstanceSpec {
-                    policy: current,
-                    ..instance.clone()
-                }],
-            })?,
-            Vec::new(),
-        )?;
-        let (mut current_budget, _) = scoped(1_000_000, false)?;
-        require(
-            verify_native_boot_current_tree_profile_v20(
-                &reconfigured_view,
-                &reconfigured_profile,
-                &registry,
-                gate,
-                true,
-                &mut current_budget,
-            )?
-            .is_none(),
+            )? == Some((instance.instance, previous)),
         )?;
         for wrong in [Digest([13; 32]), Digest([0; 32])] {
             let invalid = object(
@@ -728,7 +789,6 @@ mod tests {
                 })?,
                 Vec::new(),
             )?;
-            let (mut admitted_budget, _) = scoped(1_000_000, false)?;
             require(
                 verify_native_boot_retained_source_inputs_v20(
                     &operation,
@@ -737,20 +797,348 @@ mod tests {
                     &invalid,
                     &registry,
                     gate,
-                    &mut admitted_budget,
+                    &mut budget()?,
                 )
                 .is_err(),
             )?;
-            let (mut live_budget, _) = scoped(1_000_000, false)?;
+        }
+        let current_without_literal = object(
+            publication.profile,
+            serde_json::to_vec(&IndexProfile {
+                instances: vec![InstanceSpec {
+                    policy: current,
+                    ..instance.clone()
+                }],
+            })?,
+            Vec::new(),
+        )?;
+        require(
+            verify_native_boot_inputs(
+                &operation,
+                &publication,
+                &stored_request,
+                &current_without_literal,
+                &registry,
+                &mut budget()?,
+            )
+            .is_err(),
+        )?;
+        require(
+            verify_native_boot_candidate_inputs(
+                &operation,
+                &publication,
+                &stored_request,
+                &current_without_literal,
+                &registry,
+                &mut budget()?,
+            )
+            .is_err(),
+        )?;
+        require(
+            verify_native_boot_retained_source_inputs_v20(
+                &operation,
+                &publication,
+                &stored_request,
+                &current_without_literal,
+                &registry,
+                gate,
+                &mut budget()?,
+            )? == Some((instance.instance, current)),
+        )?;
+        let literal_instance = InstanceSpec {
+            instance: IndexInstanceId([81; 16]),
+            kind: literal.kind,
+            group: PublicationGroupId([83; 16]),
+            activation: GroupActivation::CoreRequired,
+            input_domain: InputDomain::SourceLocal,
+            schema: literal.schema,
+            policy: current,
+            format: literal.format,
+        };
+        let mixed_current = InstanceSpec {
+            instance: IndexInstanceId([91; 16]),
+            policy: current,
+            ..instance.clone()
+        };
+        let current_tree = InstanceSpec {
+            policy: current,
+            ..instance.clone()
+        };
+        let another_current = InstanceSpec {
+            instance: IndexInstanceId([91; 16]),
+            group: PublicationGroupId([93; 16]),
+            ..current_tree.clone()
+        };
+        let current_with_companion = object(
+            publication.profile,
+            serde_json::to_vec(&IndexProfile {
+                instances: vec![
+                    current_tree.clone(),
+                    another_current.clone(),
+                    literal_instance.clone(),
+                ],
+            })?,
+            Vec::new(),
+        )?;
+        require(
+            verify_native_boot_inputs(
+                &operation,
+                &publication,
+                &stored_request,
+                &current_with_companion,
+                &registry,
+                &mut budget()?,
+            )
+            .is_ok(),
+        )?;
+        require(
+            verify_native_boot_retained_source_inputs_v20(
+                &operation,
+                &publication,
+                &stored_request,
+                &current_with_companion,
+                &registry,
+                gate,
+                &mut budget()?,
+            )?
+            .is_none(),
+        )?;
+        let current_twins_without_literal = object(
+            publication.profile,
+            serde_json::to_vec(&IndexProfile {
+                instances: vec![current_tree, another_current],
+            })?,
+            Vec::new(),
+        )?;
+        require(
+            verify_native_boot_retained_source_inputs_v20(
+                &operation,
+                &publication,
+                &stored_request,
+                &current_twins_without_literal,
+                &registry,
+                gate,
+                &mut budget()?,
+            )
+            .is_err(),
+        )?;
+        for specs in [
+            vec![instance.clone(), mixed_current],
+            vec![
+                instance.clone(),
+                InstanceSpec {
+                    format: StorageFormatId([86; 16]),
+                    ..literal_instance.clone()
+                },
+            ],
+            vec![
+                instance.clone(),
+                InstanceSpec {
+                    kind: IndexKind([87; 16]),
+                    ..literal_instance.clone()
+                },
+            ],
+            vec![
+                instance.clone(),
+                InstanceSpec {
+                    policy: Digest([88; 32]),
+                    ..literal_instance
+                },
+            ],
+        ] {
+            let invalid = object(
+                publication.profile,
+                serde_json::to_vec(&IndexProfile { instances: specs })?,
+                Vec::new(),
+            )?;
             require(
-                verify_native_boot_live_tree_inputs_v20(
+                verify_native_boot_retained_source_inputs_v20(
                     &operation,
                     &publication,
                     &stored_request,
                     &invalid,
                     &registry,
                     gate,
-                    &mut live_budget,
+                    &mut budget()?,
+                )
+                .is_err(),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retained_v20_segment_profiles_are_only_previous_source_witnesses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = request_rows()
+            .into_iter()
+            .next()
+            .ok_or(IndexError::Conflict)?;
+        let (operation, publication, stored_request, _) = fixture(&request)?;
+        for format in [StorageFormatId([76; 16]), StorageFormatId([77; 16])] {
+            let descriptor = AdapterDescriptor {
+                kind: IndexKind([72; 16]),
+                schema: SchemaId([74; 16]),
+                format,
+            };
+            let policy = Digest([12; 32]);
+            let text = InstanceSpec {
+                instance: IndexInstanceId([71; 16]),
+                kind: descriptor.kind,
+                group: PublicationGroupId([73; 16]),
+                activation: GroupActivation::CoreRequired,
+                input_domain: InputDomain::SourceLocal,
+                schema: descriptor.schema,
+                policy,
+                format,
+            };
+            let literal = AdapterDescriptor {
+                kind: IndexKind([82; 16]),
+                schema: SchemaId([84; 16]),
+                format: StorageFormatId([85; 16]),
+            };
+            let mut registry = AdapterRegistry::new();
+            registry.register(descriptor, CurrentTreeOnly(policy), |_| Ok(()))?;
+            registry.register(literal, CurrentTreeOnly(policy), |_| Ok(()))?;
+            registry.require_companion(descriptor.kind, literal)?;
+            let gate = RetainedSourceTextPolicyV20 {
+                descriptor,
+                previous: policy,
+                current: policy,
+            };
+            let profile =
+                |instances: Vec<InstanceSpec>| -> Result<StoredObject, Box<dyn std::error::Error>> {
+                    Ok(object(
+                        publication.profile,
+                        serde_json::to_vec(&IndexProfile { instances })?,
+                        Vec::new(),
+                    )?)
+                };
+            let lone = profile(vec![text.clone()])?;
+            require(
+                verify_native_boot_inputs(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &lone,
+                    &registry,
+                    &mut budget()?,
+                )
+                .is_err(),
+            )?;
+            require(
+                verify_native_boot_candidate_inputs(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &lone,
+                    &registry,
+                    &mut budget()?,
+                )
+                .is_err(),
+            )?;
+            require(
+                verify_native_boot_retained_source_inputs_v20(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &lone,
+                    &registry,
+                    gate,
+                    &mut budget()?,
+                )? == Some((text.instance, policy)),
+            )?;
+            for malformed in [
+                InstanceSpec {
+                    policy: Digest([13; 32]),
+                    ..text.clone()
+                },
+                InstanceSpec {
+                    format: StorageFormatId([75; 16]),
+                    ..text.clone()
+                },
+            ] {
+                require(
+                    verify_native_boot_retained_source_inputs_v20(
+                        &operation,
+                        &publication,
+                        &stored_request,
+                        &profile(vec![malformed])?,
+                        &registry,
+                        gate,
+                        &mut budget()?,
+                    )
+                    .is_err(),
+                )?;
+            }
+            let sibling = InstanceSpec {
+                instance: IndexInstanceId([81; 16]),
+                kind: literal.kind,
+                group: PublicationGroupId([83; 16]),
+                activation: GroupActivation::CoreRequired,
+                input_domain: InputDomain::SourceLocal,
+                schema: literal.schema,
+                policy,
+                format: literal.format,
+            };
+            let paired = profile(vec![text.clone(), sibling.clone()])?;
+            require(
+                verify_native_boot_inputs(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &paired,
+                    &registry,
+                    &mut budget()?,
+                )
+                .is_ok(),
+            )?;
+            require(
+                verify_native_boot_retained_source_inputs_v20(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &paired,
+                    &registry,
+                    gate,
+                    &mut budget()?,
+                )?
+                .is_none(),
+            )?;
+            require(
+                verify_native_boot_retained_source_inputs_v20(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &profile(vec![
+                        text.clone(),
+                        InstanceSpec {
+                            format: StorageFormatId([86; 16]),
+                            ..sibling
+                        },
+                    ])?,
+                    &registry,
+                    gate,
+                    &mut budget()?,
+                )
+                .is_err(),
+            )?;
+            require(
+                verify_native_boot_retained_source_inputs_v20(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &profile(vec![
+                        text.clone(),
+                        InstanceSpec {
+                            instance: IndexInstanceId([91; 16]),
+                            group: PublicationGroupId([93; 16]),
+                            ..text
+                        },
+                    ])?,
+                    &registry,
+                    gate,
+                    &mut budget()?,
                 )
                 .is_err(),
             )?;
@@ -817,6 +1205,7 @@ mod tests {
             UpdateKind::HistoryAppend(append) => append.profile,
             UpdateKind::SourceHistoryAdvance(transition)
             | UpdateKind::SourceHistoryResync { transition, .. } => transition.history.profile,
+            UpdateKind::SourceHistoryBootstrap(transition) => transition.history.profile,
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceResync { .. }
             | UpdateKind::ProjectionAdvance(_)
@@ -875,6 +1264,76 @@ mod tests {
                 &mut budget()?,
             )?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn native_initial_boot_requires_first_source_and_exact_required_history_profile()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut request = request_rows()
+            .into_iter()
+            .find(|request| matches!(&request.kind, UpdateKind::SourceHistoryBootstrap(_)))
+            .ok_or(IndexError::Conflict)?;
+        let UpdateKind::SourceHistoryBootstrap(transition) = &mut request.kind else {
+            return Err(IndexError::Conflict.into());
+        };
+        transition.source.expected_source = SourceCut {
+            owners: MapRoot(None),
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        };
+        let instance = transition.history.instance;
+        let (operation, publication, stored_request, _) = fixture(&request)?;
+        let target = IndexProfile {
+            instances: vec![quanta_index_core::index::InstanceSpec {
+                instance,
+                kind: IndexKind([1; 16]),
+                group: PublicationGroupId([1; 16]),
+                activation: GroupActivation::CoreRequired,
+                input_domain: InputDomain::History,
+                schema: SchemaId([1; 16]),
+                policy: Digest([1; 32]),
+                format: StorageFormatId([1; 16]),
+            }],
+        };
+        let stored_profile = object(publication.profile, serde_json::to_vec(&target)?, vec![])?;
+        let mut visited = false;
+        require(
+            with_native_boot_source_history_initial_v1(
+                &operation,
+                &publication,
+                &stored_request,
+                &stored_profile,
+                &mut budget()?,
+                |history, _| {
+                    visited = history.instance == instance;
+                    Ok(())
+                },
+            )?
+            .is_some()
+                && visited,
+        )?;
+        let mut wrong = request.clone();
+        let UpdateKind::SourceHistoryBootstrap(transition) = &mut wrong.kind else {
+            return Err(IndexError::Conflict.into());
+        };
+        transition.source.expected_source.owners = MapRoot(Some(ObjectRef(Digest([9; 32]))));
+        let wrong_request = object(
+            operation.request,
+            serde_json::to_vec(&wrong)?,
+            request_preparation::children(&wrong).as_slice().to_vec(),
+        )?;
+        require(matches!(
+            with_native_boot_source_history_initial_v1(
+                &operation,
+                &publication,
+                &wrong_request,
+                &stored_profile,
+                &mut budget()?,
+                |_, _| Ok(()),
+            ),
+            Err(IndexError::DigestConflict)
+        ))?;
         Ok(())
     }
 
@@ -1298,6 +1757,279 @@ mod tests {
         require(ledger.live() == 0)?;
         Ok(())
     }
+    #[test]
+    fn source_history_recovery_binds_the_prior_and_published_profiles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceTargetV1;
+        use quanta_index_core::index::{SourceEvent, SourceOperationMode, SourceTextAdmission};
+
+        for mut request in request_rows().into_iter().filter(|request| {
+            matches!(
+                &request.kind,
+                UpdateKind::SourceHistoryBootstrap(_) | UpdateKind::SourceHistoryAdvance(_)
+            )
+        }) {
+            let key = request.operation;
+            let source = match &mut request.kind {
+                UpdateKind::SourceHistoryBootstrap(pair) => &mut pair.source,
+                UpdateKind::SourceHistoryAdvance(pair) => &mut pair.source,
+                _ => return Err(IndexError::Conflict.into()),
+            };
+            source.expected_source = SourceCut {
+                owners: MapRoot(None),
+                paths: MapRoot(None),
+                frontiers: MapRoot(None),
+            };
+            source.events = vec![SourceEvent {
+                producer: key.producer,
+                stream: key.stream,
+                stream_epoch: key.stream_epoch,
+                predecessor: 0,
+                sequence: 1,
+                payload: Digest([71; 32]),
+            }];
+            let expected_source = source.expected_source;
+            let (operation, publication, _, _) = fixture(&request)?;
+            let mut prior = publication.clone();
+            prior.identity = request.expected_view;
+            prior.profile = ObjectRef(Digest([72; 32]));
+            prior.source = expected_source;
+            let target = NativeCutoverEvidenceTargetV1 {
+                operation: key,
+                expected_view: prior.identity,
+                expected_source,
+                expected_profile: prior.profile,
+                source_mode: SourceOperationMode::Advance,
+                event_predecessor: 0,
+                event_sequence: 1,
+                owner_identity_policy_digest: Digest([73; 32]),
+                text_admission: SourceTextAdmission::Excluded,
+                canonical_target_digest: Digest([74; 32]),
+            };
+            let work = budget()?;
+            verify_native_published_source_history_target_v1(
+                &target,
+                &request,
+                &operation,
+                &publication,
+                &prior,
+                operation.request,
+                &work,
+            )?;
+            let mut wrong_prior = prior.clone();
+            wrong_prior.profile = publication.profile;
+            require(matches!(
+                verify_native_published_source_history_target_v1(
+                    &target,
+                    &request,
+                    &operation,
+                    &publication,
+                    &wrong_prior,
+                    operation.request,
+                    &work,
+                ),
+                Err(IndexError::DigestConflict)
+            ))?;
+            wrong_prior = prior.clone();
+            wrong_prior.identity.digest = Digest([75; 32]);
+            require(matches!(
+                verify_native_published_source_history_target_v1(
+                    &target,
+                    &request,
+                    &operation,
+                    &publication,
+                    &wrong_prior,
+                    operation.request,
+                    &work,
+                ),
+                Err(IndexError::DigestConflict)
+            ))?;
+            let mut wrong_publication = publication.clone();
+            wrong_publication.profile = prior.profile;
+            require(matches!(
+                verify_native_published_source_history_target_v1(
+                    &target,
+                    &request,
+                    &operation,
+                    &wrong_publication,
+                    &prior,
+                    operation.request,
+                    &work,
+                ),
+                Err(IndexError::DigestConflict)
+            ))?;
+            require(matches!(
+                verify_native_published_source_history_target_v1(
+                    &target,
+                    &request,
+                    &operation,
+                    &publication,
+                    &prior,
+                    prior.profile,
+                    &work,
+                ),
+                Err(IndexError::DigestConflict)
+            ))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_resync_recovery_requires_exact_epoch_event_and_publication()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceTargetV1;
+        use quanta_index_core::index::{SourceEvent, SourceOperationMode, SourceTextAdmission};
+
+        for with_history in [false, true] {
+            let mut request = request_rows()
+                .into_iter()
+                .find(|request| {
+                    if with_history {
+                        matches!(request.kind, UpdateKind::SourceHistoryResync { .. })
+                    } else {
+                        matches!(request.kind, UpdateKind::SourceResync { .. })
+                    }
+                })
+                .ok_or(IndexError::Conflict)?;
+            let (prior_epoch, transition) = match &mut request.kind {
+                UpdateKind::SourceResync {
+                    prior_epoch,
+                    transition,
+                } => (prior_epoch, transition),
+                UpdateKind::SourceHistoryResync {
+                    prior_epoch,
+                    transition,
+                } => (prior_epoch, &mut transition.source),
+                _ => return Err(IndexError::Conflict.into()),
+            };
+            *prior_epoch = 7;
+            request.operation.stream_epoch = 8;
+            let key = request.operation;
+            transition.events = vec![SourceEvent {
+                producer: key.producer,
+                stream: key.stream,
+                stream_epoch: key.stream_epoch,
+                predecessor: 0,
+                sequence: 1,
+                payload: transition.owner_digest()?,
+            }];
+            let expected_source = transition.expected_source;
+            let (operation, publication, _, _) = fixture(&request)?;
+            let mut prior = publication.clone();
+            prior.identity = request.expected_view;
+            prior.source = expected_source;
+            if with_history {
+                prior.profile = ObjectRef(Digest([76; 32]));
+            }
+            let target = NativeCutoverEvidenceTargetV1 {
+                operation: key,
+                expected_view: prior.identity,
+                expected_source,
+                expected_profile: prior.profile,
+                source_mode: SourceOperationMode::Resync { prior_epoch: 7 },
+                event_predecessor: 0,
+                event_sequence: 1,
+                owner_identity_policy_digest: Digest([77; 32]),
+                text_admission: SourceTextAdmission::Excluded,
+                canonical_target_digest: Digest([78; 32]),
+            };
+            let work = budget()?;
+            let validate = |target: &NativeCutoverEvidenceTargetV1,
+                            request: &UpdateRequest,
+                            operation: &ImmutableOperation,
+                            request_ref| {
+                if with_history {
+                    verify_native_published_source_history_target_v1(
+                        target,
+                        request,
+                        operation,
+                        &publication,
+                        &prior,
+                        request_ref,
+                        &work,
+                    )
+                } else {
+                    verify_native_published_source_target_v1(
+                        target,
+                        request,
+                        operation,
+                        publication.identity,
+                        publication.profile,
+                        request_ref,
+                        &work,
+                    )
+                }
+            };
+            validate(&target, &request, &operation, operation.request)?;
+            require(matches!(
+                validate(&target, &request, &operation, ObjectRef(Digest([79; 32]))),
+                Err(IndexError::DigestConflict)
+            ))?;
+            let mut wrong_request = request.clone();
+            let mut wrong_target = target;
+            let mut wrong_operation = operation;
+            match &mut wrong_request.kind {
+                UpdateKind::SourceResync { prior_epoch, .. }
+                | UpdateKind::SourceHistoryResync { prior_epoch, .. } => {
+                    *prior_epoch = 6;
+                }
+                _ => return Err(IndexError::Conflict.into()),
+            }
+            wrong_target.source_mode = wrong_request.kind.source_mode();
+            wrong_operation.source_mode = wrong_target.source_mode;
+            require(matches!(
+                validate(
+                    &wrong_target,
+                    &wrong_request,
+                    &wrong_operation,
+                    operation.request
+                ),
+                Err(IndexError::DigestConflict)
+            ))?;
+            let mut shifted_request = request.clone();
+            let shifted_source = match &mut shifted_request.kind {
+                UpdateKind::SourceResync { transition, .. } => transition,
+                UpdateKind::SourceHistoryResync { transition, .. } => &mut transition.source,
+                _ => return Err(IndexError::Conflict.into()),
+            };
+            let event = shifted_source
+                .events
+                .first_mut()
+                .ok_or(IndexError::Conflict)?;
+            event.predecessor = 1;
+            event.sequence = 2;
+            let shifted_target = NativeCutoverEvidenceTargetV1 {
+                event_predecessor: 1,
+                event_sequence: 2,
+                ..target
+            };
+            require(matches!(
+                validate(
+                    &shifted_target,
+                    &shifted_request,
+                    &operation,
+                    operation.request
+                ),
+                Err(IndexError::DigestConflict)
+            ))?;
+            if !with_history {
+                require(matches!(
+                    verify_native_published_full_target_v1(
+                        &target,
+                        &request,
+                        &operation,
+                        publication.identity,
+                        publication.profile,
+                        operation.request,
+                        &work,
+                    ),
+                    Err(IndexError::DigestConflict)
+                ))?;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn original_full_target_binds_actual_request_and_published_profile()
     -> Result<(), Box<dyn std::error::Error>> {

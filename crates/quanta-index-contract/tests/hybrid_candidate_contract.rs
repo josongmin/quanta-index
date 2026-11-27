@@ -46,12 +46,17 @@ fn lexical_row(id: &str, score: f32) -> LexicalCandidate {
             .expect("static fixture ID satisfies canonical policy"),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/search.rs"),
-        start_line: 10,
-        end_line: 18,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 10,
+            end_line: 18,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "fn search_plane() {}".to_owned(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score,
-        snippet: "fn search_plane() {}".to_owned(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 

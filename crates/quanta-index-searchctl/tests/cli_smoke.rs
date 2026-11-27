@@ -23,9 +23,9 @@ use quanta_index_contract::{
     EngineTouched, ExplainCandidateV1, GenerationPin, HybridCandidateV1, HybridLaneContributionV1,
     HybridLaneV1, HybridQueryResponse, HybridSeedQueryResponse, LexicalCandidate,
     ManifestGeneration, PlannerStage, PlannerTraceEntry, QueryResultWindowV2, RepoId,
-    RepoRelativePath, RevisionId, SearchExplanation, SearchPlaneErrorCodeV2,
-    SearchPlaneExplainQueryResponse, SearchPlaneIpcError, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    RepoRelativePath, RevisionId, SearchExplanation,
+    SearchPlaneErrorCodeV2, SearchPlaneExplainQueryResponse, SearchPlaneIpcError,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SemanticQueryResponse, TextQueryResponse, TextQuerySyntax,
 };
 use quanta_index_ipc::{IpcDispatcher, RequestBudgetV1, UdsServer};
@@ -639,6 +639,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             other @ (SearchPlaneControlIpcRequest::ReserveSearchCorpusGenerationV1(_)
             | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
+
             | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
             | SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(
@@ -1546,12 +1547,17 @@ fn stub_candidate(generation: GenerationPin) -> LexicalCandidate {
         revision_id: generation.revision_id,
         manifest_generation: generation.manifest_generation,
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        start_line: 10,
-        end_line: 14,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 10,
+            end_line: 14,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "fn main() {\n    println!(\"hi\");\n}".to_string(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        }),
         score: 0.91,
-        snippet: "fn main() {\n    println!(\"hi\");\n}".to_string(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+        native_source: None,
     }
 }
 

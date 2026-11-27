@@ -7,7 +7,7 @@ use quanta_index_searchd_harness::native_index::{
     native_dsl_history_config, native_dsl_scenario_roster,
 };
 use sha2::Digest as _;
-use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 const EXPORT_ROOT: &str = "QUANTA_INDEX_NATIVE_DSL_HISTORY_EXPORT_ROOT";
@@ -85,7 +85,7 @@ fn daemon_binary(export: bool) -> TestResult<(PathBuf, String)> {
         return Err(format!("export requires absolute {DAEMON_BIN} and {DAEMON_SHA256}").into());
     }
     let path = std::fs::canonicalize(
-        supplied.unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-searchd"))),
+        supplied.unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_quanta-index-searchd-fixture"))),
     )?;
     let digest = sha256(&path)?;
     if expected
@@ -98,8 +98,6 @@ fn daemon_binary(export: bool) -> TestResult<(PathBuf, String)> {
 }
 
 fn write_private_json(path: &Path, value: &serde_json::Value) -> TestResult {
-    use std::os::unix::fs::OpenOptionsExt as _;
-
     let mut output = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -122,8 +120,7 @@ fn native_history_dsl_fixed_ledger_warm_cold() -> TestResult {
     let mut root = FixtureRoot::new(export, &source_checkout)?;
     let (full, _, full_input, _) = publish_in_legacy_child_with_fixture(true)?;
     let state = root.path().join("state");
-    std::fs::create_dir(&state)?;
-    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::DirBuilder::new().mode(0o700).create(&state)?;
     let socket = root.path().join("native.sock");
     let running = NativeServiceGuard::start(history_service(&state, &socket)?);
     let published = (|| -> TestResult<(ViewRef, HistorySourceCutV1)> {
@@ -147,6 +144,11 @@ fn native_history_dsl_fixed_ledger_warm_cold() -> TestResult {
         }
     };
     running.stop()?;
+    // The in-process producer inherits the test runner's umask. Seal its
+    // Catalog before handing the drained fixture to the separate daemon.
+    let catalog =
+        quanta_index_catalog::catalog_dir(&state).join(quanta_index_catalog::CATALOG_FILE_NAME);
+    std::fs::File::open(catalog)?.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     let open_key = [91_u8; 32];
     let descriptor = serde_json::json!({
         "socket": socket,

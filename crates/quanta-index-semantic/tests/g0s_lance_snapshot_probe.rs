@@ -1,4 +1,4 @@
-//! G0-S — `LanceDB` snapshot reuse probe (W0 decision gate).
+//! G0-S — Lance snapshot reuse probe (W0 decision gate).
 //!
 //! The semantic lane currently materializes a delta generation by byte-copying
 //! the whole base dataset (`prepare_staging_dataset` -> `copy_dir`). The
@@ -9,11 +9,11 @@
 //!    rewritten under a generation that still points at it)
 //! 2. Can a generation be materialized by hard-linking a base dataset, then
 //!    mutated, without touching the base bytes?
-//! 3. Can writes branch from an older-than-latest version *in place*? The
-//!    upstream contract says a checked-out table refuses modification; this
-//!    pins that as observed behavior rather than documentation.
-//! 4. After pruning, does a pinned old version fail closed rather than
+//! 3. After pruning, does a pinned old version fail closed rather than
 //!    silently serving a different row set?
+//!
+//! The retired LanceDB Table checkout mutation rule is tested separately in
+//! the isolated `tools/lance-upstream-oracle` package.
 //!
 //! ANN recall under delete/refill is deliberately not probed here: the semantic
 //! owner tests already hold an exhaustive exact-cosine oracle, and mixing a
@@ -23,17 +23,10 @@
 //! Emits `G0S-EVIDENCE` lines; run with `-- --nocapture` for the gate ADR.
 
 #![forbid(unsafe_code)]
-// The probe drives lancedb's own futures, which are not `Send`, on a
-// current-thread runtime it owns. Both the non-`Send` futures and the
-// `block_on` seam are deliberate and local to this target — the same shape the
-// semantic owner tests already use for direct lancedb inspection.
+// The probe owns a current-thread runtime for direct Lance inspection.
 #![expect(
     clippy::future_not_send,
-    reason = "lancedb's futures are not Send; the probe owns a current-thread runtime and never moves them across threads"
-)]
-#![expect(
-    clippy::disallowed_methods,
-    reason = "test-only direct lancedb inspection; the sync seam is the probe's own runtime"
+    reason = "the probe owns a current-thread runtime and never moves dataset futures across threads"
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,7 +39,8 @@ use std::sync::Arc;
 use arrow_array::types::Float32Type;
 use arrow_array::{Array as _, FixedSizeListArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use lancedb::query::{ExecutableQuery as _, QueryBase as _};
+use lance::Dataset;
+use lance::dataset::{builder::DatasetBuilder, cleanup::CleanupPolicyBuilder};
 use sha2::{Digest as _, Sha256};
 
 type ProbeResult = Result<(), Box<dyn Error>>;
@@ -127,40 +121,26 @@ fn dataset_uri(path: &Path) -> Result<String, Box<dyn Error>> {
         .ok_or_else(|| "probe dataset path is not valid UTF-8".into())
 }
 
-async fn connect(path: &Path) -> Result<lancedb::Connection, Box<dyn Error>> {
+async fn create_base_table(path: &Path) -> Result<Dataset, Box<dyn Error>> {
     std::fs::create_dir_all(path)?;
-    Ok(lancedb::connect(&dataset_uri(path)?).execute().await?)
-}
-
-async fn create_base_table(path: &Path) -> Result<lancedb::Table, Box<dyn Error>> {
-    let connection = connect(path).await?;
-    let table = connection
-        .create_empty_table(TABLE_NAME, probe_schema())
-        .execute()
-        .await?;
+    let uri = dataset_uri(&path.join(format!("{TABLE_NAME}.lance")))?;
     let indices: Vec<usize> = (0..BASE_ROW_COUNT).collect();
-    let _added = table.add(batch_for(&indices)?).execute().await?;
-    Ok(table)
+    let batch = batch_for(&indices)?;
+    let reader = arrow_array::RecordBatchIterator::new(std::iter::once(Ok(batch)), probe_schema());
+    Ok(Dataset::write(reader, uri.as_str(), None).await?)
 }
 
-async fn open_table(path: &Path) -> Result<lancedb::Table, Box<dyn Error>> {
-    Ok(connect(path)
-        .await?
-        .open_table(TABLE_NAME)
-        .execute()
-        .await?)
+async fn open_table(path: &Path) -> Result<Dataset, Box<dyn Error>> {
+    let uri = dataset_uri(&path.join(format!("{TABLE_NAME}.lance")))?;
+    Ok(DatasetBuilder::from_uri(&uri).load().await?)
 }
 
 /// Row ids present in the table, sorted. The independent oracle for every
 /// membership assertion in this probe.
-async fn live_row_ids(table: &lancedb::Table) -> Result<Vec<String>, Box<dyn Error>> {
+async fn live_row_ids(table: &Dataset) -> Result<Vec<String>, Box<dyn Error>> {
     use futures::TryStreamExt as _;
 
-    let mut stream = table
-        .query()
-        .select(lancedb::query::Select::columns(&["row_id"]))
-        .execute()
-        .await?;
+    let mut stream = table.scan().try_into_stream().await?;
     let mut ids: Vec<String> = Vec::new();
     while let Some(batch) = stream.try_next().await? {
         let column = batch
@@ -301,16 +281,16 @@ fn lance_dataset_files_are_immutable_across_versions() -> ProbeResult {
     let dir = tempfile::tempdir()?;
     let dataset = dir.path().join("dataset");
     runtime()?.block_on(async {
-        let table = create_base_table(&dataset).await?;
-        let first_version = table.version().await?;
+        let mut table = create_base_table(&dataset).await?;
+        let first_version = table.version().version;
         let before = inventory(&dataset)?;
 
-        let _added = table
-            .add(batch_for(&[90_001, 90_002, 90_003])?)
-            .execute()
-            .await?;
+        let batch = batch_for(&[90_001, 90_002, 90_003])?;
+        let reader =
+            arrow_array::RecordBatchIterator::new(std::iter::once(Ok(batch)), probe_schema());
+        table.append(reader, None).await?;
         let _deleted = table.delete(delete_row_predicate(7).as_str()).await?;
-        let second_version = table.version().await?;
+        let second_version = table.version().version;
         let after = inventory(&dataset)?;
 
         let mut rewritten: Vec<String> = Vec::new();
@@ -345,7 +325,7 @@ fn lance_dataset_files_are_immutable_across_versions() -> ProbeResult {
         }
         if !rewritten.is_empty() {
             return Err(format!(
-                "lancedb rewrote files that an earlier version still names: {rewritten:?}"
+                "Lance rewrote files that an earlier version still names: {rewritten:?}"
             )
             .into());
         }
@@ -370,11 +350,16 @@ fn hard_linked_lance_base_supports_a_delta_without_rewriting_base_bytes() -> Pro
 
         let linked = hard_link_tree(&base, &delta)?;
 
-        let delta_table = open_table(&delta).await?;
+        let mut delta_table = open_table(&delta).await?;
         let _deleted = delta_table
             .delete(delete_row_predicate(7).as_str())
             .await?;
-        let _added = delta_table.add(batch_for(&[90_001])?).execute().await?;
+        let batch = batch_for(&[90_001])?;
+        let reader = arrow_array::RecordBatchIterator::new(
+            std::iter::once(Ok(batch)),
+            probe_schema(),
+        );
+        delta_table.append(reader, None).await?;
 
         let base_inventory_after = inventory(&base)?;
         let (fresh, fresh_files, shared_files) = fresh_against(&delta, &base_inodes)?;
@@ -428,82 +413,29 @@ fn hard_linked_lance_base_supports_a_delta_without_rewriting_base_bytes() -> Pro
     })
 }
 
-/// (3) Writes must not branch from an older-than-latest version in place.
-///
-/// This pins the rejected alternative. If this ever starts succeeding, the
-/// layout decision in the G0-S ADR has to be revisited deliberately rather
-/// than drifting.
-#[test]
-fn lance_refuses_to_mutate_a_checked_out_older_version() -> ProbeResult {
-    let dir = tempfile::tempdir()?;
-    let dataset = dir.path().join("dataset");
-    runtime()?.block_on(async {
-        let table = create_base_table(&dataset).await?;
-        let base_version = table.version().await?;
-        let base_ids = live_row_ids(&table).await?;
-
-        let _deleted = table.delete(delete_row_predicate(7).as_str()).await?;
-        let latest_version = table.version().await?;
-
-        table.checkout(base_version).await?;
-        let checked_out_ids = live_row_ids(&table).await?;
-
-        let branch_attempt = table.add(batch_for(&[90_001])?).execute().await;
-
-        evidence(
-            "old_version_branch",
-            &[
-                ("base_version", base_version.to_string()),
-                ("latest_version", latest_version.to_string()),
-                ("checked_out_row_count", checked_out_ids.len().to_string()),
-                ("branch_write_rejected", branch_attempt.is_err().to_string()),
-                (
-                    "branch_write_error",
-                    branch_attempt.as_ref().err().map_or_else(
-                        || "none".to_string(),
-                        |err| format!("{err}").replace(' ', "_"),
-                    ),
-                ),
-            ],
-        );
-
-        if checked_out_ids != base_ids {
-            return Err("checked-out base version did not reproduce the base row set".into());
-        }
-        if branch_attempt.is_ok() {
-            return Err(
-                "lancedb accepted a write against a checked-out older version; the G0-S layout decision must be revisited"
-                    .into(),
-            );
-        }
-        Ok::<(), Box<dyn Error>>(())
-    })
-}
-
-/// (4) A pruned version must fail closed, never serve a different row set.
+/// (3) A pruned version must fail closed, never serve a different row set.
 #[test]
 fn pruned_version_fails_closed_instead_of_serving_a_different_row_set() -> ProbeResult {
     let dir = tempfile::tempdir()?;
     let dataset = dir.path().join("dataset");
     runtime()?.block_on(async {
-        let table = create_base_table(&dataset).await?;
-        let base_version = table.version().await?;
+        let mut table = create_base_table(&dataset).await?;
+        let base_version = table.version().version;
         let base_ids = live_row_ids(&table).await?;
         let base_row_count = base_ids.len();
 
         let _deleted = table.delete(delete_row_predicate(7).as_str()).await?;
-        let stats = table
-            .optimize(lancedb::table::OptimizeAction::Prune {
-                older_than: Some(lancedb::table::Duration::seconds(0)),
-                delete_unverified: Some(true),
-                error_if_tagged_old_versions: Some(false),
-            })
-            .await?;
+        let policy = CleanupPolicyBuilder::default()
+            .before_timestamp(table.version().timestamp + std::time::Duration::from_secs(1))
+            .delete_unverified(true)
+            .error_if_tagged_old_versions(false)
+            .build();
+        let stats = table.cleanup_with_policy(policy).await?;
 
-        let pruned_versions = stats.prune.map_or(0, |prune| prune.old_versions);
-        let checkout_attempt = table.checkout(base_version).await;
-        let post_prune_ids = if checkout_attempt.is_ok() {
-            live_row_ids(&table).await?
+        let pruned_versions = stats.old_versions;
+        let checkout_attempt = table.checkout_version(base_version).await;
+        let post_prune_ids = if let Ok(checked_out) = &checkout_attempt {
+            live_row_ids(checked_out).await?
         } else {
             Vec::new()
         };

@@ -338,6 +338,7 @@ fn overlay_fast_oracle_rejects_empty_and_durable_replacement_hits() -> TestResul
         },
         hits: vec![NativeOverlayTextHit {
             owner,
+            repository: None,
             path: OVERLAY_REPLACEMENT_PATH.into(),
             source: NativeOverlayTextSource::Overlay { revision: 1 },
             score: FiniteScore::new(1.0)?,
@@ -755,6 +756,7 @@ fn overlay_quality_oracle_rejects_misordered_page_and_foreign_revision() -> Test
 
 pub(super) fn overlay_quality_sweep(
     client: &NativeUdsClient,
+    live: &LivePublisher<'_>,
     selected: ViewRef,
     instance: IndexInstanceId,
     session: NativeOverlaySession,
@@ -762,7 +764,7 @@ pub(super) fn overlay_quality_sweep(
     rows: &[(String, Vec<f32>)],
     owners: (OwnerKey, OwnerKey),
     deadline: Instant,
-) -> TestResult<(Digest, u64)> {
+) -> TestResult<Digest> {
     let (overlay_owner, deleted_owner) = owners;
     let view = client.read_view(
         ViewSelection::Exact(selected),
@@ -777,21 +779,13 @@ pub(super) fn overlay_quality_sweep(
     };
     let mut matches = 0_usize;
     let mut corpus_identity = None;
-    let mut publisher_sequence = 0_u64;
     let mut overlay_owner_seen = false;
     for seed in 0..config.queries {
         require(
             Instant::now() < deadline,
             format!("ANN overlay quality watchdog expired at seed {seed}"),
         )?;
-        publisher_sequence = publisher_sequence
-            .checked_add(1)
-            .ok_or("ANN overlay publisher sequence overflow")?;
-        client.renew_interaction_publisher(
-            session.publisher,
-            publisher_sequence,
-            &budget().capped_at(deadline),
-        )?;
+        live.renew()?;
         let result = overlay_quality_query(
             client,
             &selection,
@@ -845,14 +839,7 @@ pub(super) fn overlay_quality_sweep(
             Instant::now() < deadline,
             format!("ANN overlay exact-path watchdog expired at {path}"),
         )?;
-        publisher_sequence = publisher_sequence
-            .checked_add(1)
-            .ok_or("ANN overlay exact-path publisher sequence overflow")?;
-        client.renew_interaction_publisher(
-            session.publisher,
-            publisher_sequence,
-            &budget().capped_at(deadline),
-        )?;
+        live.renew()?;
         let result = overlay_quality_query(
             client,
             &selection,
@@ -941,5 +928,5 @@ pub(super) fn overlay_quality_sweep(
         Instant::now() < deadline,
         "ANN overlay quality watchdog expired after final path",
     )?;
-    Ok((corpus_identity, publisher_sequence))
+    Ok(corpus_identity)
 }

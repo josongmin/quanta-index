@@ -35,3 +35,26 @@ def test_guard_covers_non_crates_workspace_member(tmp_path: Path, monkeypatch, c
     monkeypatch.setattr(module, "ROOT", tmp_path)
     assert module.main() == 1
     assert "benchmarks/retrieval/src/lib.rs" in capsys.readouterr().out
+
+
+def test_duplicate_lint_guard_reads_attributes_not_comments_or_strings(tmp_path: Path):
+    module = _load_module()
+    source = tmp_path / "src/lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "// #[expect(clippy::multiple_crate_versions)]\n"
+        'const EXAMPLE: &str = "#[expect(clippy::multiple_crate_versions)]";\n',
+        encoding="utf-8",
+    )
+    assert module.local_duplicate_lint_overrides(tmp_path) == []
+
+    source.write_text(
+        "#[expect(clippy :: multiple_crate_versions)]\nfn example() {}\n", encoding="utf-8"
+    )
+    assert module.local_duplicate_lint_overrides(tmp_path) == [source]
+
+    source.write_text(
+        "#[cfg_attr(test, expect(clippy::multiple_crate_versions))]\nfn example() {}\n",
+        encoding="utf-8",
+    )
+    assert module.local_duplicate_lint_overrides(tmp_path) == [source]

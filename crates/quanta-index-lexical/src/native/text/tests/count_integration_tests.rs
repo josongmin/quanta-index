@@ -1,6 +1,8 @@
 use super::super::super::text_query::{Bm25Policy, NativeTextRanking, TextContentExecution};
 use super::*;
-use quanta_index_contract::{LqCase, LqCountBound, LqExpr, LqLeaf, LqQuery, LqSpan};
+use quanta_index_contract::{
+    LqCase, LqCountBound, LqExpr, LqLeaf, LqQuery, LqSpan, parse_native_content_query,
+};
 use quanta_index_core::index::FiniteScore;
 
 fn ranked_page(
@@ -8,9 +10,18 @@ fn ranked_page(
     constraints: &quanta_index_contract::QueryConstraintSetV1,
     after: Option<(FiniteScore, OwnerKey)>,
 ) -> Result<NativeTextRanking, IndexError> {
+    ranked_page_with_plan(fixture, &keyword_plan(None)?, constraints, after)
+}
+
+fn ranked_page_with_plan(
+    fixture: &VisitorFixture,
+    plan: &crate::plan::LexicalPlan,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
+    after: Option<(FiniteScore, OwnerKey)>,
+) -> Result<NativeTextRanking, IndexError> {
     NativeTextIndex::new(fixture.recipe).search_content_with_overlay(
         &fixture.member,
-        &keyword_plan(None)?,
+        plan,
         constraints,
         TextContentExecution {
             top_k: 1,
@@ -146,6 +157,72 @@ fn rank_after_pages_keep_full_match_total_and_authoritative_remaining() -> Resul
     if terminal.matched != 2 || terminal.remaining != 0 || !terminal.hits.is_empty() {
         return Err(IndexError::BackendViolation(
             "terminal page inferred remaining from full matched total".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn boolean_rank_after_pages_keep_only_scores_from_matched_branches() -> Result<(), IndexError> {
+    let (fixture, second) = two_owner_phrase_fixture()?;
+    let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+    // N=2, avgdl=4. The first body has three `one` and one `gap` in
+    // six tokens; the second has one `one` and no `gap` in two tokens.
+    let bm25 = |df: f64, tf: f64, length: f64| {
+        let idf = ((2.0 - df + 0.5) / (df + 0.5)).ln_1p();
+        let norm = 0.25 + 0.75 * length / 4.0;
+        idf * ((1.0 + 1.2_f64.recip()) / (1.2_f64.recip() + norm / tf))
+    };
+    let common_first = bm25(2.0, 3.0, 6.0);
+    let common_second = bm25(2.0, 1.0, 2.0);
+    let first_with_gap = bm25(1.0, 1.0, 6.0) + common_first;
+    let cursor = |score, owner| {
+        FiniteScore::new(score)
+            .map(|score| (score, owner))
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))
+    };
+    for (raw, first_score) in [
+        ("one OR gap case:yes", first_with_gap),
+        (
+            "(gap AND file.contains('absent')) OR one case:yes",
+            common_first,
+        ),
+    ] {
+        let parsed = parse_native_content_query(raw)
+            .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        let plan = crate::planner::LexicalPlanner::plan(&parsed)
+            .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        let first = ranked_page_with_plan(&fixture, &plan, &constraints, None)?;
+        let after = cursor(first_score, fixture.owner)?;
+        let next = ranked_page_with_plan(&fixture, &plan, &constraints, Some(after))?;
+        for (page, expected_remaining, expected_owner, expected_score) in [
+            (first, 2, fixture.owner, first_score),
+            (next, 1, second, common_second),
+        ] {
+            let [hit] = page.hits.as_slice() else {
+                return Err(IndexError::BackendViolation(format!(
+                    "{raw}: expected one hit at remaining {expected_remaining}"
+                )));
+            };
+            check_eq!((page.matched, page.remaining), (2, expected_remaining));
+            check_eq!(
+                (hit.owner, hit.score.to_bits()),
+                (expected_owner, expected_score.to_bits())
+            );
+        }
+        let terminal = ranked_page_with_plan(
+            &fixture,
+            &plan,
+            &constraints,
+            Some(cursor(common_second, second)?),
+        )?;
+        check_eq!((terminal.matched, terminal.remaining), (2, 0));
+        check!(terminal.hits.is_empty());
+
+        let forged = cursor(f64::from_bits(first_score.to_bits() + 1), fixture.owner)?;
+        check!(matches!(
+            ranked_page_with_plan(&fixture, &plan, &constraints, Some(forged)),
+            Err(IndexError::InvalidInput(_))
         ));
     }
     Ok(())

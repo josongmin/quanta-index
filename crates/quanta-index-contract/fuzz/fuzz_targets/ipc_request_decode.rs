@@ -19,8 +19,8 @@ use std::io::Cursor;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
-    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest,
-    RepoMapSourceBundle, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
+    HistoryQueryRequest, HybridQueryRequest, HybridSeedQueryRequest, RepoMapSourceBundle,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,

@@ -27,7 +27,7 @@ pub(super) struct InheritedCustodyV1 {
 }
 
 pub(super) struct RetainedEvidenceV1 {
-    pub(super) facts: wire::NativeCutoverEvidenceV1,
+    pub(super) facts: wire::NativeCutoverEvidenceEnvelopeV1,
     _memory: MemoryLease,
 }
 
@@ -89,7 +89,7 @@ impl InheritedCustodyV1 {
             .reserve_memory(EVIDENCE_MEMORY, MemoryLifetime::Temporary)?
             .ok_or_else(|| anyhow!("cutover evidence requires original admitted memory"))?;
         let bytes = read_sealed_evidence_v1(&self.evidence, length, expected, budget)?;
-        let facts = wire::decode_native_cutover_evidence_v1(&bytes)?;
+        let facts = wire::decode_native_cutover_evidence_envelope_v1(&bytes)?;
         drop(bytes);
         budget.checkpoint()?;
         Ok(RetainedEvidenceV1 {
@@ -102,11 +102,10 @@ impl InheritedCustodyV1 {
     /// Never explicitly unlock these descriptors: parent and child share OFDs.
     pub(super) fn revalidate_locks_v1(
         &self,
-        evidence: &wire::NativeCutoverEvidenceV1,
+        header: &wire::NativeCutoverEvidenceHeaderV1,
         sdk_lock_path: &Path,
         budget: &mut WorkBudget,
     ) -> Result<()> {
-        let header = &evidence.header;
         require_original_host_namespace_lock_v1(&self.host, &header.host, budget)?;
         require_original_exclusive_lock_v1(&self.sdk, sdk_lock_path, header.sdk_lock_file, budget)?;
         ensure!(
@@ -164,11 +163,7 @@ fn require_original_history_writer_fence_v1(
     budget: &mut WorkBudget,
 ) -> Result<()> {
     const NAME: &str = ".history-source-writer.lock";
-    charge(
-        budget,
-        4,
-        u64::try_from(writer_root.as_os_str().as_encoded_bytes().len())?,
-    )?;
+    charge(budget, 4, u64::try_from(writer_root.as_os_str().as_encoded_bytes().len())?)?;
     ensure!(
         writer_root.is_absolute()
             && !writer_root.components().any(|component| {
@@ -216,11 +211,7 @@ fn require_original_history_writer_fence_v1(
     // A fresh file description must be excluded by the inherited EX lock.
     match flock(&probe, FlockOperation::NonBlockingLockShared) {
         Err(rustix::io::Errno::WOULDBLOCK) => {}
-        Ok(()) => {
-            return Err(anyhow!(
-                "inherited History fence did not exclude another reader"
-            ));
-        }
+        Ok(()) => return Err(anyhow!("inherited History fence did not exclude another reader")),
         Err(error) => return Err(error.into()),
     }
     flock(held, FlockOperation::NonBlockingLockExclusive)?;

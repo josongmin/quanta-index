@@ -110,6 +110,12 @@ impl<R> QueryOutcome<R> {
         &self.result
     }
 
+    /// Mutable access to the result, for moving out detachable parts such as
+    /// a captured rank order before conversion.
+    pub const fn result_mut(&mut self) -> &mut R {
+        &mut self.result
+    }
+
     #[must_use]
     pub fn into_result(self) -> R {
         self.result

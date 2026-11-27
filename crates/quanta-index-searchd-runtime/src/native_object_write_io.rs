@@ -231,7 +231,10 @@ mod ann_enospc;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
+    use crate::publication_inventory::{
+        PublicationBootInventoryLimits, seed_publication_capacity,
+        seed_publication_capacity_stock_catalog,
+    };
     use crate::{
         native_object_read_io::NativeObjectReadIo, native_object_reclaim_io::NativeObjectReclaimIo,
         native_scratch_io::NativeScratchIo,
@@ -524,7 +527,7 @@ mod tests {
         }
     }
 
-    fn regular_census(
+    fn managed_regular_census(
         root: &Path,
         capacity: &PublicationCapacity,
     ) -> Result<(u64, u64, Vec<PathBuf>), Box<dyn std::error::Error>> {
@@ -536,18 +539,42 @@ mod tests {
             for entry in fs::read_dir(directory)? {
                 let entry = entry?;
                 let metadata = fs::symlink_metadata(entry.path())?;
+                let path = entry.path();
                 if metadata.is_dir() {
-                    directories.push(entry.path());
-                } else if metadata.is_file() && inodes.insert((metadata.dev(), metadata.ino())) {
-                    bytes = bytes
-                        .checked_add(metadata.len())
-                        .ok_or("census byte overflow")?;
+                    directories.push(path);
+                } else if metadata.is_file() {
+                    let relative = path.strip_prefix(root)?;
                     let inode = quanta_index_core::publication_capacity::InodeKey {
                         device: metadata.dev(),
                         inode: metadata.ino(),
                     };
-                    if capacity.retained_inode(inode, metadata.len())?.is_none() {
-                        untracked.push(entry.path().strip_prefix(root)?.to_path_buf());
+                    let retained = capacity.retained_inode(inode, metadata.len())?;
+                    if relative.parent() == Some(Path::new("catalog"))
+                        && matches!(
+                            relative.file_name().and_then(std::ffi::OsStr::to_str),
+                            Some(
+                                "catalog-v1.sqlite"
+                                    | "catalog-v1.sqlite-wal"
+                                    | "catalog-v1.sqlite-shm"
+                                    | "catalog-v1.sqlite-journal"
+                            )
+                        )
+                    {
+                        require(
+                            metadata.nlink() == 1 && retained.is_none(),
+                            "stock Catalog files must be singly linked and outside the application ledger",
+                        )?;
+                        continue;
+                    }
+                    require(
+                        inodes.insert((metadata.dev(), metadata.ino())),
+                        "duplicate inode in private fixture",
+                    )?;
+                    bytes = bytes
+                        .checked_add(metadata.len())
+                        .ok_or("census byte overflow")?;
+                    if retained.is_none() {
+                        untracked.push(relative.to_path_buf());
                     }
                 } else {
                     return Err("unexpected entry in private fixture".into());
@@ -564,7 +591,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let lease = StateRootLease::acquire(&directory.path().join("state"))?;
         let root = lease.state_root_identity_v1().to_path_buf();
-        let capacity = seed_publication_capacity(
+        let capacity = seed_publication_capacity_stock_catalog(
             &lease,
             &root,
             PublicationBootInventoryLimits {
@@ -578,22 +605,30 @@ mod tests {
             &[],
             &RequestBudgetV1::unbounded(),
         )?;
-        let common = PublicationFileCapacity::new(lease, capacity.clone(), 32, 256, 256)?;
-        let io = NativeScratchIo::register(
-            Arc::clone(&common),
-            std::ffi::CString::new("quanta-publication-capacity")?,
-            512,
+        let common = PublicationFileCapacity::new_with_maintenance(
+            lease,
+            capacity.clone(),
+            32,
+            256,
+            256,
+            256 * 1024,
+            8,
         )?;
-        let scratch = Arc::new(FileScratchSpace::open_managed_with_io(
-            root.join("scratch"),
-            1024 * 1024,
-            io.clone(),
-        )?);
-        let catalog = Arc::new(quanta_index_catalog::SqliteCatalog::open_with_io_admission(
-            &root,
-            Duration::from_secs(2),
-            io.clone(),
-        )?);
+        let io = NativeScratchIo::register_with_maintenance(Arc::clone(&common), 512)?;
+        let scratch = Arc::new(
+            FileScratchSpace::open_managed_with_io(root.join("scratch"), 1024 * 1024, io.clone())?
+                .into_quota_managed_stock()?,
+        );
+        let catalog = {
+            let _funding = io.enter_maintenance_scope()?;
+            Arc::new(
+                quanta_index_catalog::SqliteCatalog::open_with_stock_vfs_and_io_admission(
+                    &root,
+                    Duration::from_secs(2),
+                    io.clone(),
+                )?,
+            )
+        };
         let store_root = root.join("object-store");
         let lock_path = store_root.join(".object-namespace.lease");
         io.prepare_lock(&lock_path)?;
@@ -731,16 +766,17 @@ mod tests {
                 && loaded.registration.children.as_slice() == [child],
             "qualified batch changed fixed parent/children gold",
         )?;
-        let before = regular_census(&root, &capacity)?;
+        let before = managed_regular_census(&root, &capacity)?;
         let replay = store.install_batch(&inputs, &sink, &mut work)?;
         require(
             replay == installed,
             "qualified replay changed registration identity",
         )?;
-        let observed = regular_census(&root, &capacity)?;
+        let observed = managed_regular_census(&root, &capacity)?;
         let charged = capacity.snapshot()?;
-        if charged.used_bytes != observed.0
-            || charged.used_files != observed.1
+        let (free_maintenance_bytes, free_maintenance_files) = common.maintenance_available()?;
+        if charged.used_bytes.checked_sub(free_maintenance_bytes) != Some(observed.0)
+            || charged.used_files.checked_sub(free_maintenance_files) != Some(observed.1)
             || charged.active_tickets != 0
             || !observed.2.is_empty()
         {
@@ -767,7 +803,7 @@ mod tests {
             "session lock creation bypassed the common file ceiling",
         )?;
         require(
-            regular_census(&root, &capacity)?.1 == observed.1,
+            managed_regular_census(&root, &capacity)?.1 == observed.1,
             "refused session creation left an unadmitted file",
         )?;
         drop(all_files);
@@ -779,11 +815,18 @@ mod tests {
             "real session recovery did not drain dead and refused creation custody",
         )?;
         let after_recovery = capacity.snapshot()?;
-        let recovered_census = regular_census(&root, &capacity)?;
+        let recovered_census = managed_regular_census(&root, &capacity)?;
+        let (free_maintenance_bytes, free_maintenance_files) = common.maintenance_available()?;
         require(
             after_recovery.used_files.checked_add(1) == Some(before_recovery.used_files)
-                && after_recovery.used_bytes == recovered_census.0
-                && after_recovery.used_files == recovered_census.1
+                && after_recovery
+                    .used_bytes
+                    .checked_sub(free_maintenance_bytes)
+                    == Some(recovered_census.0)
+                && after_recovery
+                    .used_files
+                    .checked_sub(free_maintenance_files)
+                    == Some(recovered_census.1)
                 && recovered_census.2.is_empty(),
             "session retirement failed exact physical refund or census parity",
         )?;
@@ -950,6 +993,47 @@ mod tests {
             "original/pin close left an artificial reader",
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn no_replace_rejects_staged_writer_in_detached_parent() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(128)?;
+        let (objects, shard) = private_object_tree(&root)?;
+        let baseline = capacity.snapshot()?;
+        let target = shard.join("object");
+        let temporary = shard.join(".tmp-object");
+        let io = NativeObjectWriteIo::new(common);
+        let mut ticket = io.begin(&target, &temporary, 9, &mut budget()?)?;
+        let mut writer = born(ticket.as_mut(), &temporary)?;
+        writer.write_all(b"new-bytes")?;
+
+        let detached = objects.join("detached-shard");
+        fs::rename(&shard, &detached)?;
+        fs::create_dir(&shard)?;
+        fs::set_permissions(&shard, fs::Permissions::from_mode(0o700))?;
+        let result = ticket.publish_declared_temp(&writer, &target);
+        let pending = capacity.snapshot()?;
+        require(
+            matches!(result, Err(IndexError::Storage(message))
+                if message.contains("mutation parent incarnation changed"))
+                && !target.exists()
+                && !detached.join("object").exists()
+                && fs::read(detached.join(".tmp-object"))? == b"new-bytes",
+            "detached parent admitted publication or lost the original temporary",
+        )?;
+        require(
+            Some(pending.used_bytes) == baseline.used_bytes.checked_add(9)
+                && Some(pending.active_tickets) == baseline.active_tickets.checked_add(1),
+            "a refused publication released its original pending reservation",
+        )?;
+        fs::remove_dir(&shard)?;
+        fs::rename(&detached, &shard)?;
+        ticket.cancel(writer)?;
+        drop(ticket);
+        require(
+            !target.exists() && !temporary.exists() && capacity.snapshot()? == baseline,
+            "restored parent could not retire the original output reservation",
+        )
     }
 
     #[test]

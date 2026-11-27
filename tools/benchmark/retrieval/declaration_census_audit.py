@@ -274,7 +274,14 @@ def file_set_sha256(language: str, raws: dict[str, bytes]) -> str:
     return _sha(json.dumps([[path, _sha(raws[path])] for path in selected]).encode("utf-8"))
 
 
-def audit_files(language: str, view: Path, paths: list[str]) -> dict[str, Any]:
+def audit_files(
+    language: str,
+    view: Path,
+    paths: list[str],
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
     """Compare both censuses for every listed file of one language in one view."""
     if language not in CHECKER_IDS:
         raise CensusAuditError("unsupported census audit language")
@@ -297,58 +304,60 @@ def audit_files(language: str, view: Path, paths: list[str]) -> dict[str, Any]:
         else {}
     )
     refused, disagreements, admitted_paths, declarations = [], [], [], 0
-    for path in selected:
-        raw = raws[path]
-        try:
-            tree_sitter = {
-                (start, raw[start:end])
-                for start, end, *_definition in source_oracle.declaration_census(
-                    language, path, raw
-                )
-            }
-        except source_oracle.SourceOracleError as exc:
-            tree_sitter = exc
-        try:
-            if language == "python":
-                independent = _python_ast(raw)
-            else:
-                row = external[view / path]
-                if "error" in row:
-                    raise CensusAuditError(row["error"])
-                if language == "rust":
-                    independent = _rust_offsets(raw, row["declarations"])
-                else:
-                    independent = {
-                        (offset, name.encode("utf-8"))
-                        for name, _kind, offset in row["declarations"]
-                    }
-        except CensusAuditError as exc:
-            independent = exc
-        failures = [
-            (side, str(value))
-            for side, value in (("tree_sitter", tree_sitter), ("independent", independent))
-            if isinstance(value, Exception)
-        ]
-        if failures:
-            refused.append({"path": path, "refusals": [list(row) for row in failures]})
-            continue
-        if tree_sitter != independent:
-            disagreements.append(
-                {
-                    "path": path,
-                    "only_tree_sitter": sorted(
-                        [start, name.decode("utf-8", "replace")]
-                        for start, name in tree_sitter - independent
-                    ),
-                    "only_independent": sorted(
-                        [start, name.decode("utf-8", "replace")]
-                        for start, name in independent - tree_sitter
-                    ),
+    with source_oracle.declaration_census_session(
+        language,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
+    ) as census:
+        for path in selected:
+            raw = raws[path]
+            try:
+                tree_sitter = {
+                    (start, raw[start:end]) for start, end, *_definition in census(path, raw)
                 }
-            )
-            continue
-        admitted_paths.append(path)
-        declarations += len(tree_sitter)
+            except source_oracle.SourceOracleError as exc:
+                tree_sitter = exc
+            try:
+                if language == "python":
+                    independent = _python_ast(raw)
+                else:
+                    row = external[view / path]
+                    if "error" in row:
+                        raise CensusAuditError(row["error"])
+                    if language == "rust":
+                        independent = _rust_offsets(raw, row["declarations"])
+                    else:
+                        independent = {
+                            (offset, name.encode("utf-8"))
+                            for name, _kind, offset in row["declarations"]
+                        }
+            except CensusAuditError as exc:
+                independent = exc
+            failures = [
+                (side, str(value))
+                for side, value in (("tree_sitter", tree_sitter), ("independent", independent))
+                if isinstance(value, Exception)
+            ]
+            if failures:
+                refused.append({"path": path, "refusals": [list(row) for row in failures]})
+                continue
+            if tree_sitter != independent:
+                disagreements.append(
+                    {
+                        "path": path,
+                        "only_tree_sitter": sorted(
+                            [start, name.decode("utf-8", "replace")]
+                            for start, name in tree_sitter - independent
+                        ),
+                        "only_independent": sorted(
+                            [start, name.decode("utf-8", "replace")]
+                            for start, name in independent - tree_sitter
+                        ),
+                    }
+                )
+                continue
+            admitted_paths.append(path)
+            declarations += len(tree_sitter)
     checker_after = checker_identity(language)
     if checker_after != checker_before:
         raise CensusAuditError("census checker changed during audit")

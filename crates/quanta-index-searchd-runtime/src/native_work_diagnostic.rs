@@ -1120,6 +1120,7 @@ fn encode_owned(
                 UpdateKind::Materialize { claim } => Some(claim),
                 UpdateKind::SourceAdvance(_)
                 | UpdateKind::SourceHistoryAdvance(_)
+                | UpdateKind::SourceHistoryBootstrap(_)
                 | UpdateKind::SourceResync { .. }
                 | UpdateKind::SourceHistoryResync { .. }
                 | UpdateKind::ProjectionAdvance(_)

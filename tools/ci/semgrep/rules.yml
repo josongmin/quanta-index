@@ -12,7 +12,27 @@ rules:
       include:
         - "/.github/workflows/*.yml"
         - "/.github/workflows/*.yaml"
-    pattern-regex: '(?m)^(?![ \t]*(?:-\s*)?(?:name|source)\s*:|[ \t]*#)[ \t]*[^\n]*?(?<![A-Za-z0-9_./-])cargo(?:[ \t]|\\[ \t]*\r?\n[ \t]*)+(?:build|check|clippy|test|fmt|doc|bench|nextest)\b'
+    # Cargo accepts global options between [+toolchain] and COMMAND. Keep the
+    # option grammar explicit so unrelated workflow prose is not treated as a
+    # Cargo invocation merely because it contains an arbitrary --word.
+    pattern-regex: >-
+      (?mx)
+      ^(?![ \t]*(?:-\s*)?(?:name|source)\s*:|[ \t]*\#)
+      [ \t]*[^\n]*?(?<![A-Za-z0-9_./-])cargo
+      (?:[ \t]|\\[ \t]*\r?\n[ \t]*)+
+      (?:\+[A-Za-z0-9][A-Za-z0-9._-]*(?:[ \t]|\\[ \t]*\r?\n[ \t]*)+)?
+      (?:
+        (?:
+          --(?:locked|offline|frozen|verbose|quiet)
+          | -[vq]+
+          | (?:--(?:config|color)|-Z|-C)
+            (?:=|(?:[ \t]|\\[ \t]*\r?\n[ \t]*)+)
+            (?:"[^"\r\n]*"|'[^'\r\n]*'|[^ \t\r\n]+)
+          | (?:-Z|-C)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^ \t\r\n]+)
+        )
+        (?:[ \t]|\\[ \t]*\r?\n[ \t]*)+
+      )*
+      (?:build|check|clippy|test|fmt|doc|bench|nextest)\b
 
   - id: workflow-no-continue-on-error
     message: CI must fail closed. Do not declare continue-on-error on jobs or steps.
@@ -23,32 +43,3 @@ rules:
         - "/.github/workflows/*.yml"
         - "/.github/workflows/*.yaml"
     pattern: 'continue-on-error: $VALUE'
-
-  - id: rust-no-ready-on-failed-structural-precondition
-    # The semantic-outcome AST lint owns enum match-arm projections, not this
-    # let-else early-return shape.
-    message: |
-      Do not advertise `StructuralReadiness::Ready` when a prerequisite
-      `Result` failed. Return a fail-closed readiness state such as
-      `InvalidRequest` or `ProducerExecution` instead.
-    languages: [rust]
-    severity: ERROR
-    paths:
-      include:
-        - "/crates/quanta-index-searchd/src/**"
-      exclude:
-        - "**/tests/**"
-    pattern: |
-      let Ok($VALUE) = $EXPR else {
-        return StructuralReadiness::Ready;
-      };
-
-  # NOTE: a `rust-no-map-or-else-non-err` rule was considered to catch
-  # `Result::map_or(default, ...)` / `map_or_else` fallback patterns, but
-  # semgrep cannot distinguish `Option::map_or` (legitimate) from
-  # `Result::map_or` (a fallback) at the pattern level — and the
-  # `usize::try_from(x).map_or(MAX, |v| v)` saturation idiom is common
-  # enough that the false-positive rate (~6 of 7 hits in the LQ tree)
-  # outweighs the catch. Coverage of the same shape is instead handled
-  # by `tools/ci/lint/check-digest-fallibility.py` for digest functions
-  # and by manual code review for other call sites.

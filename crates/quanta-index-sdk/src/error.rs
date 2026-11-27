@@ -46,6 +46,11 @@ pub enum SdkError {
     #[error("protocol: {0}")]
     Protocol(String),
 
+    /// A typed Native read refusal on the default `.text()` route of a Native
+    /// connection, kept exactly as the Native SDK reported it.
+    #[error("native: {0}")]
+    Native(Box<crate::NativeQueryError>),
+
     #[error("serialization: {0}")]
     Serialization(String),
 
@@ -108,6 +113,7 @@ impl SdkError {
             | Self::Binding { .. }
             | Self::PlaneUnavailable { .. }
             | Self::Remote { .. }
+            | Self::Native(_)
             | Self::UnsupportedNativeQuery { .. } => None,
         }
     }
@@ -124,6 +130,7 @@ impl SdkError {
             | Self::Binding { .. }
             | Self::PlaneUnavailable { .. }
             | Self::Remote { .. }
+            | Self::Native(_)
             | Self::UnsupportedNativeQuery { .. } => None,
         }
     }

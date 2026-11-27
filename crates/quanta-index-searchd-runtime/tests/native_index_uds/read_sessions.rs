@@ -71,14 +71,12 @@ fn read_session_service_with_retention_and_work_limits(
     retention: Option<NativeRetentionConfig>,
     limits: WorkLimits,
 ) -> TestResult<NativeIndexService> {
-    read_session_service_with_reclaim(
-        root,
-        socket,
-        lease,
-        retention,
-        limits,
-        test_reclaim_config(),
-    )
+    let reclaim = if retention.is_some() {
+        release_bounded_reclaim_config()
+    } else {
+        test_reclaim_config()
+    };
+    read_session_service_with_reclaim(root, socket, lease, retention, limits, reclaim)
 }
 
 fn read_session_service_with_reclaim(
@@ -89,6 +87,85 @@ fn read_session_service_with_reclaim(
     limits: WorkLimits,
     reclaim: NativeReclaimConfig,
 ) -> TestResult<NativeIndexService> {
+    read_session_service_with_text_port(root, socket, lease, retention, limits, reclaim, |reader| {
+        reader
+    })
+}
+
+/// The read-session service with its Text reader wrapped by `text_port`.
+fn read_session_service_with_text_port<A>(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    lease: Duration,
+    retention: Option<NativeRetentionConfig>,
+    limits: WorkLimits,
+    reclaim: NativeReclaimConfig,
+    text_port: impl FnOnce(NativeTextReader) -> A,
+) -> TestResult<NativeIndexService>
+where
+    A: IndexQueryPort<PlannedTextRead, TextReadResult> + 'static,
+{
+    read_session_service_configured(
+        root,
+        socket,
+        lease,
+        retention,
+        limits,
+        reclaim,
+        NativeReadSessionConfig::default(),
+        text_port,
+    )
+}
+
+/// [`read_session_service`] with an explicit read-session configuration.
+pub(super) fn read_session_service_with_config(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    lease: Duration,
+    config: NativeReadSessionConfig,
+) -> TestResult<NativeIndexService> {
+    let retention = NativeRetentionConfig {
+        scopes: vec![NativeRetentionScope {
+            workspace: workspace(),
+            epoch: 1,
+        }],
+        sequence_window: 1,
+        page_limit: 8,
+        custody_page_limit: 8,
+        interval: Duration::from_millis(20),
+        round_timeout: Duration::from_secs(2),
+        work_limits: work_limits(),
+        head_probe_every: 2,
+    };
+    read_session_service_configured(
+        root,
+        socket,
+        lease,
+        Some(retention),
+        work_limits(),
+        release_bounded_reclaim_config(),
+        config,
+        |reader| reader,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test fixture threading every service knob"
+)]
+fn read_session_service_configured<A>(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+    lease: Duration,
+    retention: Option<NativeRetentionConfig>,
+    limits: WorkLimits,
+    reclaim: NativeReclaimConfig,
+    config: NativeReadSessionConfig,
+    text_port: impl FnOnce(NativeTextReader) -> A,
+) -> TestResult<NativeIndexService>
+where
+    A: IndexQueryPort<PlannedTextRead, TextReadResult> + 'static,
+{
     let resources = read_session_resources(lease);
     let recipe = TextRecipe::new(Digest([31; 32]));
     let spec = native_text_spec();
@@ -107,11 +184,13 @@ fn read_session_service_with_reclaim(
         provider_units: 0,
         ..resources.execution.interactive
     };
-    capabilities.text.register(
-        descriptor,
-        read_need,
-        NativeTextReader::new(recipe, Bm25Policy { k1: 1.2, b: 0.75 }, read_need)?,
-    )?;
+    let reader = NativeTextReader::new(recipe, Bm25Policy { k1: 1.2, b: 0.75 }, read_need)?;
+    capabilities
+        .text_matches
+        .register(descriptor, read_need, reader.match_reader())?;
+    capabilities
+        .text
+        .register(descriptor, read_need, text_port(reader))?;
     let service = NativeIndexService::bind_with_retention(
         root,
         socket,
@@ -121,7 +200,7 @@ fn read_session_service_with_reclaim(
         Some(reclaim),
         retention,
     )?;
-    service.configure_read_sessions(NativeReadSessionConfig::default())?;
+    service.configure_read_sessions(config)?;
     Ok(service)
 }
 
@@ -283,9 +362,19 @@ fn prepare_text_mutations_in_ingress<P: AsRef<std::path::Path>>(
     ingress: IngressRef,
     mutations: impl IntoIterator<Item = OwnerMutation>,
 ) -> TestResult<UpdateRequest> {
+    prepare_text_mutations_in_ingress_with_budget(client, expected, ingress, mutations, &budget())
+}
+
+fn prepare_text_mutations_in_ingress_with_budget<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
+    expected: quanta_index_contract::index::ViewRef,
+    ingress: IngressRef,
+    mutations: impl IntoIterator<Item = OwnerMutation>,
+    mutation_budget: &RequestBudgetV1,
+) -> TestResult<UpdateRequest> {
     let sequence = ingress.operation.sequence;
     let prior = client.read_view(ViewSelection::Exact(expected), &budget())?;
-    let owners = client.stage_mutations(ingress, mutations, &budget())?;
+    let owners = client.stage_mutations(ingress, mutations, mutation_budget)?;
     let event_sequence = sequence
         .checked_sub(1)
         .ok_or("read-session event sequence underflow")?;

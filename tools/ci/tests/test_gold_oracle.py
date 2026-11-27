@@ -532,9 +532,17 @@ def test_gold_batch_replays_global_split_twice_and_publishes_independent_capsule
     for name, identity in identities.items():
         assert identity["schema_version"] == 2
         assert identity["producer_source_digests"] == binding._gold_producer_source_digests()
-        assert {"python", "unicode", "tree_sitter", "tree_sitter_language_pack"} == set(
-            identity["parser_runtime"]
-        )
+        assert {
+            "python",
+            "unicode",
+            "tree_sitter",
+            "tree_sitter_language_pack",
+            "tree_sitter_go",
+            "tree_sitter_javascript",
+            "tree_sitter_python",
+            "tree_sitter_rust",
+            "tree_sitter_typescript",
+        } == set(identity["parser_runtime"])
         assert binding.validate_gold(target / name) == identity
         selection = json.loads((target / name / "selection.json").read_bytes())
         assert selection["repository"] == name
@@ -971,12 +979,31 @@ def test_census_disagreement_requires_query_specific_text_absence(tmp_path, monk
             for path, raw in sorted(files.items())
         ],
     }
+
+    def census_audits(refused_paths, disagreement_paths):
+        def audit(
+            _recipe,
+            _sources,
+            _view,
+            *,
+            candidate_manifest_path=None,
+            candidate_manifest_sha256=None,
+        ):
+            assert candidate_manifest_path is None
+            assert candidate_manifest_sha256 is None
+            return {
+                "python": {
+                    "refused_paths": refused_paths,
+                    "disagreement_paths": disagreement_paths,
+                }
+            }
+
+        return audit
+
     monkeypatch.setattr(
         gold_oracle,
         "_census_audits",
-        lambda _recipe, _sources, _view: {
-            "python": {"refused_paths": [], "disagreement_paths": ["disputed.py"]}
-        },
+        census_audits([], ["disputed.py"]),
     )
     value = v2_recipe(
         "holdout",
@@ -998,9 +1025,7 @@ def test_census_disagreement_requires_query_specific_text_absence(tmp_path, monk
     monkeypatch.setattr(
         gold_oracle,
         "_census_audits",
-        lambda _recipe, _sources, _view: {
-            "python": {"refused_paths": ["disputed.py"], "disagreement_paths": []}
-        },
+        census_audits(["disputed.py"], []),
     )
     gold, _blind = gold_oracle.derive(value, manifest, view)
     target, other = gold["tasks"]

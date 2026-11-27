@@ -176,13 +176,20 @@ pub(super) trait SourceSaveIntentPort: Send + Sync {
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError>;
 
+    /// Authenticate a new save against the overlay row's exact identity.
+    ///
+    /// A row that asserts a repository saves only into it: the durable
+    /// owner's repository in the base view, or the `repository_witness`'s
+    /// repository for an unsaved new file. A new file without a witness
+    /// asserts none; the producer-staged record's repository is authoritative.
     fn authenticate_save_intent(
         &self,
         intent: &NativeOverlaySaveIntent,
         content_digest: Option<Digest>,
         path_digest: Option<Digest>,
+        repository_witness: Option<OwnerKey>,
         budget: &mut WorkBudget,
-    ) -> Result<ObjectRef, IndexError>;
+    ) -> Result<(ObjectRef, Option<Digest>), IndexError>;
 }
 
 /// The port verifies source-CAS success, not merely an ingress or transport
@@ -213,6 +220,7 @@ pub(super) struct OverlaySnapshot {
     pub revision: u64,
     pub text: Option<Arc<str>>,
     pub path: Option<Arc<str>>,
+    pub repository_witness: Option<OwnerKey>,
     _memory: Option<MemoryLease>,
     _path_memory: Option<MemoryLease>,
 }
@@ -222,12 +230,18 @@ pub(super) struct OverlayMaskSnapshot {
     pub memory: MemoryLease,
 }
 
+/// One captured slot of an overlay corpus snapshot.
+///
+/// `repository_witness` is the caller's durable repository anchor for a new
+/// file. The store cannot see a view; every query checks it against the
+/// selected view before the row joins the lexical corpus.
 pub(super) struct OverlayCorpusDocument {
     pub owner: OwnerKey,
     pub revision: u64,
     pub retired: bool,
     pub text: Option<Arc<str>>,
     pub path: Option<Arc<str>>,
+    pub repository_witness: Option<OwnerKey>,
     changed_at: Instant,
     _text_memory: Option<MemoryLease>,
     _path_memory: Option<MemoryLease>,
@@ -244,6 +258,7 @@ struct DocumentEntry {
     revision: u64,
     text: Option<Arc<str>>,
     path: Option<Arc<str>>,
+    repository_witness: Option<OwnerKey>,
     bytes: usize,
     save_binding: Option<BoundSave>,
     retired: bool,
@@ -273,7 +288,6 @@ impl BoundSave {
         intent: &NativeOverlaySaveIntent,
         request: ObjectRef,
         digest: Option<Digest>,
-        path_digest: Option<Digest>,
     ) -> bool {
         self.document == intent.document
             && self.revision == intent.revision
@@ -281,7 +295,6 @@ impl BoundSave {
             && self.request == request
             && self.expected_source == intent.expected_source
             && self.content_digest == digest
-            && self.path_digest == path_digest
     }
 }
 
@@ -334,6 +347,13 @@ fn corpus_identity(
             } else {
                 hasher.update([0]);
             }
+        }
+        if let Some(witness) = row.repository_witness {
+            hasher.update([1]);
+            hasher.update(witness.producer.0);
+            hasher.update(witness.stable_id.0);
+        } else {
+            hasher.update([0]);
         }
     }
     Ok(Digest(hasher.finalize().into()))
@@ -486,6 +506,9 @@ impl NativeOverlay {
 
     /// Prepare retained backing under the original request's memory scope
     /// before changing any visible slot. `None` represents an unsaved delete.
+    ///
+    /// A repository witness accompanies only an explicit new-file path and
+    /// is verified against each query's selected view, not here.
     pub(super) fn update(
         &self,
         document: OverlayDocumentKey,
@@ -493,6 +516,7 @@ impl NativeOverlay {
         revision: u64,
         text: Option<&str>,
         path: Option<&str>,
+        repository_witness: Option<OwnerKey>,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         self.check_publisher(document.session, budget)?;
@@ -501,11 +525,16 @@ impl NativeOverlay {
                 "Native overlay revision must advance".into(),
             ));
         }
-        if path.is_some_and(|value| !crate::native_source_path::valid_native_source_path(value))
+        if path.is_some_and(|value| !quanta_index_contract::index::is_canonical_source_path(value))
             || (text.is_none() && path.is_some())
         {
             return Err(IndexError::InvalidInput(
                 "Native overlay path is invalid for this revision".into(),
+            ));
+        }
+        if repository_witness.is_some_and(|witness| path.is_none() || witness == document.owner) {
+            return Err(IndexError::InvalidInput(
+                "Native overlay repository witness needs a new-file path and another owner".into(),
             ));
         }
         let text_bytes = text.map_or(0, str::len);
@@ -591,6 +620,7 @@ impl NativeOverlay {
             let old_memory = std::mem::replace(&mut entry.payload_memory, payload_memory);
             let old_path = std::mem::replace(&mut entry.path, owned_path);
             let old_path_memory = std::mem::replace(&mut entry.path_memory, path_memory);
+            entry.repository_witness = repository_witness;
             entry.revision = revision;
             entry.bytes = bytes;
             entry.save_binding = None;
@@ -608,6 +638,7 @@ impl NativeOverlay {
                     revision,
                     text: owned,
                     path: owned_path,
+                    repository_witness,
                     bytes,
                     save_binding: None,
                     retired: false,
@@ -653,6 +684,7 @@ impl NativeOverlay {
             revision: entry.revision,
             text: entry.text.clone(),
             path: entry.path.clone(),
+            repository_witness: entry.repository_witness,
             _memory: entry.payload_memory.clone(),
             _path_memory: entry.path_memory.clone(),
         });
@@ -760,6 +792,7 @@ impl NativeOverlay {
                 retired: entry.retired,
                 text: entry.text.clone(),
                 path: entry.path.clone(),
+                repository_witness: entry.repository_witness,
                 changed_at: entry.changed_at,
                 _text_memory: entry.payload_memory.clone(),
                 _path_memory: entry.path_memory.clone(),
@@ -820,6 +853,7 @@ impl NativeOverlay {
                 || entry.retired != captured.retired
                 || !same_arc(entry.text.as_ref(), captured.text.as_ref())
                 || !same_arc(entry.path.as_ref(), captured.path.as_ref())
+                || entry.repository_witness != captured.repository_witness
                 || entry.changed_at != captured.changed_at
             {
                 return Err(IndexError::Conflict);
@@ -852,6 +886,7 @@ impl NativeOverlay {
                 || entry.retired != captured.retired
                 || !same_arc(entry.text.as_ref(), captured.text.as_ref())
                 || !same_arc(entry.path.as_ref(), captured.path.as_ref())
+                || entry.repository_witness != captured.repository_witness
                 || entry.changed_at != captured.changed_at
             {
                 return Err(IndexError::Conflict);
@@ -880,7 +915,7 @@ impl NativeOverlay {
         {
             return Err(IndexError::Conflict);
         }
-        let (expected_digest, expected_path_digest, already_bound) = {
+        let (expected_digest, expected_path_digest, repository_witness, already_bound) = {
             let state = self.lock()?;
             let entry = Self::session(&state, key)?
                 .documents
@@ -908,16 +943,18 @@ impl NativeOverlay {
                 )
             };
             let already_bound = entry.save_binding.is_some();
+            let witness = entry.repository_witness;
             drop(state);
-            (digest, path, already_bound)
+            (digest, path, witness, already_bound)
         };
-        let request = if already_bound {
-            authority.identify_save_request(intent, budget)?
+        let (request, authenticated_path_digest) = if already_bound {
+            (authority.identify_save_request(intent, budget)?, None)
         } else {
             authority.authenticate_save_intent(
                 intent,
                 expected_digest,
                 expected_path_digest,
+                repository_witness,
                 budget,
             )?
         };
@@ -937,6 +974,18 @@ impl NativeOverlay {
                 "Native overlay saved state lacks its receipt".into(),
             ));
         }
+        if let Some(bound) = entry.save_binding {
+            // Another caller may have bound and retired this same request
+            // while authority was checked. Its inherited path digest is no
+            // longer the row's original optional path; the bound identity is
+            // the stable retry authority.
+            let same = bound.matches_intent(intent, request, expected_digest);
+            drop(state);
+            if !same {
+                return Err(IndexError::Conflict);
+            }
+            return Ok(());
+        }
         let current_digest = if entry.retired {
             entry
                 .save_binding
@@ -950,14 +999,6 @@ impl NativeOverlay {
         if current_digest != Some((expected_digest, expected_path_digest)) {
             return Err(IndexError::Conflict);
         }
-        if let Some(bound) = entry.save_binding {
-            let same = bound.matches_intent(intent, request, expected_digest, expected_path_digest);
-            drop(state);
-            if !same {
-                return Err(IndexError::Conflict);
-            }
-            return Ok(());
-        }
         if entry.retired {
             return Err(IndexError::Conflict);
         }
@@ -968,7 +1009,7 @@ impl NativeOverlay {
             request,
             expected_source: intent.expected_source,
             content_digest: expected_digest,
-            path_digest: expected_path_digest,
+            path_digest: authenticated_path_digest,
         });
         drop(state);
         Ok(())
@@ -1301,10 +1342,114 @@ mod tests {
             &self,
             _intent: &NativeOverlaySaveIntent,
             _content_digest: Option<Digest>,
-            _path_digest: Option<Digest>,
+            path_digest: Option<Digest>,
+            repository_witness: Option<OwnerKey>,
             _budget: &mut WorkBudget,
+        ) -> Result<(ObjectRef, Option<Digest>), IndexError> {
+            // The fixed rows carry no witness; a witness test uses its own port.
+            if repository_witness.is_some() {
+                return Err(IndexError::Conflict);
+            }
+            Ok((ObjectRef(Digest([12; 32])), path_digest))
+        }
+    }
+
+    /// Accepts only the exact witness of the row being saved.
+    struct WitnessIntent(OwnerKey);
+    impl SourceSaveIntentPort for WitnessIntent {
+        fn identify_save_request(
+            &self,
+            original: &NativeOverlaySaveIntent,
+            budget: &mut WorkBudget,
         ) -> Result<ObjectRef, IndexError> {
-            Ok(ObjectRef(Digest([12; 32])))
+            AcceptingIntent.identify_save_request(original, budget)
+        }
+
+        fn authenticate_save_intent(
+            &self,
+            _intent: &NativeOverlaySaveIntent,
+            _content_digest: Option<Digest>,
+            path_digest: Option<Digest>,
+            repository_witness: Option<OwnerKey>,
+            _budget: &mut WorkBudget,
+        ) -> Result<(ObjectRef, Option<Digest>), IndexError> {
+            if repository_witness != Some(self.0) {
+                return Err(IndexError::Conflict);
+            }
+            Ok((ObjectRef(Digest([12; 32])), path_digest))
+        }
+    }
+
+    struct InheritedPathIntent;
+    impl SourceSaveIntentPort for InheritedPathIntent {
+        fn identify_save_request(
+            &self,
+            original: &NativeOverlaySaveIntent,
+            budget: &mut WorkBudget,
+        ) -> Result<ObjectRef, IndexError> {
+            AcceptingIntent.identify_save_request(original, budget)
+        }
+
+        fn authenticate_save_intent(
+            &self,
+            intent: &NativeOverlaySaveIntent,
+            content_digest: Option<Digest>,
+            path_digest: Option<Digest>,
+            repository_witness: Option<OwnerKey>,
+            budget: &mut WorkBudget,
+        ) -> Result<(ObjectRef, Option<Digest>), IndexError> {
+            if content_digest.is_none() || path_digest.is_some() || repository_witness.is_some() {
+                return Err(IndexError::Conflict);
+            }
+            Ok((
+                AcceptingIntent.identify_save_request(intent, budget)?,
+                Some(Digest([42; 32])),
+            ))
+        }
+    }
+
+    struct RetireDuringFirstBind<'a> {
+        store: &'a NativeOverlay,
+        key: OverlaySessionKey,
+        receipt: NativeOverlaySaveReceipt,
+    }
+    impl SourceSaveIntentPort for RetireDuringFirstBind<'_> {
+        fn identify_save_request(
+            &self,
+            original: &NativeOverlaySaveIntent,
+            budget: &mut WorkBudget,
+        ) -> Result<ObjectRef, IndexError> {
+            InheritedPathIntent.identify_save_request(original, budget)
+        }
+
+        fn authenticate_save_intent(
+            &self,
+            intent: &NativeOverlaySaveIntent,
+            content_digest: Option<Digest>,
+            path_digest: Option<Digest>,
+            repository_witness: Option<OwnerKey>,
+            budget: &mut WorkBudget,
+        ) -> Result<(ObjectRef, Option<Digest>), IndexError> {
+            let authenticated = InheritedPathIntent.authenticate_save_intent(
+                intent,
+                content_digest,
+                path_digest,
+                repository_witness,
+                budget,
+            )?;
+            self.store
+                .bind_save_intent(self.key, intent, &InheritedPathIntent, budget)?;
+            let bound = {
+                let state = self.store.lock()?;
+                NativeOverlay::session(&state, self.key)?
+                    .documents
+                    .get(&intent.document.owner)
+                    .and_then(|entry| entry.save_binding)
+                    .ok_or(IndexError::Conflict)?
+            };
+            self.store
+                .retire_verified(self.key, &self.receipt, &bound, budget)?;
+            Ok(authenticated)
         }
     }
 
@@ -1359,15 +1504,51 @@ mod tests {
     }
 
     #[test]
+    fn inherited_path_bind_accepts_same_request_retired_during_authority_check()
+    -> Result<(), IndexError> {
+        let live = Arc::new(LiveBytes::default());
+        let mut work = budget(Arc::new(Scope(live.clone())));
+        let store = overlay();
+        let doc = document(1);
+        store.begin_session(doc.session, &mut work)?;
+        store.update(doc, None, 1, Some("typed"), None, None, &mut work)?;
+        let saved = receipt(doc, 1);
+        let mut original = intent(&saved);
+        original.expected_source = Some(ObjectRef(Digest([10; 32])));
+        store.bind_save_intent(
+            doc.session,
+            &original,
+            &RetireDuringFirstBind {
+                store: &store,
+                key: doc.session,
+                receipt: saved,
+            },
+            &mut work,
+        )?;
+        check!(store.snapshot_document(doc, &mut work)?.is_none());
+        store.bind_save_intent(doc.session, &original, &InheritedPathIntent, &mut work)?;
+        let state = store.lock()?;
+        let entry = NativeOverlay::session(&state, doc.session)?
+            .documents
+            .get(&doc.owner)
+            .ok_or(IndexError::Conflict)?;
+        check!(entry.retired && entry.saved_receipt == Some(saved));
+        drop(state);
+        store.close_session(doc.session, &mut work)?;
+        check!(live.0.load(Ordering::SeqCst) == 0);
+        Ok(())
+    }
+
+    #[test]
     fn revisions_slots_and_save_ack_refusal_keep_text() -> Result<(), IndexError> {
         let live = Arc::new(LiveBytes::default());
         let mut work = budget(Arc::new(Scope(live.clone())));
         let store = overlay();
         let doc = document(1);
         store.begin_session(doc.session, &mut work)?;
-        store.update(doc, None, 1, Some("typed"), None, &mut work)?;
+        store.update(doc, None, 1, Some("typed"), None, None, &mut work)?;
         check!(matches!(
-            store.update(doc, Some(0), 2, Some("stale"), None, &mut work),
+            store.update(doc, Some(0), 2, Some("stale"), None, None, &mut work),
             Err(IndexError::Conflict)
         ));
         let snapshot = store
@@ -1394,7 +1575,7 @@ mod tests {
                 }]
         );
         drop(masks);
-        store.update(doc, Some(1), 2, None, None, &mut work)?;
+        store.update(doc, Some(1), 2, None, None, None, &mut work)?;
         let masks = store.snapshot_masks(doc.session, &mut work)?;
         check!(
             masks.entries
@@ -1434,7 +1615,7 @@ mod tests {
         let doc = document(1);
         store.begin_session(doc.session, &mut work)?;
         let session_memory = live.0.load(Ordering::SeqCst);
-        store.update(doc, None, 1, Some("saved text"), None, &mut work)?;
+        store.update(doc, None, 1, Some("saved text"), None, None, &mut work)?;
         let active_memory = live.0.load(Ordering::SeqCst);
         let saved = receipt(doc, 1);
         store.bind_save_intent(doc.session, &intent(&saved), &AcceptingIntent, &mut work)?;
@@ -1457,21 +1638,21 @@ mod tests {
                 .is_empty()
         );
         check!(matches!(
-            store.update(doc, None, 1, Some("replayed"), None, &mut work),
+            store.update(doc, None, 1, Some("replayed"), None, None, &mut work),
             Err(IndexError::Conflict)
         ));
         let mut second = doc;
         second.owner.stable_id = StableOwnerId([7; 16]);
-        store.update(second, None, 1, Some("second"), None, &mut work)?;
+        store.update(second, None, 1, Some("second"), None, None, &mut work)?;
         let mut third = doc;
         third.owner.stable_id = StableOwnerId([8; 16]);
         let before_full_refusal = live.0.load(Ordering::SeqCst);
         check!(matches!(
-            store.update(third, None, 1, Some("third"), None, &mut work),
+            store.update(third, None, 1, Some("third"), None, None, &mut work),
             Err(IndexError::ResourceLimited)
         ));
         check!(live.0.load(Ordering::SeqCst) == before_full_refusal);
-        store.update(doc, Some(1), 2, Some("new revision"), None, &mut work)?;
+        store.update(doc, Some(1), 2, Some("new revision"), None, None, &mut work)?;
         check!(
             store
                 .snapshot_document(doc, &mut work)?
@@ -1499,7 +1680,7 @@ mod tests {
                 .corpus_unchanged_for_request(&empty, work.request())?
                 .is_none()
         );
-        store.update(doc, None, 1, Some("first"), None, &mut work)?;
+        store.update(doc, None, 1, Some("first"), None, None, &mut work)?;
         check!(matches!(
             store.corpus_unchanged_for_request(&empty, work.request()),
             Err(IndexError::Conflict)
@@ -1532,7 +1713,7 @@ mod tests {
                 .corpus_unchanged_for_request(&retired, work.request())?
                 .is_none()
         );
-        store.update(doc, Some(1), 2, Some("second"), None, &mut work)?;
+        store.update(doc, Some(1), 2, Some("second"), None, None, &mut work)?;
         check!(matches!(
             store.corpus_unchanged_for_request(&retired, work.request()),
             Err(IndexError::Conflict)
@@ -1568,7 +1749,7 @@ mod tests {
         let saved = receipt(doc, 1);
         let original = intent(&saved);
         store.begin_session(doc.session, &mut work)?;
-        store.update(doc, None, 1, Some("saved text"), None, &mut work)?;
+        store.update(doc, None, 1, Some("saved text"), None, None, &mut work)?;
         store.bind_save_intent(doc.session, &original, &AcceptingIntent, &mut work)?;
         store.bind_save_intent(doc.session, &original, &AcceptingIntent, &mut work)?;
 
@@ -1659,7 +1840,15 @@ mod tests {
             ));
         }
 
-        store.update(doc, Some(1), 2, Some("next revision"), None, &mut work)?;
+        store.update(
+            doc,
+            Some(1),
+            2,
+            Some("next revision"),
+            None,
+            None,
+            &mut work,
+        )?;
         check!(matches!(
             store.validate_corpus(&saved_corpus, &work),
             Err(IndexError::Conflict)
@@ -1687,8 +1876,16 @@ mod tests {
         let mut deleted = doc;
         deleted.owner.stable_id = StableOwnerId([7; 16]);
         store.begin_session(doc.session, &mut work)?;
-        store.update(doc, None, 1, Some("typed"), Some("src/typed.rs"), &mut work)?;
-        store.update(deleted, None, 1, None, None, &mut work)?;
+        store.update(
+            doc,
+            None,
+            1,
+            Some("typed"),
+            Some("src/typed.rs"),
+            None,
+            &mut work,
+        )?;
+        store.update(deleted, None, 1, None, None, None, &mut work)?;
         let captured = store.snapshot_corpus(doc.session, &mut work)?;
         let same = store.snapshot_corpus(doc.session, &mut work)?;
         check!(captured.identity == same.identity);
@@ -1715,12 +1912,28 @@ mod tests {
         drop(same);
         for bad_path in ["", "/absolute.rs", "a/../b.rs", "a//b.rs", "a\0b.rs"] {
             check!(matches!(
-                store.update(doc, Some(1), 2, Some("next"), Some(bad_path), &mut work),
+                store.update(
+                    doc,
+                    Some(1),
+                    2,
+                    Some("next"),
+                    Some(bad_path),
+                    None,
+                    &mut work
+                ),
                 Err(IndexError::InvalidInput(_))
             ));
         }
         check!(matches!(
-            store.update(deleted, Some(1), 2, None, Some("deleted.rs"), &mut work),
+            store.update(
+                deleted,
+                Some(1),
+                2,
+                None,
+                Some("deleted.rs"),
+                None,
+                &mut work
+            ),
             Err(IndexError::InvalidInput(_))
         ));
         store.update(
@@ -1729,6 +1942,7 @@ mod tests {
             2,
             Some("next"),
             Some("src/next.rs"),
+            None,
             &mut work,
         )?;
         check!(matches!(
@@ -1744,6 +1958,99 @@ mod tests {
         store.close_session(doc.session, &mut work)?;
         check!(live.0.load(Ordering::SeqCst) > 0);
         drop(captured);
+        check!(live.0.load(Ordering::SeqCst) == 0);
+        Ok(())
+    }
+
+    #[test]
+    fn repository_witness_is_retained_fenced_and_limited_to_new_paths() -> Result<(), IndexError> {
+        let live = Arc::new(LiveBytes::default());
+        let mut work = budget(Arc::new(Scope(live.clone())));
+        let store = overlay();
+        let doc = document(1);
+        let mut witness = doc.owner;
+        witness.stable_id = StableOwnerId([9; 16]);
+        store.begin_session(doc.session, &mut work)?;
+        for (text, path, anchor) in [
+            (Some("typed"), None, witness),
+            (None, None, witness),
+            (Some("typed"), Some("src/new.rs"), doc.owner),
+        ] {
+            check!(matches!(
+                store.update(doc, None, 1, text, path, Some(anchor), &mut work),
+                Err(IndexError::InvalidInput(_))
+            ));
+        }
+        store.update(
+            doc,
+            None,
+            1,
+            Some("typed"),
+            Some("src/new.rs"),
+            Some(witness),
+            &mut work,
+        )?;
+        let snapshot = store
+            .snapshot_document(doc, &mut work)?
+            .ok_or_else(|| IndexError::BackendViolation("witnessed row vanished".into()))?;
+        check!(snapshot.repository_witness == Some(witness));
+        let mut captured = store.snapshot_corpus(doc.session, &mut work)?;
+        check!(
+            captured
+                .documents
+                .first()
+                .is_some_and(|row| row.repository_witness == Some(witness))
+        );
+        store.validate_corpus(&captured, &work)?;
+        // Only the witness differs: the live slot fences it and the corpus
+        // identity binds it.
+        let row = captured
+            .documents
+            .first_mut()
+            .ok_or_else(|| IndexError::BackendViolation("captured row vanished".into()))?;
+        row.repository_witness = None;
+        check!(matches!(
+            store.validate_corpus(&captured, &work),
+            Err(IndexError::Conflict)
+        ));
+        check!(corpus_identity(captured.session.wire, &captured.documents)? != captured.identity);
+        drop(snapshot);
+        drop(captured);
+        store.close_session(doc.session, &mut work)?;
+        check!(live.0.load(Ordering::SeqCst) == 0);
+        Ok(())
+    }
+
+    #[test]
+    fn save_binding_hands_the_row_witness_to_the_source_authority() -> Result<(), IndexError> {
+        let live = Arc::new(LiveBytes::default());
+        let mut work = budget(Arc::new(Scope(live.clone())));
+        let store = overlay();
+        let doc = document(1);
+        let mut witness = doc.owner;
+        witness.stable_id = StableOwnerId([9; 16]);
+        let mut other = witness;
+        other.stable_id = StableOwnerId([10; 16]);
+        store.begin_session(doc.session, &mut work)?;
+        store.update(
+            doc,
+            None,
+            1,
+            Some("saved text"),
+            Some("src/new.rs"),
+            Some(witness),
+            &mut work,
+        )?;
+        let saved = intent(&receipt(doc, 1));
+        let refusing: [&dyn SourceSaveIntentPort; 2] = [&AcceptingIntent, &WitnessIntent(other)];
+        for refused in refusing {
+            check!(matches!(
+                store.bind_save_intent(doc.session, &saved, refused, &mut work),
+                Err(IndexError::Conflict)
+            ));
+        }
+        store.bind_save_intent(doc.session, &saved, &WitnessIntent(witness), &mut work)?;
+        store.close_session(doc.session, &mut work)?;
         check!(live.0.load(Ordering::SeqCst) == 0);
         Ok(())
     }

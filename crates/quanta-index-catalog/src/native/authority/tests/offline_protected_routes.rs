@@ -410,7 +410,7 @@ fn protected_route_refuses_corrupt_registered_edge_before_visiting_publications(
         Some(route_ref)
     );
 
-    let guard = catalog.lock()?;
+    let mut guard = catalog.lock()?;
     let mut healthy_visits = 0_usize;
     let _verified = boot_manifest::validate_protected_routes_with_publications(
         &guard,
@@ -431,7 +431,7 @@ fn protected_route_refuses_corrupt_registered_edge_before_visiting_publications(
     guard.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(count_attached_view_root_scan),
-    );
+    )?;
     let mut rollback_visits = 0_usize;
     let rollback = read_only::check_rollback_with_publications(
         &guard,
@@ -443,7 +443,10 @@ fn protected_route_refuses_corrupt_registered_edge_before_visiting_publications(
             Ok(())
         },
     );
-    guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    guard.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )?;
     rollback?;
     check_eq!(rollback_visits, 2);
     check_eq!(ATTACHED_VIEW_ROOT_SCANS.with(std::cell::Cell::get), 1);
@@ -946,7 +949,7 @@ fn selected_primary_can_be_outside_complete_preserved_legacy_heads() -> TestResu
 #[test]
 fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestResult {
     let root = tempfile::tempdir()?;
-    let (catalog, primary_operation, _primary, _old_source_operation, old_source_view) =
+    let (catalog, primary_operation, primary_view, old_source_operation, old_source_view) =
         two_published_heads(root.path())?;
     let mut imported_operation = operation(20_006, 206);
     imported_operation.key.workspace = second_workspace();
@@ -980,7 +983,7 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
     };
     routes.validate()?;
     let mut false_genesis = routes.clone();
-    false_genesis.repomap_heads[0].source_publication = old_source_view;
+    false_genesis.repomap_heads[0].source_publication = old_source_view.clone();
     check!(false_genesis.validate().is_err());
     let (ingress, route_ref) = stage_routes(&catalog, &routes, operation(20_007, 207).key)?;
     let memory = ProtectedTestMemoryV1 {
@@ -1040,8 +1043,28 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
         None,
         &mut protected_budget_v1(),
     )?;
-    let mut source_only = routes.clone();
-    source_only.repomap_heads.clear();
+    let mut empty = routes.clone();
+    empty.repomap_heads.clear();
+    check_eq!(
+        boot_quiescence::check_quiescent_protected_routes(
+            &guard,
+            selected.publication.identity,
+            &empty,
+            None,
+            &mut protected_budget_v1(),
+        ),
+        Err(IndexError::DigestConflict)
+    );
+    let mut source_only = route_set(
+        primary_operation.clone(),
+        primary_view,
+        old_source_operation,
+        old_source_view,
+    )?;
+    source_only
+        .heads
+        .retain(|head| head.publication.identity.workspace == primary_operation.key.workspace);
+    source_only.validate()?;
     check_eq!(
         boot_quiescence::check_quiescent_protected_routes(
             &guard,
@@ -1536,16 +1559,23 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
     let bad_route = RegisteredObject::unscoped(bad_routes.object_ref()?, 1, bad_routes.children()?);
     new.reserve_inputs(ingress, std::slice::from_ref(&bad_route))?;
     new.confirm_inputs(ingress, std::slice::from_ref(&bad_route))?;
-    check_eq!(
-        new.restore_protected_native_heads_v1(
+    let assert_import_conflict = |snapshot: &_, routes: &_, case: &str| -> TestResult {
+        let mut budget = protected_budget_v1();
+        let observed = new.restore_protected_native_heads_v1(
             new_primary.key,
             ingress,
-            &bad,
-            &bad_routes,
-            &mut protected_budget_v1(),
-        ),
-        Err(IndexError::DigestConflict)
-    );
+            snapshot,
+            routes,
+            &mut budget,
+        );
+        check_eq!(
+            observed,
+            Err(IndexError::DigestConflict),
+            "{case}: {budget:?}"
+        );
+        Ok(())
+    };
+    assert_import_conflict(&bad, &bad_routes, "missing operation row")?;
     {
         let guard = new.lock()?;
         check_eq!(current_view(&*guard, second_workspace())?, None);
@@ -1566,16 +1596,7 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
                 let guard = new.lock()?;
                 insert_orphan_workspace_row_v1(&guard, family, &foreign_key)?;
             }
-            check_eq!(
-                new.restore_protected_native_heads_v1(
-                    new_primary.key,
-                    ingress,
-                    &snapshot,
-                    &routes,
-                    &mut protected_budget_v1(),
-                ),
-                Err(IndexError::DigestConflict)
-            );
+            assert_import_conflict(&snapshot, &routes, family)?;
             {
                 let guard = new.lock()?;
                 remove_orphan_workspace_row_v1(&guard, family, &foreign_key)?;
@@ -1594,16 +1615,7 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
             insert_orphan_view_root_v1(&guard, primary_workspace, primary_profile.reference)?;
             views
         };
-        check_eq!(
-            new.restore_protected_native_heads_v1(
-                new_primary.key,
-                ingress,
-                &snapshot,
-                &routes,
-                &mut protected_budget_v1(),
-            ),
-            Err(IndexError::DigestConflict)
-        );
+        assert_import_conflict(&snapshot, &routes, "orphan view root")?;
         {
             let guard = new.lock()?;
             check_eq!(
@@ -1673,16 +1685,7 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
         Ok(())
     };
     insert_orphan()?;
-    check_eq!(
-        new.restore_protected_native_heads_v1(
-            new_primary.key,
-            ingress,
-            &snapshot,
-            &routes,
-            &mut protected_budget_v1(),
-        ),
-        Err(IndexError::DigestConflict)
-    );
+    assert_import_conflict(&snapshot, &routes, "first import with an orphan claim")?;
     {
         let guard = new.lock()?;
         check_eq!(current_view(&*guard, second_workspace())?, None);
@@ -1704,16 +1707,7 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
     assert_orphan_children_refuse_import()?;
     assert_orphan_view_root_refuses_import()?;
     insert_orphan()?;
-    check_eq!(
-        new.restore_protected_native_heads_v1(
-            new_primary.key,
-            ingress,
-            &snapshot,
-            &routes,
-            &mut protected_budget_v1(),
-        ),
-        Err(IndexError::DigestConflict)
-    );
+    assert_import_conflict(&snapshot, &routes, "exact retry with an orphan claim")?;
     remove_orphan()?;
     restore_clean("exact protected import retry")?;
     let exact_memory = ProtectedTestMemoryV1 {

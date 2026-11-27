@@ -669,17 +669,16 @@ fn render_hybrid_payload(payload: &HybridQueryResponse, rendered: &mut String) -
             .join(" ");
         fmt_ok(writeln!(
             rendered,
-            "{}. candidate_id={} path={} lines={}-{} score={} fused={} lanes={}",
+            "{}. candidate_id={} path={}{} score={} fused={} lanes={}",
             display_index,
             row.candidate.candidate_id,
             row.candidate.repo_relative_path.as_str(),
-            row.candidate.start_line,
-            row.candidate.end_line,
+            lines_field(&row.candidate),
             row.candidate.score,
             row.fused_score,
             lanes
         ))?;
-        for line in row.candidate.snippet.lines() {
+        for line in snippet_lines(&row.candidate) {
             fmt_ok(writeln!(rendered, "   {line}"))?;
         }
     }
@@ -864,7 +863,10 @@ fn display_has_more(value: Option<bool>) -> &'static str {
     }
 }
 
-fn render_window_line(window: &QueryResultWindowV2, rendered: &mut String) -> CliResult<()> {
+pub(super) fn render_window_line(
+    window: &QueryResultWindowV2,
+    rendered: &mut String,
+) -> CliResult<()> {
     let matched = match window.candidate_count() {
         quanta_index_contract::CandidateCountV1::Exact(count) => format!("{count}"),
         quanta_index_contract::CandidateCountV1::AtLeast(count) => format!(">={count}"),
@@ -957,15 +959,14 @@ fn render_lexical_payload(
             .ok_or_else(|| CliError::protocol("candidate index overflow".to_string()))?;
         fmt_ok(writeln!(
             rendered,
-            "{}. candidate_id={} path={} lines={}-{} score={}",
+            "{}. candidate_id={} path={}{} score={}",
             display_index,
             candidate.candidate_id,
             candidate.repo_relative_path.as_str(),
-            candidate.start_line,
-            candidate.end_line,
+            lines_field(candidate),
             candidate.score
         ))?;
-        for line in candidate.snippet.lines() {
+        for line in snippet_lines(candidate) {
             fmt_ok(writeln!(rendered, "   {line}"))?;
         }
     }
@@ -1075,15 +1076,14 @@ fn render_runtime_metadata_payload(
         })?;
         fmt_ok(writeln!(
             rendered,
-            "{}. candidate_id={} path={} lines={}-{} score={}",
+            "{}. candidate_id={} path={}{} score={}",
             display_index,
             candidate.candidate_id,
             candidate.repo_relative_path.as_str(),
-            candidate.start_line,
-            candidate.end_line,
+            lines_field(candidate),
             candidate.score
         ))?;
-        for line in candidate.snippet.lines() {
+        for line in snippet_lines(candidate) {
             fmt_ok(writeln!(rendered, "   {line}"))?;
         }
     }
@@ -1287,4 +1287,23 @@ pub(super) fn render_remote_error_text(
         }
     }
     Ok(text)
+}
+
+/// ` lines=<start>-<end>` for a row with match lines; nothing for a row whose
+/// producer reports no line position, never a made-up `0-0`.
+pub(super) fn lines_field(candidate: &quanta_index_contract::LexicalCandidate) -> String {
+    candidate.lines.map_or_else(String::new, |lines| {
+        format!(" lines={}-{}", lines.start_line, lines.end_line)
+    })
+}
+
+/// The excerpt's text lines; none for a row without a match excerpt.
+pub(super) fn snippet_lines(
+    candidate: &quanta_index_contract::LexicalCandidate,
+) -> std::str::Lines<'_> {
+    candidate
+        .excerpt
+        .as_ref()
+        .map_or("", |excerpt| excerpt.snippet.as_str())
+        .lines()
 }

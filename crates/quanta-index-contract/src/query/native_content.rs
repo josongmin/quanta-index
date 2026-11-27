@@ -88,6 +88,9 @@ impl NativeContentQueryTokens<'_> {
     }
 }
 
+/// Native Text admits at most this many `path.regex` leaves per query.
+pub const MAX_NATIVE_PATH_REGEX_LEAVES: usize = 4;
+
 /// Tokenize once, refusing unsupported engines before their parser guards.
 pub fn tokenize_native_content_query(
     input: &str,
@@ -100,31 +103,23 @@ pub fn tokenize_native_content_query(
         ));
     }
     let tokens = tokenize(input)?;
-    if let Some(token) = tokens.iter().enumerate().find_map(|(ordinal, token)| {
-        match &token.kind {
-            LqTokenKind::RawString(_) | LqTokenKind::StructuralBlock(_) => true,
-            LqTokenKind::Predicate { name, .. } => {
-                let direct = matches!(
-                    name.as_str(),
-                    "file.contains"
-                        | "repo.has.file"
-                        | "repo.has.path"
-                        | "repo.contains.file"
-                        | "repo.contains.path"
-                );
-                let scoped_repo = matches!(
-                    name.as_str(),
-                    "has.file" | "has.path" | "contains.file" | "contains.path"
-                ) && ordinal >= 2
-                    && matches!(&tokens[ordinal - 1].kind, LqTokenKind::Colon)
-                    && matches!(&tokens[ordinal - 2].kind,
+    if let Some(token) = tokens.iter().enumerate().find_map(|(ordinal, token)| match &token.kind {
+        LqTokenKind::RawString(_) | LqTokenKind::StructuralBlock(_) => true,
+        LqTokenKind::Predicate { name, .. } => {
+            let direct = matches!(
+                name.as_str(),
+                "file.contains" | "path.contains" | "path.regex" | "repo.has.file" | "repo.has.path"
+                    | "repo.contains.file" | "repo.contains.path"
+            );
+            let scoped_repo = matches!(name.as_str(), "has.file" | "has.path" | "contains.file" | "contains.path")
+                && ordinal >= 2
+                && matches!(&tokens[ordinal - 1].kind, LqTokenKind::Colon)
+                && matches!(&tokens[ordinal - 2].kind,
                     LqTokenKind::KeywordOrFilterName(scope) if scope == "repo");
-                !direct && !scoped_repo
-            }
-            _ => false,
+            !direct && !scoped_repo
         }
-        .then_some(token)
-    }) {
+        _ => false,
+    }.then_some(token)) {
         return Err(LqParseError::new(
             LqParseErrorCode::UnsupportedCombo,
             token.span,

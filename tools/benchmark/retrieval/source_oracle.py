@@ -9,11 +9,19 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import platform
 import re
+import time
+import warnings
 from collections import defaultdict
+from contextlib import ExitStack, contextmanager, nullcontext
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+ORACLE_FILE_TIMEOUT_SECONDS = 10.0
+ORACLE_BATCH_TIMEOUT_SECONDS = 300.0
+ORACLE_MAX_SOURCE_BYTES = 1 << 20
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 # Identifier fragments (prefix/infix/typo) may start with a digit; components are
@@ -343,8 +351,113 @@ def declaration_language(path: str) -> str | None:
     )
 
 
+def validate_candidate_manifest(path: Path, sha256: str) -> dict[str, Any]:
+    """Verify the installed candidate tuple before independent oracle use."""
+    from tools.benchmark.retrieval import declaration_parsers, symbol_coverage, ts_projection
+
+    if not isinstance(path, Path) or not path.is_absolute() or not symbol_coverage.is_sha(sha256):
+        raise SourceOracleError("source oracle candidate manifest pin is invalid")
+    try:
+        raw = symbol_coverage.regular_bytes(path, max_bytes=1 << 20)
+        if hashlib.sha256(raw).hexdigest() != sha256:
+            raise ValueError("candidate manifest digest differs")
+        manifest = symbol_coverage.parse_json(raw)
+        required = {
+            "schema",
+            "platform",
+            "architecture",
+            "grammar_identity",
+            "go_version",
+            "node_version",
+            "typescript_version",
+            "script_sha256",
+            "official_binary",
+            "syntax_batch_binary",
+            "go_helper",
+            "node",
+            "typescript_js",
+            "node_libraries",
+        }
+        system = {"Darwin": "macos", "Linux": "linux"}.get(platform.system())
+        architecture = {"arm64": "aarch64"}.get(platform.machine(), platform.machine())
+        if (
+            not isinstance(manifest, dict)
+            or set(manifest) != required
+            or manifest["schema"] != "quanta-symbol-candidate-artifacts-v1"
+            or manifest["platform"] != system
+            or manifest["architecture"] != architecture
+            or not isinstance(manifest["grammar_identity"], str)
+            or not manifest["grammar_identity"].startswith("registry-")
+            or len(manifest["grammar_identity"]) > 4096
+            or manifest["go_version"] != "go1.25.4"
+            or not isinstance(manifest["node_version"], str)
+            or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", manifest["node_version"]) is None
+            or manifest["typescript_version"] != "5.9.3"
+            or not symbol_coverage.is_sha(manifest["script_sha256"])
+            or not isinstance(manifest["node_libraries"], list)
+            or len(manifest["node_libraries"]) > 8
+        ):
+            raise ValueError("candidate manifest schema or platform differs")
+        if (
+            hashlib.sha256(
+                symbol_coverage.regular_bytes(ts_projection.SOURCE, max_bytes=1 << 20)
+            ).hexdigest()
+            != manifest["script_sha256"]
+        ):
+            raise ValueError("candidate projection script differs")
+        limits = {
+            "official_binary": 256 << 20,
+            "syntax_batch_binary": 256 << 20,
+            "go_helper": 32 << 20,
+            "node": 256 << 20,
+            "typescript_js": 16 << 20,
+        }
+        names = set()
+        artifact_parent = None
+        for key, maximum in (*limits.items(), ("node_libraries", 256 << 20)):
+            items = manifest["node_libraries"] if key == "node_libraries" else [manifest[key]]
+            for item in items:
+                if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+                    raise ValueError("candidate artifact descriptor differs")
+                artifact_path = Path(item["path"]) if isinstance(item["path"], str) else Path()
+                if (
+                    not artifact_path.is_absolute()
+                    or artifact_path.name in names
+                    or not symbol_coverage.is_sha(item["sha256"])
+                ):
+                    raise ValueError("candidate artifact path or digest differs")
+                if artifact_parent is None:
+                    artifact_parent = artifact_path.parent
+                elif artifact_path.parent != artifact_parent:
+                    raise ValueError("candidate artifacts do not share one installed directory")
+                names.add(artifact_path.name)
+                blob = symbol_coverage.regular_bytes(artifact_path, max_bytes=maximum)
+                if hashlib.sha256(blob).hexdigest() != item["sha256"]:
+                    raise ValueError("candidate artifact bytes differ")
+        # Wheels are an independent channel. Check their installed RECORD and
+        # exported language entries, rather than trusting the Rust candidate.
+        for grammar, source in (
+            ("go", b"package p\nfunc Sample() {}\n"),
+            ("javascript", b"function Sample() {}\n"),
+            ("typescript", b"type Sample = number;\n"),
+            ("tsx", b"function Sample() { return <div/> }\n"),
+        ):
+            parser, _digest = declaration_parsers.get_released_syntax_candidate_parser(grammar)
+            if parser.parse(source).root_node.has_error:
+                raise ValueError("released grammar capability probe failed")
+        symbol_coverage.candidate_grammar_identity(path, sha256)
+        return manifest
+    except (OSError, ValueError, ImportError, LookupError) as exc:
+        raise SourceOracleError(f"source oracle candidate manifest unavailable: {exc}") from exc
+
+
 def declaration_census(
-    language: str, path: str, raw: bytes
+    language: str,
+    path: str,
+    raw: bytes,
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
 ) -> list[tuple[int, int, int, int, str]]:
     """All declared names in one file as (name start/end, definition start/end, kind).
 
@@ -353,21 +466,48 @@ def declaration_census(
     """
     if language not in DECLARATION_GRAMMARS:
         raise SourceOracleError("unsupported declaration census language")
+    if not isinstance(raw, bytes) or len(raw) > ORACLE_MAX_SOURCE_BYTES:
+        raise SourceOracleError(f"source oracle file byte limit exceeded: {path}")
     suffix = "." + path.rsplit(".", 1)[-1]
     grammar = DECLARATION_GRAMMARS[language].get(suffix)
     if grammar is None:
         raise SourceOracleError(f"{language} census does not admit file suffix: {path}")
+    if (candidate_manifest_path is None) != (candidate_manifest_sha256 is None):
+        raise SourceOracleError("source oracle candidate manifest requires path and digest")
+    if candidate_manifest_path is not None and language in {"go", "javascript", "typescript"}:
+        manifest = validate_candidate_manifest(candidate_manifest_path, candidate_manifest_sha256)
+        return _projected_declaration_census(language, path, raw, manifest)
+    deadline = time.monotonic() + ORACLE_FILE_TIMEOUT_SECONDS
     try:
         from tools.benchmark.retrieval.declaration_parsers import get_parser
 
         parser = get_parser(grammar)
     except (ImportError, LookupError, ValueError) as exc:
         raise SourceOracleError(f"{language} source oracle parser unavailable") from exc
-    root = parser.parse(raw).root_node
+    root = _bounded_tree(parser, raw, deadline, path)
     if root.has_error:
         prefix = "Go" if language == "go" else language
         raise SourceOracleError(f"{prefix} source oracle parse error: {path}")
-    return _declaration_rows(language, path, raw, root)
+    rows = _declaration_rows(language, path, raw, root)
+    if time.monotonic() > deadline:
+        raise SourceOracleError(f"source oracle timeout: {path}")
+    return rows
+
+
+def _bounded_tree(parser, raw: bytes, deadline: float, path: str):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SourceOracleError(f"source oracle timeout: {path}")
+    # The pinned Python tree-sitter binding exposes timeout_micros for bytestrings.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="Use the progress_callback in parse", category=DeprecationWarning
+        )
+        parser.timeout_micros = max(1, int(remaining * 1_000_000))
+        tree = parser.parse(raw)
+    if tree is None or time.monotonic() > deadline:
+        raise SourceOracleError(f"source oracle timeout: {path}")
+    return tree.root_node
 
 
 def candidate_go_declaration_census(path: str, raw: bytes, projector, *, timeout_seconds: float):
@@ -380,17 +520,20 @@ def candidate_go_declaration_census(path: str, raw: bytes, projector, *, timeout
     from tools.benchmark.retrieval.declaration_parsers import get_released_go_candidate_parser
     from tools.benchmark.retrieval.go_projection import GoProjectionError
 
+    deadline = time.monotonic() + timeout_seconds
     try:
         projection = projector.project(raw, timeout_seconds=timeout_seconds)
         parser, extension_sha256 = get_released_go_candidate_parser()
     except (GoProjectionError, ImportError, LookupError, ValueError) as exc:
         raise SourceOracleError(f"Go candidate producer failure: {path}: {exc}") from exc
-    root = parser.parse(projection.projected).root_node
+    root = _bounded_tree(parser, projection.projected, deadline, path)
     if root.has_error:
         raise SourceOracleError(f"Go candidate grammar parse error: {path}")
     rows = _declaration_rows("go", path, raw, root)
     if any(projection.overlaps_name(start, end) for start, end, *_ in rows):
         raise SourceOracleError(f"Go candidate projected declaration name: {path}")
+    if time.monotonic() > deadline:
+        raise SourceOracleError(f"source oracle timeout: {path}")
     return rows, projection, extension_sha256
 
 
@@ -404,18 +547,140 @@ def candidate_syntax_declaration_census(
     from tools.benchmark.retrieval.declaration_parsers import get_released_syntax_candidate_parser
     from tools.benchmark.retrieval.ts_projection import TsProjectionError
 
+    deadline = time.monotonic() + timeout_seconds
     try:
         projection = projector.project(path, raw, timeout_seconds=timeout_seconds)
         parser, extension_sha256 = get_released_syntax_candidate_parser(grammar)
     except (TsProjectionError, ImportError, LookupError, ValueError) as exc:
         raise SourceOracleError(f"syntax candidate producer failure: {path}: {exc}") from exc
-    root = parser.parse(projection.projected).root_node
+    root = _bounded_tree(parser, projection.projected, deadline, path)
     if root.has_error:
         raise SourceOracleError(f"syntax candidate grammar parse error: {path}")
     rows = _declaration_rows(language, path, raw, root)
     if any(projection.overlaps_name(start, end) for start, end, *_ in rows):
         raise SourceOracleError(f"syntax candidate projected declaration name: {path}")
+    if time.monotonic() > deadline:
+        raise SourceOracleError(f"source oracle timeout: {path}")
     return rows, projection, extension_sha256
+
+
+def _go_projector(manifest: dict[str, Any]):
+    from tools.benchmark.retrieval.go_projection import GoProjector
+
+    helper = manifest["go_helper"]
+    return GoProjector(
+        Path(helper["path"]),
+        binary_sha256=helper["sha256"],
+        go_version=manifest["go_version"],
+    )
+
+
+def _syntax_projector(manifest: dict[str, Any]):
+    from tools.benchmark.retrieval.ts_projection import TsProjector
+
+    node = manifest["node"]
+    typescript = manifest["typescript_js"]
+    return TsProjector(
+        Path(node["path"]),
+        Path(typescript["path"]),
+        node_sha256=node["sha256"],
+        typescript_sha256=typescript["sha256"],
+        script_sha256=manifest["script_sha256"],
+        node_version=manifest["node_version"],
+        typescript_version=manifest["typescript_version"],
+        node_libraries=tuple(
+            (Path(item["path"]), item["sha256"]) for item in manifest["node_libraries"]
+        ),
+    )
+
+
+def _projected_declaration_census(
+    language: str,
+    path: str,
+    raw: bytes,
+    manifest: dict[str, Any],
+    *,
+    go_projector=None,
+    syntax_projector=None,
+    batch_deadline: float | None = None,
+) -> list[tuple[int, int, int, int, str]]:
+    if not isinstance(raw, bytes) or len(raw) > ORACLE_MAX_SOURCE_BYTES:
+        raise SourceOracleError(f"source oracle file byte limit exceeded: {path}")
+    deadline = min(
+        time.monotonic() + ORACLE_FILE_TIMEOUT_SECONDS,
+        batch_deadline if batch_deadline is not None else float("inf"),
+    )
+    try:
+        if language == "go":
+            context = (
+                nullcontext(go_projector) if go_projector is not None else _go_projector(manifest)
+            )
+            with context as projector:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SourceOracleError(f"Go source oracle timeout: {path}")
+                rows, _projection, _wheel = candidate_go_declaration_census(
+                    path, raw, projector, timeout_seconds=remaining
+                )
+        else:
+            context = (
+                nullcontext(syntax_projector)
+                if syntax_projector is not None
+                else _syntax_projector(manifest)
+            )
+            with context as projector:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SourceOracleError(f"syntax source oracle timeout: {path}")
+                rows, _projection, _wheel = candidate_syntax_declaration_census(
+                    language, path, raw, projector, timeout_seconds=remaining
+                )
+        if time.monotonic() > deadline:
+            raise SourceOracleError(f"source oracle timeout: {path}")
+        return rows
+    except SourceOracleError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise SourceOracleError(f"source oracle candidate producer failure: {path}: {exc}") from exc
+
+
+@contextmanager
+def declaration_census_session(
+    language: str,
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+):
+    """Reuse pinned helper bytes across one bounded independent census pass."""
+    if (candidate_manifest_path is None) != (candidate_manifest_sha256 is None):
+        raise SourceOracleError("source oracle candidate manifest requires path and digest")
+    manifest = (
+        validate_candidate_manifest(candidate_manifest_path, candidate_manifest_sha256)
+        if candidate_manifest_path is not None
+        else None
+    )
+    if manifest is None or language in {"rust", "python"}:
+        yield lambda path, raw: declaration_census(language, path, raw)
+        return
+    deadline = time.monotonic() + ORACLE_BATCH_TIMEOUT_SECONDS
+    with ExitStack() as stack:
+        go_projector = stack.enter_context(_go_projector(manifest)) if language == "go" else None
+        syntax_projector = (
+            stack.enter_context(_syntax_projector(manifest))
+            if language in {"javascript", "typescript"}
+            else None
+        )
+        if time.monotonic() > deadline:
+            raise SourceOracleError("source oracle candidate staging timeout")
+        yield lambda path, raw: _projected_declaration_census(
+            language,
+            path,
+            raw,
+            manifest,
+            go_projector=go_projector,
+            syntax_projector=syntax_projector,
+            batch_deadline=deadline,
+        )
 
 
 def _declaration_rows(language: str, path: str, raw: bytes, root):
@@ -472,11 +737,20 @@ def has_identifier_word_in_span(raw: bytes, token: bytes, start: int, end: int) 
     return False
 
 
-def census_parser_identity() -> str:
+def census_parser_identity(
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
+) -> str:
     """Bind shared census rows to the loaded oracle and parser source/grammar."""
     import tree_sitter._binding as tree_sitter_binding
 
     from tools.benchmark.retrieval import declaration_parsers
+
+    if (candidate_manifest_path is None) != (candidate_manifest_sha256 is None):
+        raise SourceOracleError("source oracle candidate manifest requires path and digest")
+    if candidate_manifest_path is not None:
+        validate_candidate_manifest(candidate_manifest_path, candidate_manifest_sha256)
 
     payload = {
         "oracle_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -488,8 +762,9 @@ def census_parser_identity() -> str:
         "tree_sitter_language_pack": importlib.metadata.version("tree-sitter-language-pack"),
         "released_grammar_versions": {
             grammar: importlib.metadata.version("tree-sitter-" + grammar)
-            for grammar in sorted(declaration_parsers.RELEASED_GRAMMARS)
+            for grammar in sorted(declaration_parsers.RELEASED_VERSIONS)
         },
+        "candidate_manifest_sha256": candidate_manifest_sha256,
         "tree_sitter_binary_sha256": hashlib.sha256(
             Path(tree_sitter_binding.__file__).read_bytes()
         ).hexdigest(),
@@ -515,7 +790,16 @@ class DeclarationCensusCache:
             raise SourceOracleError("declaration cache parser identity changed")
 
     def census(
-        self, language: str, path: str, raw: bytes, expected_sha256: str
+        self,
+        language: str,
+        path: str,
+        raw: bytes,
+        expected_sha256: str,
+        *,
+        candidate_manifest: dict[str, Any] | None = None,
+        go_projector=None,
+        syntax_projector=None,
+        batch_deadline: float | None = None,
     ) -> list[tuple[int, int, int, int, str]]:
         actual = hashlib.sha256(raw).hexdigest()
         if actual != expected_sha256:
@@ -523,7 +807,20 @@ class DeclarationCensusCache:
         key = (language, path, actual)
         if key not in self._rows:
             try:
-                rows = tuple(declaration_census(language, path, raw))
+                rows = tuple(
+                    _projected_declaration_census(
+                        language,
+                        path,
+                        raw,
+                        candidate_manifest,
+                        go_projector=go_projector,
+                        syntax_projector=syntax_projector,
+                        batch_deadline=batch_deadline,
+                    )
+                    if candidate_manifest is not None
+                    and language in {"go", "javascript", "typescript"}
+                    else declaration_census(language, path, raw)
+                )
             except SourceOracleError as exc:
                 self._rows[key] = ("error", str(exc))
                 raise
@@ -542,9 +839,29 @@ class SourceOracleIndex:
         declaration_exclusions: dict[tuple[str, str], set[str]] | None = None,
         *,
         census_cache: DeclarationCensusCache | None = None,
+        candidate_manifest_path: Path | None = None,
+        candidate_manifest_sha256: str | None = None,
     ) -> None:
+        if (candidate_manifest_path is None) != (candidate_manifest_sha256 is None):
+            raise SourceOracleError("source oracle candidate manifest requires path and digest")
+        self._candidate_manifest = (
+            validate_candidate_manifest(candidate_manifest_path, candidate_manifest_sha256)
+            if candidate_manifest_path is not None
+            else None
+        )
+        self._active_go_projector = None
+        self._active_syntax_projector = None
+        self._batch_deadline: float | None = None
         if census_cache is not None:
-            census_cache.assert_parser_identity(census_parser_identity())
+            identity = (
+                census_parser_identity()
+                if candidate_manifest_path is None
+                else census_parser_identity(
+                    candidate_manifest_path=candidate_manifest_path,
+                    candidate_manifest_sha256=candidate_manifest_sha256,
+                )
+            )
+            census_cache.assert_parser_identity(identity)
         if not 0 < len(files) <= MAX_FILES:
             raise SourceOracleError("source oracle file limit exceeded")
         if sum(len(raw) for raw, _digest in files.values()) > MAX_SOURCE_BYTES:
@@ -667,40 +984,41 @@ class SourceOracleIndex:
         key = (language, excluded)
         if key not in self._declarations:
             declarations: dict[bytes, list[tuple[str, int, int, int, int]]] = defaultdict(list)
-            for path, (raw, _digest) in self.files.items():
-                source_language = declaration_language(path)
-                if source_language is None or language not in (
-                    source_language,
-                    ALL_DECLARATION_LANGUAGES,
-                ):
-                    continue
-                if path in excluded:
+            with self._candidate_batch(language):
+                for path, (raw, _digest) in self.files.items():
+                    source_language = declaration_language(path)
+                    if source_language is None or language not in (
+                        source_language,
+                        ALL_DECLARATION_LANGUAGES,
+                    ):
+                        continue
+                    if path in excluded:
+                        try:
+                            self._declaration_census(source_language, path, raw)
+                        except SourceOracleError as exc:
+                            if not _excludable_census_refusal(exc):
+                                raise
+                        else:
+                            raise SourceOracleError(
+                                f"excluded declaration file has a complete census: {path}"
+                            )
+                        continue
+                    # Every declaration is kept: variant contracts match names that
+                    # differ from the submitted query bytes.
                     try:
-                        self._declaration_census(source_language, path, raw)
+                        census = self._declaration_census(source_language, path, raw)
                     except SourceOracleError as exc:
-                        if not _excludable_census_refusal(exc):
-                            raise
-                    else:
-                        raise SourceOracleError(
-                            f"excluded declaration file has a complete census: {path}"
+                        if path in self._excluded_declaration_paths[
+                            language
+                        ] and _excludable_census_refusal(exc):
+                            raise SourceOracleError(
+                                f"declaration exclusion lacks explicit query eligibility: {path}"
+                            ) from exc
+                        raise
+                    for start, end, definition_start, definition_end, _kind in census:
+                        declarations[raw[start:end]].append(
+                            (path, start, end, definition_start, definition_end)
                         )
-                    continue
-                # Every declaration is kept: variant contracts match names that
-                # differ from the submitted query bytes.
-                try:
-                    census = self._declaration_census(source_language, path, raw)
-                except SourceOracleError as exc:
-                    if path in self._excluded_declaration_paths[
-                        language
-                    ] and _excludable_census_refusal(exc):
-                        raise SourceOracleError(
-                            f"declaration exclusion lacks explicit query eligibility: {path}"
-                        ) from exc
-                    raise
-                for start, end, definition_start, definition_end, _kind in census:
-                    declarations[raw[start:end]].append(
-                        (path, start, end, definition_start, definition_end)
-                    )
             self._declarations[key] = declarations
         return self._declarations[key]
 
@@ -708,8 +1026,58 @@ class SourceOracleIndex:
         self, language: str, path: str, raw: bytes
     ) -> list[tuple[int, int, int, int, str]]:
         if self._census_cache is None:
+            if self._candidate_manifest is not None and language in {
+                "go",
+                "javascript",
+                "typescript",
+            }:
+                return _projected_declaration_census(
+                    language,
+                    path,
+                    raw,
+                    self._candidate_manifest,
+                    go_projector=self._active_go_projector,
+                    syntax_projector=self._active_syntax_projector,
+                    batch_deadline=self._batch_deadline,
+                )
             return declaration_census(language, path, raw)
-        return self._census_cache.census(language, path, raw, self.files[path][1])
+        return self._census_cache.census(
+            language,
+            path,
+            raw,
+            self.files[path][1],
+            candidate_manifest=self._candidate_manifest,
+            go_projector=self._active_go_projector,
+            syntax_projector=self._active_syntax_projector,
+            batch_deadline=self._batch_deadline,
+        )
+
+    @contextmanager
+    def _candidate_batch(self, language: str):
+        if self._candidate_manifest is None or language in {"rust", "python"}:
+            yield
+            return
+        if self._batch_deadline is not None:
+            raise SourceOracleError("nested source oracle candidate batch")
+        deadline = time.monotonic() + ORACLE_BATCH_TIMEOUT_SECONDS
+        with ExitStack() as stack:
+            try:
+                if language in {"go", ALL_DECLARATION_LANGUAGES}:
+                    self._active_go_projector = stack.enter_context(
+                        _go_projector(self._candidate_manifest)
+                    )
+                if language in {"javascript", "typescript", ALL_DECLARATION_LANGUAGES}:
+                    self._active_syntax_projector = stack.enter_context(
+                        _syntax_projector(self._candidate_manifest)
+                    )
+                if time.monotonic() > deadline:
+                    raise SourceOracleError("source oracle candidate staging timeout")
+                self._batch_deadline = deadline
+                yield
+            finally:
+                self._active_go_projector = None
+                self._active_syntax_projector = None
+                self._batch_deadline = None
 
     def declared_names(self, language: str) -> list[str]:
         if self._excluded_declaration_paths[language]:
@@ -719,16 +1087,17 @@ class SourceOracleIndex:
     def census_failures(self, language: str) -> list[dict[str, str]]:
         """Files whose declaration census refuses, for visible unsupported strata."""
         failures = []
-        for path, (raw, _digest) in sorted(self.files.items()):
-            source_language = declaration_language(path)
-            if source_language is not None and language in (
-                source_language,
-                ALL_DECLARATION_LANGUAGES,
-            ):
-                try:
-                    declaration_census(source_language, path, raw)
-                except SourceOracleError as exc:
-                    failures.append({"path": path, "reason": str(exc)})
+        with self._candidate_batch(language):
+            for path, (raw, _digest) in sorted(self.files.items()):
+                source_language = declaration_language(path)
+                if source_language is not None and language in (
+                    source_language,
+                    ALL_DECLARATION_LANGUAGES,
+                ):
+                    try:
+                        self._declaration_census(source_language, path, raw)
+                    except SourceOracleError as exc:
+                        failures.append({"path": path, "reason": str(exc)})
         return failures
 
     def _name_matches(self, contract: str, query: str) -> list[tuple[str, int, int, int, int]]:

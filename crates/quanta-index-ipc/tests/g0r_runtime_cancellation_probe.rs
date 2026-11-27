@@ -25,6 +25,9 @@
 
 use std::error::Error;
 use std::fmt;
+use std::io::Write;
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
@@ -32,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use quanta_index_ipc::{
     ClientIoPolicy, IpcDispatcher, IpcError, RequestBudgetV1, RequestEnvelope, ResponseEnvelope,
-    SlotRefusal, UdsServer, send_request,
+    SlotRefusal, UdsServer, encode_request, send_request,
 };
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -43,9 +46,6 @@ type ProbeResult = Result<(), Box<dyn Error>>;
 /// Generous bound for a handshake that must complete; a hang here is a probe
 /// defect, not evidence.
 const HANDSHAKE_BOUND: Duration = Duration::from_secs(20);
-/// Short client budget used only where the probe asserts a client *cannot*
-/// be served because the server is provably occupied.
-const BLOCKED_CLIENT_BUDGET: Duration = Duration::from_millis(150);
 const ACCEPT_IDLE: Duration = Duration::from_millis(1);
 
 // ---------------------------------------------------------------------------
@@ -305,7 +305,9 @@ fn start_server() -> Result<Server, Box<dyn Error>> {
 
 impl Server {
     fn wait_entered(&self) -> Result<u64, Box<dyn Error>> {
-        Ok(self.entered.recv_timeout(HANDSHAKE_BOUND)?)
+        self.entered
+            .recv_timeout(HANDSHAKE_BOUND)
+            .map_err(|error| format!("dispatcher entry handshake: {error}").into())
     }
 
     fn stop(&mut self) -> Result<(), Box<dyn Error>> {
@@ -438,24 +440,30 @@ fn an_in_flight_dispatch_does_not_block_other_clients() -> ProbeResult {
 
 /// (2) A peer that disconnects mid-dispatch cancels its budget.
 ///
-/// Client A parks inside the dispatcher, then abandons its connection by
-/// letting its read budget expire. The connection's peer watch sees the
-/// hang-up and cancels the request's budget; once the test releases the
-/// parked dispatch, the dispatcher's checkpoint observes the cancellation.
+/// Client A parks inside the dispatcher, then closes its connection. The
+/// connection's peer watch sees the hang-up and cancels the request's budget.
+/// Once the test releases the parked dispatch, its checkpoint observes the
+/// cancellation.
 /// The native work between checkpoints still runs — G0-R pinned that hard
 /// cancellation is not available — but nothing past the checkpoint does, and
 /// the server can name where it stopped.
 #[test]
 fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
     let mut server = start_server()?;
-    let holder = spawn_holder(server.socket.clone(), BLOCKED_CLIENT_BUDGET);
-    let _entered = server.wait_entered()?;
+    let mut holder = UnixStream::connect(&server.socket)?;
+    holder.set_write_timeout(Some(HANDSHAKE_BOUND))?;
+    holder.write_all(&encode_request(&ProbeRequest {
+        request_id: 1,
+        payload: HOLD,
+    })?)?;
+    if server.wait_entered()? != HOLD {
+        return Err("dispatcher entered with an unexpected payload".into());
+    }
 
-    // A gives up: its read budget is shorter than the hold. This is the
-    // disconnect the peer watch must notice.
-    let abandoned = holder
-        .join()
-        .map_err(|panic| format!("holder thread panicked: {panic:?}"))?;
+    // Close only after dispatch entry: a short client deadline can expire
+    // before the server admits the request on a slow scheduler.
+    holder.shutdown(Shutdown::Both)?;
+    drop(holder);
     // Wait for the watch-thread detection event instead of sleeping out
     // the poll interval: the test proceeds the moment the watch reports.
     wait_hangup_detected(&server, 1)?;
@@ -464,7 +472,12 @@ fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
     let _released = server.release.wait();
     // A follow-up request runs on another connection and cannot acknowledge
     // completion of the abandoned dispatch. Observe that dispatch directly.
-    if server.finished.recv_timeout(HANDSHAKE_BOUND)? != HOLD {
+    if server
+        .finished
+        .recv_timeout(HANDSHAKE_BOUND)
+        .map_err(|error| format!("abandoned dispatch completion handshake: {error}"))?
+        != HOLD
+    {
         return Err("unexpected dispatch completion".into());
     }
     let follow_up = send(&server.socket, 9, 1, HANDSHAKE_BOUND);
@@ -473,7 +486,7 @@ fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
     evidence(
         "disconnect_cancels",
         &[
-            ("abandoned_client_outcome", describe(&abandoned)),
+            ("peer_close", "shutdown_both".to_string()),
             (
                 "completions_while_abandoned",
                 completions_while_abandoned.to_string(),
@@ -484,9 +497,6 @@ fn a_disconnected_peer_cancels_its_dispatch_budget() -> ProbeResult {
     );
     server.stop()?;
 
-    if !matches!(abandoned, Err(IpcError::Timeout { .. })) {
-        return Err(format!("client must have abandoned the request, got {abandoned:?}").into());
-    }
     if completions_while_abandoned != 0 {
         return Err("dispatch completed before the test released it".into());
     }

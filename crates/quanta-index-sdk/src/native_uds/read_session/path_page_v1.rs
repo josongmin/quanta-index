@@ -16,10 +16,22 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         after: Option<NativeTextPathCursorV1>,
         budget: &RequestBudgetV1,
     ) -> Result<NativeTextPathPageV1, NativeUdsError> {
+        self.search_text_path_page_with_observation(expected, instance, query, after, budget, None)
+    }
+
+    pub(crate) fn search_text_path_page_with_observation(
+        &self,
+        expected: &NativeReadSessionStatus,
+        instance: IndexInstanceId,
+        query: TextQueryRequest,
+        after: Option<NativeTextPathCursorV1>,
+        budget: &RequestBudgetV1,
+        observation: Option<&mut ClientLexicalQueryObservationV1>,
+    ) -> Result<NativeTextPathPageV1, NativeUdsError> {
         let digest = prepare_path_page(expected, instance, &query, after.as_ref(), None)?;
         let limit = query.top_k;
         let constraints = query.constraints.clone();
-        let NativeIndexResponse::TextPathPageV1(page) = self.request(
+        let NativeIndexResponse::TextPathPageV1(page) = self.request_lexical(
             NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchTextPathPageV1 {
                 session: expected.session,
                 instance,
@@ -27,6 +39,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 after: after.clone(),
             }),
             budget,
+            observation,
         )?
         else {
             return Err(NativeUdsError::Protocol(
@@ -56,7 +69,6 @@ pub(super) fn prepare_path_page(
 ) -> Result<quanta_index_contract::index::Digest, NativeUdsError> {
     if expected.state != NativeReadSessionState::Active
         || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&query.top_k)
-        || query.syntax == quanta_index_contract::TextQuerySyntax::CodeSearch
         || query.generation.is_some()
         || query.generation_selector.is_some()
         || query.cursor.is_some()
@@ -92,7 +104,7 @@ pub(super) fn prepare_path_page(
             || cursor.instance != instance
             || cursor.query != digest
             || cursor.score.get() < 0.0
-            || !super::super::valid_native_source_path(&cursor.path)
+            || !super::super::is_canonical_source_path(&cursor.path)
             || query
                 .constraints
                 .repo_relative_path_exact
@@ -119,6 +131,8 @@ pub(super) fn validate_path_page(
     let result = &page.ranked.ranking;
     let count = u64::try_from(result.hits.len())
         .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    page.validate_code_search()
+        .map_err(|message| NativeUdsError::Protocol(message.into()))?;
     // A continuation excludes at least the group that supplied its input cursor.
     if page.session != expected.session
         || page.remaining > result.matched
@@ -184,7 +198,7 @@ pub(super) fn validate_path_page(
 mod tests {
     use super::*;
     use quanta_index_contract::native_protocol::{
-        NativeTextCoverage, NativeTextPathRankingV1, NativeTextResult,
+        NativeTextCoverage, NativeTextHit, NativeTextPathRankingV1, NativeTextResult,
     };
     use quanta_index_contract::{FiniteScore, QueryConstraintSetV1, RepoId, TextQuerySyntax};
 
@@ -231,6 +245,7 @@ mod tests {
             ranked,
             remaining: 2,
             after: Some(anchor.clone()),
+            code_search: Vec::new(),
         };
         validate_path_page(
             &status,
@@ -318,6 +333,131 @@ mod tests {
         let mut ordinary = query;
         ordinary.query_text = "needle".into();
         assert!(prepare_path_page(&status, instance, &ordinary, None, None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn path_page_tied_groups_continue_across_repositories_and_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (status, original, instance, _) = super::super::page::tests::fixture()?;
+        let query = TextQueryRequest {
+            syntax: TextQuerySyntax::Native,
+            query_text: "select:path needle".into(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: None,
+            generation_selector: None,
+            top_k: 2,
+            cursor: None,
+        };
+        let digest = prepare_path_page(&status, instance, &query, None, None)?;
+        let repo_a = RepoId::new("repo-a")?;
+        let repo_b = RepoId::new("repo-b")?;
+        let repo_c = RepoId::new("repo-c")?;
+        let mut hits = Vec::new();
+        for (stable_id, path) in [
+            (1, "src/a.rs"),
+            (2, "src/a.rs"),
+            (3, "src/b.rs"),
+            (4, "src/a.rs"),
+        ] {
+            let mut hit = original.hits[0].clone();
+            hit.owner.stable_id.0 = [stable_id; 16];
+            hit.path = path.into();
+            hits.push(hit);
+        }
+        let ranking = |hits: Vec<NativeTextHit>| NativeTextResult {
+            view: status.view,
+            instance,
+            coverage: NativeTextCoverage::CoreRequired,
+            artifact: original.artifact,
+            matched: 4,
+            exhaustive: true,
+            hits,
+        };
+        let anchor = NativeTextPathCursorV1 {
+            view: status.view,
+            instance,
+            query: digest,
+            artifact: original.artifact,
+            score: hits[1].score,
+            repository: repo_b.clone(),
+            path: hits[1].path.clone(),
+        };
+        let first = NativeTextPathPageV1 {
+            session: status.session,
+            ranked: NativeTextPathRankingV1 {
+                ranking: ranking(hits[..2].to_vec()),
+                repositories: vec![repo_a, repo_b.clone()],
+            },
+            remaining: 4,
+            after: Some(anchor.clone()),
+            code_search: Vec::new(),
+        };
+        validate_path_page(
+            &status,
+            instance,
+            2,
+            digest,
+            None,
+            &query.constraints,
+            &first,
+            None,
+        )?;
+        assert_eq!(
+            prepare_path_page(&status, instance, &query, Some(&anchor), None)?,
+            digest
+        );
+        let second = NativeTextPathPageV1 {
+            session: status.session,
+            ranked: NativeTextPathRankingV1 {
+                ranking: ranking(hits[2..].to_vec()),
+                repositories: vec![repo_b, repo_c],
+            },
+            remaining: 2,
+            after: None,
+            code_search: Vec::new(),
+        };
+        validate_path_page(
+            &status,
+            instance,
+            2,
+            digest,
+            Some(&anchor),
+            &query.constraints,
+            &second,
+            None,
+        )?;
+        let mut later_anchor = anchor.clone();
+        later_anchor.path = "src/z.rs".into();
+        assert!(matches!(
+            validate_path_page(
+                &status,
+                instance,
+                2,
+                digest,
+                Some(&later_anchor),
+                &query.constraints,
+                &second,
+                None,
+            ),
+            Err(NativeUdsError::Protocol(message)) if message == "text path page precedes cursor"
+        ));
+        let mut reversed = second;
+        reversed.ranked.ranking.hits.reverse();
+        reversed.ranked.repositories.reverse();
+        assert!(matches!(
+            validate_path_page(
+                &status,
+                instance,
+                2,
+                digest,
+                Some(&anchor),
+                &query.constraints,
+                &reversed,
+                None,
+            ),
+            Err(NativeUdsError::Protocol(_))
+        ));
         Ok(())
     }
 }

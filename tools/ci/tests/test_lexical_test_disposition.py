@@ -328,7 +328,7 @@ def test_retirement_requires_complete_nextest_evidence(
     event = f"{crate}::{target}${case}"
     recorded = event.replace("$replacement", "$other") if evidence == "different_pass" else event
     meta = {"crate": crate, "test_binary": target, "kind": kind}
-    binary_id = f"{crate}::{target}"
+    binary_id = crate if library_event else f"{crate}::{target}"
     target_dir = checker.ROOT / f"{run_id}-target"
     binary = {
         "binary-id": binary_id,
@@ -727,7 +727,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         }
         rows = {binary_id: row}
         for name, kind in extra_targets.items():
-            extra_id = f"quanta-index-lexical::{name}"
+            extra_id = "quanta-index-lexical" if kind == "lib" else f"quanta-index-lexical::{name}"
             rows[extra_id] = {
                 "binary-id": extra_id,
                 "binary-path": str(target / name),
@@ -1002,14 +1002,18 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert not list(evidence.glob("*-source-manifest.json"))
     else:
-        path = retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        manifest_digests = {}
+        path = retirement_nextest.capture_release_execution(
+            checkout, "b" * 40, evidence, _manifest_digests=manifest_digests, **args
+        )
+        assert manifest_digests[path] == retirement_nextest.RawFile.capture(path).sha256
         manifest = json.loads(path.read_bytes())
         assert manifest["execution"]["workspace_root"] == str(checkout)
         assert manifest["execution"]["selection"]["expected_events"] == [event]
-        expected_executables = {
-            f"quanta-index-lexical::{name}": hashlib.sha256(b"test binary").hexdigest()
-            for name in ("replacement", *extra_targets)
-        }
+        expected_executables = dict.fromkeys(
+            ("quanta-index-lexical", "quanta-index-lexical::additional", binary_id),
+            hashlib.sha256(b"test binary").hexdigest(),
+        )
         expected_executables.update(
             {
                 "runtime/debug/quanta-index-searchd": hashlib.sha256(b"native daemon").hexdigest(),
@@ -1247,7 +1251,14 @@ def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners
     monkeypatch.setattr(retirement_nextest, "_require_frozen_checkout", lambda *_: None)
     monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: batches)
     retained = {}
-    monkeypatch.setattr(retirement_nextest, "_reusable_captures", lambda *_: retained)
+
+    def reusable(*args):
+        digests = args[-1]
+        for path in retained.values():
+            digests[path] = retirement_nextest.RawFile.capture(path).sha256
+        return retained
+
+    monkeypatch.setattr(retirement_nextest, "_reusable_captures", reusable)
     monkeypatch.setattr(retirement_nextest, "_require_capture_host", lambda *_: None)
     monkeypatch.delenv(retirement_nextest.LEGACY_SHA_ENV, raising=False)
     monkeypatch.delenv(retirement_nextest.LEGACY_BINARY_ENV, raising=False)
@@ -1255,7 +1266,10 @@ def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners
 
     def capture(*_, **selection):
         launched.append(selection["expected_events"][0])
-        return evidence / "new-manifest.json"
+        path = evidence / "new-manifest.json"
+        path.write_bytes(b"new verified manifest")
+        selection["_manifest_digests"][path] = retirement_nextest.RawFile.capture(path).sha256
+        return path
 
     monkeypatch.setattr(retirement_nextest, "capture_release_execution", capture)
 
@@ -1269,6 +1283,7 @@ def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners
     assert launched == []
 
     retained[(legacy,)] = evidence / "verified-manifest.json"
+    retained[(legacy,)].write_bytes(b"retained verified manifest")
     monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(tmp_path / "expired-old-q"))
     monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, "a" * 64)
     active = run()

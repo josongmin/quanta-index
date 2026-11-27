@@ -6,6 +6,7 @@ import json
 import os
 import struct
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,116 @@ def test_default_release_daemon_uses_the_native_artifact_producer():
     assert "--all-features" not in command
 
 
+def stock_sqlite_metadata():
+    runtime = "path+file:///checkout#quanta-index-searchd-runtime@0.1.0"
+    sqlite = "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.39.1"
+    return {
+        "packages": [
+            {"id": runtime, "name": "quanta-index-searchd-runtime"},
+            {
+                "id": sqlite,
+                "name": "libsqlite3-sys",
+                "version": "0.39.1",
+                "source": "registry+https://github.com/rust-lang/crates.io-index",
+            },
+        ],
+        "resolve": {
+            "nodes": [
+                {
+                    "id": runtime,
+                    "features": [],
+                    "deps": [{"pkg": sqlite, "dep_kinds": [{"kind": None}]}],
+                },
+                {"id": sqlite, "features": ["bundled"], "deps": []},
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize("fault", [
+    None, "local-source", "old-version", "stock-mode", "legacy-mode",
+    "default-mode", "fork-feature", "dev-only", "missing-deps", "duplicate-sqlite",
+])
+def test_release_sqlite_graph_requires_registry_default_runtime(fault):
+    checker = load_checker()
+    metadata = deepcopy(stock_sqlite_metadata())
+    runtime, sqlite = metadata["resolve"]["nodes"]
+    if fault == "local-source":
+        metadata["packages"][1]["source"] = None
+    elif fault == "old-version":
+        metadata["packages"][1]["version"] = "0.38.2"
+    elif fault == "stock-mode":
+        runtime["features"].append("stock-sqlite-only")
+    elif fault == "legacy-mode":
+        runtime["features"].append("legacy-sqlite-vfs")
+    elif fault == "default-mode":
+        runtime["features"].append("default")
+    elif fault == "fork-feature":
+        sqlite["features"].append("quanta-capacity-vfs-test-hooks")
+    elif fault == "dev-only":
+        runtime["deps"][0]["dep_kinds"] = [{"kind": "dev"}]
+    elif fault == "missing-deps":
+        del sqlite["deps"]
+    elif fault == "duplicate-sqlite":
+        metadata["packages"].append(dict(metadata["packages"][1]))
+    if fault is None:
+        checker.check_release_sqlite_graph(metadata)
+    else:
+        with pytest.raises(ValueError, match="release SQLite"):
+            checker.check_release_sqlite_graph(metadata)
+
+
+def test_release_sqlite_supply_uses_actual_linux_daemon_features(monkeypatch, tmp_path):
+    checker = load_checker()
+
+    def cargo_output(root, *args):
+        assert root == tmp_path
+        if args[0] == "metadata":
+            assert args == (
+                "metadata", "--format-version", "1", "--manifest-path",
+                str(tmp_path / "crates/quanta-index-searchd-runtime/Cargo.toml"),
+                "--filter-platform", checker.INSTALLED_LINUX_TARGET,
+                "--no-default-features",
+            )
+            metadata = stock_sqlite_metadata()
+            metadata["resolve"]["nodes"][0]["features"] = ["native-test-fixtures"]
+            return json.dumps(metadata)
+        assert args == (
+            "tree", "-p", checker.WORKSPACE_PACKAGE,
+            "--target", checker.INSTALLED_LINUX_TARGET, "--no-default-features",
+            "--edges", "normal,build,features", "--prefix", "none",
+        )
+        return "quanta-index-searchd-runtime v0.1.0\nlibsqlite3-sys v0.39.1\n"
+
+    monkeypatch.setattr(checker, "cargo_output", cargo_output)
+    checker.check_release_sqlite_supply(tmp_path)
+
+
+@pytest.mark.parametrize("feature", [
+    "native-test-fixtures", "stock-sqlite-only", "legacy-sqlite-vfs",
+])
+def test_release_feature_tree_rejects_nonproduction_runtime_feature(feature):
+    checker = load_checker()
+    with pytest.raises(ValueError, match="private or test feature"):
+        checker.check_release_sqlite_feature_tree(
+            f'quanta-index-searchd-runtime feature "{feature}"\n'
+        )
+
+
+def test_native_release_refuses_sqlite_supply_before_compiler(checkout, monkeypatch):
+    checker, _ = checkout
+    def refuse_supply(root):
+        raise ValueError("release SQLite supply refused")
+
+    monkeypatch.setattr(checker, "check_release_sqlite_supply", refuse_supply)
+    monkeypatch.setattr(
+        checker, "run_release_compiler",
+        lambda *args: pytest.fail("compiler ran after SQLite supply refusal"),
+    )
+    with pytest.raises(ValueError, match="release SQLite supply refused"):
+        checker.build_and_check_native_daemon(checker.ROOT, None)
+
+
 @pytest.mark.parametrize(
     ("role", "fault"),
     [
@@ -108,6 +219,8 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(
     from tools.ci.source_closure import ClosureError
 
     checker = load_checker()
+    supply_checks = []
+    monkeypatch.setattr(checker, "check_release_sqlite_supply", supply_checks.append)
     monkeypatch.setenv("CI", "true")
     monkeypatch.setenv("QUANTA_INDEX_RESOURCE_ADMISSION", "0")
     root = tmp_path / "source"
@@ -220,9 +333,11 @@ def test_release_build_receipt_round_trips_to_real_shipment_reader(
         error, message = failures[fault]
         with pytest.raises(error, match=message):
             checker.capture_release_build(root, role, evidence)
+        assert supply_checks == ([root] if role == "daemon" else [])
         assert not (evidence / "build-result.json").exists()
         return
     assert checker.capture_release_build(root, role, evidence) == []
+    assert supply_checks == ([root] if role == "daemon" else [])
     digest = checker.file_sha256(evidence / "build-result.json")
     evidence = evidence.rename(tmp_path / "relocated release evidence")
     if role == "daemon":
@@ -337,16 +452,20 @@ def test_release_gates_require_retirement_before_proof_steps(
         )
     )
     (tmp_path / "uv").write_text(
-        '#!/bin/sh\nif [ "$1" = sync ]; then exit 0; fi\n'
+        '#!/bin/sh\ncase "$*" in\n'
+        '  "sync "*) exit 0 ;;\n'
+        '  "run --frozen --extra dev python tools/ci/lint/check-proof-authority.py "*)\n'
+        '    printf "%s\\n" check-proof-authority.py; exit 0 ;;\n'
+        '  "run --no-sync --offline python tools/ci/check-tantivy-retirement.py "*) ;;\n'
+        "  *) exit 90 ;;\n"
+        "esac\n"
         'case " $* " in *" --proof-checkout "*) ;; *) exit 91 ;; esac\n'
         'case " $* " in *" --installed-readback signed-readback "*) ;; *) exit 92 ;; esac\n'
         'case " $* " in *" --installed-q-approval-request q-approval-request "*) ;; *) exit 93 ;; esac\n'
         'for arg; do mode="$arg"; done\n'
         'printf "retirement %s\\n" "$mode"\nexit "$RETIREMENT_EXIT"\n'
     )
-    (tmp_path / "python3").write_text('#!/bin/sh\nprintf "%s\\n" "${1##*/}"\n')
-    for name in ("uv", "python3"):
-        (tmp_path / name).chmod(0o755)
+    (tmp_path / "uv").chmod(0o755)
     result = subprocess.run(
         ["just", recipe],
         cwd=tmp_path,
@@ -795,6 +914,7 @@ def release_build(checkout):
 
 def test_native_release_rejects_existing_shared_daemon(release_build, monkeypatch, capsys):
     checker, _, _, events = release_build
+    monkeypatch.setattr(checker, "check_release_sqlite_supply", lambda root: None)
     shared_daemon = Path(events[0]["executable"])
     shared_daemon.write_bytes(b"previous build")
     shared_daemon.chmod(0o700)
@@ -1242,9 +1362,7 @@ def shipped_release(release_build, tmp_path, request):
     deployment = tmp_path / "q-deployment"
     deployment.mkdir(mode=0o700)
     selected_q, approval_request = selection_fixture(
-        deployment,
-        binary_bytes=binary.read_bytes(),
-        retired_policy=getattr(request, "param", False),
+        deployment, binary_bytes=binary.read_bytes(), retired_policy=getattr(request, "param", False),
     )
     request_path = deployment / "approval-request.json"
     request_path.write_text(json.dumps(approval_request))
@@ -1254,7 +1372,7 @@ def shipped_release(release_build, tmp_path, request):
         approval_request["decision_policy_sha256"],
         checker.hashlib.sha256(active_bytes).hexdigest(),
         manifest_sha,
-        selection_path=approval_request["selection_path"],
+        selection_path=Path(approval_request["selection_path"]),
     )
     readback = tmp_path / "LOCAL-INSTALLED-LINUX-PRODUCED.json"
     readback.write_text(
@@ -1290,31 +1408,48 @@ def shipped_release(release_build, tmp_path, request):
 
 
 @pytest.mark.parametrize("shipped_release", [True], indirect=True)
+@pytest.mark.parametrize("foreign_path", [False, True], ids=["active-path", "same-bytes-other-path"])
+def test_shipped_retirement_approval_binds_the_active_selection(shipped_release, foreign_path):
+    checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, selected_q = shipped_release
+    if foreign_path:
+        request_wire = json.loads(request.read_text())
+        selected = Path(request_wire["selection_path"])
+        other = selected.with_name("other-active.json")
+        other.write_bytes(selected.read_bytes())
+        other.chmod(0o600)
+        request_wire["selection_path"] = str(other)
+        request.write_text(json.dumps(request_wire))
+
+    def read_shipped_install():
+        return checker.shipped_bundle_findings(
+            bundle, readback, checker.file_sha256(binary), "b" * 40,
+            approval_request_path=request, trust_root=trust,
+        )
+
+    if foreign_path:
+        with pytest.raises(ValueError, match="signed Q approval differs from the installed selection or policy"):
+            read_shipped_install()
+    else:
+        assert read_shipped_install() == (
+            str(selected_q.state_root), selected_q.native_config_sha256, bundle.name,
+        )
+
+
+@pytest.mark.parametrize("shipped_release", [True], indirect=True)
 def test_shipped_retirement_approval_uses_selected_policy(shipped_release):
-    checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, selected_q = (
-        shipped_release
-    )
+    checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, selected_q = shipped_release
     assert checker.shipped_bundle_findings(
-        bundle,
-        readback,
-        checker.file_sha256(binary),
-        "b" * 40,
-        approval_request_path=request,
-        trust_root=trust,
+        bundle, readback, checker.file_sha256(binary), "b" * 40,
+        approval_request_path=request, trust_root=trust,
     ) == (str(selected_q.state_root), selected_q.native_config_sha256, bundle.name)
 
     policy = Path(json.loads(request.read_text())["decision_policy_path"])
     policy.write_text('{"decision":"rejected"}')
     with pytest.raises(ValueError, match="selection or decision policy changed"):
         checker.shipped_bundle_findings(
-            bundle,
-            readback,
-            checker.file_sha256(binary),
-            "b" * 40,
-            approval_request_path=request,
-            trust_root=trust,
+            bundle, readback, checker.file_sha256(binary), "b" * 40,
+            approval_request_path=request, trust_root=trust,
         )
-
 
 @pytest.mark.parametrize(
     "fault",
@@ -1807,6 +1942,8 @@ def test_native_release_recipe_checks_its_own_compiler_stream(
     release_build, monkeypatch, capsys, fault, expected
 ):
     checker, _, binary, events = release_build
+    supply_checks = []
+    monkeypatch.setattr(checker, "check_release_sqlite_supply", supply_checks.append)
     shared = Path(events[0]["executable"])
     shared.write_bytes(b"previous build")
     shared.chmod(0o700)
@@ -1873,6 +2010,7 @@ def test_native_release_recipe_checks_its_own_compiler_stream(
     assert (
         checker.main(expected_daemon_sha256=expected_digest, build_native_daemon=True) == expected
     )
+    assert supply_checks == [checker.ROOT]
     result = capsys.readouterr()
     if expected == 0:
         assert checker.file_sha256(binary) in result.out

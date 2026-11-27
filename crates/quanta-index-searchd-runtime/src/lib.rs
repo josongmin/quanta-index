@@ -21,6 +21,7 @@ mod native_authorization;
 mod native_auto_signals;
 mod native_catalog_cache_diagnostics;
 mod native_catalog_retirement;
+mod native_code_search_excerpt;
 mod native_dispatch;
 pub mod native_effort;
 mod native_effort_ports;
@@ -40,6 +41,7 @@ mod native_overlay_query;
 mod native_overlay_transport;
 mod native_producer_source_lookup;
 pub mod native_product;
+mod native_progress_observation;
 mod native_projection_owner_lookup;
 mod native_projection_source_diff;
 mod native_provider_custody;
@@ -49,21 +51,24 @@ mod native_query_lowering;
 mod native_read_session_transport;
 mod native_read_sessions;
 mod native_reclaim_driver;
+mod native_reclaim_observation;
 #[cfg(unix)]
 pub mod native_recovery;
+mod native_release_deadline;
 mod native_reply;
 mod native_repository_path_transport;
 mod native_resources;
 mod native_result;
 mod native_retention;
+mod native_retention_observation;
 #[cfg(unix)]
 pub mod native_scratch_io;
 mod native_semantic_result;
 mod native_semantic_scope;
 mod native_source_owner_lookup;
-mod native_source_path;
 mod native_stub_certificate_projection_v1;
 mod native_stub_transport;
+mod native_text_match_transport;
 mod native_text_result;
 mod native_wal_reclaim;
 mod native_work_diagnostic;
@@ -81,19 +86,17 @@ pub mod publication_file_deletions;
 /// This does not install whole-publication admission in the default runtime.
 #[cfg(unix)]
 pub mod publication_inventory;
-#[cfg(unix)]
-pub mod publication_lance_io;
+#[cfg(all(test, unix, feature = "legacy-semantic-adapter"))]
+mod publication_lance_io;
 pub mod publication_lexical_lifetime;
 #[cfg(unix)]
 pub mod publication_sidecar;
-#[cfg(unix)]
-pub mod publication_sqlite_vfs;
-#[cfg(unix)]
-pub mod repomap_file_admission;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "legacy-semantic-adapter"))]
 pub mod semantic_file_factory;
 #[cfg(unix)]
 pub mod source_upload_file_admission;
+#[cfg(all(unix, feature = "sqlite-owner-vfs-grant"))]
+pub mod sqlite_owner_memory_grant;
 
 fn runtime_diagnostic_span(
     context: &DiagnosticContextV1,

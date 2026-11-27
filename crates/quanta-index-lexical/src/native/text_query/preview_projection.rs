@@ -374,6 +374,8 @@ impl PreparedPreview<'_> {
                     append_ranges(&coordinates, result.ranges, limits, &mut witnesses, budget)?;
                 }
                 Clause::Contains(_)
+                | Clause::PathContains(_)
+                | Clause::PathFilters
                 | Clause::Repo(_)
                 | Clause::All(_)
                 | Clause::Any(_)

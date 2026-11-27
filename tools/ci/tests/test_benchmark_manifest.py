@@ -117,13 +117,16 @@ def test_profiles_project_without_inventing_membership() -> None:
 def test_quality_all_delegates_to_the_registry_control_plane() -> None:
     justfile = JUSTFILE.read_text(encoding="utf-8")
     match = re.search(
-        r"^rust-verify-quality-all:\n(?P<body>.*?)(?=^[a-z0-9][a-z0-9-]*(?:\s+[^:]*)?:|\Z)",
+        r"^rust-verify-quality-all:[^\n]*\n(?P<body>.*?)(?=^[a-z0-9][a-z0-9-]*(?:\s+[^:]*)?:|\Z)",
         justfile,
         re.MULTILINE | re.DOTALL,
     )
     assert match is not None
     body = match.group("body")
-    assert "python3 tools/benchmark/benchctl.py run quality-full" in body
+    assert "uv run --frozen --extra dev python tools/benchmark/benchctl.py run quality-full" in body
+    assert (
+        "uv run --frozen --extra dev python tools/benchmark/quality_integration_summary.py" in body
+    )
     assert "@just rust-verify-quality-" not in body
 
 
@@ -137,7 +140,8 @@ def test_dsl_refresh_delegates_to_the_registry_control_plane() -> None:
     assert match is not None
     body = match.group("body")
     assert (
-        "python3 tools/benchmark/benchctl.py run dsl-authority --cold-samples {{samples}}" in body
+        "uv run --frozen --extra dev python tools/benchmark/benchctl.py "
+        "run dsl-authority --cold-samples {{quote(samples)}}" in body
     )
     assert "@just rust-bench-dsl-" not in body
 
@@ -151,7 +155,7 @@ def test_dsl_comparison_uses_the_control_planes_pair_check() -> None:
     )
     assert match is not None
     assert match.group("body").splitlines() == [
-        "    python3 tools/benchmark/benchctl.py compare dsl-authority",
+        "    uv run --frozen --extra dev python tools/benchmark/benchctl.py compare dsl-authority",
     ]
 
 

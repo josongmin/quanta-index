@@ -2,7 +2,7 @@
 
 
 
-종료는 구현, 제품 실행, 기본값 전환, 퇴역을 모두 포함한다. 현재 소스의 Tantivy 제거와 전체 타깃 컴파일은 [06.2–06.3](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) 범위에서 끝났고, Linux release·서명 번들·복구·제품 실행은 남았다. 이 문서의 추가 기준은 기존 [R01–R40](../oct-22-finalizing/DOD.md)과 [E07 운영 사양](../oct-22-finalizing/E07-performance-operations.md)에 더해 적용한다. 아래 수치는 시험 전 고정하는 기준이다. 관측 결과는 각 현행 오너 원장에서 판정한다.
+종료는 구현, 제품 실행, 기본값 전환, 퇴역을 모두 포함한다. 현재 소스의 Tantivy 제거와 전체 타깃 컴파일은 [06.2–06.3](../../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement) 범위에서 끝났고, Linux release·서명 번들·복구·제품 실행은 남았다. 이 문서의 추가 기준은 기존 [R01–R40](../oct-22-finalizing/DOD.md)과 [E07 운영 사양](../oct-22-finalizing/E07-performance-operations.md)에 더해 적용한다. 아래 수치는 시험 전 고정하는 기준이다. 관측 결과는 각 현행 오너 원장에서 판정한다.
 
 ## 제품 및 상태 계약
 
@@ -19,9 +19,9 @@
 | 구간 | 기존 조건 | 통과 증거 |
 | --- | --- | --- |
 | Native Caddy / etcd 원 SDK60 | 고정 Caddy 590파일·etcd 1,421파일. 실제 SDK I/O 제한 **60초**, 물리 파일 **30,000**, Native 논리 work bytes **536,870,912**, reads/writes/mutations **각 1,000,000**. Off와 Record 모두 원 입력·제한으로 실행. | Full ACK·검색·재오픈·source digest 일치. 최초 거절, SDK I/O, staging, publish, reopen 시간을 별도 필드로 기록. Record에는 두 프로세스의 완전한 trace와 누락 0. [원 입력·결과](../nov-5-indexing-bugbash/WORKPLAN.md#root-integration-follow-up--fixed-sdk60-and-independent-file-holdout) |
-| Legacy Caddy / etcd 비교 | 이전 릴리스의 동일 원 입력, SDK I/O 60초·물리 Work 예약 30,000개 유지. 각 2회. | 원 SDK 결과·쿼리·재오픈을 남긴다. Native 완료와 Legacy 비교 결과는 각 실행에 귀속한다. Legacy Work 예약과 전체 상태 루트 파일 수를 따로 기록한다. [기존 반복 측정](../nov-5-indexing-bugbash/RCA.md#file-v3-합류-후-원-sdk-반복-결과) |
+| Legacy Caddy / etcd 비교 | 이전 릴리스의 동일 원 입력, SDK I/O 60초·물리 Work 예약 30,000개 유지. 각 2회. | 원 SDK 결과·쿼리·재오픈을 남긴다. Native 완료와 Legacy 비교 결과는 각 실행에 귀속한다. Legacy Work 예약과 전체 상태 루트 파일 수를 따로 기록한다. [기존 반복 측정](../../ARCHIVE-INDEX.md#nov-5-indexing-rca-preimage) |
 | 표준 Large 재시작 | 삭제 전 Legacy 기준 회귀는 `process_readiness_owner_v1`의 `e2e_process_readiness::binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page`였다. 준비 SDK 제한 300초, source 4,096개, 이후 독립 데몬 두 번. | Native 최적화 실행은 원 두 OS 재시작과 소스 해시·owner·저장소별 및 전역 4,096개 순위를 **VERIFIED**, 1/1·320.116초에 확인했다. 이 고정 입력은 Literal V3와 packed seek까지 포함하며 뒤이은 inventory 변경 전이다. 파일 30,000, 원 Large funding, 서버 120초를 유지했다. 출하 관련 입력이 바뀌면 영향 범위를 재검증하고, 전체 테스트 시간을 SDK60 ACK 수치로 사용하지 않는다. [실행 결과](tickets/NC-F-integration.md#f--original-sdk60-and-native-buildprepare-budget--2026-11-14) · [Native 회귀](../../../crates/quanta-index-searchd-runtime/tests/native_product_process/large_restart.rs) |
-| Native Large / XL | seed 42, 각각 4,096 / 32,768파일, 원 서버 dispatch **120초**. Large의 별도 논리 funding은 R/W/M 각 67,108,864 및 549,755,813,888B. | 원 full ACK·검색·재오픈·delta/no-op/delete·이전 view·같은 작업 복구. SDK60의 512 MiB 진단 한도, 외부 controller timeout, staging과 서버 dispatch는 각각 적용 대상과 시계를 유지한다. [원 Large 조건](../nov-5-indexing-bugbash/README.md#native-large-funding-boundary) · [F2 실행 계약](../nov-5-indexing-bugbash/RCA.md#native-final-f2-execution-20261111) |
+| Native Large / XL | seed 42, 각각 4,096 / 32,768파일, 원 서버 dispatch **120초**. Large의 별도 논리 funding은 R/W/M 각 67,108,864 및 549,755,813,888B. | 원 full ACK·검색·재오픈·delta/no-op/delete·이전 view·같은 작업 복구. SDK60의 512 MiB 진단 한도, 외부 controller timeout, staging과 서버 dispatch는 각각 적용 대상과 시계를 유지한다. [원 Large 조건](../nov-5-indexing-bugbash/README.md#native-large-funding-boundary) · [F2 실행 계약](../../ARCHIVE-INDEX.md#nov-5-indexing-rca-preimage) |
 | Native Mixed | Linux aarch64 전용 2 CPU / 6 GiB / local SSD. 60초 warmup+900초 open-loop, **50 QPS**, **1 Hz** ≤16 KiB replace/delete/restore, 동시 4·대기 64, ≥10,000 attempts 및 query class별 ≥1,000. | 예정 발행부터 decoded top20까지 검색 p95≤100ms/p99≤500ms, staging→ACK→검색 freshness p95≤1s/p99≤5s. pin 600초, lease 300초, renew 120초/최대 간격 180초, 해제 후 60초 내 reclaimable debt 0, shutdown grace 5초. 초과·실패·timeout·대기 포함. [운영 사양](../oct-22-finalizing/E07-performance-operations.md#fixed-profiles-and-oracles) |
 | 물리 자원·관측 | 원 운영 프로필 전체 process RSS ≤2 GiB, allocated scratch ≤4 GiB, physical ≤64 GiB. 정식 Large Off/Record 직렬 교대 ≥3쌍. | 실제 high-water에 WAL·scratch·보호/퇴역 객체·FD를 포함한다. Record 고정 phase별 paired ratio 중앙값 증가 ≤5%, drop 0. 논리 바이트나 샘플 최대값은 연속 물리 peak 증거가 아니다. [자원 및 관측 DoD](../oct-22-finalizing/E07-performance-operations.md#dod) |
 | Native 원 ANN4K 및 제품 SLO | 4096×64/Q64/K10, Recall@10 ≥0.95, 원 1M reads/512 MiB, SDK 30초/worker 10초. Native/IDE의 RFC 12.3/12.5는 별도 하드웨어·기능·비교 조건을 적용한다. | 실제 ANN/정확 검색과 독립 gold, 원 예산 및 기존 Native/IDE 필수 운영 기준. 원 ANN4K의 통과를 대형 ANN이나 실제 SDK60의 통과로 이전하지 않는다. [원 profile 구분](../oct-22-finalizing/DOD.md#existing-profile-separation) · [RFC SLO](../../rfc/oct-10-native-incremental-vnext.md#123-latency-stability-and-qualification-envelope) |
@@ -59,13 +59,13 @@ N3/N4/N5는 DEV에 사용한다. 기존 split 검증으로 저장소·fork/유�
 
 ## 전환 및 퇴역 판정
 
-Tantivy 우선 전환은 [실행 계획](TANTIVY-RETIREMENT.md)의 유지·퇴역 호출 목록, 설치·복구, 성능 및 전체 의존성 0건 조건으로 판정한다. 전체 삭제를 반영한 후보를 먼저 검증하고 동일 바이너리·설정으로 기본 전환한다. 코드 퇴역과 전체 Native 제품 수용은 별도 판정이다.
+Tantivy 우선 전환은 [호출자 수용](../nov-20-native-cutover-closeout/tickets/05-bench-callers-hosted-ci.md#정식-dsl과-실제-제품-호출), [퇴역·설치 복구](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md#검증), [같은 후보의 성능 비교](../nov-20-native-cutover-closeout/tickets/07-product-qualification.md#출하-벤치와-비교-입력)로 판정한다. 전체 의존성 0건을 포함해 삭제를 반영한 후보를 검증한 뒤 동일 바이너리·설정으로 기본 전환한다. 코드 퇴역과 전체 Native 제품 수용은 별도 판정이다.
 
 ### Tantivy 우선 퇴역 T 단계
 
 T는 Tantivy 제거 후보의 독립 판정이며 아래 통합 A/B와 구분한다. T의 완료에는 유지할 lexical·History·호출자 이전, 격리된 실제 설치 후보의 게시·검색·재시작·복구, 최종 후보의 SDK60·Large·독립 Hybrid 및 해당 기능의 기존 성능/회귀 기준이 필요하다. 전체 workspace·release 그래프·코드·lock·vendor·후보 번들에서 Tantivy 계열은 0건이어야 한다. Native 기본 호출과 Legacy 거절도 그 격리된 설치 후보에서 리허설한다. 전역 기본 선택의 E06 활성화는 통합 A 이후에만 수행한다.
 
-Native LanceDB 전환은 기존 Semantic 오너가 맡는다. T에서는 Tantivy 의존성 제거와 그에 해당하는 제품 범위를 검증한다. 통합 A/B에서는 아래 Native 출하 기준을 적용한다. [최종 구조·실행 계획](TANTIVY-RETIREMENT.md#구조-감사와-최종-실행-계획--2026-11-15)
+Native LanceDB 전환은 기존 Semantic 오너가 맡는다. T에서는 Tantivy 의존성 제거와 그에 해당하는 제품 범위를 검증한다. 통합 A/B에서는 아래 Native 출하 기준을 적용한다. [최종 구조·실행 계획](../nov-20-native-cutover-closeout/tickets/LANES.md#현행-구현과-수용-순서)
 
 ### 전체 Native 통합 A/B
 
@@ -82,7 +82,7 @@ P07의 SDK·Runtime·공개 SDK/CLI Published와 설치 복구는 각 원 suite�
 ## 최종 제거 및 증거 체크리스트
 
 - [ ] 통합 A 전 `./scripts/cargow tree --locked --offline -p quanta-index-searchd-runtime --edges normal,build`와 출하 SDK/CLI 패키지의 동일 검사를 실제 release recipe의 target·features로 실행한다. `tantivy`·`tantivy-fst` 및 Tantivy 계열 패키지가 0건이어야 한다. 출하 데몬의 LanceDB 의존성을 Native Semantic까지 추적한다. 그래프를 실제 출하 바이너리·번들 해시에 결속하고 번들에서 별도 인덱스 실행 파일과 Legacy 모드 설정을 검사한다. 격리한 이전 릴리스·비교 도구는 별도 그래프로 확인한다.
-- [x] Legacy lexical writer/reader·History, 공유 `tantivy-fst` matcher, `legacy-tantivy`/`legacy-bench`, 공용 manifest·lockfile·vendor patch를 현재 소스에서 제거했다. 전체 타깃 컴파일과 workspace 검사는 [06.3 원장](../nov-20-native-cutover-closeout/tickets/06-tantivy-retirement.md) 범위에서 통과했다. 이는 설치 후보의 실제 release/번들 판정이 아니다.
+- [x] Legacy lexical writer/reader·History, 공유 `tantivy-fst` matcher, `legacy-tantivy`/`legacy-bench`, 공용 manifest·lockfile·vendor patch를 현재 소스에서 제거했다. 전체 타깃 컴파일과 workspace 검사는 [06.3 원장](../../adr/NOV-12-001-native-query-and-semantic-engine.md#engine-composition-and-retirement) 범위에서 통과했다. 이는 설치 후보의 실제 release/번들 판정이 아니다.
 - [ ] Native 정규식·오류와 exact/ANN build·search·restore/reopen을 새 Native 루트에서 실제 실행한다. Native Catalog가 LanceDB 리전 파일셋을 관리하는지 확인하고 Legacy 경로 fallback 0건을 검증한다. 제거된 Legacy Text/File sidecar·History·writer/head/GC 및 semantic generation adapter가 출하 실행 경로에 없는지 대조한다. 공개 wire·module/API·벤치 기본값·CI inventory를 실제 사용 경로와 맞춘다. [Native LanceDB 세션](../../../crates/quanta-index-semantic/src/native/ann_session.rs)
 - [ ] 전환 후 authoritative head와 발행·보존 writer가 각각 하나다. 이전 읽기·pin 및 승인된 rollback 보존 범위를 정리하고 외부 비교나 이전 릴리스의 보관을 운영 제품과 분리한다.
 - [ ] 정식 수용은 source와 dirty 입력·toolchain·feature·모델·manifest·config·실행 바이너리 해시를 연결한다. canonical host admission과 해당 quiet-host 기준을 통과하고 실제 본문·종료값을 원 검증기로 확인한다. F2는 부모/자식 terminal에서 `case_exit=0`, `status=VERIFIED`, `product_verified=true`를 확인한다. 준비 완료·과거 pair·부분 실행·테스트 본문 0건은 합격 증거가 아니다.

@@ -182,6 +182,38 @@ def test_library_only_scope_builds_one_nextest_command(tmp_path: Path, monkeypat
     assert command[command.index("--no-tests") + 1] == "fail"
 
 
+def test_native_catalog_owner_selects_only_registered_library_cases(capsys) -> None:
+    assert MODULE.main(["candidate-activation-owner", "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert "--lib -E" in output
+    assert "--all-features --locked" in output
+    assert "--no-tests fail" in output
+    for case in MODULE.live_proof(
+        REPO_ROOT, "p03-candidate-activation-owner"
+    )["required_nextest_lib_cases"]["quanta-index-catalog"]:
+        assert f"test(={case})" in output
+    with pytest.raises(ValueError, match="registered library packages"):
+        MODULE.build_command(
+            "test-owner-lane", 2, True, ["quanta-index-catalog"], [],
+            exact_lib_cases={"quanta-index-core": ["native::authority::tests::unrelated"]},
+        )
+
+
+def test_p02b_keeps_generic_journal_and_exact_native_supplement(capsys) -> None:
+    assert MODULE.main(["p02b-operation-journal", "--dry-run"]) == 0
+    generic = capsys.readouterr().out
+    assert "--test operation_journal --all-features --locked" in generic
+    assert "--lib" not in generic
+
+    assert MODULE.main(["p02b-native-journal-lib", "--dry-run"]) == 0
+    native = capsys.readouterr().out
+    assert "--lib -E" in native
+    assert "--all-features --locked" in native
+    proof = MODULE.live_proof(REPO_ROOT, "p02b-operation-journal")
+    for case in proof["required_nextest_lib_cases"]["quanta-index-catalog"]:
+        assert f"test(={case})" in native
+
+
 def test_owner_library_scope_runs_ignored_tests_only_when_requested(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -262,18 +294,14 @@ def test_fast_scope_keeps_migrated_modules_without_running_the_readiness_suite()
     fast = MODULE.build_command(*MODULE.resolve_targets(catalog, ["daemon-fast"]))
     assert fast.count("nextest") == 1
     assert {fast[i + 1] for i, arg in enumerate(fast) if arg == "--test"} == {
-        "runtime_fast_suite",
-        "process_readiness_owner_v1",
+        "runtime_fast_suite", "process_readiness_owner_v1",
     }
     expr = fast[fast.index("-E") + 1]
     assert "binary(=runtime_fast_suite)" in expr
     assert "binary(=process_readiness_owner_v1)" in expr
     for module in (
-        "legacy_hybrid_filters",
-        "legacy_explain_score_trace",
-        "legacy_structural_hellgate",
-        "legacy_sdk_code_search_frontdoor",
-        "legacy_text_route_hellgate",
+        "legacy_hybrid_filters", "legacy_explain_score_trace", "legacy_structural_hellgate",
+        "legacy_sdk_code_search_frontdoor", "legacy_text_route_hellgate",
     ):
         assert f"test(/^{module}::/)" in expr
     assert "legacy_reference_process" not in expr
@@ -379,9 +407,7 @@ def test_local_thread_override_only_reduces_catalog_cap() -> None:
 
 @pytest.mark.parametrize("missing_module", [False, True])
 def test_proof_mode_collects_and_runs_the_same_target(
-    tmp_path: Path,
-    monkeypatch,
-    missing_module: bool,
+    tmp_path: Path, monkeypatch, missing_module: bool,
 ) -> None:
     data = _catalog(tmp_path)
     monkeypatch.setattr(MODULE, "ROOT", tmp_path)
@@ -441,25 +467,14 @@ def test_proof_mode_collects_and_runs_the_same_target(
     if missing_module:
         with pytest.raises(ValueError, match="selected no tests in first:alpha:required_module"):
             MODULE.run_with_proof_evidence(
-                command,
-                scopes=["one"],
-                lane=lane,
-                raw_dir=raw,
-                targets=targets,
+                command, scopes=["one"], lane=lane, raw_dir=raw, targets=targets,
             )
         assert len(calls) == 1
         return
 
-    assert (
-        MODULE.run_with_proof_evidence(
-            command,
-            scopes=["one"],
-            lane=lane,
-            raw_dir=raw,
-            targets=targets,
-        )
-        == 0
-    )
+    assert MODULE.run_with_proof_evidence(
+        command, scopes=["one"], lane=lane, raw_dir=raw, targets=targets,
+    ) == 0
     assert calls[0][calls[0].index("nextest") + 1] == "list"
     assert calls[1][calls[1].index("nextest") + 1] == "run"
     assert "--message-format-version" in calls[1]
@@ -467,11 +482,7 @@ def test_proof_mode_collects_and_runs_the_same_target(
     assert len(list(raw.glob("*-nextest.jsonl"))) == 1
     with pytest.raises(ValueError, match="already exists"):
         MODULE.run_with_proof_evidence(
-            command,
-            scopes=["one"],
-            lane=lane,
-            raw_dir=raw,
-            targets=targets,
+            command, scopes=["one"], lane=lane, raw_dir=raw, targets=targets,
         )
 
 
@@ -494,29 +505,14 @@ def native_release_checkout(tmp_path, monkeypatch):
     return root
 
 
-@pytest.mark.parametrize(
-    ("scope", "case"),
-    [
-        (
-            "candidate-activation-release",
-            "activation_readers_see_complete_views_and_reopen_the_published_head",
-        ),
-        (
-            "query-truth-release",
-            "retained_text_keysets_preserve_order_and_refuse_a_different_view_cursor",
-        ),
-        ("sdk-binding-release", "sdk_query_reply_stays_bound_to_the_configured_view_and_instance"),
-        ("provider-boundary-release", "native_provider_enforces_approved_budget_and_cancellation"),
-        (
-            "runtime-supervisor-release",
-            "native_signals_drain_peer_fds_and_required_maintenance_loss_stops_serving",
-        ),
-        (
-            "control-readiness-release",
-            "candidate_readiness_refuses_lost_root_with_bounded_diagnostics",
-        ),
-    ],
-)
+@pytest.mark.parametrize(("scope", "case"), [
+    ("candidate-activation-release", "activation_readers_see_complete_views_and_reopen_the_published_head"),
+    ("query-truth-release", "retained_text_keysets_preserve_order_and_refuse_a_different_view_cursor"),
+    ("sdk-binding-release", "sdk_query_reply_stays_bound_to_the_configured_view_and_instance"),
+    ("provider-boundary-release", "native_provider_enforces_approved_budget_and_cancellation"),
+    ("runtime-supervisor-release", "native_signals_drain_peer_fds_and_required_maintenance_loss_stops_serving"),
+    ("control-readiness-release", "candidate_readiness_refuses_lost_root_with_bounded_diagnostics"),
+])
 def test_native_release_scope_selects_the_exact_product_case(scope, case, monkeypatch, capsys):
     monkeypatch.delenv(MODULE.PROOF_RAW_DIR, raising=False)
     assert MODULE.main([scope, "--dry-run"]) == 0
@@ -528,34 +524,24 @@ def test_native_release_scope_selects_the_exact_product_case(scope, case, monkey
     assert MODULE.PROOF_RAW_DIR in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "fault, message",
-    [
-        (None, None),
-        ("missing-approval", "registered approved provider"),
-        ("changed-config", "differ from their registered approval"),
-        ("loopback", "remote HTTPS origin"),
-        ("excess-cost", "exactly two paid attempts"),
-        ("no-credential", "approved provider credential is unavailable"),
-        ("wrong-witness", "daemon witness differs"),
-    ],
-)
+@pytest.mark.parametrize("fault, message", [
+    (None, None),
+    ("missing-approval", "registered approved provider"),
+    ("changed-config", "differ from their registered approval"),
+    ("loopback", "remote HTTPS origin"),
+    ("excess-cost", "exactly two paid attempts"),
+    ("no-credential", "approved provider credential is unavailable"),
+    ("wrong-witness", "daemon witness differs"),
+])
 def test_p07_pins_approval_before_execution_and_requires_its_witness(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    fault,
-    message,
-    native_release_checkout,
+    tmp_path, monkeypatch, capsys, fault, message, native_release_checkout,
 ):
     from tools.ci.tests.p11_test_issuer import nextest_bytes
 
     approval = tmp_path / "provider-config.json"
     provider = {
         "kind": "open_ai",
-        "base_url": "https://localhost"
-        if fault == "loopback"
-        else "https://provider.example.invalid",
+        "base_url": "https://localhost" if fault == "loopback" else "https://provider.example.invalid",
         "api_key_env": "P07_FIXTURE_CREDENTIAL",
         "max_retries": 0,
         "work_budget": {
@@ -571,9 +557,7 @@ def test_p07_pins_approval_before_execution_and_requires_its_witness(
         registry = native_release_checkout / "tools/ci/proof-authority.toml"
         contents = registry.read_text()
         label = f'id = "{MODULE.P07_PROOF}"\n'
-        registry.write_text(
-            contents.replace(label, label + f'provider_approval_sha256 = "{approved_sha}"\n')
-        )
+        registry.write_text(contents.replace(label, label + f'provider_approval_sha256 = "{approved_sha}"\n'))
     daemon = tmp_path / "candidate-daemon"
     daemon.write_bytes(b"frozen candidate executable")
     daemon.chmod(0o500)
@@ -610,19 +594,13 @@ def test_p07_pins_approval_before_execution_and_requires_its_witness(
             assert pin.read_bytes() == approved
             assert env[P07_PROVIDER_SHA_ENV] == approved_sha
             kwargs["stdout"].write(events)
-            (witness_dir / P07_WITNESS_FILE).write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "test": P07_EVENT,
-                        "nonce": env[MODULE.WITNESS_NONCE_ENV],
-                        "executables": [daemon_sha, daemon_sha],
-                        "provider_approval_sha256": "b" * 64
-                        if fault == "wrong-witness"
-                        else approved_sha,
-                    }
-                )
-            )
+            (witness_dir / P07_WITNESS_FILE).write_text(json.dumps({
+                "schema_version": 1,
+                "test": P07_EVENT,
+                "nonce": env[MODULE.WITNESS_NONCE_ENV],
+                "executables": [daemon_sha, daemon_sha],
+                "provider_approval_sha256": "b" * 64 if fault == "wrong-witness" else approved_sha,
+            }))
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(MODULE.subprocess, "run", nextest)
@@ -636,26 +614,13 @@ def test_p07_pins_approval_before_execution_and_requires_its_witness(
     assert phases == (["list", "run"] if fault in (None, "wrong-witness") else [])
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "both-observed",
-        "launch-alias",
-        "missing-observation",
-        "wrong-kind",
-        "wrong-binary",
-        "replaced-during-collection",
-        "extra-selection",
-        "source-changed-during-collection",
-        "frozen-written-and-restored",
-    ],
-)
+@pytest.mark.parametrize("scenario", [
+    "both-observed", "launch-alias", "missing-observation", "wrong-kind", "wrong-binary",
+    "replaced-during-collection", "extra-selection", "source-changed-during-collection",
+    "frozen-written-and-restored",
+])
 def test_p04_scope_captures_both_process_observations(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    scenario,
-    native_release_checkout,
+    tmp_path, monkeypatch, capsys, scenario, native_release_checkout,
 ):
     from tools.ci.tests.p11_test_issuer import nextest_bytes
 
@@ -667,8 +632,8 @@ def test_p04_scope_captures_both_process_observations(
     (first, first_events), (second, second_events) = [
         nextest_bytes(package, binary, kind, name.split("$")[1]) for name in names
     ]
-    suite_id = f"{package}::{binary}"
     inventory = json.loads(first)
+    (suite_id,) = inventory["rust-suites"]
     inventory["test-count"] = 2
     inventory["rust-suites"][suite_id]["testcases"].update(
         json.loads(second)["rust-suites"][suite_id]["testcases"]
@@ -687,7 +652,8 @@ def test_p04_scope_captures_both_process_observations(
     first_rows[0]["test_count"] = inventory["test-count"]
     first_rows[-1]["passed"] = inventory["test-count"]
     event_bytes = b"".join(
-        json.dumps(row).encode() + b"\n" for row in [*first_rows[:-1], *other_rows, first_rows[-1]]
+        json.dumps(row).encode() + b"\n"
+        for row in [*first_rows[:-1], *other_rows, first_rows[-1]]
     )
     binary_path = tmp_path / "candidate-searchd"
     binary_path.write_bytes(b"fixed Native release executable")
@@ -732,10 +698,7 @@ def test_p04_scope_captures_both_process_observations(
                 lock.write_text("version = 4\n")
                 lock.chmod(mode)
         else:
-            assert scenario not in (
-                "source-changed-during-collection",
-                "frozen-written-and-restored",
-            )
+            assert scenario not in ("source-changed-during-collection", "frozen-written-and-restored")
             stdout.write(event_bytes)
             directory = Path(env[MODULE.WITNESS_DIR_ENV])
             assert pinned.parent == directory.resolve()
@@ -743,16 +706,9 @@ def test_p04_scope_captures_both_process_observations(
             for name in names[:1] if scenario == "missing-observation" else names:
                 filename, launches = specs[name]
                 observed_sha = "1" * 64 if scenario == "wrong-binary" else approved_sha
-                (directory / filename).write_text(
-                    json.dumps(
-                        {
-                            "schema_version": 1,
-                            "test": name,
-                            "nonce": nonce,
-                            "executables": [observed_sha] * launches,
-                        }
-                    )
-                )
+                (directory / filename).write_text(json.dumps({
+                    "schema_version": 1, "test": name, "nonce": nonce, "executables": [observed_sha] * launches,
+                }))
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(MODULE.subprocess, "run", nextest)
@@ -765,9 +721,7 @@ def test_p04_scope_captures_both_process_observations(
         if scenario == "source-changed-during-collection":
             assert "proof source changed during nextest collection" in capsys.readouterr().err
         if scenario == "frozen-written-and-restored":
-            assert (
-                "frozen proof checkout changed during nextest collection" in capsys.readouterr().err
-            )
+            assert "frozen proof checkout changed during nextest collection" in capsys.readouterr().err
         return
     assert MODULE.main([scope]) == 0
     (capture,) = tmp_path.glob("*-daemon-observations.json")
@@ -809,25 +763,17 @@ def test_p04_refuses_missing_daemon_before_collecting_or_building(
     assert not raw.exists()
 
 
-@pytest.mark.parametrize(
-    ("fault", "expected"),
-    [
-        ("missing_launch", 2),
-        ("replaced_daemon", 2),
-        ("different_observation", 2),
-        ("rewritten_inventory", 2),
-        ("rewritten_events", 2),
-        ("source_changed_during_execution", 2),
-        (None, 0),
-    ],
-)
+@pytest.mark.parametrize(("fault", "expected"), [
+    ("missing_launch", 2),
+    ("replaced_daemon", 2),
+    ("different_observation", 2),
+    ("rewritten_inventory", 2),
+    ("rewritten_events", 2),
+    ("source_changed_during_execution", 2),
+    (None, 0),
+])
 def test_p10_release_scope_captures_the_exact_native_rebuild(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    fault,
-    expected,
-    native_release_checkout,
+    tmp_path, monkeypatch, capsys, fault, expected, native_release_checkout,
 ):
     from tools.ci.tests.p11_test_issuer import nextest_bytes
 
@@ -877,16 +823,12 @@ def test_p10_release_scope_captures_the_exact_native_rebuild(
                 (native_release_checkout / "Cargo.lock").write_text("version = 3\n")
             launches = 3 if fault == "missing_launch" else 4
             observed = "1" * 64 if fault == "different_observation" else approved_sha
-            (directory / filename).write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "test": name,
-                        "nonce": env[MODULE.WITNESS_NONCE_ENV],
-                        "executables": [observed] * launches,
-                    }
-                )
-            )
+            (directory / filename).write_text(json.dumps({
+                "schema_version": 1,
+                "test": name,
+                "nonce": env[MODULE.WITNESS_NONCE_ENV],
+                "executables": [observed] * launches,
+            }))
         return SimpleNamespace(returncode=0)
 
     if fault == "rewritten_events":

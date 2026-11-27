@@ -1,267 +1,53 @@
-//! Byte limits shared by semantic control-file producers and consumers.
+//! Byte limits and readers shared by Semantic control-file producers and consumers.
 
-use std::fs::File;
-use std::io::{self, Read as _};
-use std::path::Path;
-use std::sync::Arc;
-
-use lance_io::object_store::file_admission::{FileAdmission, FileReaderLease};
-
-use rustix::fs::{AtFlags, Mode, OFlags, open, openat, statat};
-use sha2::{Digest as _, Sha256};
+mod plain;
+pub(crate) mod product;
+pub(crate) mod receipt;
 
 pub(crate) use crate::legacy::limits::{
     MAX_GENERATION_CONTRACT_BYTES, MAX_RECEIPT_BYTES, MAX_SCOPE_MANIFEST_BYTES,
-    MAX_SEALED_MANIFEST_BYTES, MAX_SEALED_MARKER_BYTES,
+    MAX_SEALED_MANIFEST_BYTES, MAX_SEALED_MARKER_BYTES, ensure_bounded,
 };
+use plain::{measure_bounded, read_bounded};
+pub(crate) use product::{open_dataset_reader, regular_file_present};
 
-/// Pin the family and generation before resolving a control-file name.
-///
-/// The configured track root may have trusted ancestors, but neither of its
-/// generation-owned children may redirect a later read through a symlink.
-fn generation_parent(path: &Path) -> io::Result<(File, &std::ffi::OsStr)> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "control file has no name"))?;
-    let generation = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "control file has no generation directory",
-        )
-    })?;
-    let generation_name = generation.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "generation has no directory name",
-        )
-    })?;
-    let family = generation.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "generation has no family directory",
-        )
-    })?;
-    let directory_flags =
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::NONBLOCK;
-    let family = open(family, directory_flags, Mode::empty())
-        .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
-    let generation = openat(
-        &family,
-        Path::new(generation_name),
-        directory_flags,
-        Mode::empty(),
-    )
-    .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
-    Ok((File::from(generation), name))
-}
+use std::{io, path::Path};
 
-/// Distinguish an absent control file from a present but unsafe filesystem
-/// object. Callers may treat only the former as an incomplete generation.
-pub(crate) fn regular_file_present(path: &Path) -> io::Result<bool> {
-    let (generation, name) = match generation_parent(path) {
-        Ok(opened) => opened,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    match statat(&generation, Path::new(name), AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(metadata) if rustix::fs::FileType::from_raw_mode(metadata.st_mode).is_file() => Ok(true),
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("control file {} is not a regular file", path.display()),
-        )),
-        Err(error) if error == rustix::io::Errno::NOENT => Ok(false),
-        Err(error) => Err(io::Error::from_raw_os_error(error.raw_os_error())),
-    }
-}
+use quanta_index_core::publication_admission::PublicationObjectLifetimePort;
 
-enum BoundedControlFile {
-    Plain(File),
-    Admitted(Arc<dyn FileReaderLease>),
-}
-
-/// A committed dataset reader retains the canonical inode lease through the
-/// final byte hashed by Core's seal or scrub algorithm.
-pub(crate) enum DatasetReadFile {
-    Plain(File),
-    Admitted(Arc<dyn FileReaderLease>),
-}
-
-impl io::Read for DatasetReadFile {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(file) => file.read(buffer),
-            Self::Admitted(lease) => {
-                let mut file = lease.file()?;
-                file.read(buffer)
-            }
-        }
-    }
-}
-
-pub(crate) fn open_dataset_reader(
-    path: &Path,
-    admission: Option<&dyn FileAdmission>,
-) -> io::Result<DatasetReadFile> {
-    let mut opening = admission
-        .map(|admission| admission.begin_reader_open(path))
-        .transpose()?;
-    let file = open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
-    match opening.as_deref_mut() {
-        Some(opening) => opening.opened_owned(file).map(DatasetReadFile::Admitted),
-        None => Ok(DatasetReadFile::Plain(file)),
-    }
-}
-
-impl io::Read for BoundedControlFile {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(file) => file.read(buffer),
-            Self::Admitted(lease) => {
-                let mut file = lease.file()?;
-                file.read(buffer)
-            }
-        }
-    }
-}
-
-fn open_bounded_with_admission(
+pub(crate) fn read_bounded_for_generation(
     path: &Path,
     max_bytes: usize,
-    admission: Option<&dyn FileAdmission>,
-) -> io::Result<BoundedControlFile> {
-    // The guard precedes openat and owns path/inode custody even if a caller
-    // aborts before returning the final descriptor.
-    let mut opening = admission
-        .map(|admission| admission.begin_reader_open(path))
-        .transpose()?;
-    let (generation, name) = generation_parent(path)?;
-    let descriptor = openat(
-        &generation,
-        Path::new(name),
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|error| {
-        if error == rustix::io::Errno::LOOP {
-            io::Error::new(io::ErrorKind::InvalidData, "control file is a symlink")
-        } else {
-            io::Error::from_raw_os_error(error.raw_os_error())
-        }
-    })?;
-    let file = File::from(descriptor);
-    // Transfer the original FD to the admission lease immediately. A failed
-    // metadata check must still retire that exact FD through the binder.
-    let file = match opening.as_deref_mut() {
-        Some(opening) => BoundedControlFile::Admitted(opening.opened_owned(file)?),
-        None => BoundedControlFile::Plain(file),
-    };
-    let metadata = match &file {
-        BoundedControlFile::Plain(file) => file.metadata()?,
-        BoundedControlFile::Admitted(lease) => lease.file()?.metadata()?,
-    };
-    if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "control file is not a regular file",
-        ));
-    }
-    if metadata.len() > u64::try_from(max_bytes).map_err(io::Error::other)? {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("control file exceeds {max_bytes} bytes"),
-        ));
-    }
-    Ok(file)
-}
-
-#[cfg(test)]
-pub(crate) fn read_bounded(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {
-    read_bounded_with_admission(path, max_bytes, None)
-}
-
-pub(crate) fn read_bounded_with_admission(
-    path: &Path,
-    max_bytes: usize,
-    admission: Option<&dyn FileAdmission>,
+    lifetime: Option<&dyn PublicationObjectLifetimePort>,
 ) -> io::Result<Vec<u8>> {
-    let file = open_bounded_with_admission(path, max_bytes, admission)?;
-    // A file may grow after metadata. The extra byte detects that race without
-    // reading unbounded attacker-controlled content into memory.
-    let sentinel_limit = u64::try_from(max_bytes)
-        .map_err(io::Error::other)?
-        .checked_add(1)
-        .ok_or_else(|| io::Error::other("control-file byte limit overflow"))?;
-    let mut reader = file.take(sentinel_limit);
-    let mut bytes = Vec::new();
-    let _read_bytes = reader.read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("control file exceeds {max_bytes} bytes"),
-        ));
+    match lifetime {
+        Some(lifetime) => product::read_bounded_with_control_lifetime(path, max_bytes, lifetime),
+        None => read_bounded(path, max_bytes),
     }
-    Ok(bytes)
 }
 
-/// Stream a control-file commitment through the same nofollow and size
-/// admission used by the decoders, without retaining its bytes in memory.
-#[cfg(test)]
-pub(crate) fn measure_bounded(path: &Path, max_bytes: usize) -> io::Result<(u64, [u8; 32])> {
-    measure_bounded_with_admission(path, max_bytes, None)
-}
-
-pub(crate) fn measure_bounded_with_admission(
+pub(crate) fn read_string_for_generation(
     path: &Path,
     max_bytes: usize,
-    admission: Option<&dyn FileAdmission>,
-) -> io::Result<(u64, [u8; 32])> {
-    let mut file = open_bounded_with_admission(path, max_bytes, admission)?;
-    let limit = u64::try_from(max_bytes).map_err(io::Error::other)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 1 << 16].into_boxed_slice();
-    let mut length = 0_u64;
-    loop {
-        // Once opened, an I/O failure does not prove missing or corrupt
-        // content. Callers may classify only open-time NotFound that way.
-        let read = file.read(&mut buffer).map_err(io::Error::other)?;
-        if read == 0 {
-            break;
-        }
-        length = length
-            .checked_add(u64::try_from(read).map_err(io::Error::other)?)
-            .ok_or_else(|| io::Error::other("control-file length overflows u64"))?;
-        if length > limit {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("control file exceeds {max_bytes} bytes"),
-            ));
-        }
-        hasher.update(buffer.get(..read).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "control-file read exceeded buffer",
-            )
-        })?);
-    }
-    Ok((length, hasher.finalize().into()))
-}
-
-pub(crate) fn read_string_bounded_with_admission(
-    path: &Path,
-    max_bytes: usize,
-    admission: Option<&dyn FileAdmission>,
+    lifetime: Option<&dyn PublicationObjectLifetimePort>,
 ) -> io::Result<String> {
-    String::from_utf8(read_bounded_with_admission(path, max_bytes, admission)?)
+    String::from_utf8(read_bounded_for_generation(path, max_bytes, lifetime)?)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-pub(crate) use crate::legacy::limits::ensure_bounded;
+pub(crate) fn measure_bounded_for_generation(
+    path: &Path,
+    max_bytes: usize,
+    lifetime: Option<&dyn PublicationObjectLifetimePort>,
+) -> io::Result<(u64, [u8; 32])> {
+    match lifetime {
+        Some(lifetime) => product::measure_bounded_with_control_lifetime(path, max_bytes, lifetime),
+        None => measure_bounded(path, max_bytes),
+    }
+}
+
+#[cfg(test)]
+use std::fs::File;
 
 #[cfg(test)]
 mod tests {

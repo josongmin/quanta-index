@@ -16,8 +16,8 @@ mod mutations;
 pub mod object_install;
 mod owned_work;
 mod owner_coverage;
-pub mod ports;
 mod protected_source_routes;
+pub mod ports;
 mod query;
 mod read_attempt;
 mod read_settlement;
@@ -25,13 +25,13 @@ mod reclaim;
 mod records;
 mod registration;
 mod repository_key;
+mod source_paths;
 mod scratch;
 mod searchable;
-mod source_paths;
 mod staging_payload;
 mod work;
 pub use budget::scoped_memory::ScopedMemoryBudget;
-pub use budget::{RetirementCheckV2, WorkBudget, WorkBudgetDenial, WorkLimits, WorkUsage};
+pub use budget::{WorkBudget, WorkBudgetDenial, WorkLimits, WorkUsage};
 pub use error::IndexError;
 pub use lifetime::{
     ReadSessionLease, ReadSessionRecoveryPage, ReadSessionRef, ReadTicketLease,
@@ -53,24 +53,26 @@ pub use metadata::{
 };
 pub use mutations::{
     OwnerMutationCursor, OwnerMutationDigest, SourceChangeCursor, SourceInputCursor,
-    SourceSnapshotCursor, decode_owner_mutation_value, owner_mutation_value,
+    SourceSnapshotCursor, decode_owner_mutation_value, is_canonical_empty_mutation_set,
+    owner_mutation_value,
 };
 pub use owned_work::{
     OWNED_WORK_PRODUCER, OwnedReadyOutcome, OwnedWorkAssignment, OwnedWorkBegin, OwnedWorkDefer,
     OwnedWorkGrant, OwnedWorkPolicy, OwnedWorkReport, OwnedWorkTerminal,
 };
 pub use owner_coverage::{pending_owner_coverage_value, read_owner_coverage};
+pub use protected_source_routes::{
+    NativeProtectedSnapshotPageV1,
+    decode_native_protected_source_routes_v1, validate_inline_native_protected_snapshot_v1,
+    with_native_protected_snapshot_stream_v1, with_native_protected_snapshot_v1,
+    with_native_protected_source_routes_v1,
+};
 pub use ports::{
     AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort,
     ObjectWriteSyncDirectories, ObjectWriteTicket,
 };
-pub use protected_source_routes::{
-    NativeProtectedSnapshotPageV1, decode_native_protected_source_routes_v1,
-    validate_inline_native_protected_snapshot_v1, with_native_protected_snapshot_stream_v1,
-    with_native_protected_snapshot_v1, with_native_protected_source_routes_v1,
-};
-pub use quanta_index_contract::RepoId;
 pub use quanta_index_contract::index::*;
+pub use quanta_index_contract::RepoId;
 pub use query::{
     FiniteScore, FiniteScoreError, IndexQueryPort, NativeTextHitSource, QueryCoverage,
     QueryOutcome, QueryReadContext,
@@ -97,13 +99,12 @@ pub use records::{
 pub use registration::{
     RegisteredObject, RegisteredObjectBatch, RegisteredObjectData, RegisteredObjectIter,
 };
+pub use source_paths::{
+    validate_source_path_repository_key, visit_repository_path_owners, visit_repository_path_sources,
+};
 pub use scratch::{
     ScratchAllocation, ScratchIoBinding, ScratchIoScope, ScratchNamespaceLease, ScratchRequest,
-    ScratchSpacePort,
-};
-pub use source_paths::{
-    validate_source_path_repository_key, visit_repository_path_owners,
-    visit_repository_path_sources,
+    ScratchSpacePort, ScratchSqliteVfs,
 };
 pub use work::{
     MAX_WORK_ACTION_BYTES, ObjectChildren, WorkAction, WorkActionDigest, WorkActionSet,

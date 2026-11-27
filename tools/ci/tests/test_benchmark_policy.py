@@ -343,6 +343,52 @@ def test_registry_cli_ci_invocation_is_allowed(tmp_path: Path) -> None:
     assert module.workflow_bypasses(tmp_path, registry) == []
 
 
+@pytest.mark.parametrize(
+    ("path", "run"),
+    [
+        (".github/workflows/benchmark.yaml", "just rust-verify-quality-relevance"),
+        (".circleci/config.yml", "just rust-verify-quality-relevance"),
+        (".circleci/config.yml", "command: just rust-verify-quality-relevance"),
+    ],
+)
+def test_additional_ci_workflow_forms_refuse_direct_producer(
+    tmp_path: Path, path: str, run: str
+) -> None:
+    module = _policy_module()
+    registry = module.load_registry(BENCHMARK_DIR / "registry.toml")
+    workflow = tmp_path / path
+    workflow.parent.mkdir(parents=True)
+    if run.startswith("command:"):
+        step = f"      - run:\n          {run}\n"
+    else:
+        step = f"      - run: {run}\n"
+    workflow.write_text(f"jobs:\n  bypass:\n    steps:\n{step}", encoding="utf-8")
+    assert module.workflow_bypasses(tmp_path, registry) == [
+        f"{workflow.name}:bypass: just rust-verify-quality-relevance"
+    ]
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        "python3 tools/benchmark/benchctl.py run dsl-authority",
+        "command: python3 tools/benchmark/benchctl.py run dsl-authority",
+    ],
+)
+def test_circleci_registry_cli_is_not_a_producer_bypass(tmp_path: Path, run: str) -> None:
+    module = _policy_module()
+    registry = module.load_registry(BENCHMARK_DIR / "registry.toml")
+    workflow = tmp_path / ".circleci" / "config.yml"
+    workflow.parent.mkdir(parents=True)
+    step = (
+        f"      - run:\n          {run}\n"
+        if run.startswith("command:")
+        else f"      - run: {run}\n"
+    )
+    workflow.write_text(f"jobs:\n  registered:\n    steps:\n{step}", encoding="utf-8")
+    assert module.workflow_bypasses(tmp_path, registry) == []
+
+
 def test_legacy_authority_family_is_refused(tmp_path: Path) -> None:
     module = _policy_module()
     text = (REPO_ROOT / "tools" / "benchmark" / "registry.toml").read_text(encoding="utf-8")

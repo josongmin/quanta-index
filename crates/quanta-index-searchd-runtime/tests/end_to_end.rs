@@ -707,6 +707,7 @@ fn verify_publish_dispatch_lexical_roundtrip(socket: &Path) -> TestResult {
                 | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
+
                 | SearchPlaneQueryIpcResponse::Explain(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
                 | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -878,10 +879,31 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
         )
         .into());
     }
-    if candidate.start_line != 3 || candidate.end_line != 8 {
+    if candidate
+        .lines
+        .as_ref()
+        .expect("fixture row carries match lines")
+        .start_line
+        != 3
+        || candidate
+            .lines
+            .as_ref()
+            .expect("fixture row carries match lines")
+            .end_line
+            != 8
+    {
         return Err(format!(
             "expected line span 3..8, got {}..{}",
-            candidate.start_line, candidate.end_line
+            candidate
+                .lines
+                .as_ref()
+                .expect("fixture row carries match lines")
+                .start_line,
+            candidate
+                .lines
+                .as_ref()
+                .expect("fixture row carries match lines")
+                .end_line
         )
         .into());
     }

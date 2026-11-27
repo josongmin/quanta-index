@@ -2,8 +2,8 @@
 //! this adapter owns complete History rows, source-cut binding and execution.
 //! Historical paths are never represented as current SourceLocal file owners.
 
-mod borrowed_projection;
 mod build;
+mod borrowed_projection;
 mod generation_input;
 mod query;
 mod reader;
@@ -17,12 +17,10 @@ use row_budget::shape_codec::{closed_shape, newtype_shape};
 
 use crate::readiness::serde_support::impl_struct_serde;
 use quanta_index_contract::{
-    AuxEpochV1, BatchPublishReceipt, HistoryDiffHunkUpsert, HistoryIngestBatch, ManifestGeneration,
-    RepoId, RevisionId,
+    AuxEpochV1, BatchPublishReceipt, HistoryDiffHunkUpsert, HistoryIngestBatch, ManifestGeneration, RepoId, RevisionId,
     index::{
-        Digest, GroupActivation, IndexKind, InputBinding, InputDomain,
-        MAX_HISTORY_SOURCE_INPUT_BYTES_V1, MapRoot, MemberBinding, ObjectRef, SchemaId,
-        StorageFormatId, ViewRef,
+        Digest, GroupActivation, InputBinding, InputDomain, MapRoot, MemberBinding, ObjectRef,
+        ViewRef, MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
     },
 };
 use quanta_index_core::{
@@ -58,14 +56,65 @@ struct SourceInputData<T> {
     _memory: Option<MemoryLease>,
 }
 
-pub const NATIVE_HISTORY_KIND_V1: IndexKind = IndexKind(*b"qidx.history.v1!");
-pub const NATIVE_HISTORY_FORMAT_V1: StorageFormatId = StorageFormatId(*b"qidx.hist.rows1!");
-pub const NATIVE_HISTORY_SCHEMA_V1: SchemaId = SchemaId(*b"qidx.hist.data1!");
+pub use quanta_index_contract::index::{
+    NATIVE_HISTORY_FORMAT_V1, NATIVE_HISTORY_KIND_V1, NATIVE_HISTORY_SCHEMA_V1,
+    native_history_policy_v1,
+};
+
+/// Recompute the first Native History cut from the registered Original leaves.
+/// An ingress preview must supply its own confirmed-root and view authority.
+pub fn fold_native_history_initial_v1(
+    input: quanta_index_contract::index::NativeHistoryInitialInputV1,
+    source: ObjectRef,
+    physical_children: &[ObjectRef],
+    operation: quanta_index_core::index::OperationKey,
+    view_sequence: u64,
+    mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<ReplayedHistorySourceV1, CoreError> {
+    input.verify_children_v1(physical_children).map_err(invalid)?;
+    let original = generation_input::verify_initial_with_get(input, &mut get, budget)?;
+    ReplayedHistorySourceV1::native_initial(
+        operation, view_sequence, source, &original.value, budget,
+    )
+}
+
+/// Decode one ingress-confirmed wire4 root and reuse the paid publication
+/// fold. The caller retains the exact ingress and selected-view authority.
+pub fn preview_native_history_initial_cut_v1(
+    source: ObjectRef,
+    stored: &StoredObject,
+    operation: quanta_index_core::index::OperationKey,
+    view_sequence: u64,
+    get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<(HistorySourceCutV1, Option<MemoryLease>), IndexError> {
+    let decoded = build::source_input::decode_history_object_allow_children::<
+        quanta_index_contract::index::NativeHistoryInitialInputV1,
+    >(source, stored, budget)
+    .map_err(|error| index_error(error, budget))?;
+    let folded = fold_native_history_initial_v1(
+        decoded.value, source, &stored.registration.children,
+        operation, view_sequence, get, budget,
+    )
+    .map_err(|error| index_error(error, budget))?;
+    let cut = folded.cut();
+    let bytes = cut.generation.repo_id.as_str().len()
+        .checked_add(cut.generation.revision_id.as_str().len())
+        .and_then(|value| value.checked_add(std::mem::size_of::<HistorySourceCutV1>()))
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or(IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage { bytes, ..WorkUsage::default() })?;
+    let memory = budget.reserve_memory(bytes, MemoryLifetime::Retained)?;
+    Ok((cut.clone(), memory))
+}
+
 const REPLAY_HISTORY_MANIFEST: u32 = 1;
 const APPEND_HISTORY_MANIFEST: u32 = 2;
 const SNAPSHOT_HISTORY_MANIFEST: u32 = 3;
 const SUCCESSOR_HISTORY_MANIFEST: u32 = 4;
 const NATIVE_RESTORE_HISTORY_MANIFEST: u32 = 5;
+const NATIVE_INITIAL_HISTORY_MANIFEST: u32 = 6;
 
 // A diff hunk has fixed fields and four boxed UTF-8 strings. CBOR stores the
 // string bytes once; JSON may unescape them into a growing String before the
@@ -119,23 +168,6 @@ fn row_decode_backing(
     row_budget::RowBacking::new(retained, peak)
 }
 
-#[must_use]
-pub fn native_history_policy_v1() -> Digest {
-    let mut hash = Sha256::new();
-    hash.update(b"qidx.native.history.rows.v1\0;hashed-row-keys;typed-json-rows;bound-source-input;canonical-history-values;commit+diff;exact-length-bm25:k1=1.2,b=.75;sha-path-total-order");
-    hash.update(
-        quanta_index_lq_text_normalizer::TEXT_NORMALIZER_VERSION
-            .major
-            .to_le_bytes(),
-    );
-    hash.update(
-        quanta_index_lq_text_normalizer::TEXT_NORMALIZER_VERSION
-            .minor
-            .to_le_bytes(),
-    );
-    Digest(hash.finalize().into())
-}
-
 pub(crate) struct Manifest {
     format: u32,
     repo: RepoId,
@@ -177,14 +209,8 @@ impl Manifest {
         self.cut().input_context_v1().map_err(invalid)
     }
     fn validate(&self) -> Result<(), CoreError> {
-        if !matches!(
-            self.format,
-            REPLAY_HISTORY_MANIFEST
-                | APPEND_HISTORY_MANIFEST
-                | SNAPSHOT_HISTORY_MANIFEST
-                | SUCCESSOR_HISTORY_MANIFEST
-                | NATIVE_RESTORE_HISTORY_MANIFEST
-        ) || self.epoch == AuxEpochV1::GENESIS
+        if !matches!(self.format, REPLAY_HISTORY_MANIFEST | APPEND_HISTORY_MANIFEST | SNAPSHOT_HISTORY_MANIFEST | SUCCESSOR_HISTORY_MANIFEST | NATIVE_RESTORE_HISTORY_MANIFEST | NATIVE_INITIAL_HISTORY_MANIFEST)
+            || self.epoch == AuxEpochV1::GENESIS
             || self.sequence == 0
             || self.snapshot == Digest([0; 32])
             || self.replay == Digest([0; 32])
@@ -209,22 +235,21 @@ impl Manifest {
         if self.format == SNAPSHOT_HISTORY_MANIFEST && self.predecessor.is_some() {
             return Err(invalid("Native History snapshot must be its initial FULL"));
         }
+        if self.format == NATIVE_INITIAL_HISTORY_MANIFEST
+            && (self.predecessor.is_some() || self.epoch != AuxEpochV1::new(1)
+                || !self.source_manifest.as_ref().is_some_and(|value| !value.is_empty()))
+        {
+            return Err(invalid("Native History initial FULL lacks its exact source"));
+        }
         if self.format == SUCCESSOR_HISTORY_MANIFEST
             && (self.epoch != AuxEpochV1::new(1)
-                || !self
-                    .source_manifest
-                    .as_ref()
-                    .is_some_and(|value| !value.is_empty())
+                || !self.source_manifest.as_ref().is_some_and(|value| !value.is_empty())
                 || !self.predecessor.as_ref().is_some_and(|prior| {
-                    prior
-                        .generation
-                        .is_next_generation_of_repo_v1(&self.repo, self.generation)
+                    prior.generation.is_next_generation_of_repo_v1(&self.repo, self.generation)
                         && prior.replay_start != self.replay
                 }))
         {
-            return Err(invalid(
-                "Native History generation lacks its exact predecessor",
-            ));
+            return Err(invalid("Native History generation lacks its exact predecessor"));
         }
         Ok(())
     }
@@ -235,10 +260,19 @@ impl Manifest {
 pub struct PreparedNativeHistoryV1 {
     artifact: ObjectRef,
     manifest: Manifest,
+    retained_initial: Option<ObjectRef>,
     _manifest_memory: Option<MemoryLease>,
 }
 
 impl PreparedNativeHistoryV1 {
+    fn initial_origin(&self) -> Option<ObjectRef> {
+        if self.manifest.format == NATIVE_INITIAL_HISTORY_MANIFEST {
+            Some(self.artifact)
+        } else {
+            self.retained_initial
+        }
+    }
+
     #[must_use]
     pub const fn artifact(&self) -> ObjectRef {
         self.artifact
@@ -288,6 +322,7 @@ pub struct NativeHistoryReadV1 {
     pub(crate) view: ViewRef,
     pub(crate) instance: quanta_index_contract::index::IndexInstanceId,
     pub(crate) artifact: ObjectRef,
+    retained_initial: Option<ObjectRef>,
     _manifest_memory: Option<MemoryLease>,
 }
 
@@ -321,39 +356,28 @@ pub fn prepare_native_history_snapshot_full_v1(
         read_rows,
         context.budget,
     )?;
-    prepare(
-        &source,
-        None,
-        source_input,
-        SNAPSHOT_HISTORY_MANIFEST,
-        context,
-    )
+    prepare(&source, None, source_input, SNAPSHOT_HISTORY_MANIFEST, context)
 }
 
 fn prepare_native_history_restore_full_v1(
-    old: &Manifest,
+    prior: &PreparedNativeHistoryV1,
     source_input: ObjectRef,
     context: &mut AttemptContext<'_>,
 ) -> Result<PreparedNativeHistoryV1, CoreError> {
-    let bytes = old
-        .repo
-        .as_str()
-        .len()
+    let old = &prior.manifest;
+    let bytes = old.repo.as_str().len()
         .checked_add(old.revision.as_str().len())
         .and_then(|bytes| bytes.checked_add(old.source_manifest.as_ref().map_or(0, String::len)))
         .and_then(|bytes| {
             old.predecessor.as_ref().map_or(Some(bytes), |cut| {
-                bytes
-                    .checked_add(cut.generation.repo_id.as_str().len())
+                bytes.checked_add(cut.generation.repo_id.as_str().len())
                     .and_then(|bytes| bytes.checked_add(cut.generation.revision_id.as_str().len()))
             })
         })
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Manifest>() + 512))
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| invalid("Native History restore manifest allocation bound overflow"))?;
-    let memory = context
-        .budget
-        .reserve_memory(bytes, MemoryLifetime::Retained)
+    let memory = context.budget.reserve_memory(bytes, MemoryLifetime::Retained)
         .map_err(|error| history_work_error(context.budget, error))?;
     let manifest = Manifest {
         format: NATIVE_RESTORE_HISTORY_MANIFEST,
@@ -371,20 +395,7 @@ fn prepare_native_history_restore_full_v1(
         row_count: old.row_count,
         maximum_row_bytes: old.maximum_row_bytes,
     };
-    manifest.validate()?;
-    let payload = encode_json(&manifest, context.budget)?;
-    let row_child = manifest
-        .rows
-        .0
-        .ok_or_else(|| invalid("Native History restore rows are absent"))?;
-    let artifact = context
-        .put(&payload.bytes, &[row_child, source_input])
-        .map_err(|error| history_work_error(context.budget, error))?;
-    Ok(PreparedNativeHistoryV1 {
-        artifact,
-        manifest,
-        _manifest_memory: memory,
-    })
+    install_manifest(manifest, prior.initial_origin(), memory, context)
 }
 
 impl NativeHistoryReadV1 {
@@ -409,7 +420,7 @@ impl NativeHistoryReadV1 {
         let (source, prior) = self.advance_source(fence, batch, ack, context.budget)?;
         prepare(
             &source,
-            Some((&prior.manifest, batch)),
+            Some((&prior, batch)),
             source_input,
             REPLAY_HISTORY_MANIFEST,
             context,
@@ -424,14 +435,13 @@ impl NativeHistoryReadV1 {
         budget: &mut WorkBudget,
     ) -> Result<(ReplayedHistorySourceV1, PreparedNativeHistoryV1), CoreError> {
         if self.manifest.format != REPLAY_HISTORY_MANIFEST {
-            return Err(invalid(
-                "Legacy History replay cannot advance a Native publication",
-            ));
+            return Err(invalid("Legacy History replay cannot advance a Native publication"));
         }
         let source = replay_delta_source(self.source, fence, batch, ack, budget)?;
         let prior = PreparedNativeHistoryV1 {
             artifact: self.artifact,
             manifest: self.manifest,
+            retained_initial: self.retained_initial,
             _manifest_memory: self._manifest_memory,
         };
         Ok((source, prior))
@@ -440,46 +450,31 @@ impl NativeHistoryReadV1 {
     pub fn open(context: &mut QueryReadContext<'_>) -> Result<Self, CoreError> {
         let prepared = open_ticket_manifest(context)?;
         verify_manifest_source(&prepared.manifest, context.objects, context.budget)?;
-        let source = load_rows(
-            &prepared.manifest,
-            context.objects,
-            context.maps,
-            context.budget,
-        )?;
+        let source = load_rows(&prepared.manifest, context.objects, context.maps, context.budget)?;
         Ok(Self {
             source,
             manifest: prepared.manifest,
             view: context.ticket.view.identity,
             instance: context.instance.instance,
             artifact: prepared.artifact,
+            retained_initial: prepared.retained_initial,
             _manifest_memory: prepared._manifest_memory,
         })
     }
 }
 
-fn open_ticket_manifest(
-    context: &mut QueryReadContext<'_>,
-) -> Result<PreparedNativeHistoryV1, CoreError> {
+fn open_ticket_manifest(context: &mut QueryReadContext<'_>) -> Result<PreparedNativeHistoryV1, CoreError> {
     validate_instance(context.instance)?;
     let key = member_map_key(context.instance.instance);
-    let reference = context
-        .maps
-        .lookup_object(context.ticket.view.members, &key, context.budget)
+    let reference = context.maps.lookup_object(context.ticket.view.members, &key, context.budget)
         .map_err(|error| history_work_error(context.budget, error))?
         .ok_or_else(|| invalid("History member absent from selected view"))?;
-    let stored = context
-        .objects
-        .get(reference, context.budget)
+    let stored = context.objects.get(reference, context.budget)
         .map_err(|error| history_work_error(context.budget, error))?;
     let member = decode_member_binding(&stored.payload, context.budget)
         .map_err(|error| history_work_error(context.budget, error))?;
     if stored.registration.reference != reference
-        || !stored.registration.children.iter().copied().eq([
-            Some(member.artifact),
-            member.input.root.0,
-        ]
-        .into_iter()
-        .flatten())
+        || !stored.registration.children.iter().copied().eq([Some(member.artifact), member.input.root.0].into_iter().flatten())
     {
         return Err(invalid("History member differs from selected ticket"));
     }
@@ -492,43 +487,25 @@ fn open_ticket_manifest(
 /// with the returned repository/revision identifiers through response encoding.
 pub fn read_native_history_cut_v1(
     context: &mut QueryReadContext<'_>,
-) -> Result<(ObjectRef, HistorySourceCutV1, Option<MemoryLease>), IndexError> {
-    let prepared =
-        open_ticket_manifest(context).map_err(|error| index_error(error, context.budget))?;
-    let Manifest {
-        repo,
-        revision,
-        generation,
-        epoch,
-        snapshot,
-        replay,
-        ..
-    } = prepared.manifest;
+) -> Result<(ObjectRef, ObjectRef, HistorySourceCutV1, Option<MemoryLease>), IndexError> {
+    let prepared = open_ticket_manifest(context)
+        .map_err(|error| index_error(error, context.budget))?;
+    let Manifest { repo, revision, generation, epoch, snapshot, replay, source_input, .. } = prepared.manifest;
     let cut = HistorySourceCutV1 {
         generation: quanta_index_core::AuxiliaryGenerationKeyV1 {
-            repo_id: repo,
-            revision_id: revision,
-            generation,
+            repo_id: repo, revision_id: revision, generation,
         },
         durable_epoch: epoch,
         snapshot_digest: snapshot,
         replay_start: replay,
     };
-    Ok((prepared.artifact, cut, prepared._manifest_memory))
+    Ok((prepared.artifact, source_input, cut, prepared._manifest_memory))
 }
 
 /// Read the source closure published with the selected generation's member.
 pub fn read_native_history_generation_v1(
     context: &mut QueryReadContext<'_>,
-) -> Result<
-    (
-        ObjectRef,
-        ObjectRef,
-        quanta_index_contract::index::HistoryGenerationInputV1,
-        Digest,
-    ),
-    IndexError,
-> {
+) -> Result<(ObjectRef, ObjectRef, quanta_index_contract::index::HistoryGenerationInputV1, Digest), IndexError> {
     (|| {
         let mut prepared = open_ticket_manifest(context)?;
         let member = prepared.artifact;
@@ -538,39 +515,24 @@ pub fn read_native_history_generation_v1(
                 &prepared.manifest,
                 &mut |reference, budget| context.objects.get(reference, budget),
                 context.budget,
-            )?
-            .ok_or_else(|| invalid("Native History restore source is absent"))?;
+            )?.ok_or_else(|| invalid("Native History restore source is absent"))?;
         }
         if prepared.manifest.format != SUCCESSOR_HISTORY_MANIFEST {
-            return Err(CoreError::NotReady(
-                "History generation outputs were not published by a Source advance".into(),
-            ));
+            return Err(CoreError::NotReady("History generation outputs were not published by a Source advance".into()));
         }
         let reference = prepared.manifest.source_input;
-        let stored = context
-            .objects
-            .get(reference, context.budget)
+        let stored = context.objects.get(reference, context.budget)
             .map_err(|error| history_work_error(context.budget, error))?;
         let inputs = generation_input::decode_closure(reference, &stored, context.budget)?;
-        let predecessor = prepared
-            .manifest
-            .predecessor
-            .as_ref()
+        let predecessor = prepared.manifest.predecessor.as_ref()
             .ok_or_else(|| invalid("History successor predecessor is absent"))?;
         let bytes = predecessor.generation.repo_id.as_str().len()
-            + predecessor.generation.revision_id.as_str().len()
-            + 128;
-        context
-            .budget
-            .charge(WorkUsage {
-                bytes: bytes as u64,
-                ..WorkUsage::default()
-            })
+            + predecessor.generation.revision_id.as_str().len() + 128;
+        context.budget.charge(WorkUsage { bytes: bytes as u64, ..WorkUsage::default() })
             .map_err(|error| history_work_error(context.budget, error))?;
         let predecessor_context = predecessor.input_context_v1().map_err(invalid)?;
         Ok((member, published_source_input, inputs, predecessor_context))
-    })()
-    .map_err(|error| index_error(error, context.budget))
+    })().map_err(|error| index_error(error, context.budget))
 }
 
 /// Check a generated immutable History artifact under the original attempt.
@@ -635,21 +597,21 @@ fn decode_manifest(
     let manifest: Manifest =
         serde_json::from_slice(&stored.payload).map_err(|error| invalid(&error.to_string()))?;
     manifest.validate()?;
+    let initial = match stored.registration.children.as_slice() {
+        [_, _] => None,
+        [_, _, initial] => Some(*initial),
+        _ => return Err(invalid("History manifest has unexpected children")),
+    };
+    let (children, count) = manifest_children(&manifest, initial)?;
     if stored.registration.reference != input
-        || !stored.registration.children.iter().copied().eq([
-            manifest.rows.0,
-            Some(manifest.source_input),
-        ]
-        .into_iter()
-        .flatten())
+        || stored.registration.children.as_slice() != &children[..count]
     {
-        return Err(invalid(
-            "History manifest child graph differs from its row map",
-        ));
+        return Err(invalid("History manifest child graph differs from its row map"));
     }
     Ok(PreparedNativeHistoryV1 {
         artifact: input,
         manifest,
+        retained_initial: initial,
         _manifest_memory: memory,
     })
 }
@@ -670,26 +632,18 @@ pub fn verify_native_history_boot_member_v1(
     let manifest = &prepared.manifest;
     if !matches!(
         (input, manifest.format),
-        (
-            NativeHistoryBootSourceV1::Replay(_),
-            REPLAY_HISTORY_MANIFEST
-        ) | (
-            NativeHistoryBootSourceV1::Snapshot(_),
-            SNAPSHOT_HISTORY_MANIFEST
-        ) | (
-            NativeHistoryBootSourceV1::NativeRestore(_),
-            NATIVE_RESTORE_HISTORY_MANIFEST
-        )
-    ) || (manifest.predecessor.is_some() && manifest.format != NATIVE_RESTORE_HISTORY_MANIFEST)
+        (NativeHistoryBootSourceV1::Replay(_), REPLAY_HISTORY_MANIFEST)
+            | (NativeHistoryBootSourceV1::Snapshot(_), SNAPSHOT_HISTORY_MANIFEST)
+            | (NativeHistoryBootSourceV1::NativeRestore(_), NATIVE_RESTORE_HISTORY_MANIFEST)
+            | (NativeHistoryBootSourceV1::NativeInitial(_), NATIVE_INITIAL_HISTORY_MANIFEST)
+    )
+        || (manifest.predecessor.is_some() && manifest.format != NATIVE_RESTORE_HISTORY_MANIFEST)
         || &manifest.cut() != expected
         || member.format != NATIVE_HISTORY_FORMAT_V1
         || member.input.schema != NATIVE_HISTORY_SCHEMA_V1
         || member.input.policy != native_history_policy_v1()
         || member.input.root != manifest.rows
-        || member.input.context
-            != manifest
-                .context()
-                .map_err(|error| index_error(error, budget))?
+        || member.input.context != manifest.context().map_err(|error| index_error(error, budget))?
         || member.logical_commitment != manifest.snapshot
     {
         return Err(IndexError::DigestConflict);
@@ -711,6 +665,9 @@ pub fn verify_native_history_boot_member_v1(
             }
             (manifest.sequence, manifest.source_manifest.as_deref())
         }
+        NativeHistoryBootSourceV1::NativeInitial(_) => {
+            return Err(IndexError::DigestConflict);
+        }
     };
     if manifest.sequence != sequence || manifest.source_manifest.as_deref() != source_manifest {
         return Err(IndexError::DigestConflict);
@@ -718,9 +675,7 @@ pub fn verify_native_history_boot_member_v1(
     if let NativeHistoryBootSourceV1::Snapshot(checkpoint) = input {
         verify_source_snapshot_rows(
             expected,
-            |budget, visit| {
-                build::visit_snapshot_checkpoint_rows_v1(checkpoint, &mut get, budget, visit)
-            },
+            |budget, visit| build::visit_snapshot_checkpoint_rows_v1(checkpoint, &mut get, budget, visit),
             budget,
             |_, _| Ok(()),
         )
@@ -740,18 +695,124 @@ pub fn verify_native_history_boot_member_v1(
             || old.manifest.sequence != manifest.sequence
             || old.manifest.source_manifest != manifest.source_manifest
             || old.manifest.predecessor != manifest.predecessor
+            || prepared.retained_initial.is_some_and(|origin| Some(origin) != old.initial_origin())
         {
             return Err(IndexError::DigestConflict);
         }
-        verify_manifest_source_with_v1(
-            &old.manifest,
-            |reference, budget| get(reference, budget),
-            budget,
-        )
-        .map_err(|error| index_error(error, budget))?;
+        verify_manifest_source_with_v1(&old.manifest, |reference, budget| get(reference, budget), budget)
+            .map_err(|error| index_error(error, budget))?;
     }
     budget.checkpoint()?;
     Ok(prepared)
+}
+
+/// Re-derive a first Native FULL from its immutable Original closure under an
+/// already authenticated Catalog operation. No Legacy inventory is consulted.
+/// The caller still verifies the returned member's physical row map.
+pub fn verify_native_history_initial_boot_member_v1(
+    member: &MemberBinding,
+    stored: &StoredObject,
+    expected: &HistorySourceCutV1,
+    source: &RegisteredObject,
+    input: quanta_index_contract::index::NativeHistoryInitialInputV1,
+    operation: quanta_index_core::index::OperationKey,
+    view_sequence: u64,
+    get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<PreparedNativeHistoryV1, IndexError> {
+    let prepared = decode_manifest(member.artifact, stored, budget)
+        .map_err(|error| index_error(error, budget))?;
+    verify_history_boot_binding(member, &prepared.manifest, budget)?;
+    verify_initial_manifest(prepared, expected, source, input, operation, view_sequence, get, budget)
+}
+
+/// Reopen the committed initial member through the current History partition
+/// when the original exact view has been retired from the Catalog.
+pub fn verify_retained_native_initial_history_boot_member_v1(
+    member: &MemberBinding,
+    stored: &StoredObject,
+    expected: &HistorySourceCutV1,
+    source: &RegisteredObject,
+    input: quanta_index_contract::index::NativeHistoryInitialInputV1,
+    operation: quanta_index_core::index::OperationKey,
+    view_sequence: u64,
+    mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<PreparedNativeHistoryV1, IndexError> {
+    let current = decode_manifest(member.artifact, stored, budget)
+        .map_err(|error| index_error(error, budget))?;
+    verify_history_boot_binding(member, &current.manifest, budget)?;
+    let initial = if current.manifest.format == NATIVE_INITIAL_HISTORY_MANIFEST {
+        current
+    } else {
+        let reference = current.retained_initial.ok_or(IndexError::SnapshotUnavailable)?;
+        let original = get(reference, budget)?;
+        let initial = decode_manifest(reference, &original, budget)
+            .map_err(|error| index_error(error, budget))?;
+        if current.manifest.repo != initial.manifest.repo
+            || current.manifest.generation < initial.manifest.generation
+            || (current.manifest.generation == initial.manifest.generation
+                && (current.manifest.revision != initial.manifest.revision
+                    || current.manifest.epoch < initial.manifest.epoch))
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        initial
+    };
+    verify_initial_manifest(initial, expected, source, input, operation, view_sequence, get, budget)
+}
+
+fn verify_history_boot_binding(
+    member: &MemberBinding,
+    manifest: &Manifest,
+    budget: &WorkBudget,
+) -> Result<(), IndexError> {
+    if member.format != NATIVE_HISTORY_FORMAT_V1
+        || member.input.schema != NATIVE_HISTORY_SCHEMA_V1
+        || member.input.policy != native_history_policy_v1()
+        || member.input.root != manifest.rows
+        || member.input.context != manifest.context().map_err(|error| index_error(error, budget))?
+        || member.logical_commitment != manifest.snapshot
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_initial_manifest(
+    prepared: PreparedNativeHistoryV1,
+    expected: &HistorySourceCutV1,
+    source: &RegisteredObject,
+    input: quanta_index_contract::index::NativeHistoryInitialInputV1,
+    operation: quanta_index_core::index::OperationKey,
+    view_sequence: u64,
+    mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<PreparedNativeHistoryV1, IndexError> {
+    (|| {
+        let manifest = &prepared.manifest;
+        if manifest.format != NATIVE_INITIAL_HISTORY_MANIFEST
+            || manifest.predecessor.is_some()
+            || manifest.source_input != source.reference
+            || manifest.sequence != view_sequence
+            || manifest.cut() != *expected
+        {
+            return Err(invalid("Native History initial member differs from selected publication"));
+        }
+        let folded = fold_native_history_initial_v1(
+            input, source.reference, &source.children, operation, view_sequence,
+            &mut get, budget,
+        )?;
+        if folded.cut() != expected
+            || manifest.source_manifest != folded.manifest_digest
+            || manifest.row_count < 2
+        {
+            return Err(invalid("Native History initial Original differs from committed FULL"));
+        }
+        budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
+        Ok(prepared)
+    })().map_err(|error| index_error(error, budget))
 }
 
 fn verify_manifest_source(
@@ -759,11 +820,7 @@ fn verify_manifest_source(
     objects: &dyn quanta_index_core::index::ports::ImmutableObjectPort,
     budget: &mut WorkBudget,
 ) -> Result<(), CoreError> {
-    verify_manifest_source_with_v1(
-        manifest,
-        |reference, budget| objects.get(reference, budget),
-        budget,
-    )
+    verify_manifest_source_with_v1(manifest, |reference, budget| objects.get(reference, budget), budget)
 }
 
 fn verify_manifest_source_with_v1(
@@ -773,9 +830,7 @@ fn verify_manifest_source_with_v1(
 ) -> Result<(), CoreError> {
     let mut restored = None;
     loop {
-        let current = restored
-            .as_ref()
-            .map_or(manifest, |value: &PreparedNativeHistoryV1| &value.manifest);
+        let current = restored.as_ref().map_or(manifest, |value: &PreparedNativeHistoryV1| &value.manifest);
         let next = verify_manifest_source_step_v1(current, &mut get, budget)?;
         match next {
             Some(previous) => restored = Some(previous),
@@ -789,11 +844,9 @@ fn verify_manifest_source_step_v1(
     get: &mut impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
     budget: &mut WorkBudget,
 ) -> Result<Option<PreparedNativeHistoryV1>, CoreError> {
-    budget
-        .checkpoint()
+    budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
+    let origin = get(manifest.source_input, budget)
         .map_err(|error| history_work_error(budget, error))?;
-    let origin =
-        get(manifest.source_input, budget).map_err(|error| history_work_error(budget, error))?;
     validate_manifest_source_registration(manifest, &origin.registration)?;
     match manifest.format {
         SUCCESSOR_HISTORY_MANIFEST => {
@@ -801,21 +854,20 @@ fn verify_manifest_source_step_v1(
                 generation_input::decode_closure(manifest.source_input, &origin, budget)?;
             Ok(None)
         }
+        NATIVE_INITIAL_HISTORY_MANIFEST => {
+            let input: SourceInputData<quanta_index_contract::index::NativeHistoryInitialInputV1> =
+                build::source_input::decode_history_object_allow_children(
+                    manifest.source_input, &origin, budget,
+                )?;
+            input.value.verify_children_v1(&origin.registration.children).map_err(invalid)?;
+            Ok(None)
+        }
         NATIVE_RESTORE_HISTORY_MANIFEST => {
             let input: SourceInputData<quanta_index_contract::index::NativeHistoryRestoreInputV1> =
-                build::source_input::decode_history_object_allow_children(
-                    manifest.source_input,
-                    &origin,
-                    budget,
-                )?;
-            input
-                .value
-                .verify_children_v1(&origin.registration.children)
-                .map_err(invalid)?;
+                build::source_input::decode_history_object_allow_children(manifest.source_input, &origin, budget)?;
+            input.value.verify_children_v1(&origin.registration.children).map_err(invalid)?;
             if input.value.cut != manifest.cut() {
-                return Err(invalid(
-                    "Native History restore source cut differs from manifest",
-                ));
+                return Err(invalid("Native History restore source cut differs from manifest"));
             }
             let stored = get(input.value.member, budget)
                 .map_err(|error| history_work_error(budget, error))?;
@@ -828,9 +880,7 @@ fn verify_manifest_source_step_v1(
                 || previous.manifest.source_manifest != manifest.source_manifest
                 || previous.manifest.predecessor != manifest.predecessor
             {
-                return Err(invalid(
-                    "Native History restored member differs from immutable predecessor",
-                ));
+                return Err(invalid("Native History restored member differs from immutable predecessor"));
             }
             Ok(Some(previous))
         }
@@ -846,16 +896,11 @@ fn validate_manifest_source_registration(
         return Err(invalid("History source input child graph differs"));
     }
     match manifest.format {
-        REPLAY_HISTORY_MANIFEST | APPEND_HISTORY_MANIFEST if !source.children.is_empty() => {
-            Err(invalid("History source input child graph differs"))
-        }
-        SNAPSHOT_HISTORY_MANIFEST
-        | SUCCESSOR_HISTORY_MANIFEST
-        | NATIVE_RESTORE_HISTORY_MANIFEST
+        REPLAY_HISTORY_MANIFEST | APPEND_HISTORY_MANIFEST if !source.children.is_empty() =>
+            Err(invalid("History source input child graph differs")),
+        SNAPSHOT_HISTORY_MANIFEST | SUCCESSOR_HISTORY_MANIFEST | NATIVE_RESTORE_HISTORY_MANIFEST | NATIVE_INITIAL_HISTORY_MANIFEST
             if source.children.is_empty() =>
-        {
-            Err(invalid("History source input child graph differs"))
-        }
+            Err(invalid("History source input child graph differs")),
         _ => Ok(()),
     }?;
     Ok(())
@@ -924,13 +969,13 @@ fn validate_instance(
 
 fn prepare(
     source: &ReplayedHistorySourceV1,
-    prior: Option<(&Manifest, &HistoryIngestBatch)>,
+    prior: Option<(&PreparedNativeHistoryV1, &HistoryIngestBatch)>,
     source_input: ObjectRef,
     format: u32,
     context: &mut AttemptContext<'_>,
 ) -> Result<PreparedNativeHistoryV1, CoreError> {
     let cut = source.cut();
-    let mut root = prior.map_or(MapRoot(None), |(prior, _)| prior.rows);
+    let mut root = prior.map_or(MapRoot(None), |(prior, _)| prior.manifest.rows);
     let mut row_count = 0_u64;
     let mut maximum_row_bytes = 0_u64;
     let attempt = context.attempt;
@@ -966,8 +1011,11 @@ fn prepare(
             // The producer fold already owns and funds these typed records.
             // Keep the canonical CBOR row for snapshot accounting and V2 raw
             // fallback, while borrowing the same state for the V1 JSON shape.
-            let native =
-                borrowed_projection::from_source(&source.state, source.cut.durable_epoch, row)?;
+            let native = borrowed_projection::from_source(
+                &source.state,
+                source.cut.durable_epoch,
+                row,
+            )?;
             let length = json_len(&native, budget)?;
             if length <= MAX_HISTORY_SOURCE_INPUT_BYTES_V1 as u64 {
                 Some(encode_json_sized(&native, length, budget)?)
@@ -975,8 +1023,11 @@ fn prepare(
                 None
             }
         };
-        let next =
-            stage_native_history_row_v1(row, encoded, budget, |payload, children, budget| {
+        let next = stage_native_history_row_v1(
+            row,
+            encoded,
+            budget,
+            |payload, children, budget| {
                 let mut local = AttemptContext {
                     attempt,
                     objects,
@@ -986,8 +1037,8 @@ fn prepare(
                     budget,
                 };
                 local.put(payload, children)
-            })
-            .map_err(|error| history_work_error(budget, error))?;
+            },
+        ).map_err(|error| history_work_error(budget, error))?;
         let mut local = AttemptContext {
             attempt,
             objects,
@@ -1049,7 +1100,7 @@ fn prepare(
         .and_then(|bytes| bytes.checked_add(source.manifest_digest.as_ref().map_or(0, String::len)))
         .and_then(|bytes| {
             bytes.checked_add(prior.map_or(0, |(prior, _)| {
-                prior.repo.as_str().len() + prior.revision.as_str().len()
+                prior.manifest.repo.as_str().len() + prior.manifest.revision.as_str().len()
             }))
         })
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Manifest>() + 512))
@@ -1069,23 +1120,51 @@ fn prepare(
         replay: cut.replay_start,
         sequence: source.sequence,
         source_manifest: source.manifest_digest.clone(),
-        predecessor: prior.map(|(prior, _)| prior.cut()),
+        predecessor: prior.map(|(prior, _)| prior.manifest.cut()),
         source_input,
         rows: root,
         row_count,
         maximum_row_bytes,
     };
+    install_manifest(
+        manifest, prior.and_then(|(prior, _)| prior.initial_origin()), manifest_memory, context,
+    )
+}
+
+fn install_manifest(
+    manifest: Manifest,
+    retained_initial: Option<ObjectRef>,
+    memory: Option<MemoryLease>,
+    context: &mut AttemptContext<'_>,
+) -> Result<PreparedNativeHistoryV1, CoreError> {
     manifest.validate()?;
+    let (children, count) = manifest_children(&manifest, retained_initial)?;
     let payload = encode_json(&manifest, context.budget)?;
-    let row_child = root.0.ok_or_else(|| invalid("History row root absent"))?;
-    let artifact = context
-        .put(&payload.bytes, &[row_child, source_input])
+    let artifact = context.put(&payload.bytes, &children[..count])
         .map_err(|error| history_work_error(context.budget, error))?;
-    Ok(PreparedNativeHistoryV1 {
-        artifact,
-        manifest,
-        _manifest_memory: manifest_memory,
-    })
+    Ok(PreparedNativeHistoryV1 { artifact, manifest, retained_initial, _manifest_memory: memory })
+}
+
+// Includes at most one immutable origin. Every successor inherits that one
+// reference, so same-slot updates do not hold a chain of retired row maps.
+fn manifest_children(
+    manifest: &Manifest,
+    initial: Option<ObjectRef>,
+) -> Result<([ObjectRef; 3], usize), CoreError> {
+    let rows = manifest.rows.0.ok_or_else(|| invalid("History row root absent"))?;
+    let source = manifest.source_input;
+    let empty = ObjectRef(Digest([0; 32]));
+    let Some(initial) = initial else { return Ok(([rows, source, empty], 2)); };
+    if !matches!(
+        manifest.format,
+        APPEND_HISTORY_MANIFEST | SUCCESSOR_HISTORY_MANIFEST | NATIVE_RESTORE_HISTORY_MANIFEST
+    ) && !(manifest.format == REPLAY_HISTORY_MANIFEST && manifest.predecessor.is_some()) {
+        return Err(invalid("History manifest cannot carry an initial origin edge"));
+    }
+    if initial == empty || initial == rows || initial == source {
+        return Err(invalid("History manifest has an invalid initial origin edge"));
+    }
+    Ok(([rows, source, initial], 3))
 }
 
 // Fixed map keys avoid truncating a valid historical path at the map-key
@@ -1195,9 +1274,7 @@ impl HistoryRowRestorerV1 {
             || cut.replay_start == Digest([0; 32])
             || sequence == 0
         {
-            return Err(invalid(
-                "History source cut or durable sequence is incomplete",
-            ));
+            return Err(invalid("History source cut or durable sequence is incomplete"));
         }
         Ok(Self {
             output: ReplayedHistorySourceV1 {
@@ -1220,10 +1297,7 @@ impl HistoryRowRestorerV1 {
         data: NativeRowData,
         memory: Option<MemoryLease>,
     ) -> Result<(), CoreError> {
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or_else(|| invalid("History row count overflow"))?;
+        self.count = self.count.checked_add(1).ok_or_else(|| invalid("History row count overflow"))?;
         match data {
             NativeRowData::Epoch(epoch) => {
                 if family != AuxiliaryRowFamilyV1::Epoch
@@ -1231,34 +1305,20 @@ impl HistoryRowRestorerV1 {
                     || !key.is_empty()
                     || epoch != self.output.cut.durable_epoch
                 {
-                    return Err(invalid(
-                        "History epoch singleton differs from committed cut",
-                    ));
+                    return Err(invalid("History epoch singleton differs from committed cut"));
                 }
                 self.saw_epoch = true;
             }
             NativeRowData::Row(decoded) => {
                 validate_row_key(family, &key, &decoded)?;
                 match decoded {
-                    HistoryReadbackRowV1::Commit(record) => {
-                        self.output.state.restore_commit(record.sha, record)
-                    }
-                    HistoryReadbackRowV1::Ref(update) => {
-                        self.output.state.restore_ref(&update.name, update.sha)
-                    }
-                    HistoryReadbackRowV1::Tag(update) => {
-                        self.output.state.restore_tag(&update.name, update.sha)
-                    }
+                    HistoryReadbackRowV1::Commit(record) => self.output.state.restore_commit(record.sha, record),
+                    HistoryReadbackRowV1::Ref(update) => self.output.state.restore_ref(&update.name, update.sha),
+                    HistoryReadbackRowV1::Tag(update) => self.output.state.restore_tag(&update.name, update.sha),
                     HistoryReadbackRowV1::DiffHunk(update) => self.output.state.restore_diff_hunk(
-                        HistoryDiffKey::new(update.commit_sha, &update.file_path),
-                        update.record,
+                        HistoryDiffKey::new(update.commit_sha, &update.file_path), update.record,
                     ),
-                    HistoryReadbackRowV1::Materialization {
-                        commits,
-                        refs,
-                        tags,
-                        diff_hunks,
-                    } => {
+                    HistoryReadbackRowV1::Materialization { commits, refs, tags, diff_hunks } => {
                         if self.saw_meta {
                             return Err(invalid("duplicate History metadata"));
                         }
@@ -1288,9 +1348,7 @@ impl HistoryRowRestorerV1 {
             || !self.saw_epoch
             || !self.saw_meta
         {
-            return Err(invalid(
-                "History complete inventory differs from committed cut",
-            ));
+            return Err(invalid("History complete inventory differs from committed cut"));
         }
         let output = self.output;
         validate_history_references(&output.state, budget)?;
@@ -1300,13 +1358,9 @@ impl HistoryRowRestorerV1 {
         let mut maximum_row_bytes = 0_u64;
         output.visit_rows(budget, &mut |row, _| {
             maximum_row_bytes = maximum_row_bytes.max(
-                u64::try_from(
-                    row.value
-                        .len()
-                        .checked_add(row.key.row_key.len())
-                        .ok_or_else(|| invalid("History row weight overflow"))?,
-                )
-                .map_err(|_| invalid("History row weight overflow"))?,
+                u64::try_from(row.value.len().checked_add(row.key.row_key.len())
+                    .ok_or_else(|| invalid("History row weight overflow"))?)
+                    .map_err(|_| invalid("History row weight overflow"))?,
             );
             hash.push_row(row.key.family, &row.key.row_key, &row.value);
             Ok(())
@@ -1314,9 +1368,7 @@ impl HistoryRowRestorerV1 {
         if hash.finish() != output.cut.snapshot_digest
             || expected_maximum_row_bytes.is_some_and(|bytes| bytes != maximum_row_bytes)
         {
-            return Err(invalid(
-                "History full row digest differs from committed cut",
-            ));
+            return Err(invalid("History full row digest differs from committed cut"));
         }
         Ok(output)
     }
@@ -1375,8 +1427,12 @@ fn restore_source_snapshot_rows(
         source_manifest.as_deref(),
         budget,
     )?;
-    let mut restore =
-        HistoryRowRestorerV1::new(expected.clone(), durable_sequence, source_manifest, custody)?;
+    let mut restore = HistoryRowRestorerV1::new(
+        expected.clone(),
+        durable_sequence,
+        source_manifest,
+        custody,
+    )?;
     verify_source_snapshot_rows(expected, read_rows, budget, |row, budget| {
         let family = row.key.family;
         let backing = if family == AuxiliaryRowFamilyV1::Commit {
@@ -1416,9 +1472,7 @@ fn verify_source_snapshot_rows(
     let mut saw_epoch = false;
     let mut previous: Option<(AuxiliaryRowFamilyV1, Vec<u8>, Option<MemoryLease>)> = None;
     read_rows(budget, &mut |row, budget| {
-        budget
-            .checkpoint()
-            .map_err(|error| history_work_error(budget, error))?;
+        budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
         if row.key.domain != quanta_index_core::AuxiliaryDomainV1::History
             || row.key.generation != expected.generation
         {
@@ -1432,26 +1486,20 @@ fn verify_source_snapshot_rows(
             }
             saw_epoch = true;
         } else if family == AuxiliaryRowFamilyV1::Epoch
-            || previous
-                .as_ref()
-                .is_some_and(|(prior_family, prior_key, _)| {
-                    (family.as_code_str(), key.as_slice())
-                        <= (prior_family.as_code_str(), prior_key.as_slice())
-                })
-        {
-            return Err(invalid(
-                "History source rows are duplicated or out of order",
-            ));
-        }
-        budget
-            .charge(WorkUsage {
-                bytes: u64::try_from(row.value.len())
-                    .ok()
-                    .and_then(|bytes| bytes.checked_add(u64::try_from(key.len()).ok()?))
-                    .ok_or_else(|| invalid("History source row work overflow"))?,
-                ..WorkUsage::default()
+            || previous.as_ref().is_some_and(|(prior_family, prior_key, _)| {
+                (family.as_code_str(), key.as_slice())
+                    <= (prior_family.as_code_str(), prior_key.as_slice())
             })
-            .map_err(|error| history_work_error(budget, error))?;
+        {
+            return Err(invalid("History source rows are duplicated or out of order"));
+        }
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(row.value.len())
+                .ok()
+                .and_then(|bytes| bytes.checked_add(u64::try_from(key.len()).ok()?))
+                .ok_or_else(|| invalid("History source row work overflow"))?,
+            ..WorkUsage::default()
+        }).map_err(|error| history_work_error(budget, error))?;
         source_hash.push_row(family, key, &row.value);
         // The epoch is a prefix, while only subsequent rows are key-ordered.
         if family != AuxiliaryRowFamilyV1::Epoch {
@@ -1459,17 +1507,14 @@ fn verify_source_snapshot_rows(
                 .ok()
                 .and_then(|bytes| bytes.checked_add(64))
                 .ok_or_else(|| invalid("History source order key allocation overflow"))?;
-            let order_memory = budget
-                .reserve_memory(key_bytes, MemoryLifetime::Temporary)
+            let order_memory = budget.reserve_memory(key_bytes, MemoryLifetime::Temporary)
                 .map_err(|error| history_work_error(budget, error))?;
             previous = Some((family, key.clone(), order_memory));
         }
         visit(row, budget)
     })?;
     if !saw_epoch || source_hash.finish() != expected.snapshot_digest {
-        return Err(invalid(
-            "History source rows differ from independently issued cut",
-        ));
+        return Err(invalid("History source rows differ from independently issued cut"));
     }
     Ok(())
 }
@@ -1530,8 +1575,8 @@ fn load_rows_with_v1(
                 return Err(invalid("History row inventory exceeds manifest"));
             }
             let family = split_key(key)?;
-            let stored =
-                get(*reference, budget).map_err(|error| history_work_error(budget, error))?;
+            let stored = get(*reference, budget)
+                .map_err(|error| history_work_error(budget, error))?;
             if stored.registration.reference != *reference {
                 return Err(invalid("History row child graph differs"));
             }
@@ -1704,9 +1749,7 @@ fn json_len<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<u64, Cor
                 self.refusal = Some(error);
                 return Err(std::io::Error::other("History encoding work refused"));
             }
-            self.length = self
-                .length
-                .checked_add(length)
+            self.length = self.length.checked_add(length)
                 .ok_or_else(|| std::io::Error::other("History encoding length overflow"))?;
             Ok(bytes.len())
         }
@@ -1714,14 +1757,8 @@ fn json_len<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<u64, Cor
             Ok(())
         }
     }
-    budget
-        .checkpoint()
-        .map_err(|error| history_work_error(budget, error))?;
-    let mut measure = Measure {
-        length: 0,
-        budget,
-        refusal: None,
-    };
+    budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
+    let mut measure = Measure { length: 0, budget, refusal: None };
     let encoded = serde_json::to_writer(&mut measure, value);
     if let Some(error) = measure.refusal.take() {
         return Err(history_work_error(measure.budget, error));
@@ -1735,34 +1772,28 @@ fn encode_json_sized<T: Serialize>(
     length: u64,
     budget: &mut WorkBudget,
 ) -> Result<FundedJson, CoreError> {
-    let size =
-        usize::try_from(length).map_err(|_| invalid("History encoding length exceeds usize"))?;
+    let size = usize::try_from(length).map_err(|_| invalid("History encoding length exceeds usize"))?;
     let memory = budget
-        .reserve_memory(length, MemoryLifetime::Temporary)
+        .reserve_memory(
+            length,
+            MemoryLifetime::Temporary,
+        )
         .map_err(|error| history_work_error(budget, error))?;
-    budget
-        .charge(WorkUsage {
-            bytes: length,
-            ..WorkUsage::default()
-        })
+    budget.charge(WorkUsage { bytes: length, ..WorkUsage::default() })
         .map_err(|error| history_work_error(budget, error))?;
     let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(size)
-        .map_err(|error| invalid(&error.to_string()))?;
+    bytes.try_reserve_exact(size).map_err(|error| invalid(&error.to_string()))?;
     if bytes.capacity() > size {
         return Err(invalid("History encoding allocation exceeded grant"));
     }
     bytes.resize(size, 0);
     let mut remaining = bytes.as_mut_slice();
-    serde_json::to_writer(&mut remaining, value).map_err(|error| invalid(&error.to_string()))?;
+    serde_json::to_writer(&mut remaining, value)
+        .map_err(|error| invalid(&error.to_string()))?;
     if !remaining.is_empty() {
         return Err(invalid("History encoding changed between admitted passes"));
     }
-    Ok(FundedJson {
-        bytes,
-        _memory: memory,
-    })
+    Ok(FundedJson { bytes, _memory: memory })
 }
 
 fn encode_json<T: Serialize>(value: &T, budget: &mut WorkBudget) -> Result<FundedJson, CoreError> {
@@ -1815,23 +1846,9 @@ fn invalid(message: &str) -> CoreError {
 #[cfg(test)]
 mod large_row_tests {
     use super::*;
-    use quanta_index_contract::{
-        DiffHunkSide,
-        index::native_immutable_object_ref_v1,
-        lex::{CommitRecord, CommitSha, DiffHunkRecord},
-    };
-    use quanta_index_core::{
-        AuxiliaryDomainV1, AuxiliaryRowKeyV1,
-        index::{MemoryLeaseOwner, MemoryScope, MemoryScopePort, WorkLimits},
-    };
-    use std::{
-        collections::BTreeMap,
-        sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        },
-        time::{Duration, Instant},
-    };
+    use quanta_index_contract::{DiffHunkSide, lex::{CommitRecord, CommitSha, DiffHunkRecord}, index::native_immutable_object_ref_v1};
+    use quanta_index_core::{AuxiliaryDomainV1, AuxiliaryRowKeyV1, index::{MemoryLeaseOwner, MemoryScope, MemoryScopePort, WorkLimits}};
+    use std::{collections::BTreeMap, sync::{Arc, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}};
 
     struct Ledger {
         live: AtomicU64,
@@ -1845,19 +1862,10 @@ mod large_row_tests {
         }
     }
     impl MemoryScopePort for Scope {
-        fn reserve(
-            &self,
-            bytes: u64,
-            _lifetime: MemoryLifetime,
-        ) -> Result<MemoryLease, IndexError> {
-            let _previous = self
-                .0
-                .live
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-                    live.checked_add(bytes)
-                        .filter(|next| *next <= self.0.maximum)
-                })
-                .map_err(|_| IndexError::ResourceLimited)?;
+        fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            let _previous = self.0.live.fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+                live.checked_add(bytes).filter(|next| *next <= self.0.maximum)
+            }).map_err(|_| IndexError::ResourceLimited)?;
             Ok(MemoryLease::new(bytes, self.0.clone()))
         }
     }
@@ -1880,10 +1888,7 @@ mod large_row_tests {
             }
         ));
         assert!(budget.first_denial().is_none());
-        assert_eq!(
-            index_error(overloaded, &budget),
-            IndexError::ResourceLimited
-        );
+        assert_eq!(index_error(overloaded, &budget), IndexError::ResourceLimited);
 
         let cancelled = WorkBudget::new(limits, Instant::now() + Duration::from_secs(60));
         cancelled.request().cancel_handle().cancel();
@@ -1985,9 +1990,12 @@ mod large_row_tests {
         assert_eq!(ledger.live.load(Ordering::Acquire), held);
         assert!(held + 4 * 12 * MIB > ledger.maximum);
 
-        let backing =
-            row_budget::native_json_backing(AuxiliaryRowFamilyV1::Commit, &wire, &mut budget)
-                .expect("plain Native V1 shape under original custody");
+        let backing = row_budget::native_json_backing(
+            AuxiliaryRowFamilyV1::Commit,
+            &wire,
+            &mut budget,
+        )
+        .expect("plain Native V1 shape under original custody");
         assert_eq!(ledger.live.load(Ordering::Acquire), held);
         let (decoded, scratch) = backing
             .reserve_decode(&mut budget)
@@ -2137,17 +2145,9 @@ mod large_row_tests {
 
     #[test]
     fn escaped_five_mib_diff_hunk_uses_raw_immutable_row_and_recovers_typed_data() {
-        let ledger = Arc::new(Ledger {
-            live: AtomicU64::new(0),
-            maximum: 64 * 1024 * 1024,
-        });
+        let ledger = Arc::new(Ledger { live: AtomicU64::new(0), maximum: 64 * 1024 * 1024 });
         let mut budget = WorkBudget::new(
-            WorkLimits {
-                reads: 1_000_000,
-                writes: 1_000_000,
-                mutations: 1_000_000,
-                bytes: 1_000_000_000,
-            },
+            WorkLimits { reads: 1_000_000, writes: 1_000_000, mutations: 1_000_000, bytes: 1_000_000_000 },
             Instant::now() + Duration::from_secs(60),
         );
         budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(ledger.clone())))));
@@ -2180,126 +2180,75 @@ mod large_row_tests {
         };
         drop(record);
         assert!(row.value.len() < MAX_HISTORY_SOURCE_INPUT_BYTES_V1);
-        let state_loan = budget
-            .reserve_memory(
-                row_decode_backing_bytes(
-                    AuxiliaryRowFamilyV1::DiffHunk,
-                    row.value.len(),
-                    row.key.row_key.len(),
-                    16,
-                    DIFF_HUNK_CBOR_DECODE_BACKING,
-                )
+        let state_loan = budget.reserve_memory(
+            row_decode_backing_bytes(AuxiliaryRowFamilyV1::DiffHunk, row.value.len(), row.key.row_key.len(), 16, DIFF_HUNK_CBOR_DECODE_BACKING)
                 .expect("restored source backing"),
-                MemoryLifetime::Retained,
-            )
-            .expect("restored source memory");
-        let source_loan = budget
-            .reserve_memory((row.value.len() * 2) as u64, MemoryLifetime::Temporary)
-            .expect("row emission memory");
-        let projection_loan = budget
-            .reserve_memory(
-                row_decode_backing_bytes(
-                    AuxiliaryRowFamilyV1::DiffHunk,
-                    row.value.len(),
-                    row.key.row_key.len(),
-                    32,
-                    DIFF_HUNK_CBOR_DECODE_BACKING,
-                )
+            MemoryLifetime::Retained,
+        ).expect("restored source memory");
+        let source_loan = budget.reserve_memory(
+            (row.value.len() * 2) as u64,
+            MemoryLifetime::Temporary,
+        ).expect("row emission memory");
+        let projection_loan = budget.reserve_memory(
+            row_decode_backing_bytes(AuxiliaryRowFamilyV1::DiffHunk, row.value.len(), row.key.row_key.len(), 32, DIFF_HUNK_CBOR_DECODE_BACKING)
                 .expect("source projection bound"),
-                MemoryLifetime::Temporary,
-            )
-            .expect("source projection memory");
+            MemoryLifetime::Temporary,
+        ).expect("source projection memory");
         let data = NativeRowData::Row(decode_history_row(&row).expect("typed source row"));
-        let native = NativeRowRef {
-            key: &row.key.row_key,
-            data: &data,
-        };
+        let native = NativeRowRef { key: &row.key.row_key, data: &data };
         let json_bytes = json_len(&native, &mut budget).expect("typed Native row width");
         assert!(json_bytes > MAX_HISTORY_SOURCE_INPUT_BYTES_V1 as u64);
         drop(data);
         drop(projection_loan);
-        assert!(
-            serde_json::from_slice::<NativeDiffHunkRow>(
-                br#"{"key":[],"data":{"Row":{"Commit":{}}}}"#
-            )
-            .is_err()
-        );
+        assert!(serde_json::from_slice::<NativeDiffHunkRow>(
+            br#"{"key":[],"data":{"Row":{"Commit":{}}}}"#
+        ).is_err());
 
         let mut objects = BTreeMap::<ObjectRef, StoredObject>::new();
-        let reference =
-            stage_native_history_row_v1(&row, None, &mut budget, |payload, children, budget| {
-                let reference = native_immutable_object_ref_v1(payload, children)
-                    .ok_or(IndexError::DigestConflict)?;
-                let loan = budget.reserve_memory(
-                    StoredObject::allocation_bytes(payload.len(), children.len())?,
-                    MemoryLifetime::Retained,
-                )?;
-                let replaced = objects.insert(
-                    reference,
-                    StoredObject::new(
-                        RegisteredObject::unscoped(
-                            reference,
-                            (quanta_index_contract::index::NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1
-                                + payload.len()
-                                + children.len() * 32) as u64,
-                            children.to_vec(),
-                        ),
-                        payload.to_vec(),
-                        loan,
-                    ),
-                );
-                assert!(replaced.is_none(), "immutable row part emitted twice");
-                Ok(reference)
-            })
-            .expect("raw row projection");
+        let reference = stage_native_history_row_v1(&row, None, &mut budget, |payload, children, budget| {
+            let reference = native_immutable_object_ref_v1(payload, children)
+                .ok_or(IndexError::DigestConflict)?;
+            let loan = budget.reserve_memory(
+                StoredObject::allocation_bytes(payload.len(), children.len())?,
+                MemoryLifetime::Retained,
+            )?;
+            let replaced = objects.insert(reference, StoredObject::new(
+                RegisteredObject::unscoped(reference, (quanta_index_contract::index::NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1 + payload.len() + children.len() * 32) as u64, children.to_vec()),
+                payload.to_vec(),
+                loan,
+            ));
+            assert!(replaced.is_none(), "immutable row part emitted twice");
+            Ok(reference)
+        }).expect("raw row projection");
         assert!(objects.get(&reference).is_some_and(|object| {
             quanta_index_core::index::history_checkpoint::is_large_row_v2(&object.payload)
         }));
         drop(source_loan);
         drop(state_loan);
         let directory = objects.get(&reference).expect("directory");
-        let (recovered, raw_loan) =
-            quanta_index_core::index::history_checkpoint::decode_large_row_v2(
-                &generation,
-                1,
-                reference,
-                directory,
-                &mut budget,
-                &mut |child, budget| {
-                    let stored = objects.get(&child).ok_or(IndexError::SnapshotUnavailable)?;
-                    let loan = budget.reserve_memory(
-                        StoredObject::allocation_bytes(
-                            stored.payload.len(),
-                            stored.registration.children.len(),
-                        )?,
-                        MemoryLifetime::Temporary,
-                    )?;
-                    Ok(StoredObject::new(
-                        stored.registration.clone(),
-                        stored.payload.clone(),
-                        loan,
-                    ))
-                },
-            )
-            .expect("raw row readback");
+        let (recovered, raw_loan) = quanta_index_core::index::history_checkpoint::decode_large_row_v2(
+            &generation,
+            1,
+            reference,
+            directory,
+            &mut budget,
+            &mut |child, budget| {
+                let stored = objects.get(&child).ok_or(IndexError::SnapshotUnavailable)?;
+                let loan = budget.reserve_memory(
+                    StoredObject::allocation_bytes(stored.payload.len(), stored.registration.children.len())?,
+                    MemoryLifetime::Temporary,
+                )?;
+                Ok(StoredObject::new(stored.registration.clone(), stored.payload.clone(), loan))
+            },
+        ).expect("raw row readback");
         assert_eq!(recovered, row);
-        let decoded_loan = budget
-            .reserve_memory(
-                row_decode_backing_bytes(
-                    AuxiliaryRowFamilyV1::DiffHunk,
-                    recovered.value.len(),
-                    recovered.key.row_key.len(),
-                    16,
-                    DIFF_HUNK_CBOR_DECODE_BACKING,
-                )
+        let decoded_loan = budget.reserve_memory(
+            row_decode_backing_bytes(AuxiliaryRowFamilyV1::DiffHunk, recovered.value.len(), recovered.key.row_key.len(), 16, DIFF_HUNK_CBOR_DECODE_BACKING)
                 .expect("typed row bound"),
-                MemoryLifetime::Temporary,
-            )
-            .expect("typed row memory");
+            MemoryLifetime::Temporary,
+        ).expect("typed row memory");
         let decoded = decode_history_row(&recovered).expect("typed Native readback");
-        let HistoryReadbackRowV1::DiffHunk(hunk) = decoded else {
-            panic!("wrong History family")
-        };
+        let HistoryReadbackRowV1::DiffHunk(hunk) = decoded else { panic!("wrong History family") };
         assert_eq!(hunk.commit_sha, sha);
         assert_eq!(hunk.file_path.as_ref(), "big.rs");
         assert_eq!(hunk.record.added_text.len(), 5 * 1024 * 1024);

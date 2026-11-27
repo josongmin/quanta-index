@@ -266,6 +266,19 @@ impl IndexBuildPort for NativeLiteralIndex {
                 {
                     return Err(IndexError::Conflict);
                 }
+                // A Literal root binds only the Source owners map. When a Source
+                // advance leaves it unchanged (a frontier-only, no-op DELTA),
+                // the published root is already the exact output: keep its
+                // identity and commitment under the new input binding without
+                // invoking prepare or opening a Literal object.
+                if quanta_index_core::index::is_canonical_empty_mutation_set(delta.changed)
+                    && delta.prior.owners == delta.next.owners
+                {
+                    return Ok(PlanDecision::Reuse(Box::new(MemberBinding {
+                        input: context.input,
+                        ..*member
+                    })));
+                }
                 (Some(*member), DeltaInput::Patch(delta))
             }
             (
@@ -732,6 +745,272 @@ impl NativeLiteralIndex {
             }
         }
     }
+}
+
+/// Read-only gram postings of one authenticated Literal member, used by Text
+/// reads to anchor `file.contains` on the pinned Literal sibling.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum LiteralGrams {
+    Tree { grams: MapRoot },
+    Packed { blocks: MapRoot },
+}
+
+impl LiteralGrams {
+    /// Authenticates the member's artifact exactly as `search` does. The
+    /// caller has already proved the member is the unique pinned sibling over
+    /// `sources`.
+    pub(super) fn open(
+        member: &MemberBinding,
+        sources: MapRoot,
+        objects: &dyn ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, IndexError> {
+        let artifact = objects.get(member.artifact, budget)?;
+        if artifact.registration.reference != member.artifact
+            || Digest(Sha256::digest(&artifact.payload).into()) != member.logical_commitment
+        {
+            return Err(IndexError::CorruptObject(
+                "literal sibling commitment mismatch".into(),
+            ));
+        }
+        if let Some(root) = PackedRoot::decode(&artifact.payload)? {
+            if root.sources != sources
+                || artifact.registration.children.as_slice() != root.children().as_slice()
+            {
+                return Err(IndexError::CorruptObject(
+                    "literal sibling block root mismatch".into(),
+                ));
+            }
+            return Ok(Self::Packed {
+                blocks: root.blocks,
+            });
+        }
+        let root = super::metadata::decode_fixed::<Root>(&artifact.payload, budget)?;
+        if !artifact
+            .registration
+            .children
+            .iter()
+            .copied()
+            .eq([root.owners.0, root.grams.0].into_iter().flatten())
+        {
+            return Err(IndexError::CorruptObject(
+                "literal sibling tree root mismatch".into(),
+            ));
+        }
+        Ok(Self::Tree { grams: root.grams })
+    }
+
+    fn tree_posting(
+        grams: MapRoot,
+        gram: [u8; 3],
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<Posting>, IndexError> {
+        maps.lookup_object(grams, &gram, budget)?
+            .map(|reference| load_posting(reference, objects, budget))
+            .transpose()
+    }
+
+    /// The gram's owner count, saturated at `cap`. A packed posting is read
+    /// only until `cap` owners have been seen.
+    pub(super) fn count_capped(
+        self,
+        gram: [u8; 3],
+        cap: u64,
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        budget: &mut WorkBudget,
+    ) -> Result<u64, IndexError> {
+        match self {
+            Self::Tree { grams } => Ok(Self::tree_posting(grams, gram, objects, maps, budget)?
+                .map_or(0, |posting| posting.count.min(cap))),
+            Self::Packed { blocks } => {
+                let mut cursor = super::literal_blocks::LiteralGramCursor::new(
+                    maps, objects, blocks, gram, None,
+                );
+                let mut count = 0_u64;
+                while count < cap && cursor.next(budget)?.is_some() {
+                    count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                }
+                Ok(count)
+            }
+        }
+    }
+
+    /// Every owner of the gram in ascending key order. A tree posting must
+    /// hold exactly its declared count.
+    pub(super) fn owners(
+        self,
+        gram: [u8; 3],
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        budget: &mut WorkBudget,
+        mut visit: impl FnMut([u8; 32], &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        match self {
+            Self::Tree { grams } => {
+                let Some(posting) = Self::tree_posting(grams, gram, objects, maps, budget)? else {
+                    return Ok(());
+                };
+                let mut after: Option<[u8; 32]> = None;
+                let mut seen = 0_u64;
+                loop {
+                    let page = maps.scan(
+                        posting.root,
+                        after.as_ref().map(<[u8; 32]>::as_slice),
+                        64,
+                        budget,
+                    )?;
+                    for (key, _) in &page.entries {
+                        let key = owner_cursor(key)?;
+                        if after.is_some_and(|prior| prior >= key) {
+                            return Err(IndexError::CorruptObject(
+                                "literal posting owners are not strictly ordered".into(),
+                            ));
+                        }
+                        after = Some(key);
+                        seen = seen.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                        visit(key, budget)?;
+                    }
+                    if !page.has_more {
+                        break;
+                    }
+                    if page.entries.is_empty() {
+                        return Err(IndexError::BackendViolation(
+                            "nonprogressing map cursor".into(),
+                        ));
+                    }
+                }
+                if seen != posting.count {
+                    return Err(IndexError::CorruptObject(
+                        "literal posting differs from its declared count".into(),
+                    ));
+                }
+                Ok(())
+            }
+            Self::Packed { blocks } => {
+                let mut cursor = super::literal_blocks::LiteralGramCursor::new(
+                    maps, objects, blocks, gram, None,
+                );
+                while let Some(owner) = cursor.next(budget)? {
+                    visit(owner, budget)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// A monotone membership probe of one gram's posting; see
+    /// [`GramProbe::contains`].
+    pub(super) fn probe(self, gram: [u8; 3]) -> GramProbe {
+        GramProbe(match self {
+            Self::Tree { grams } => ProbeState::Tree {
+                grams,
+                gram,
+                posting: TreePosting::Unread,
+            },
+            Self::Packed { blocks } => {
+                ProbeState::Packed(super::literal_blocks::LiteralGramProbe::new(blocks, gram))
+            }
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn contains(
+        self,
+        cache: &mut super::literal_blocks::MembershipCache,
+        gram: [u8; 3],
+        owner: [u8; 32],
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        match self {
+            Self::Tree { grams } => Ok(
+                match Self::tree_posting(grams, gram, objects, maps, budget)? {
+                    Some(posting) => maps.lookup(posting.root, &owner, budget)?.is_some(),
+                    None => false,
+                },
+            ),
+            Self::Packed { blocks } => cache.contains(
+                maps,
+                objects,
+                blocks,
+                super::literal_blocks::literal_key(gram, owner),
+                budget,
+            ),
+        }
+    }
+}
+
+/// Membership of one gram's posting for owners asked in ascending order.
+///
+/// A packed posting reads each of its blocks at most once; a tree posting
+/// loads its posting record once and looks each owner up in its owner map.
+pub(super) struct GramProbe(ProbeState);
+
+/// A tree posting record, read on first use.
+enum TreePosting {
+    Unread,
+    Absent,
+    Present(Posting),
+}
+
+enum ProbeState {
+    Tree {
+        grams: MapRoot,
+        gram: [u8; 3],
+        posting: TreePosting,
+    },
+    Packed(super::literal_blocks::LiteralGramProbe),
+}
+
+impl GramProbe {
+    pub(super) fn contains(
+        &mut self,
+        owner: [u8; 32],
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        match &mut self.0 {
+            ProbeState::Tree {
+                grams,
+                gram,
+                posting,
+            } => {
+                if matches!(posting, TreePosting::Unread) {
+                    *posting = LiteralGrams::tree_posting(*grams, *gram, objects, maps, budget)?
+                        .map_or(TreePosting::Absent, TreePosting::Present);
+                }
+                match posting {
+                    TreePosting::Present(found) => {
+                        Ok(maps.lookup(found.root, &owner, budget)?.is_some())
+                    }
+                    TreePosting::Unread | TreePosting::Absent => Ok(false),
+                }
+            }
+            ProbeState::Packed(probe) => probe.contains(maps, objects, owner, budget),
+        }
+    }
+}
+
+/// Canonical payloads of a tree-format Literal artifact and gram posting,
+/// for sibling fixtures in Text read tests.
+#[cfg(test)]
+pub(super) fn tree_fixture_payloads(
+    owners: MapRoot,
+    grams: MapRoot,
+) -> Result<Vec<u8>, IndexError> {
+    serde_json::to_vec(&Root { owners, grams })
+        .map_err(|error| IndexError::InvalidInput(error.to_string()))
+}
+
+#[cfg(test)]
+pub(super) fn tree_fixture_posting(root: MapRoot, count: u64) -> Result<Vec<u8>, IndexError> {
+    serde_json::to_vec(&Posting { root, count })
+        .map_err(|error| IndexError::InvalidInput(error.to_string()))
 }
 
 struct SourceOwners<'a> {
@@ -2116,20 +2395,32 @@ mod tests {
             },
             deadline,
         );
-        let PlanDecision::Incremental(plan) = index.plan(
+        let delta = SourceDelta {
+            prior: source,
+            next: source,
+            changed,
+        };
+        let plan = match index.plan(
             BaseMember::Present(Box::new(member.clone())),
-            DeltaInput::Patch(SourceDelta {
-                prior: source,
-                next: source,
-                changed,
-            }),
+            DeltaInput::Patch(delta.clone()),
             &current,
             &mut budget,
-        )?
-        else {
-            return Err(IndexError::BackendViolation(
-                "empty patch did not produce an incremental literal plan".into(),
-            ));
+        )? {
+            PlanDecision::Incremental(plan) => plan,
+            // Planning keeps the exact published member for a canonical empty
+            // set. These tests drive prepare's own empty-patch defence too.
+            PlanDecision::Reuse(reused) if *reused == member => LiteralPlan {
+                base: Some(member.clone()),
+                context: current,
+                input: DeltaInput::Patch(delta),
+            },
+            PlanDecision::Reuse(_)
+            | PlanDecision::RebuildRequired
+            | PlanDecision::MaintenanceRequired => {
+                return Err(IndexError::BackendViolation(
+                    "empty patch did not keep the published literal member".into(),
+                ));
+            }
         };
         Ok((plan, member, objects))
     }
@@ -2250,7 +2541,9 @@ mod tests {
         let mut next_context = prior_context.clone();
         next_context.source.frontiers = MapRoot(Some(ObjectRef(Digest([0x21; 32]))));
         next_context.input.context = Digest([0x22; 32]);
-        let PlanDecision::Incremental(next_plan) = index.plan(
+        // A frontier-only patch is decided at plan time: the published
+        // Literal root is kept under the new input without prepare or I/O.
+        let PlanDecision::Reuse(rebound) = index.plan(
             BaseMember::Present(Box::new(member.clone())),
             DeltaInput::Patch(SourceDelta {
                 prior: prior_context.source,
@@ -2266,21 +2559,25 @@ mod tests {
         )?
         else {
             return Err(IndexError::BackendViolation(
-                "frontier-only patch was rejected".into(),
+                "frontier-only patch did not reuse the literal root".into(),
             ));
         };
-        let rebound = ready(index.prepare(next_plan, &mut attempt))?;
-        check_eq!(rebound.binding.artifact, member.artifact);
+        check_eq!(rebound.input, next_context.input);
         check_eq!(
-            rebound.binding.logical_commitment,
-            member.logical_commitment
+            (
+                rebound.instance,
+                rebound.format,
+                rebound.artifact,
+                rebound.logical_commitment
+            ),
+            (
+                member.instance,
+                member.format,
+                member.artifact,
+                member.logical_commitment
+            )
         );
-        check_eq!(rebound.binding.input, next_context.input);
-        check_ne!(rebound.binding, member);
-        check_eq!(
-            ready(index.verify_and_seal(rebound, &mut attempt))?.input,
-            next_context.input
-        );
+        check_ne!(rebound.input, member.input);
         check_eq!(scratch.allocations.load(Ordering::Relaxed), 0);
         check_eq!(objects.installs.load(Ordering::Relaxed), 0);
         check_eq!(maps.applies.load(Ordering::Relaxed), 0);

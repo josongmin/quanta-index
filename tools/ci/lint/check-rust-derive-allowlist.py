@@ -146,11 +146,7 @@ def main() -> int:
     if findings:
         for line in findings:
             print(line, file=sys.stderr)
-        print(
-            f"\n{len(findings)} disallowed derive(s) found. "
-            "Update the allowlist or rewrite the derive as a manual impl.",
-            file=sys.stderr,
-        )
+        print(f"\n{len(findings)} disallowed derive(s) found.", file=sys.stderr)
         return 1
 
     print("All `#[derive(...)]` sites are on the allowlist.")

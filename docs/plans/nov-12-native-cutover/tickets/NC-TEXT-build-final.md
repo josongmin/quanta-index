@@ -2,7 +2,7 @@
 
 2026-11-21 KST 갱신. 사용자가 승인한 최종 설계의 구현·인수 계획과 검증 결과다.
 
-이 패킷은 [전체 퇴역 계획](../TANTIVY-RETIREMENT.md#구조-감사와-최종-실행-계획--2026-11-15)의 Native Text 구현 순서를 구체화한다. 기존 History·Caller·Source·설치 복구·Hybrid·T/A/B/E06의 담당과 종료 조건은 변경하지 않는다. [작성·실행 경계](../README.md#레인별-착수와-인계)와 [원 수용 기준](../DOD.md)을 유지한다. 공용 TANTIVY-RETIREMENT/DOD/원장은 F가 소유하고 이 채팅은 이 전용 패킷을 갱신한다.
+이 패킷은 [전체 퇴역 계획](../../nov-20-native-cutover-closeout/tickets/LANES.md#현행-구현과-수용-순서)의 Native Text 구현 순서를 구체화한다. 기존 History·Caller·Source·설치 복구·Hybrid·T/A/B/E06의 담당과 종료 조건은 변경하지 않는다. [작성·실행 경계](../README.md#레인별-착수와-인계)와 [원 수용 기준](../DOD.md)을 유지한다. 공용 TANTIVY-RETIREMENT/DOD/원장은 F가 소유하고 이 채팅은 이 전용 패킷을 갱신한다.
 
 Main에는 multipage writer, descriptor receipt, byte-full dictionary, borrowed cold stream, prefix 조회 재사용·정확한 구간 병합과 Literal cold owner-prefix 봉인이 연결됐다. 후속 LCP·wide128 credit·Storage fixture 수리를 포함한 R44 동결본의 빌드·Clippy·전체958개 본문과 별도 leaky 관측은 아래 표에서 구분한다. 원본 corpus의 prefix-cache6,129,674B·Literal 봉인18,060,924B 감소는 각각 당시 코호트의 component 결과이며, LCP local 회귀의 비용 감소와 구분한다. 원512MiB WorkBytes·R/W/M 각100만·원 입력·단일 FULL을 유지한다. 원본 SDK·현재 Large·quiet Off 수용은 별도 범위이며 [최종 Main 재검증과 mutation RCA](#final-main-revalidation-and-mutation-rca)가 증거와 잔여를 소유한다.
 
@@ -885,94 +885,58 @@ etcd의 post-map child readback은 독립 검증이므로 RAM에 보관한 `Chec
 
 ### 2026-11-15 SDK 선행 접합 현재 입력
 
-Kernel History/Cow/request decode 13개 PASS와 이후 SearchPlane의 History replay import/unused imports/CBOR error variant compiler101·본문0은 선행 접합의 이력이다. 아래 Text7·Runtime3은 이후 별도 실제 실행에서 통과했으며, 그 결과를 전체 SearchPlane owning이나 원본 SDK 성공으로 확대하지 않는다.
+Kernel History/COW/request decode 13 PASS 뒤 SearchPlane 첫 compile은 실패(본문 0)했다. 후속 공용 wire·SourceJoin owning은 nextest `fe47aa32-26f1-4b19-a048-84bba92222e0`, command `exec-02d5588d-a73d-4879-ae68-f4b222c16d32`에서 Wire12+SourceJoin44=56 PASS/373 skip/exit0이었다. `Digest64` tuple wire의 독립 gold 수리 뒤 결과이며, 앞선 `866f4440` gold 불일치는 종결된 이력이다. Text7 첫 compile E0505는 alias를 cold arena보다 먼저 drop하도록 수정했고, production·gold는 변경하지 않았다.
 
-후속 공용 wire·SourceJoin owning은 D의 기존 Q 큐에서 nextest `fe47aa32-26f1-4b19-a048-84bba92222e0`, **Wire12 + SourceJoin44 = 56 PASS / 373 skip / exit0**으로 종료했다. 실제 command execution `exec-02d5588d-a73d-4879-ae68-f4b222c16d32`의 compile6.27s·Starting56·completed/exit0와 Root의 전체 본문 결과를 대조했다. 기존 `Digest64` tuple wire에 맞춘 독립 gold 수리 뒤 결과이며, 이전 `866f4440`의 gold 불일치는 종결된 이력이다. 명령은 같은 lane의 `./scripts/cargow nextest run --locked --offline --build-jobs 2 -p quanta-index-contract --lib --features quanta-native-identity-v1 -E 'test(native_cutover_evidence_v1::tests::) | test(native_cutover_source_join_v1::tests::)' --no-tests fail --no-fail-fast --test-threads 1`이다. 이 선행 owning PASS도 후속 Text 영향 회귀·release 후보·Caddy/etcd SDK60의 실행을 대신하지 않는다. 해당 다음 actual handle은 아직 미수신이며 worker Rust/SDK runner는 0이다.
-
-Text7의 첫 실행은 새 alias calibration test의 `drop((alias, cold))` E0505로 compiler101·본문0이었다. alias를 먼저 drop한 뒤 cold arena를 drop하도록 최소 수정했다. clone·추가 allocation·production·gold 변경은 없으며 formatter/diff-check 통과 뒤 같은 7scope를 Root에 재요청했다. 이 compile 실패를 제품 RED로 세지 않는다.
-
-SDK 원입력 read-only 재확인: 보존된 `run-original-sdk.py`가 지정한 같은 snapshot/manifest에서 Caddy 590파일·3,272,107B, etcd 1,421파일·8,666,217B의 전체 path 집합·각 파일 SHA·manifest SHA·repository commit·검색 토큰이 일치했다. Caddy manifest는 `3aae07d2535fc1f165ea9e18a597021bd1fc5d732bdbdd128055e88c78f8e937`, etcd는 `15e75db82a188dda532ac7b13ffa215e6ea7c657352c202382ced438f2478fc4`다. 입력을 수정하거나 새 manifest/runner를 만들지 않았다. 이는 SDK 입력 준비 검증이며 old `16d8d0ee` 후보를 새 NTX 후보의 수용으로 재사용할 권한이 아니다. 새 release·원 캡·같은 원입력으로 실제 SDK 게시·검색·재오픈을 실행해야 한다.
+원 SDK 입력 read-only 대조에서 Caddy590(3,272,107B, manifest `3aae07d2535fc1f165ea9e18a597021bd1fc5d732bdbdd128055e88c78f8e937`)과 etcd1421(8,666,217B, manifest `15e75db82a188dda532ac7b13ffa215e6ea7c657352c202382ced438f2478fc4`)의 전체 path·파일 SHA·manifest SHA·commit·검색 토큰이 일치했다. 이는 입력 준비 검증이며 이전 `16d8d0ee` 후보나 후속 Text/SDK60 수용 증거가 아니다. 상세 실행 경과와 원문은 [보관 인덱스](../../../ARCHIVE-INDEX.md#2026-11-23-native-supplier-and-runtime-history)를 따른다.
 
 ### NTX2A-G7 실제 GREEN
 
-Root의 `env CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=10 ./scripts/cargow --lane test-workspace-lane nextest run --locked --offline -p quanta-index-lexical --lib --no-default-features --no-tests fail -E 'test(native::text::tests::inventory_trace_tests::) | test(native::text::tests::inventory_shape_tests::)' --test-threads 1 --no-fail-fast --failure-output immediate --success-output final`은 nextest `0a7b720b-190a-441c-a3b1-bbefd2e7032c`, **7 actual bodies / 7 PASS / 529 skip / exit0**, compile26.14s·본문0.126s로 종료·실행권 반환됐다. 현재 shape SHA `75ac4cae12911c2f30e5fa66e3778118abcc70761e7fd20216bc5b8009a217e9`, production `text.rs` `ee2c6944` / `occurrence_pack.rs` `fb2eba49`를 인수한다.
+nextest `0a7b720b-190a-441c-a3b1-bbefd2e7032c`: inventory trace·shape 7 actual/7 PASS/529 skip/exit0, compile26.14s·body0.126s. shape SHA `75ac4cae12911c2f30e5fa66e3778118abcc70761e7fd20216bc5b8009a217e9`, production `text.rs` `ee2c6944`/`occurrence_pack.rs` `fb2eba49`. Work3·SQL/Empty/borrowed Alias/SQL-produced InlineAlias의 shape4, SQL provenance·고정 P/U/K·literal key/position·Off/Record 원 Work·첫 Bytes 거절·메모리 해제를 확인했다. Direct DirectoryAlias는 이 fixture 경로가 아니므로 NOT_RUN; 원 SDK60 수용도 이 실행으로 증명되지 않는다.
 
-이 범위는 Work3·SQL/Empty/borrowed Alias/SQL-produced InlineAlias의 shape4다. 특히 SQL 출력에 alias가 있어도 SQL provenance를 유지한다. 고정 P/U/K·literal key/position·Off/Record 원 Work·첫 Bytes 거절·메모리 해제를 확인했다. **Direct DirectoryAlias는 이 fixture의 선택 경로가 아니며 NOT_RUN**이다. 아래 Runtime3은 이후 VERIFIED로 전환됐고 원 SDK60 수용은 NOT_RUN이다. 원본 etcd의 실제 배타적 Work·shape 분포를 얻기 전 토큰 생산자 전면 재설계나 예산 완화를 채택하지 않는다.
-
-Runtime3의 첫 compile은 새 Catalog visitor 공용 parent export 누락으로 compiler101·본문0이었고 Root가 해당 parent를 수정했다. 다음 compile의 Text leaf 네 E0308은 concrete `Arc::clone`이 expected trait-object Arc로 역추론된 문제였다. 기존 concrete Arc를 유지하고 명시 typed local coercion으로 최소 수정했다. 새 provider/Box/wrapper·backing allocation·production·gold 변경은 없다. 현재 Runtime SHA `67b72b8247501025273888e0008d22b348f4302c2b5ece3446b594d4b3649fd0`, formatter/diff-check 통과 뒤 같은 Runtime3를 Root에 재요청했다. Root 소유 History cfgtest match 두 곳의 접합 수리는 별개다. 두 compile 실패 모두 실제 제품 RED/GREEN으로 세지 않는다.
-
-Runtime3의 세 번째 compile도 unused-result 한 건으로 compiler101·본문0이었다. fresh retry 뒤 확인한 member artifact를 보존하고 fixture를 다시 열어 current published view·membership artifact의 동일성으로 반환값을 소비했다. clone·새 API·production·gold·한도 변경은 없다. 모든 membership 호출 반환 사용을 재대조했고 formatter/diff-check 통과 후 현재 SHA `67b72b8247501025273888e0008d22b348f4302c2b5ece3446b594d4b3649fd0`로 같은 3scope를 요청했다. 기존 nextest PID32495·cargo32958·rustc37509는 terminal 이후 사라진 것을 확인했으며 observation timeout만으로 재시작하지 않았다.
+후속 Runtime3 compile의 parent export 누락, leaf `Arc::clone` E0308, fixture unused-result는 모두 compiler101·본문0 이력이었다. concrete Arc의 명시 coercion, 반환된 member artifact와 published view의 대조로 수정했다. provider·allocation·production·gold·한도는 변경하지 않았다.
 
 ### 실행권 인수
 
-Root가 usageLimited였을 때 기존 검증 실행권을 D에 넘겼고 Runtime3 Q 실행 요청도 그 인계에 포함됐다. Source의 `compile-activity-admission.lock`과 QIndex `scripts/cargow`의 `resource-admission/build-test.lock`은 별개라는 RCA는 Root가 인수했다. Runtime3은 아래 실제 run에서 종료했다. 현재 동결 fixture는 `67b72b8247501025273888e0008d22b348f4302c2b5ece3446b594d4b3649fd0`이며 production SHA는 아래 GREEN의 4파일과 같다. 후속 owning·release·SDK 실행권은 D에 있고 명시 반환 전 Text worker Rust/SDK runner는 0이다. Root/D의 대화·대기 의도는 live job이나 본문 성공의 증거가 아니다. actual PID/session/terminal을 받은 뒤만 실행 상태와 결과를 판정한다. Source supplier 종료·lock 우회·새 실행 레인을 만들지 않는다.
+Root Q 실행권은 D가 인수해 아래 실제 실행을 마쳤다. Source `compile-activity-admission.lock`과 QIndex `resource-admission/build-test.lock`은 별개다. 동결 fixture `67b72b8247501025273888e0008d22b348f4302c2b5ece3446b594d4b3649fd0`; worker 대기나 대화만으로 live job·본문 성공을 주장하지 않는다.
 
 ### Runtime 첫 실제 행동 실패와 단계 RCA
 
-D owning nextest `bfc8e6ad-3d9f-4430-8e61-9613d3139674`은 compile0.77s 성공 뒤 실제 `dense_text_post_confirm_error_preserves_current_and_fresh_retry` 1건이 1.025s·`Error: Conflict`로 실패했고 failfast 때문에 나머지 4건은 NOT_RUN이었다. namespace가 선택한 5개는 business 3 + 공유 SQL profiler helper 2이며 source 변경이나 추가 business testcase가 아니다.
-
-Catalog/RFC의 현재 계약상 Unknown op2는 Pending SourceEvent claim을 유지하고 동일 event의 새 op3는 Conflict를 반환한다. 같은 op2를 다시 submit하는 것도 재실행이 아니며, canonical recovery는 `kernel.resume(op2)`가 새 fence에서 원 immutable request를 재실행하는 경로다. 원 stderr만으로 실패 위치를 단정하지 않기 위해 fault fixture의 initial open/configure/request/submit/reopen/retry에 phase label만 추가했다. 현 SHA `67b72b8247501025273888e0008d22b348f4302c2b5ece3446b594d4b3649fd0`, formatter/diff-check 통과다. 기대값·예산·공급자·production은 유지했다. D의 같은 Q 실행권에서 failfast 없이 현재 5개 또는 exact 실패1의 재실행을 요청했다. retry 단계임이 확인되면 fixture의 잘못된 op3 API 사용을 canonical resume으로 변경하되 full publish/9owner membership/reopen 동일성은 그대로 증명해야 한다. Conflict 자체를 성공으로 바꾸지 않는다.
-
-복구 전제 소스 대조: native `claim_recovery`는 Pending·현재 epoch 일치를 검사하고 즉시 새 fence를 발급하며 별도 lease 만료 대기가 없다. KernelServices의 read lease는 operation recovery gate가 아니다. 이 fixture의 이전 동기 실행 반환·소유자 drop·같은 exclusive root lease 재획득 뒤 `resume(op2)`가 합법이고, 이전 fence의 늦은 쓰기는 FenceLost다. Catalog 재오픈을 OS 프로세스 재시작 증거로 승격하지 않는다. 실제 Conflict의 phase를 확인하기 전에는 생산 코드 결함이나 fixture 오류를 최종 확정하지 않는다.
+D nextest `bfc8e6ad-3d9f-4430-8e61-9613d3139674`: compile PASS 뒤 F2 actual 1 FAIL(1.025s, `Error: Conflict`), failfast로 나머지 4 NOT_RUN. 선택된 5개는 business3+공유 SQL profiler helper2다. Unknown op2는 Pending SourceEvent claim을 유지하므로 새 op3와 충돌한다. 같은 op2 재submit도 재실행이 아니며 canonical recovery는 `kernel.resume(op2)`가 새 fence에서 원 immutable request를 재실행하는 경로다. `claim_recovery`에는 별도 lease 만료 대기가 없고 이전 fence의 늦은 쓰기는 FenceLost다. Catalog 재오픈은 OS 프로세스 재시작 증거가 아니다.
 
 ### Runtime phase 확정과 canonical recovery 수리
 
-D diagnostic exact1 nextest `f5353ad3-13cc-4128-8eec-357fe6e3be4a`은 compile2m02s PASS 후 actual body1 FAIL·1.780s·640skip·exit100으로 종료했고 stderr는 `fault retry submit: incremental precondition conflict`였다. 따라서 Unknown 원 작업의 Pending event claim을 둔 채 새 op3를 제출한 fixture의 API 사용 오류로 원인을 확정했다.
-
-원 fixture 하나에서 새 request/event 재작성 대신 `kernel.resume(op2)`가 새 fence로 original immutable request를 재실행하도록 수정했다. 이름은 `dense_text_post_confirm_error_preserves_current_and_resumes_original_operation`로 정정했고 복제 testcase를 만들지 않았다. Unknown·dense1call/COMMIT2·old current/empty/reopen·정상 full publish·9owner membership·재개 게시 뒤 다시 reopen artifact 동일성은 모두 유지했다. Conflict를 전체 성공 기대값으로 바꾸지 않았고 엔진·버짓·한도·공급자는 변경하지 않았다. 현 SHA `67b72b8247501025273888e0008d22b348f4302c2b5ece3446b594d4b3649fd0`, formatter/diff-check 통과다. D가 인수한 같은 Root Q 큐에 `test(/^native::dense_install_tests::dense_text_/) --no-fail-fast`의 primary3 재실행을 요청했다. 이 regex는 shared SQL profiler helper2를 제외한다. 당시 수리 후 실행 대기였고, 아래 run에서 세 본문 모두 통과했다.
+진단 nextest `f5353ad3-13cc-4128-8eec-357fe6e3be4a`: compile2m02s PASS, actual1 FAIL/1.780s/640 skip/exit100; stderr `fault retry submit: incremental precondition conflict`. 실패 단계는 원 Pending event 뒤 새 op3를 제출한 fixture의 API 오류로 확정됐다. 해당 fixture 하나를 `kernel.resume(op2)`로 수정해 original immutable request를 재실행했다. Unknown·dense1call/COMMIT2·old current/empty/reopen·full publish·9owner membership·재오픈 artifact 동일성 계약을 유지했고 엔진·budget·한도는 변경하지 않았다.
 
 ### NTX1a Runtime3 실제 GREEN
 
-D의 기존 Root Q 큐에서 아래 명령은 nextest `8ee85ee8-371d-405e-98ff-aef809179e83`, compile2m03s·**actual3 / PASS3 / 638skip / body6.024s / exit0**으로 종료했다. `resource-admission/build-test.lock` 반환을 확인했다. frozen fixture `67b72b82`, production write `13045e24` / wire `9c27d9b3` / text `ee2c6944` / occurrence pack `fb2eba49`가 그대로다.
+기존 Q 큐 nextest `8ee85ee8-371d-405e-98ff-aef809179e83`: `./scripts/cargow nextest run --locked --offline --build-jobs 2 -p quanta-index-searchd-runtime --lib --no-default-features -E 'test(/^native::dense_install_tests::dense_text_/)' --no-tests fail --no-fail-fast --test-threads 1`; compile2m03s, actual3/3 PASS/638 skip/body6.024s/exit0. fixture `67b72b82`, production write `13045e24`/wire `9c27d9b3`/text `ee2c6944`/occurrence pack `fb2eba49`.
 
-```sh
-QUANTA_INDEX_BUILD_LANE=test-workspace-lane QUANTA_INDEX_RESOURCE_WAIT_SECONDS=10 \
-./scripts/cargow nextest run --locked --offline --build-jobs 2 \
-  -p quanta-index-searchd-runtime --lib --no-default-features \
-  -E 'test(/^native::dense_install_tests::dense_text_/)' \
-  --no-tests fail --no-fail-fast --test-threads 1
-```
+- G1 2.420s: Original whole-window leaf+directory 1batch/2COMMIT 대 unsupported fallback 2batch/4COMMIT; 고정 DF/TF/positions·artifact·reopen.
+- F2 1.380s: post-confirm Unknown에서 old published root·reopen 유지, `resume(op2)` full publish·9owner membership·다시 reopen.
+- A1 2.222s: 8MiB credit에서 optional admission miss 뒤 정상 경로 성공; first denial 없음, 동일 artifact·query·reopen.
 
-- G1 PASS2.420s: 실제 승인 Original의 whole-window leaf+directory 설치 1batch/2COMMIT 대 미지원 fallback 2batch/4COMMIT, fixed DF/TF/positions·artifact·재오픈 동일성.
-- F2 PASS1.380s: confirm 뒤 오류에서 Unknown과 기존 공개 root 유지·재오픈, 원 작업 `resume(op2)`의 full publish·9owner membership·다시 재오픈.
-- A1 PASS2.222s: 실제 8MiB credit에서 optional admission miss 후 기존 경로 성공, first denial 없음·fast와 같은 artifact/조회/재오픈.
-
-이 결과는 production coalescer와 복구·입장의 집중 검증이다. 실제 Caddy·etcd SDK60 수용, 모든 source의 Direct 분기, 새 dense artifact의 실제 GC fault 조합을 뜻하지 않는다. Root에 영향 owning·기존 child-first/GC/barrier·UDS rank/reopen 후 같은 source/Cargo 후보 release와 원본 SDK를 이어 달라고 요청했다. Text worker Rust/SDK runner는 계속 0이다.
-
+이 집중 검증은 원 Caddy/etcd SDK60, Direct 전 source 분기, GC fault 조합을 증명하지 않는다. 상세 회복·실행 이력은 [ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md#native-lexical-replay-and-cold-build-evidence)에 보관한다.
 
 ### 현재 Descriptor 후보 source capture
 
-`/private/tmp/qidx-sdk60-directory.383jci/source-before.json`은 HEAD `ade5fadc1a084fbb81eba831861e996081d80867`의 dirty workspace build inputs 2,789개를 결속한다. 기존 실패 후보를 덮어쓰지 않았다. source freeze는 오너에게 알렸으며, before/after 비교 일치를 실제 확인한 경우에만 후보 수용에 쓴다.
+후보 `/private/tmp/qidx-sdk60-directory.383jci`는 HEAD `ade5fadc1a084fbb81eba831861e996081d80867`의 build 입력 2,789개를 before/after로 결속했다. 보강 Runtime nextest `cc25ca9c-ed2f-427c-8fdf-6b0096c81c7f`는 12/12 PASS/639 skip/exit0(본문15.873s): 서로 다른 raw body의 Directory two-window에서 occurrence block2를 한 번 설치하고 64MiB/8MiB 동일 artifact·DF2·독립 positions·reopen을 검증했다. Native-only Runtime tree와 Tantivy package 차단 검사는 exit0이었다.
 
-보강 Runtime `cc25ca9c-ed2f-427c-8fdf-6b0096c81c7f`: **12/12 PASS /639 skip /exit0**, queue157.84s·compile28.56s·본문15.873s. Directory fixture는 서로 다른 raw 공백/개행 body, inventory batch1로 whole-body inventory reuse를 배제했다. 두 window에서 동일 occurrence block2를 한 번만 설치하고 64MiB/8MiB 모두 같은 artifact·DF2·독립 positions·reopen을 검증했다. 명령은 같은 Runtime12 selector와 `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=600`이며 SDK/product caps 변경은 없다.
-
-
-새 후보 Native-only `cargow tree -p quanta-index-searchd-runtime --no-default-features --locked --offline --edges normal,build --prefix none`와 Tantivy package 차단 검사는 exit0이다. 같은 Q lane/jobs2/운영 대기600에서 daemon release를 빌드 중이다. queue157.80s 뒤 입장했고, 입장 시 캡처2,789개 파일의 현재 drift0을 확인했다. `cargo-metadata.json`의 canonical target_directory에서 결과를 복사하고 source-after-daemon 비교를 통과한 경우만 기존 helper 재빌드/SDK로 진행한다. 현재 binary/pair/SDK 성공으로 판정하지 않는다.
-
-
-daemon release는 compile2m50s·exit0으로 종료했고 `/private/tmp/qidx-sdk60-directory.383jci/quanta-index-searchd`에 chmod0500으로 복사했다. SHA256 `98d6ef5292b1f5745b0ef11e0fabd50462130ee58e4dd9d446760aee257661fb`·14,614,976B다. source-before/after-daemon은 HEAD와2,789개 입력이 모두 같았다. 현재 기존 `native_corpus`를 별도 rebuild 중이며 pair closure 전 SDK는 NOT_RUN이다. helper의 Legacy/Native 혼합 의존성을 daemon의 Native-only/Tantivy-free 그래프와 혼동하지 않는다.
-
-
-helper release는 compile5m10s·exit0으로 종료했다. 기존 `native_corpus`의 새 SHA256은 `807af561449566de636b134a277f20a5e2a41ff8b8992855edaa0801121ea616`·2,890,976B다. `source-after-helper.json`은 HEAD와2,789개 입력이 before와 모두 동일해 pair closure를 통과했다. `pair-binding.json` 및 Off1/Off2/Record1의 동일 daemon 복사본을 준비했고 원 runner의 quiet Off1 입장을 시작했다. 이 시점 SDK 본문 수용은 아직 미판정이다.
-
-
-Off1은 원 quiet preflight에서 foreign rustc1·load26.576172>8로 exit1·SDK 본문0 **BLOCKED**였다. `ALLOW_CONTENDED`를 설정하지 않았고 같은 상태의 Off2를 반복하지 않았다. pre-SDK source closure도2,789개 모두 일치했다. 원 budget의 Record를 동일 Q mutex에서 별도로 실행한다. Record 시간은 quiet 성능 수용으로 사용하지 않는다.
-
+동일 source closure의 daemon release SHA256 `98d6ef5292b1f5745b0ef11e0fabd50462130ee58e4dd9d446760aee257661fb`, 기존 `native_corpus` helper release SHA256 `807af561449566de636b134a277f20a5e2a41ff8b8992855edaa0801121ea616`을 pair로 고정했다. helper의 Legacy/Native 혼합 의존성은 daemon의 Native-only/Tantivy-free 그래프와 별개다. quiet Off1은 foreign rustc1·load26.576172>8로 본문0 BLOCKED; `ALLOW_CONTENDED` 없이 Off2를 반복하지 않았다. Record는 같은 원 budget·Q mutex에서 진단으로만 실행했고 quiet 성능 수용으로 세지 않았다.
 
 ### Descriptor 후보 원 SDK 실제 실패와 다음 경계
 
-새 /private/tmp/qidx-sdk60-directory.383jci의 Record는 **Caddy54.63s·etcd33.60s, 둘 다 ResourceLimited·ACK0·query/reopen 미도달 FAILED**다. source/daemon/helper/원 corpus/원 caps는 위 pair로 결속됐다. Off1은 foreign rustc1·load26.576172>8에서 본문0 BLOCKED였고 Off2·Large는 실행하지 않았다. 실패 후보를 그대로 반복하지 않는다.
+이 pair의 Record는 Caddy54.63s·etcd33.60s, 둘 다 ResourceLimited/ACK0/query·reopen 미도달 **FAILED**다. Off1은 위 사유로 BLOCKED, Off2·Large는 NOT_RUN. 원 캡을 완화하거나 진단 완료를 SDK60 수용으로 바꾸지 않는다.
 
-| 원본 | 새 첫 거절 | 상태 |
+| 원본 | 새 첫 거절 | 결과 |
 | --- | --- | --- |
-| Caddy590 | reads999729+275>1000000, managed_install.rs108; bytes499758302/W523919/M658407; memory denial 없음 | COMPLETE_DIAGNOSTIC·health[]·open request0·ACK0 |
-| etcd1421 | bytes536870900+28>536870912, cold_tokens.rs398; R491784/W460564/M689731; memory denial 없음 | COMPLETE_DIAGNOSTIC·health[]·open request0·ACK0 |
+| Caddy590 | reads 999729+275>1000000, `managed_install.rs:108`; bytes499758302/W523919/M658407; memory denial 없음 | COMPLETE_DIAGNOSTIC·health[]·open request0·ACK0 |
+| etcd1421 | bytes536870900+28>536870912, `cold_tokens.rs:398`; R491784/W460564/M689731; memory denial 없음 | COMPLETE_DIAGNOSTIC·health[]·open request0·ACK0 |
 
-post-Record의 전체 workspace 비교는 두 무관한 integration test(native_product_process/ann_regions.rs, native_index_uds/read_sessions/query/hybrid.rs) 변경 때문에 false다. selected release --bin 빌드에는 두 test target이 포함되지 않고 runtime/src·harness/src에서도 include하지 않는다. 나머지2787개 입력 및 HEAD·동결 binary digests는 동일하며 record-source-binding.json에 구분했다. 전체 workspace 불변이라고 주장하지 않는다.
+post-Record 전체 workspace 비교는 무관한 integration test 두 파일 변경으로 불일치했다. selected release bin의 입력이 아닌 해당 두 파일을 제외한 2,787개 입력·HEAD·동결 binary digest는 같으며 `record-source-binding.json`에 구분했다. 전체 workspace 불변 주장은 하지 않는다.
 
-Caddy의 공통 첫329 posting pages를 대조하면 lane37의 R207662/W73258/B86813378와 dense reserve293calls/4306objects가 동일하다. Small lane39는 R525787→292336(-233451), physical wrapper inputs5471→325였다. 새 실행은 이 절감으로452번째 page까지 진행했지만 다시 읽기 한도에서 거절됐다. 이를 전체 읽기756k가 비슷하다는 이유로 퇴행이라 하지 않으며, ACK0을590source 커밋으로 승격하지 않는다. 현재 Small Draft는64-term SQL page마다 flush돼 cross-page child dictionary 재사용이 없다. 다만 trace에는 인접 block child 중복·남은 총 page 수가 없어 NTX1b가 원 한도를 해결한다고 확정하지 않는다. 다음 채택에는 실제 block headroom/child overlap와 전체 term count가 필요하다.
+Caddy 공통 첫329 posting pages에서 lane37의 R207662/W73258/B86813378와 dense reserve293calls/4306objects는 동일했다. Small lane39 R525787→292336(-233451), wrapper inputs5471→325로 줄어 452번째 page까지 진행했으나 read cap을 넘었다. 현재 Small Draft는 64-term SQL page마다 flush돼 cross-page child dictionary 재사용이 없다. 인접 child 중복·남은 전체 page 수는 trace에 없어 NTX1b 완주를 예측할 수 없다.
 
-etcd의 완료된 prepare metric은704→785 owner(Alias569/Direct216/SQL0), P1118628/U367668/Kall8859762/Kuniq4458175다. map lane40/전체 map_apply3 비용은 이전보다12162098B 줄었지만, 추가81owner 준비가11927193B를 소비했다. diff는606회/124196392B로 동일한 prefix여서 후속 backlog가 남았다. NTX2B 후보 경계는 canonical census→ColdTokens fill/sort/group이지만 Kall−Kuniq4401587B나 마지막28B 거절을 전체 Work 절감·완주 예측으로 바꾸지 않는다. 원 logical edit·seal/EOF fees는 유지한다.
+etcd prepare는 owner704→785(Alias569/Direct216/SQL0), P1118628/U367668/Kall8859762/Kuniq4458175. map_apply3 비용은 12,162,098B 줄었지만 추가81owner 준비에 11,927,193B가 들었고 diff606회/124,196,392B prefix 뒤 backlog가 남았다. NTX2B의 canonical census→ColdTokens fill/sort/group은 후보 경계다. Kall−Kuniq4,401,587B나 마지막28B 거절은 전체 Work 절감·완주 증거가 아니다. 원 logical edit·seal/EOF fees는 유지한다. 후속 SDK60·Large와 R34 최종 상태는 이 ticket의 최신 수용 구간을 따른다.
 
 ### 2026-11-16 confirmed cold Dense page 재사용
 
@@ -1073,21 +1037,7 @@ The changed-dependency retry also exited101/body0: RepoMap FundedPayload.memory 
 
 ### Historical compact-cursor closeout verification, 2026-11-16
 
-The preceding blocked audit is historical: both compiler sites are now corrected by the existing RepoMap owner. The current user's resumed request was evaluated against live source. Small/Dense producer, receipt validation, reader and final publication are connected; no additional Text correctness defect was found in the focused static review. No new production patch, engine or port was invented for this turn.
-
-```sh
-env CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=600 ./scripts/cargow --lane test-workspace-lane nextest run -p quanta-index-lexical -p quanta-index-searchd-runtime --lib --no-default-features --locked --offline -E 'test(native::text::) | test(native::text_spool::) | test(native::text_occurrence::) | test(native::literal) | test(native::dense_install_tests::)' --test-threads 1 --no-tests fail --no-fail-fast --status-level fail --final-status-level fail
-```
-
-VERIFIED: run `c2c3d5e8-b512-4a59-a982-ca9036ed978f`, 425 executed/425 PASS/738 filtered/exit0, admission317.310s/compile2m25s/body68.860s. This is Lexical410 and Runtime15 on dirty HEAD `ade5fadc1a084fbb81eba831861e996081d80867`, with the three Text-owned source hashes in the current section unchanged before/after. Runtime includes 129/300-term fixed block counts, 64/8MiB Original scopes, complete membership/position oracles, first- and second-block post-confirm failure with same-operation resume, Dense cross-page reuse, and fresh reopen. Formatting and scoped whitespace checks exited0.
-
-F's current integration run `16c936f8-7f9e-4b90-9762-4769cc84ee3a` is consumed as10/10 PASS across4 binaries/158 filtered/exit0, not rewritten as the older exact7 selection. Its actual selectors cover FileMap/Source transitions, Small old pins/reopen, occurrence paths, fixed UDS BM25 and the process Text policy contract. Native Runtime+Harness normal/build/dev tree has zero Tantivy packages; full workspace retirement remains F's scope.
-
-The already-running combined no-default release under F's existing queue was reused rather than duplicated. Its first release session80090 exited0 after456s compilation; the final same-command cache validation session77274 exited0 in1.46s. The first release PID71229 is terminal. Before admission, three ANN-owned inputs changed; the final binding therefore uses `source-before-cache-check.json` and `source-after-build.json`, not the earlier snapshot. Those2799 inputs and HEAD also match `source-after-sdk.json`. The Native tree result has zero Tantivy packages. Daemon SHA256 is `652ffa299d5747c511c0d38cad8cfdaae419e2623dfe8ad1110ce1271a50352c`, helper is `a3eecb0abadbf7b3e747d1566b0e84c3468fcc86daa6dc5b6c4548b4d82f1cc4`; both local files were independently rehashed. This proves dirty-source candidate binding, not signed installed qualification or an independent ANN handoff.
-
-**Historical compact-cursor SDK result: FAILED.** F's existing resource-admitted Record controller PID9037 terminated after both corpora. Caddy590/3272107B and etcd1421/8666217B both refused ResourceLimited/FULL ACK0, so query/reopen was not reached. Exact denials are in the current section. Both saved traces have matching hashes, COMPLETE_DIAGNOSTIC, health[] and open_requests0. `sdk-results-summary.json` records original file30000/Work536870912B/R-W-M1000000/SDK60, unchanged source, diagnostic Record times32.56s/21.67s, and current Off BLOCKED at load31.640137>8/body0. Diagnostic times are not quiet performance acceptance.
-
-**Remaining work classification:** Small/Directory/Dense code, their production wiring and the current owning regression are VERIFIED at their stated scope. Product SDK resource acceptance is FAILED; quiet SDK60 is BLOCKED, not passed. The next Text code change requires a measured, actual work elimination with the existing logical-edit fees and EOF/CAS/independent seal/readback intact. The current etcd refusal at packed_runs.rs213 is the original logical-edit admission, not a packet-copy operation. Latest complete trace parent-chain analysis gives posting-edit lane33 exclusive91263484B and inventory prepare lane46 exclusive57615227B across861 completed owners. Direct239 failed alias-probe work has only a loose upper bound7451156B, not a demonstrated saving; block_shape itself charges zero bytes. This evidence does not justify a fee discount or an unconditional new producer/prepared API. No unchanged SDK retry or speculative production patch was submitted.
+The frozen candidate passed **425/425** (Lexical410 and Runtime15) and **F integration 10/10**. Original Caddy and etcd Record runs were **FAILED** at ACK zero with `ResourceLimited`. Quiet Off was **BLOCKED** in preflight with zero bodies. Run IDs and scope are in the [Text ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md#native-lexical-replay-and-cold-build-evidence). The [archive index](../../../ARCHIVE-INDEX.md#2026-11-23-native-cohort-and-proof-history) locates the full custody and cost evidence, including the etcd logical-edit refusal and the measured posting-edit and inventory-prepare costs that informed subsequent candidates below.
 
 ### T-PREPASS-COUNT-DATA: authenticated cardinality DATA reuse
 
@@ -1107,83 +1057,47 @@ T-PREPASS-FINAL-1 supersedes the preceding source-ready: fund the source token f
 
 ### T-PREPASS-FINAL-1 regression and bound candidate
 
-VERIFIED: final owning command is the existing `test-workspace-lane` combined Lexical/Runtime lib rail:
-
-```sh
-env CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=600 ./scripts/cargow --lane test-workspace-lane nextest run -p quanta-index-lexical -p quanta-index-searchd-runtime --lib --no-default-features --locked --offline -E 'test(native::text::) | test(native::text_spool::) | test(native::text_occurrence::) | test(native::literal) | test(native::dense_install_tests::)' --test-threads 1 --no-tests fail --no-fail-fast --status-level fail --final-status-level fail
-```
-
-Run `4f9e0f40-8f95-4ad6-a31f-21cd66e43852`:437 executed/437 PASS/738 filtered/exit0, compile5m12s/body110.156s. The preceding focused repair `3abb4149-8b3c-4bf1-aac9-d37c4635a83b` passed19/19, and new-feature run `7b77ced8-474e-4231-94ef-a18328c5ee36` passed18/18. Scoped formatting and whitespace checks exit0. Final source hashes: text.rs `be6fa449c6817250c8279f69e662e09f6819329f6f66f24112891326b98df0e4`, cold_tokens.rs `46fb4292d58ccb02c8d771f0d087b403a7e61734c5c358313108806edfb4ea38`, packed_runs.rs `1696cba0ecdd4c4b51c79f51013b6bad286968f83e3d52ebf29023a2fa9c6a4e`, posting_case_pages.rs `3fdd08d8b2f50ebb30762411a14ec134a23d56cb315c2921cd6b13f5a3ac5cc9`.
-
-Measured intermediate original SDK DATA (compact-cursor versus map-census, not final qualification): Caddy census589 spans/8,353,147B→0; etcd861 spans/15,357,748B→0. Completed-owner count, nine aggregate inventory-shape counters and fill/prepare byte totals agree, with no new SQL fallback. Caddy successful shapes589=Alias384+Direct204+Empty1; etcd861=Alias622+Direct239. The native_text_inventory_prepare/34 inclusive bytes decrease exactly by the eliminated native_text_inventory_prepare/43 census bytes. The separate build_prepare/43 is RepoMap verify_and_seal and is unchanged. This establishes actual removed traversal; it does not certify per-owner identity or final full ACK. Caddy intermediate deadline cancellation and etcd refusal remain failed SDK bodies. The cardinality sidecar additionally avoids the packet reread while preserving logical reads and charging its new integrity seal; the original append logical edit fee is unchanged.
+The then-current Lexical/Runtime owning run `4f9e0f40-8f95-4ad6-a31f-21cd66e43852` passed 437/437; focused runs `3abb4149-8b3c-4bf1-aac9-d37c4635a83b` and `7b77ced8-474e-4231-94ef-a18328c5ee36` passed 19/19 and 18/18. The authenticated census removed measured Caddy 8,353,147B and etcd 15,357,748B of repeated inventory traversal, preserving logical read/edit fees. This was intermediate proof, not original SDK ACK. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Original final-copy SDK and next owning boundary
 
-FAILED: existing original `run-original-sdk.py` ran both corpora with immutable daemon `a00a3d738876a3867e266835781226adc9bfbcb1e67bdfa7a34363f8712732f8` and helper `3b1a819a27b50931af0db2f17fd2e0fddf30cd475ae7968979cd7521b67d06b7`, unchanged Work536870912B/R-W-M1000000/files30000/SDK60. Caddy usage R828013/W479737/B536870700/M639214 +298B map bootstrap-frame denial. Etcd usage R317834/W479594/B536860274/M699544 +17847B original posting logical-edit denial. Both trace ingests COMPLETE_DIAGNOSTIC, health[], open_requests0 and exact trace hashes; full publication failed, query/reopen NOT_RUN. Off is BLOCKED at27.909668>8.0/body0. Candidate paths include `pair-binding.json`, `input-binding.json`, `sdk-results-summary.json` and complete per-corpus traces outside checkout.
-
-Read-only producer→append→packet review found no justified fee-removal patch: `PostingTermKey::copy` is a real memory copy but WorkBytes0; append's first loop preserves logical edit admission before effects; owner/ref packet dictionaries and ordered packet fastpath already exist. Unordered packet recopy is a real possible cost, but current trace has no unordered count/bytes and does not establish a net saving. Storage map bootstrap and earlier Source/FileMap work remain the existing owners' boundaries. Do not introduce a new engine/fee discount or rerun an unchanged failed SDK candidate.
+Original Caddy/etcd Record on daemon `a00a3d738876a3867e266835781226adc9bfbcb1e67bdfa7a34363f8712732f8` and helper `3b1a819a27b50931af0db2f17fd2e0fddf30cd475ae7968979cd7521b67d06b7` failed at fixed 512MiB/R-W-M1m/files30k/SDK60: Caddy B536870700+298 at map bootstrap, etcd B536860274+17847 at original posting edit. Both ACK0/query/reopen not reached; Off blocked. Actual fee removal was unjustified. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### T-PAIRED-EOF-EPOCH
 
-The independently added regression initially hit compiler101/body0 due to three unused atomic fetch results. Only explicit result bindings were added to that test leaf. Actual behavioral RED `57b54883-d986-42b3-991f-5868b3dcf975` then executed2:1 PASS/1 FAIL/561 filtered/exit100, compile50.34s/body0.025s. `paired_eof_rejects_stale_sql_even_when_packet_payload_is_unchanged` accepted empty EOF after a same-payload SQL UPDATE; the valid Top-write/no-Work/no-allocation oracle passed. Root cause: both CaseCursor eof flags bypass refill, and PostingCasePages::next checked poison but not the sealed source epoch. The minimal owning fix calls existing `check_page_source` before output allocation on every next; it charges no new Work and allocates nothing. No digest/CAS/EOF validation is removed. VERIFIED: full TextSpool owning regression `72852bce-92a0-4a68-87f3-c9c04d60320c` executed86/PASS86/477 filtered/exit0, compile31.03s/body13.325s. Both new EOF oracles pass; scoped formatting/whitespace checks exit0. This is a narrow final-fix result, not a fresh combined439 pass or original SDK qualification.
-
-**Concrete remaining SDK boundary:** final-copy Caddy FULL reaches the155th MapApply batch:26,893 inline values/26,893 child refs/1,549,252 input wire bytes. This failed MapApply consumes60,689,805B while previous154 successful map applies total5,854,066B. Terminal at existing charge_bootstrap_frame. Review sorted bootstrap frame lifetime/copy before proposing a Storage hunk; existing Storage owner retains this boundary. Etcd FULL is before postings: inventory prepare865 spans, diff780; original logical edit admission refuses at packed_runs.rs318. Text census saving is real, but no trace-based net saving from a new packed-writer algorithm has been established. Inclusive/overlapping child Work is not summed or subtracted into fictitious exclusive costs. Exact selector names matter: native_text_inventory_prepare/43 census is removed; build_prepare/43 RepoMap verify_and_seal is unchanged.
+Unchanged-payload SQL epoch after EOF was behavioral RED `57b54883-d986-42b3-991f-5868b3dcf975`. The existing source check before allocation on every next repaired stale EOF acceptance; `72852bce-92a0-4a68-87f3-c9c04d60320c` passed 86/86 without new Work or changed CAS/EOF semantics. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Final EOF release dependency, source-ready required
 
-The same existing no-default optimized daemon+helper command was attempted after the EOF guard, candidate `/private/tmp/qidx-sdk60-text-copy-ym3jb7a9/eof-guard`. Build FAILED compiler101/body0 after24.756s, not a Native SDK body. During the interval the existing Storage owner changed map.rs/diff.rs/node_wire.rs/original_lookup.rs/value_codec.rs and added map/retained_value.rs. Its pub(super) RetainedMapValue::Many exposes private ManyChildren (`retained_value.rs:25`, definition:11), rejected by deny(private_interfaces). Text does not overwrite that owner's production hunk or loosen the warning gate. The new snapshot contains2802 inputs; preserve failed release log/result outside checkout. Final EOF SDK is BLOCKED by this source dependency; once corrected, recapture the exact admitted source and run the same release/SDK chain. Do not repeat this unchanged compiler failure or promote the earlier paired-cursor binary to the guard revision. Current goal remains active; the SDK resource failures are unresolved.
-
-The Storage owner corrected ManyChildren to pub(super); Text did not edit that production file. The specific compiler cause changed, so release r2 was admitted with a fresh2802-input before snapshot and the same canonical command. No production input drift was observed at the subsequent read-only check. This supersedes the preceding source-ready blocker without deleting the failed attempt; final SDK remains NOT_RUN until the new pair is bound.
+An initial optimized release failed compiler101/body0 on concurrent Storage `ManyChildren` visibility. Its owner corrected that dependency; no Native SDK body ran for the failed pair. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Final guard pair bound; original SDK in flight
 
-VERIFIED build scope only: release r2 exit0/114.572s, before/after2802-input set/hash and HEAD equal, no compiler-error bypass. New immutable daemon `/private/tmp/qidx-sdk60-text-copy-ym3jb7a9/eof-guard/quanta-index-searchd`:14,648,832B/SHA256 `c394552525b0051e3aa3de3c3a492f882ef1f9147e0e0628419f935d399a1f1b`; helper2,890,928B/SHA256 `3b1a819a27b50931af0db2f17fd2e0fddf30cd475ae7968979cd7521b67d06b7`. This pair includes the existing Storage owner's compact retained-value work in addition to Text EOF guard. Do not attribute a new SDK prefix delta entirely to Text. Static review found no logical tariff/cap deletion: bootstrap frame/backing still charges actual size and live copied bytes, multi-child Arc has Original backing, public full-width materialization is charged. Storage runtime/unit qualification is not established by this static review.
-
-Original Off preflight on the new pair is BLOCKED at load27.558594>8/body0/exit1, no override. Original Record was then admitted and runs both corpora using the same unchanged runner/helper/inputs/caps; results pending. Build compilation is not product SDK acceptance.
+The corrected release built on a stable 2,802-input capture: daemon SHA256 `c394552525b0051e3aa3de3c3a492f882ef1f9147e0e0628419f935d399a1f1b`, helper SHA256 `3b1a819a27b50931af0db2f17fd2e0fddf30cd475ae7968979cd7521b67d06b7`. Off preflight was blocked; build success alone did not qualify SDK. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Final guard original SDK terminal result
 
-FAILED: original runner Record exited1 after both real bodies and returned the shared mutex. Caddy37.55s terminal R874650/W488784/B536848780/M652038 plus38312B at Catalog managed_install.rs108. It completed all155 MapApply calls; the previous copy candidate's155th map apply had failed. Etcd20.87s terminal R317894/W485357/B536770775/M699544 plus139551B at packed_runs.rs835;790 owner diffs completed versus779 in the preceding candidate. Both FULL ACK0; query/reopen NOT_RUN. Both diagnostic ingests COMPLETE_DIAGNOSTIC/health[]/open_requests0, with exact saved trace SHA verified. Immutable binaries and diagnostic input hashes stayed fixed. Original input manifests/all files/commit/query tokens were rechecked after execution.
-
-Correction: etcd835 is sort_work admission before sort and measured_copy864, not an executed second-copy charge. Removing only the second copy leaves that refused charge. No packet-level counters establish how much prior unordered recopy could be saved. Offset-index migration would require writer/reader/seek/merge/digest/fence/bijection validation changes, Original-funded bounds and measured index/SQL/read amplification. It remains conditional, not adopted or mandatory scope. No fee/cap discount or unverified packet codec was written.
-
-The final SDK after snapshot has2802 inputs but seven Storage-owned paths differ from source-before-build-r2; `sdk-results-summary.json` explicitly records source_inputs_unchanged=false and every path. Exact source before/after build matched, so immutable candidate execution remains observable, but it is not current-source acceptance. Those owner edits are preserved; Text does not overwrite or repeatedly rebuild an actively changing dependency. Current Text source/tests remain ready at their stated scopes; full-product512MiB/quiet60 acceptance remains failed/blocked, not complete.
+Both original Records failed FULL ACK0. Caddy B536848780+38312 at `managed_install.rs:108` after all 155 MapApply calls; etcd B536770775+139551 at `packed_runs.rs:835` before sort. Neither reached query/reopen; Off remained blocked. Seven Storage-owned inputs later differed from the build snapshot, so this pair was not current-source acceptance. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Goal continuation: current owning rail and packet cost observation
 
-The preceding goal turn made code and execution progress, not completion. Current HEAD remains ade5fadc1a084fbb81eba831861e996081d80867. No earlier Rust/SDK process remained live at continuation preflight; Storage production files then matched the prior SDK-after snapshot. The next combined current Storage+Text+Runtime lib rail was actually admitted, but exited compiler101/body0 after236.938s at new Storage cfg(test) retained_value_cas.rs34: Arc::clone type coercion. A test-only self.0.clone() correction preserved all grant/CAS assertions. Storage-only lib then exited compiler101/body0 after40.169s at four unused atomic fetch results in that same test; explicit return bindings and file-local formatting fixed them. No Storage production hunk, cap, warning gate or oracle was changed by Text.
-
-T-PACKET-COST-OBSERVATION is selected before any offset-index codec: current traces cannot separate completed sort tariff from full row-body recopy. Existing DiagnosticContext/WorkBudget APIs can report accepted Work in NativeTextPostingEdit lanes36(sort),37(actual recopy),38(unordered packet/SQL outcome) without Core/schema edits. Off must run the original operation directly, and Record must preserve Work/result/context. Existing 5-row fixed fixture independently requires365B sort and50B copy, with identical CAS/order/EOF and no new spans for the existing ordered fastpath. The new test-only oracle was added to ordered_packets.rs; its first attempt was compiler101/body0 from one unused DiagnosticSpanIdV1 import, removed without changing the gold. The exact selector RED is currently admitted/queued on the existing lane/mutex; no production observer has been implemented before the behavioral RED.
-
-No existing counter means internal packet row count; SqliteRows and PostingMutations must not be repurposed. Body-copy observation is useful actual work evidence but alone does not qualify index/read/SQL net savings or product acceptance. A new private packet format remains conditional; existing logical sort charge is preserved.
+The changed Storage dependency first caused compiler101/body0, then its test-only fixture was corrected. Diagnostic lanes36/37/38 were selected to separate accepted posting sort Work, actual row-copy Work and inclusive unordered packet/SQL outcome without changing fees or counters. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Packet observation RED and current Storage/packet GREEN
 
-The first exact selector omitted the posting_packed parent module and run5896668d-a948-4ed7-b044-1e40c9b4abc0 executed0/filtered564/exit4; this was NOT_RUN, not a behavioral RED or pass. The corrected unique selector `test(unordered_packet_observation_separates_sort_and_real_row_copy)` actually executed1/FAIL1/563 filtered/exit100 in run560e24e4-decb-40be-ad02-b5f8d10c9b6a (compile0.59s/body0.063s), expected three packet phases versus actual0.
-
-Parent then added lexical-only observe_packet_work and factored the existing unordered body into finish_unordered. The original sort_work charge, strict sorting/duplicate checks,128KiB memory grant, measured_copy, dictionaries, digest, SQL insert and reset order are preserved. Diagnostic Off calls the original closure directly; failed span admission records trace health and still executes the original operation. Scoped contexts restore on result/err. NativeTextPostingEdit/36 is accepted sort Work; /37 is actual body recopy; /38 is the entire unordered finalization and SQL outcome. /38 includes /36 and /37 and must not be added to them or called SQL-only cost. No Core counter, wire, tariff, cap or published policy was changed.
-
-VERIFIED owning command: `env CARGO_BUILD_JOBS=2 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=600 ./scripts/cargow --lane test-workspace-lane nextest run -p quanta-index-storage -p quanta-index-lexical --lib --no-default-features --locked --offline -E 'package(quanta-index-storage) | test(native::text_spool::tests::posting_packed::)' --test-threads 1 --no-tests fail --no-fail-fast --status-level fail --final-status-level fail`. Run961e4db1-2446-4dd7-a7d4-abeba87ba925 executed240/PASS240/542 filtered/exit0, compile1m47s/body30.609s. This includes current Storage lib and new observer365B/50B independent gold, ordered fastpath absence and identical Off/Record Work+CAS/order/EOF. Actual corpus packet-copy measurement remains NOT_RUN until a new bound SDK pair; no claim that observability removed more bytes or fixed SDK acceptance.
+The first selector selected zero bodies; corrected behavioral RED exposed absent packet spans. Production observation preserved original sort/copy/CAS/EOF operations. Storage+packet run `961e4db1-2446-4dd7-a7d4-abeba87ba925` passed 240/240, including independent 365B sort/50B copy and Off/Record equality. Corpus savings remained unmeasured. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Object-only FULL row-count inference (not a new counter)
 
-Source inspection establishes the original native_corpus FULL request precondition: `scale/native_index/corpus.rs` creates a new workspace, reconfigures only profile on genesis, then stages every SourceAdvance owner with expected=None/next=Some(source_ref). Text push_change checks absence of the prior contribution against admitted prior source, and PostingEdits::push accepts only Option<ObjectRef>, rejecting unchanged values. Thus reached FULL posting rows are one-sided None→Object, not arbitrary inline or warm updates.
-
-For those completed unordered initial packets only, existing formulas give sort Work per row=71+term.len and compact copied body=8+term.len, so `(native_text_posting_edit/36 WorkBytes - /37 WorkBytes)/63` derives the row count. Require exact divisibility, both child spans OK, parent packet/38 OK, and ancestry under that fresh FULL request. The fixed5-row oracle gives(365-50)/63=5 independently. This is a source-bound derived count, not a directly emitted counter and not authority to skip validation. Warm Object→Object updates have difference94; mixed typed rows only bound ceil(D/94)<=N<=floor(D/63). Inline test inputs invalidate this object-only formula. The original FULL source preconditions must be rechecked with runner/helper/source binding.
-
-The added write-refusal observer oracle keeps accepted bytes575=365sort+50copy+160dictionary, exact Writes denial, unchanged SQL epoch, same Off/Record usage, restored parent context and successful fixed cursor/EOF retry. Current full Lexical/Runtime lib rail is live; this new test is not yet declared passed. Storage all+packet240 pass is separate scope and is not upgraded to current full441 or SDK success.
+For reached fresh FULL posting rows with `None→Object`, existing sort/copy tariffs imply row count `(lane36 WorkBytes − lane37 WorkBytes)/63`, only when both child spans and packet parent are complete and division exact. The five-row gold gives `(365−50)/63=5`. Warm/inline rows invalidate this inference; no new counter or validation bypass was introduced. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Current full Text/Runtime regression and new bound observer pair
 
-VERIFIED: current combined Lexical/Runtime owning selector executed441/PASS441/738 filtered/exit0 in runa3b61279-86d0-45de-a13e-6f99f45c5f12, compile4m57s/body132.252s. It includes the new SQL-write-refusal/retry observation oracle: accepted575B, exact ResourceLimited/Writes, unchanged SQL epoch, restored diagnostic parent, ordered/CAS/EOF retry, equal Off/Record producer/denied/final Work. This replaces the earlier separate437+86 current-source description for this Text/Runtime scope. Storage all+packet240 pass remains separately scoped and is not added to441 because packet tests overlap.
-
-VERIFIED build scope: `/private/tmp/qidx-sdk60-packet-work-r4dxzzgz` no-default optimized daemon/helper build exit0/201.241s (compiler3m19s), exact before/after2803-input set/hash and HEAD equal. Immutable daemon14,648,832B/SHA256 `9e40b0045b5b593fc66d11e5f12fcdc6d3bb02715fd87025b9f8aa4e62afbb4c`; immutable helper2,890,928B/SHA256 `3b1a819a27b50931af0db2f17fd2e0fddf30cd475ae7968979cd7521b67d06b7`. Original driver/corpus/gold/SDK60/Work512MiB/R-W-M1m/file30k and Original scopes remain unchanged. Off preflight BLOCKED/body0 at host load32.425781>8 and14 foreign Rust processes, no override. The existing runner Record is now admitted for both original corpora; body/copy measurements are NOT_RUN until its actual terminal output is recovered.
+Then-current combined Lexical/Runtime run `a3b61279-86d0-45de-a13e-6f99f45c5f12` passed 441/441 with the SQL-write-refusal/retry observation gold. Bound daemon `9e40b0045b5b593fc66d11e5f12fcdc6d3bb02715fd87025b9f8aa4e62afbb4c` and helper `3b1a819a27b50931af0db2f17fd2e0fddf30cd475ae7968979cd7521b67d06b7` built over 2,803 inputs; Off was blocked. Later source/candidate results supersede its pending Record state. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Packet observer original SDK terminal and measured format decision
 
-Candidate `/private/tmp/qidx-sdk60-packet-work-r4dxzzgz` Record runner exit1 and mutex returned. Both real original bodies failed `REQUEST_DEADLINE_EXCEEDED` at native_corpus_publication_status (Caddy67.58s process, etcd79.10s process, each SDK60 unchanged). Full ACK0/query/reopen NOT_RUN. Caddy observed usage386,125,553B and etcd496,323,772B, both daemon first_denial cancelled at Storage object.rs865. These are deadline failures during contended Record execution. Off was preflight BLOCKED/body0. Exact source2803/HEAD, both binaries, diagnostic inputs and original full corpus file hashes/commit/query tokens match through SDK.
-
-Caddy raw footer invalid:229,039 attempted,228,666 accepted/written,373 dropped,4 open. Missing begin for span9501 triggers strict parser error at thread_cpu_ns seq50985. Preserve trace as failed diagnostic, do not adjust schema or salvage savings from orphan events. Etcd canonical ingest COMPLETE_DIAGNOSTIC, health[], open0, trace digest6d6855b796d65a9e76b19486c7e257050c9b14bf2c6d1a701aee3594fa32d8e0. Full request span4553 contains117 completed unordered packet/38 parents, each with checked successful sort/36 and recopy/37 children. Sums: sort16,365,685B, body recopy3,304,273B, inclusive packet27,188,860B. The original FULL object-only source and exact per-packet identity `(T−B)/63` derive207,324 rows. Existing insertion/dictionary charges recover57,440B dictionaries; checks pass for32B units and128KiB packet bound. Hypothetical u32 offset index write/copies/first read cost16*N, giving net −12,911B before added readback validation, fragmentation, or later reads.102/117 packets are already negative. Keep current packet wire. Frame these as the completed observed prefix, not extrapolated full-corpus savings or a bytes refusal.
+This 2,803-input pair's Caddy/etcd Records failed SDK60 deadlines (67.58s/79.10s), ACK0/query/reopen not reached. Caddy diagnostic footer was invalid and cannot support savings. Etcd complete prefix measured 117 unordered packets: sort16,365,685B, body recopy3,304,273B, inclusive packet27,188,860B. A hypothetical offset index saved only 12,911B net before read costs, with 102/117 packets negative; the existing wire was retained. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Borrowed term packet read
 
@@ -1326,42 +1240,23 @@ Etcd's terminal64-row flush failed inside the original posting logical write adm
 
 ### Authenticated posting packet boundaries
 
-The packed cursor authenticates in-packet order once and keeps the boundary
-witness through packet turnover and retry. The [custody ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md) owns this
-contract. R11 Caddy and etcd Records refused before ACK at their original
-caps. R11 Large passed its two-restart body in
-`ef7d80cc-502d-4510-a803-9640e018463c`. Exact binaries, charges, source
-capture and result tables remain in the [exact source and execution record](../../../ARCHIVE-INDEX.md#2026-11-17-six-ticket-historical-body-compaction).
+The packed cursor retains authenticated packet order and boundary witness across retry. The source-scoped owning run `ef7d80cc-502d-4510-a803-9640e018463c` and original Records are retained as history; the [custody ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md) owns the continuing contract. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Resident packets across cold term windows
 
-The two-slot resident packet cache reuses authenticated payloads across
-term windows under its Original grant, source identity and accepted epoch.
-R12's two Record requests still failed before ACK. Its selected test-only
-source drift and original metrics remain in the [exact source and execution record](../../../ARCHIVE-INDEX.md#2026-11-17-six-ticket-historical-body-compaction).
-The [custody ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md) owns cache lifetime and retry.
+Two Original-funded resident slots reuse authenticated payloads across windows under source identity and accepted epoch. R12 Caddy/etcd Records still failed before ACK; no product success followed. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Parallel closeout against NTX4
 
-The sealed-writer grant release and existing group-local child validation
-are implemented. The R12 owner table is historical and retained in the
-[exact source and execution record](../../../ARCHIVE-INDEX.md#2026-11-17-six-ticket-historical-body-compaction). Current Caddy Record/Large and etcd outcome follow
-[the active product boundary](#admission-decision-and-remaining-product-verification).
+Sealed-writer grant release and group-local child validation were implemented. The R12 owner table is historical; current NTX4 product gates follow below. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Same-wire late materialization for phase-0 packets
 
-The isolated late-emission draft measured a proposed Work change on five
-rows. The later production cold term writer is recorded in the [custody ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md).
-The draft's exact fixture and proof limits remain in the [exact source and execution record](../../../ARCHIVE-INDEX.md#2026-11-17-six-ticket-historical-body-compaction).
+A five-row late-emission draft was measured, while the production cold term writer and preserved fees are in the [custody ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md). It was a candidate, not a new required codec. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### Posting cursor retry after retained-memory refusal
 
-The retained cursor retries the refused row and checks stale-source
-identity. The owning no-default Lexical run
-`9d6e5066-bc00-49f1-b54d-5424a2fd89cf` passed 365/365. The subsequent
-child-census candidate supplied diagnostic Caddy and etcd failures with
-release-input drift. Their exact charges, metrics and build identities are
-in the [exact source and execution record](../../../ARCHIVE-INDEX.md#2026-11-17-six-ticket-historical-body-compaction).
+The retained cursor retries the refused row and checks stale-source identity; Lexical `9d6e5066-bc00-49f1-b54d-5424a2fd89cf` passed 365/365. The next child-census Caddy/etcd Records failed diagnostically; original SDK acceptance remained open. [원문 복구](../../../ARCHIVE-INDEX.md#older-native-cutover-cohorts).
 
 ### NTX4 structural remediation and acceptance
 

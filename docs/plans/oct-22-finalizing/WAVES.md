@@ -29,26 +29,15 @@ E02의 현재 담당·검증 경로는 [에픽 E02](README.md#e02)에서 찾는�
 
 현재 판단과 신규 패킷은 [bugbash SSOT](../nov-5-indexing-bugbash/README.md),
 [구현·검증 계획](../nov-5-indexing-bugbash/WORKPLAN.md)이 소유한다.
-이전 C/R/F 패킷과 실행 순서는 [보존 본문](../../history/nov-5-indexing-bugbash/E07-WAVES.md)에 있다.
-기존 구현·과거 요청을 새 잔여 작업으로 재발급하지 않는다.
 
 <a id="e07-closeout-plan-20261030"></a>
-[이전 계획 이력](../../history/nov-5-indexing-bugbash/E07-WAVES.md#e07-closeout-plan-20261030)
-
 <a id="e07-remaining-rca-plan-20261031"></a>
-[이전 계획 이력](../../history/nov-5-indexing-bugbash/E07-WAVES.md#e07-remaining-rca-plan-20261031)
-
 <a id="e07-residual-packets-20261102"></a>
-[이전 계획 이력](../../history/nov-5-indexing-bugbash/E07-WAVES.md#e07-residual-packets-20261102)
-
 <a id="e07-wal-policy-execution-20261103"></a>
-[이전 계획 이력](../../history/nov-5-indexing-bugbash/E07-WAVES.md#e07-wal-policy-execution-20261103)
-
 <a id="e07-entry-map-rca-plan-20261103"></a>
-[이전 계획 이력](../../history/nov-5-indexing-bugbash/E07-WAVES.md#e07-entry-map-rca-plan-20261103)
-
 <a id="e07-entry-map-contract-parallel-tests-20261103"></a>
-[이전 계획 이력](../../history/nov-5-indexing-bugbash/E07-WAVES.md#e07-entry-map-contract-parallel-tests-20261103)
+
+이전 C/R/F 패킷과 10월 30일~11월 3일 실행 계획은 [E07 원문 복구](../../ARCHIVE-INDEX.md#nov-5-e07-preimages)에 있다.
 
 ## W1 — 독점 병렬 묶음
 

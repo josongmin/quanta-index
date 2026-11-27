@@ -18,8 +18,13 @@ mod held_previous_native_v1;
 mod preserved_native_v1;
 #[path = "restore_forward/preserved_sources_v1.rs"]
 mod preserved_sources_v1;
+#[path = "restore_forward/source_only_catalog_v7.rs"]
+mod source_only_catalog_v7;
 
 pub(crate) use held_previous_native_v1::HeldPreviousNativeV1;
+pub(crate) use source_only_catalog_v7::{
+    CatalogWatchPublicationV7, verify_locked_source_only_catalog_v7,
+};
 
 /// Refuse a selection whose configured Semantic writers would reopen an
 /// incompatible ANN directory. All reads use the held, existing-only Q root.
@@ -338,25 +343,58 @@ pub(in crate::native_product::boot) fn verify_native_separate_repomap_v1(
         root,
         budget,
     )?;
+    Ok(Some(verify_saved_native_separate_repomap_v1(
+        &saved,
+        old_native_root,
+        new_native_root,
+        locator_digest,
+        (publish, activation),
+        io,
+        budget,
+    )?))
+}
+
+/// Authenticate a saved, config-selected RepoMap root and its two terminal
+/// receipts. The saved control supplies the path; evidence supplies no path.
+fn verify_saved_native_separate_repomap_v1(
+    saved: &crate::deployment_selection::DeploymentSelectionDocumentV1,
+    old_native_root: &std::path::Path,
+    new_native_root: &std::path::Path,
+    locator_digest: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverDigest64V1,
+    receipts: (
+        &quanta_index_contract::RepoMapTerminalReceiptV2,
+        &quanta_index_contract::RepoMapTerminalReceiptV2,
+    ),
+    io: &crate::native_scratch_io::NativeScratchIo,
+    budget: &mut WorkBudget,
+) -> Result<VerifiedLegacyRepoMapV1> {
+    let root = saved.state_root_v1();
+    if !root.is_absolute()
+        || [old_native_root, new_native_root]
+            .into_iter()
+            .any(|other| root.starts_with(other) || other.starts_with(root))
+    {
+        return Err(IndexError::DigestConflict.into());
+    }
     let (lease, memory) = acquire_recovery_root_v1(root, budget)?;
     let authority =
-        legacy_read_factory::LegacyReadAuthorityV1::acquire(&saved, io, lease, memory, budget)?;
+        legacy_read_factory::LegacyReadAuthorityV1::acquire(saved, io, lease, memory, budget)?;
     authority.require_repomap_locator_v1(*locator_digest, budget)?;
     let observed = quanta_index_catalog::verify_legacy_catalog_quiescence_v1(
         root,
         authority.catalog(),
-        &publish.mutation.repo_id,
-        &publish.mutation.revision_id,
+        &receipts.0.mutation.repo_id,
+        &receipts.0.mutation.revision_id,
         budget,
     )?;
-    let files = authority.verify_active_repomap_v1(&observed, (publish, activation), budget)?;
+    let files = authority.verify_active_repomap_v1(&observed, receipts, budget)?;
     drop(observed);
     authority.retire_catalog(budget)?;
-    Ok(Some(VerifiedLegacyRepoMapV1 {
+    Ok(VerifiedLegacyRepoMapV1 {
         files,
         separate: Some(authority),
         locator: *locator_digest,
-    }))
+    })
 }
 
 fn require_previous_repomap_current_v1(
@@ -391,15 +429,187 @@ fn verify_candidate_install_attestation_v1(
     budget: &mut WorkBudget,
 ) -> Result<()> {
     if locked.requires_candidate_install_attestation_v1() {
-        let root = authority.lease.state_root_identity_v1();
-        let io = NativeObjectReadIo::new(Arc::clone(&authority.physical));
         let expected = command
             .install_catalog_digest
             .ok_or(IndexError::SnapshotUnavailable)?;
-        if catalog_digest::catalog_content_digest(root, &io, budget)? != expected {
+        if catalog_digest::catalog_content_digest(authority, budget)? != expected {
             return Err(IndexError::DigestConflict.into());
         }
     }
+    Ok(())
+}
+
+struct NativeHistoryCensusV1 {
+    entries: Vec<FundedNativeRestoreInputV1>,
+    _capacity: Option<MemoryLease>,
+}
+
+#[derive(Clone, Copy)]
+enum NativeHistoryCensusViewV1 {
+    Current,
+    Boot,
+}
+
+fn collect_native_history_v1(
+    held: &HeldPreviousNativeV1,
+    view: NativeHistoryCensusViewV1,
+    budget: &mut WorkBudget,
+) -> Result<NativeHistoryCensusV1> {
+    // Drop the entries and their strings before releasing the array grant.
+    let mut history_capacity = None;
+    let mut native_history = Vec::<FundedNativeRestoreInputV1>::new();
+    let mut admitted_slots = 0usize;
+    let visit = |input: &quanta_index_contract::index::NativeHistoryRestoreInputV1,
+                 _reader: &FileObjectReader,
+                 source_input: ObjectRef,
+                 budget: &mut WorkBudget|
+     -> Result<()> {
+        let bytes = input
+            .cut
+            .generation
+            .repo_id
+            .as_str()
+            .len()
+            .checked_add(input.cut.generation.revision_id.as_str().len())
+            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited)?;
+        let memory =
+            budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)?;
+        if native_history.len() == admitted_slots {
+            let max = quanta_index_contract::native_protocol::MAX_NATIVE_READ_PROFILE_INSTANCES;
+            let capacity = admitted_slots.saturating_mul(2).clamp(1, max);
+            if capacity <= native_history.len() {
+                return Err(IndexError::ResourceLimited.into());
+            }
+            let array_bytes = capacity
+                .checked_mul(std::mem::size_of::<FundedNativeRestoreInputV1>())
+                .ok_or(IndexError::ResourceLimited)?;
+            let array_bytes =
+                u64::try_from(array_bytes).map_err(|_width| IndexError::ResourceLimited)?;
+            // Reallocation can temporarily own both buffers.
+            let next = budget
+                .reserve_memory(
+                    array_bytes,
+                    quanta_index_core::index::MemoryLifetime::Retained,
+                )?
+                .ok_or(IndexError::ResourceLimited)?;
+            native_history
+                .try_reserve_exact(capacity.saturating_sub(native_history.len()))
+                .map_err(|_allocation| IndexError::ResourceLimited)?;
+            admitted_slots = capacity;
+            history_capacity = Some(next);
+        }
+        native_history.push(FundedNativeRestoreInputV1 {
+            value: input.clone(),
+            source_input,
+            _memory: memory,
+        });
+        Ok(())
+    };
+    let witnessed_history_count = match view {
+        NativeHistoryCensusViewV1::Current => held.visit_history_members_v1(None, budget, visit)?,
+        NativeHistoryCensusViewV1::Boot => held.visit_boot_history_members_v7(budget, visit)?,
+    };
+    if witnessed_history_count != u64::try_from(native_history.len())? {
+        return Err(IndexError::DigestConflict.into());
+    }
+    native_history.sort_unstable_by(|left, right| {
+        let left = &left.value.cut.generation;
+        let right = &right.value.cut.generation;
+        match view {
+            NativeHistoryCensusViewV1::Current => {
+                left.repo_id.cmp(&right.repo_id).then_with(|| {
+                    left.bootstrap_order_key_v1()
+                        .cmp(&right.bootstrap_order_key_v1())
+                })
+            }
+            NativeHistoryCensusViewV1::Boot => left.cmp(right),
+        }
+    });
+    if native_history
+        .windows(2)
+        .any(|pair| matches!(pair, [left, right] if left.value.cut.generation == right.value.cut.generation))
+    {
+        return Err(IndexError::DigestConflict.into());
+    }
+    Ok(NativeHistoryCensusV1 {
+        entries: native_history,
+        _capacity: history_capacity,
+    })
+}
+
+/// Compare retained Native History with the candidate's installed BOOT.
+/// The BOOT can be a later History or projection publication over the FULL.
+fn verify_preserved_native_history_v7(
+    previous: &HeldPreviousNativeV1,
+    candidate: &HeldPreviousNativeV1,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    use quanta_index_search_plane::native_history::{
+        NativeHistoryBootSourceV1, with_native_history_boot_source_v1,
+    };
+
+    let expected = collect_native_history_v1(previous, NativeHistoryCensusViewV1::Current, budget)?;
+    let mut matched = 0usize;
+    let _visited =
+        candidate.visit_boot_history_members_v7(budget, |installed, reader, input, budget| {
+            let stored = reader.get(input, budget)?;
+            with_native_history_boot_source_v1(input, &stored, budget, |origin, budget| {
+                match origin {
+                    NativeHistoryBootSourceV1::NativeRestore(old) => {
+                        let generation = &old.cut.generation;
+                        let search = 2 + u64::from(expected.entries.len().max(1).ilog2());
+                        let axis_bytes = 128_u64
+                            .checked_add(
+                                u64::try_from(generation.repo_id.as_str().len())
+                                    .map_err(|_| IndexError::ResourceLimited)?,
+                            )
+                            .and_then(|bytes| {
+                                bytes.checked_add(generation.revision_id.as_str().len() as u64)
+                            })
+                            .ok_or(IndexError::ResourceLimited)?;
+                        budget.charge(quanta_index_core::index::WorkUsage {
+                            reads: search,
+                            bytes: search
+                                .checked_mul(axis_bytes)
+                                .ok_or(IndexError::ResourceLimited)?,
+                            ..Default::default()
+                        })?;
+                        let index = expected
+                            .entries
+                            .binary_search_by(|row| {
+                                let actual = &row.value.cut.generation;
+                                actual.repo_id.cmp(&generation.repo_id).then_with(|| {
+                                    actual
+                                        .bootstrap_order_key_v1()
+                                        .cmp(&generation.bootstrap_order_key_v1())
+                                })
+                            })
+                            .map_err(|_| IndexError::DigestConflict)?;
+                        if old != &expected.entries[index].value
+                            || installed.instance != old.instance
+                            || installed.cut != old.cut
+                        {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        // The held BOOT reader refuses duplicate instances.
+                        // A successful exact match can consume each old row once.
+                        matched = matched.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                        Ok(())
+                    }
+                    NativeHistoryBootSourceV1::NativeInitial(_) if expected.entries.is_empty() => {
+                        Ok(())
+                    }
+                    _ => Err(IndexError::DigestConflict),
+                }
+            })?;
+            Ok(())
+        })?;
+    if matched != expected.entries.len() {
+        return Err(IndexError::DigestConflict.into());
+    }
+    previous.require_current_and_retired_v1(budget)?;
+    candidate.require_current_and_retired_v1(budget)?;
     Ok(())
 }
 
@@ -416,86 +626,18 @@ fn publish_previous_native_v1(
 ) -> std::result::Result<DeploymentSelectionPublishedV1, DeploymentSelectionErrorV1> {
     let before = DeploymentSelectionErrorV1::RefusedBeforeRename;
     let source = fresh_initial_source_inputs_v1(evidence, joined, budget).map_err(before)?;
-    let held =
-        held_previous_native_v1::HeldPreviousNativeV1::acquire_v1(locked.current_v1(), budget)
-            .map_err(before)?;
+    let held = held_previous_native_v1::HeldPreviousNativeV1::acquire_retained_source_v1(
+        locked.current_v1(),
+        budget,
+    )
+    .map_err(before)?;
     custody_checkpoint(budget).map_err(before)?;
     let rows = held
         .observe_signed_source_rows_v1(evidence, joined, budget)
         .map_err(before)?;
-    // Drop the entries and their strings before releasing the array grant.
-    let mut _history_capacity = None;
-    let mut native_history = Vec::<FundedNativeRestoreInputV1>::new();
-    let mut admitted_slots = 0usize;
-    let witnessed_history_count = held
-        .visit_history_members_v1(None, budget, |input, _reader, _source_input, budget| {
-            let bytes = input
-                .cut
-                .generation
-                .repo_id
-                .as_str()
-                .len()
-                .checked_add(input.cut.generation.revision_id.as_str().len())
-                .ok_or(IndexError::ResourceLimited)?;
-            let bytes = u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited)?;
-            let memory =
-                budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)?;
-            if native_history.len() == admitted_slots {
-                let max = quanta_index_contract::native_protocol::MAX_NATIVE_READ_PROFILE_INSTANCES;
-                let capacity = admitted_slots.saturating_mul(2).clamp(1, max);
-                if capacity <= native_history.len() {
-                    return Err(IndexError::ResourceLimited.into());
-                }
-                let array_bytes = capacity
-                    .checked_mul(std::mem::size_of::<FundedNativeRestoreInputV1>())
-                    .ok_or(IndexError::ResourceLimited)?;
-                let array_bytes =
-                    u64::try_from(array_bytes).map_err(|_width| IndexError::ResourceLimited)?;
-                // Reallocation can temporarily own both buffers.
-                let next = budget
-                    .reserve_memory(
-                        array_bytes,
-                        quanta_index_core::index::MemoryLifetime::Retained,
-                    )?
-                    .ok_or(IndexError::ResourceLimited)?;
-                native_history
-                    .try_reserve_exact(capacity.saturating_sub(native_history.len()))
-                    .map_err(|_allocation| IndexError::ResourceLimited)?;
-                admitted_slots = capacity;
-                _history_capacity = Some(next);
-            }
-            native_history.push(FundedNativeRestoreInputV1 {
-                value: input.clone(),
-                _memory: memory,
-            });
-            Ok(())
-        })
-        .map_err(before)?;
-    if witnessed_history_count
-        != u64::try_from(native_history.len()).map_err(|error| before(error.into()))?
-    {
-        return Err(before(IndexError::DigestConflict.into()));
-    }
-    native_history.sort_unstable_by(|left, right| {
-        left.value
-            .cut
-            .generation
-            .repo_id
-            .cmp(&right.value.cut.generation.repo_id)
-            .then_with(|| {
-                left.value
-                    .cut
-                    .generation
-                    .bootstrap_order_key_v1()
-                    .cmp(&right.value.cut.generation.bootstrap_order_key_v1())
-            })
-    });
-    if native_history
-        .windows(2)
-        .any(|pair| matches!(pair, [left, right] if left.value.cut.generation == right.value.cut.generation))
-    {
-        return Err(before(IndexError::DigestConflict.into()));
-    }
+    let native_history =
+        collect_native_history_v1(&held, NativeHistoryCensusViewV1::Current, budget)
+            .map_err(before)?;
     if rows.old_head != held.observed_v1().current_head.identity || rows.published_count == 0 {
         return Err(before(IndexError::DigestConflict.into()));
     }
@@ -545,7 +687,7 @@ fn publish_previous_native_v1(
             &source,
             config.resources.physical.inventory.max_entries,
             None,
-            Some(native_history.as_slice()),
+            Some(native_history.entries.as_slice()),
             budget,
         )?;
         if !history.matches_retained_v1(installed_history.as_ref().map(|selected| &selected.value))

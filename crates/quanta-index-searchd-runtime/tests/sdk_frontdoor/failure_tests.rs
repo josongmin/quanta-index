@@ -25,6 +25,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         other @ (SdkError::UnsupportedNativeQuery { .. }
         | SdkError::Usage(_)
         | SdkError::Protocol(_)
+        | SdkError::Native(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
@@ -77,6 +78,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         other @ (SdkError::UnsupportedNativeQuery { .. }
         | SdkError::Usage(_)
         | SdkError::Protocol(_)
+        | SdkError::Native(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
@@ -104,6 +106,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         other @ (SdkError::UnsupportedNativeQuery { .. }
         | SdkError::Usage(_)
         | SdkError::Protocol(_)
+        | SdkError::Native(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
         | SdkError::Remote { .. }
@@ -248,6 +251,7 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         other @ (SdkError::UnsupportedNativeQuery { .. }
         | SdkError::Usage(_)
         | SdkError::Protocol(_)
+        | SdkError::Native(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
         | SdkError::Remote { .. }

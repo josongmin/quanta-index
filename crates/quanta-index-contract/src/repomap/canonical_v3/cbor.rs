@@ -267,8 +267,9 @@ pub(super) fn plain_digest(payload: &[u8]) -> [u8; 32] {
 pub(super) fn domain_digest(domain: &str, payload: &[u8]) -> [u8; 32] {
     let domain_length = domain.len().to_be_bytes();
     let mut hasher = Sha256::new();
-    let [_, _, _, _, a, b, c, d] = domain_length;
-    hasher.update([a, b, c, d]);
+    // The wire prefix is the low 32 bits in network byte order on every target.
+    let (_, wire_length) = domain_length.split_at(domain_length.len().saturating_sub(4));
+    hasher.update(wire_length);
     hasher.update(domain.as_bytes());
     hasher.update(payload);
     hasher.finalize().into()
@@ -317,5 +318,20 @@ fn lowercase_hex_nibble(value: u8) -> Result<u8, CanonicalRepoMapCodecErrorV1> {
         b'0'..=b'9' => Ok(value.saturating_sub(b'0')),
         b'a'..=b'f' => Ok(value.saturating_sub(b'a').saturating_add(10)),
         _ => Err(CanonicalRepoMapCodecErrorV1::InvalidDigestText),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{digest_wire_string, domain_digest};
+
+    #[test]
+    fn domain_digest_uses_four_byte_length_prefix_on_every_target() {
+        let payload = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let digest = domain_digest("quanta-index/state-root-uuid/v1", &payload);
+        assert_eq!(
+            digest_wire_string(&digest),
+            "sha256:1d23ffc09ffc6cdeac0219b4778f9564e3364d0864805fdbadc467eff66d9007"
+        );
     }
 }

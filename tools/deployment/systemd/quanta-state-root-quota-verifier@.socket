@@ -1,0 +1,13 @@
+[Unit]
+Description=Quanta StateRoot quota socket for daemon UID %i
+
+[Socket]
+ListenStream=/run/quanta-index-quota/%i.sock
+SocketUser=root
+SocketGroup=quanta-index
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

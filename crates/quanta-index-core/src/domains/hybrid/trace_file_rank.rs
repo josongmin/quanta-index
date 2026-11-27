@@ -404,12 +404,17 @@ mod tests {
             revision_id: pin.revision_id,
             manifest_generation: pin.manifest_generation,
             repo_relative_path: RepoRelativePath::new(path),
-            start_line: 10,
-            end_line: 20,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 10,
+                end_line: 20,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: String::new(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score,
-            snippet: String::new(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         }
     }
 

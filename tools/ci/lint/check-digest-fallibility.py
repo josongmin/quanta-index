@@ -127,13 +127,23 @@ def infallible_doc(node: Any, source: bytes) -> bool:
 def array_width(node: Any, source: bytes) -> int | None:
     if node.type != "array_type":
         return None
-    parts = node.named_children
-    if len(parts) != 2 or node_text(source, parts[0]) != "u8":
+    element = node.child_by_field_name("element")
+    length = node.child_by_field_name("length")
+    if element is None or node_text(source, element) != "u8":
         return None
-    if parts[1].type != "integer_literal":
+    while length is not None and length.type == "parenthesized_expression":
+        inner = [
+            child
+            for child in length.named_children
+            if child.type not in {"line_comment", "block_comment"}
+        ]
+        length = inner[0] if len(inner) == 1 else None
+    if length is None or length.type != "integer_literal":
         return None
+    literal = node_text(source, length).removesuffix("usize").replace("_", "")
+    base = 0 if literal.startswith(("0x", "0o", "0b")) else 10
     try:
-        width = int(node_text(source, parts[1]).replace("_", ""))
+        width = int(literal, base)
     except ValueError:
         return None
     return width if width in DIGEST_SIZES else None

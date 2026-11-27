@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -23,10 +23,12 @@ use quanta_index_core::{
 use quanta_index_kernel::{AdapterRegistry, Kernel, KernelServices};
 use quanta_index_storage::{FileObjectStore, FileScratchSpace};
 
+use quanta_index_lexical::native::TextRankEntry;
+
 use super::{
     CLOSING_BIT, Entry, EntryState, IndexError, NativeReadSessionConfig, NativeReadSessionSweep,
-    NativeReadSessions, PublicReleaseAttempt, RELEASE_WAITER, ViewSelection, keep_first,
-    record_failure,
+    NativeReadSessions, PublicReleaseAttempt, RELEASE_WAITER, TextOrderShare, ViewSelection,
+    keep_first, record_failure,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -84,21 +86,25 @@ fn budget() -> WorkBudget {
 
 fn registered_entry(
     registry: &NativeReadSessions,
+    uid: u32,
+    key: u8,
     state: NativeReadSessionState,
 ) -> TestResult<Arc<Entry>> {
-    let id = NativeReadSessionId([9; 32]);
+    let id = NativeReadSessionId([key; 32]);
+    let open_key = [key; 32];
     let selection = selection(1);
     let ViewSelection::Latest { workspace, epoch } = selection else {
         return Err("read-session fixture selection differs".into());
     };
     let entry = Arc::new(Entry {
         id,
-        uid: 42,
-        open_key: [7; 32],
+        uid,
+        open_key,
         selection,
         lifecycle: AtomicUsize::new(0),
         renew_waiters: AtomicUsize::new(0),
         uncertain: AtomicBool::new(false),
+        terminal_since: std::sync::OnceLock::new(),
         inner: RwLock::new(EntryState {
             status: Some(NativeReadSessionStatus {
                 session: id,
@@ -114,13 +120,17 @@ fn registered_entry(
             }),
             ..EntryState::default()
         }),
+        text_order: Mutex::new(None),
     });
+    if state == NativeReadSessionState::Released {
+        entry.mark_released();
+    }
     let mut table = registry
         .table
         .lock()
         .map_err(|error| std::io::Error::other(format!("read-session table poisoned: {error}")))?;
     check!(table.by_id.insert(id, Arc::clone(&entry)).is_none());
-    check!(table.by_open.insert((42, [7; 32]), id).is_none());
+    check!(table.by_open.insert((uid, open_key), id).is_none());
     drop(table);
     Ok(entry)
 }
@@ -132,7 +142,36 @@ fn config_rejects_unbounded_registry() -> TestResult {
     check_eq!(default.per_uid_limit, 16);
     check_eq!(default.terminal_ttl, Duration::from_secs(300));
     check_eq!(default.sweep_limit, 8);
-    check_eq!(NativeReadSessions::required_memory(&default)?, 266_240);
+    // Every default session may keep the largest captured order: 4,096 rows
+    // of one ranked entry each.
+    let largest_order = u64::try_from(std::mem::size_of::<TextRankEntry>())?
+        .checked_mul(4_096)
+        .ok_or("order bytes overflow")?;
+    let full_share = largest_order
+        .checked_mul(64)
+        .ok_or("order share overflow")?;
+    check_eq!(default.text_order_memory, full_share);
+    // The slots and table, plus the declared order share in the same grant.
+    check_eq!(
+        NativeReadSessions::required_memory(&default)?,
+        2_101_248_u64
+            .checked_add(full_share)
+            .ok_or("registry grant overflow")?
+    );
+    check_eq!(
+        NativeReadSessions::required_memory(&NativeReadSessionConfig {
+            text_order_memory: 0,
+            ..default
+        })?,
+        2_101_248
+    );
+    check_eq!(
+        NativeReadSessions::required_memory(&NativeReadSessionConfig {
+            text_order_memory: 1,
+            ..default
+        })?,
+        2_101_249
+    );
 
     for invalid in [
         NativeReadSessionConfig {
@@ -151,6 +190,11 @@ fn config_rejects_unbounded_registry() -> TestResult {
             sweep_limit: 65,
             ..default
         },
+        // More than every session's largest order can never be used.
+        NativeReadSessionConfig {
+            text_order_memory: full_share.checked_add(1).ok_or("order share overflow")?,
+            ..default
+        },
     ] {
         check!(matches!(
             NativeReadSessions::required_memory(&invalid),
@@ -160,12 +204,32 @@ fn config_rejects_unbounded_registry() -> TestResult {
     Ok(())
 }
 
+/// Cached orders are charged to the declared share only: a charge the share
+/// cannot fund is refused, and a dropped charge returns its bytes.
+#[test]
+fn text_order_share_funds_orders_up_to_its_declared_bytes() -> TestResult {
+    let share = TextOrderShare::new(100);
+    let first = share.charge(60).ok_or("60 of 100 bytes must be funded")?;
+    check!(share.charge(41).is_none());
+    let second = share.charge(40).ok_or("the last 40 bytes must be funded")?;
+    check_eq!(share.used(), 100);
+    check!(share.charge(1).is_none());
+    drop(first);
+    check_eq!(share.used(), 40);
+    check!(share.charge(61).is_none());
+    let third = share.charge(60).ok_or("returned bytes must fund again")?;
+    drop((second, third));
+    check_eq!(share.used(), 0);
+    Ok(())
+}
+
 #[test]
 fn failed_pin_does_not_leak_an_open_key_or_slot() -> TestResult {
     let registry = NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig {
         global_limit: 1,
         per_uid_limit: 1,
         sweep_limit: 1,
+        text_order_memory: NativeReadSessionConfig::full_text_order_memory(1)?,
         ..NativeReadSessionConfig::default()
     })?;
     let key = [7; 32];
@@ -229,7 +293,13 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
         )?)
     };
     check_eq!(pin_count()?, 0);
-    let registry = NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig::default())?;
+    let registry = NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig {
+        global_limit: 1,
+        per_uid_limit: 1,
+        sweep_limit: 1,
+        text_order_memory: 0,
+        ..NativeReadSessionConfig::default()
+    })?;
     let original = WorkBudget::with_request(
         limits,
         RequestBudgetV1::for_duration(Duration::from_secs(30)),
@@ -296,10 +366,72 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
     check_eq!(pin_calls.load(Ordering::Relaxed), 1);
     check_eq!(pin_count()?, 0);
 
+    // A full replay table cannot discard the original ticket or Release ACK
+    // before TTL. A fresh Open is refused, while settlement still observes
+    // the same ticket without a new Catalog pin.
+    for key in 20..27 {
+        let fixture = registered_entry(&registry, 42, key, NativeReadSessionState::Released)?;
+        drop(fixture);
+    }
+    check_eq!(
+        registry.open(42, [30; 32], selection(1), &budget(), |_selected| {
+            Err(IndexError::BackendViolation(
+                "full replay table reached Catalog pin".into(),
+            ))
+        }),
+        Err(IndexError::ResourceLimited)
+    );
+    check_eq!(
+        registry.open(42, [7; 32], selection(1), &budget(), |_selected| {
+            Err(IndexError::BackendViolation(
+                "full replay table re-pinned original key".into(),
+            ))
+        })?,
+        released
+    );
+    check_eq!(
+        registry.release(42, replay.session, &budget(), |_ticket| {
+            Err(IndexError::BackendViolation(
+                "full replay table re-released Catalog ticket".into(),
+            ))
+        })?,
+        (released, remaining)
+    );
+    check_eq!(
+        registry.with_released_ticket(42, replay.session, &budget(), |ticket| {
+            Ok(ticket.view().identity)
+        })?,
+        genesis
+    );
+    check_eq!(pin_calls.load(Ordering::Relaxed), 1);
+    check_eq!(pin_count()?, 0);
+    {
+        let mut table = registry.table.lock().map_err(|error| {
+            std::io::Error::other(format!("read-session table poisoned: {error}"))
+        })?;
+        for key in 20..27 {
+            check!(table.remove(NativeReadSessionId([key; 32])));
+        }
+    }
+
     let query_ticket = registry.open(42, [8; 32], selection(1), &budget(), |selected| {
         kernel.pin_view(selected, &budget())
     })?;
     check_eq!(pin_count()?, 1);
+    check_eq!(
+        registry.release(42, replay.session, &budget(), |_ticket| {
+            Err(IndexError::BackendViolation(
+                "replay reached Catalog release".into(),
+            ))
+        })?,
+        (released, remaining)
+    );
+    check_eq!(
+        registry.with_released_ticket(42, replay.session, &budget(), |ticket| {
+            Ok(ticket.view().identity)
+        })?,
+        genesis
+    );
     let query_id = query_ticket.session;
     let release_queries = AtomicBool::new(false);
     thread::scope(|scope| -> TestResult {
@@ -471,7 +603,7 @@ fn retained_terminal_open_replay_preserves_state_and_selection() -> TestResult {
     ] {
         let registry =
             NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig::default())?;
-        let entry = registered_entry(&registry, state)?;
+        let entry = registered_entry(&registry, 42, 7, state)?;
         let expected = registry.status(42, entry.id, &budget())?;
         let replay = registry.open(42, [7; 32], selection(1), &budget(), |_selected| {
             Err(IndexError::BackendViolation(
@@ -492,12 +624,156 @@ fn retained_terminal_open_replay_preserves_state_and_selection() -> TestResult {
 }
 
 #[test]
+fn default_uid_replay_window_keeps_more_than_the_old_32_record_limit() -> TestResult {
+    let config = NativeReadSessionConfig::default();
+    let registry = NativeReadSessions::new_unfunded_for_test(config)?;
+    for key in 0..33 {
+        let entry = registered_entry(&registry, 42, key, NativeReadSessionState::Released)?;
+        drop(entry);
+    }
+    {
+        let mut table = registry
+            .table
+            .lock()
+            .map_err(|error| std::io::Error::other(format!("table poisoned: {error}")))?;
+        table.make_room_for_open(42, &config)?;
+        check_eq!(table.by_id.len(), 33);
+        check_eq!(
+            table.by_open.get(&(42, [0; 32])),
+            Some(&NativeReadSessionId([0; 32]))
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn replay_pressure_preserves_live_slots_and_owned_records() -> TestResult {
+    let config = NativeReadSessionConfig {
+        global_limit: 2,
+        per_uid_limit: 1,
+        sweep_limit: 1,
+        text_order_memory: 0,
+        ..NativeReadSessionConfig::default()
+    };
+    let registry = NativeReadSessions::new_unfunded_for_test(config)?;
+    let oldest = registered_entry(&registry, 42, 7, NativeReadSessionState::Released)?;
+    let other = registered_entry(&registry, 43, 8, NativeReadSessionState::Released)?.id;
+    let live = registered_entry(&registry, 42, 9, NativeReadSessionState::Unknown)?;
+
+    let pin_failure = IndexError::Storage("sentinel pin failure".into());
+    let open = || {
+        registry.open(42, [30; 32], selection(1), &budget(), |_selected| {
+            Err(pin_failure.clone())
+        })
+    };
+    check_eq!(open(), Err(IndexError::ResourceLimited));
+    {
+        let mut state = live
+            .inner
+            .write()
+            .map_err(|error| std::io::Error::other(format!("entry poisoned: {error}")))?;
+        state.record_maintenance_release(false)?;
+        live.mark_released();
+    }
+    // Release frees the live slot even while both replay records are held.
+    check_eq!(open(), Err(pin_failure.clone()));
+    let oldest_id = oldest.id;
+    drop(oldest);
+    drop(live);
+    for key in 10..16 {
+        let fixture = registered_entry(&registry, 42, key, NativeReadSessionState::Released)?;
+        drop(fixture);
+    }
+    // UID 42 has reached its retained limit. Release did free live capacity,
+    // but a fresh key must wait instead of deleting the oldest replay record.
+    check_eq!(open(), Err(IndexError::ResourceLimited));
+    check_eq!(
+        registry.status(42, oldest_id, &budget())?.state,
+        NativeReadSessionState::Released
+    );
+    check_eq!(
+        registry.open(42, [7; 32], selection(1), &budget(), |_selected| {
+            Err(IndexError::BackendViolation(
+                "pressure replay attempted Catalog pin".into(),
+            ))
+        })?,
+        registry.status(42, oldest_id, &budget())?
+    );
+    check_eq!(
+        registry
+            .status(42, NativeReadSessionId([9; 32]), &budget())?
+            .state,
+        NativeReadSessionState::Released
+    );
+    check_eq!(
+        registry.status(43, other, &budget())?.state,
+        NativeReadSessionState::Released
+    );
+    let table = registry
+        .table
+        .lock()
+        .map_err(|error| std::io::Error::other(format!("table poisoned: {error}")))?;
+    check_eq!(table.by_open.get(&(42, [7; 32])), Some(&oldest_id));
+    Ok(())
+}
+
+#[test]
+fn admission_reclaims_only_expired_terminal_replay_records() -> TestResult {
+    let registry = NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig {
+        global_limit: 1,
+        per_uid_limit: 1,
+        sweep_limit: 1,
+        text_order_memory: 0,
+        ..NativeReadSessionConfig::default()
+    })?;
+    for key in 7..14 {
+        let recent = registered_entry(&registry, 42, key, NativeReadSessionState::Released)?;
+        drop(recent);
+    }
+    let expired = registered_entry(&registry, 42, 14, NativeReadSessionState::Unknown)?;
+    {
+        let mut state = expired
+            .inner
+            .write()
+            .map_err(|error| std::io::Error::other(format!("entry poisoned: {error}")))?;
+        state.record_maintenance_release(false)?;
+    }
+    let old_release = Instant::now()
+        .checked_sub(Duration::from_secs(301))
+        .ok_or("test clock cannot represent an expired release")?;
+    check!(expired.terminal_since.set(old_release).is_ok());
+    drop(expired);
+
+    let pin_failure = IndexError::Storage("sentinel pin failure".into());
+    check_eq!(
+        registry.open(42, [15; 32], selection(1), &budget(), |_selected| {
+            Err(pin_failure.clone())
+        }),
+        Err(pin_failure)
+    );
+    check_eq!(
+        registry.status(42, NativeReadSessionId([14; 32]), &budget()),
+        Err(IndexError::SnapshotUnavailable)
+    );
+    for key in 7..14 {
+        check_eq!(
+            registry
+                .status(42, NativeReadSessionId([key; 32]), &budget())?
+                .state,
+            NativeReadSessionState::Released
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn opening_reservation_rejects_other_work_without_creating_a_second_pin() -> TestResult {
     let registry = Arc::new(NativeReadSessions::new_unfunded_for_test(
         NativeReadSessionConfig {
             global_limit: 1,
             per_uid_limit: 1,
             sweep_limit: 1,
+            text_order_memory: NativeReadSessionConfig::full_text_order_memory(1)?,
             ..NativeReadSessionConfig::default()
         },
     )?);
@@ -551,11 +827,29 @@ fn first_release_failure_survives_later_request_cancellation() {
 }
 
 #[test]
+fn open_reply_deadline_is_uncertain_after_the_pin_commits() {
+    let expired = WorkBudget::with_request(
+        WorkLimits {
+            reads: 1,
+            writes: 1,
+            bytes: 1,
+            mutations: 1,
+        },
+        RequestBudgetV1::for_duration(Duration::ZERO),
+    );
+    assert_eq!(expired.checkpoint(), Err(IndexError::ResourceLimited));
+    assert_eq!(
+        super::checkpoint_open_reply(&expired),
+        Err(IndexError::Cancelled)
+    );
+}
+
+#[test]
 fn release_intent_blocks_new_query_before_waiting_and_survives_cancellation() -> TestResult {
     let registry = Arc::new(NativeReadSessions::new_unfunded_for_test(
         NativeReadSessionConfig::default(),
     )?);
-    let entry = registered_entry(&registry, NativeReadSessionState::Active)?;
+    let entry = registered_entry(&registry, 42, 7, NativeReadSessionState::Active)?;
     let id = entry.id;
 
     let cancelled = budget();
@@ -655,7 +949,7 @@ fn release_intent_blocks_new_query_before_waiting_and_survives_cancellation() ->
 #[test]
 fn maintenance_defers_closing_entry_while_public_release_owns_the_ack() -> TestResult {
     let registry = NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig::default())?;
-    let entry = registered_entry(&registry, NativeReadSessionState::Active)?;
+    let entry = registered_entry(&registry, 42, 7, NativeReadSessionState::Active)?;
     // Repeat after Closing is already retained from a cancelled attempt.
     // A split Closing/waiter read could otherwise miss the second attempt.
     for _attempt in 0..2 {
@@ -686,7 +980,7 @@ fn maintenance_defers_closing_entry_while_public_release_owns_the_ack() -> TestR
 #[test]
 fn maintenance_released_tombstone_cannot_replay_public_release_ack_or_settlement() -> TestResult {
     let registry = NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig::default())?;
-    let entry = registered_entry(&registry, NativeReadSessionState::Released)?;
+    let entry = registered_entry(&registry, 42, 7, NativeReadSessionState::Released)?;
     let id = entry.id;
     {
         let mut guard = entry.inner.write().map_err(|error| {

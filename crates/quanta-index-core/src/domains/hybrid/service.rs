@@ -536,12 +536,17 @@ mod tests {
                 .expect("static fixture ID satisfies canonical policy"),
             manifest_generation: ManifestGeneration::new(1),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-            start_line: 0,
-            end_line: 0,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 0,
+                end_line: 0,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: String::new(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 0.0,
-            snippet: String::new(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
+            native_source: None,
         }
     }
 

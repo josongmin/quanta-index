@@ -51,9 +51,20 @@ fn repo_fixture() -> Result<(VisitorFixture, OwnerKey), IndexError> {
 fn repo_fixture_with_second_path(
     second_path: &str,
 ) -> Result<(VisitorFixture, OwnerKey), IndexError> {
+    repo_fixture_with_second_path_and_repository(second_path, false)
+}
+
+fn repo_fixture_with_second_path_and_repository(
+    second_path: &str,
+    same_repository: bool,
+) -> Result<(VisitorFixture, OwnerKey), IndexError> {
     let (mut fixture, other) = two_owner_phrase_fixture()?;
     let first_repo = repo_id("corp-a")?;
-    let other_repo = repo_id("corp-b")?;
+    let other_repo = if same_repository {
+        first_repo.clone()
+    } else {
+        repo_id("corp-b")?
+    };
     let paths = MapRoot(Some(reference(80)));
     let first_owner = fixture.owner;
     let first_source = fixture.source_ref;
@@ -151,9 +162,33 @@ fn overlay_search_checks_every_selected_path_owner_in_a_repository_bucket() -> R
     };
     require_overlay_hit(&fixture, false, 2)?;
 
-    let (shared, _) = repo_fixture_with_second_path("body/a.rs")?;
-    check!(matches!(query(&shared, false), Err(IndexError::Conflict)));
-    require_overlay_hit(&shared, true, 1)
+    let (shared_path, _) = repo_fixture_with_second_path("body/a.rs")?;
+    require_overlay_hit(&shared_path, false, 2)?;
+
+    let (same_repository, second) =
+        repo_fixture_with_second_path_and_repository("body/b.rs", true)?;
+    let query_second = |mask_first| {
+        let mut overlay = vec![captured_overlay(
+            second,
+            Some("body/a.rs"),
+            Some("one draft"),
+        )];
+        if mask_first {
+            overlay.push(captured_overlay(same_repository.owner, None, None));
+            overlay.sort_unstable_by_key(|row| row.owner);
+        }
+        let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+        reader_overlay(&same_repository, overlay, &constraints, 2)
+    };
+    check!(matches!(query_second(false), Err(IndexError::Conflict)));
+    let result = query_second(true)?;
+    check_eq!(result.matched, 1);
+    check!(result.hits.iter().any(|hit| {
+        hit.owner == second
+            && hit.source == NativeTextHitSource::Overlay { revision: 19 }
+            && hit.path == "body/a.rs"
+    }));
+    Ok(())
 }
 
 #[test]
@@ -246,10 +281,9 @@ fn overlay_repository_bucket_rejects_corrupt_source_repository_and_path() -> Res
     Ok(())
 }
 
-#[test]
-fn select_path_unions_only_singleton_keyword_path_postings() -> Result<(), IndexError> {
-    use quanta_index_contract::{LqCase, LqExpr, LqFilter, LqLeaf, LqQuery, LqSelect, LqSpan};
-
+/// [`repo_fixture`] with its keyword path postings published, so the
+/// member answers `select:path` pages.
+fn path_projected_fixture() -> Result<(VisitorFixture, OwnerKey), IndexError> {
     let (mut fixture, other) = repo_fixture()?;
     let path_root = MapRoot(Some(reference(94)));
     for (owner, record, name) in [
@@ -288,6 +322,14 @@ fn select_path_unions_only_singleton_keyword_path_postings() -> Result<(), Index
         vec![fixture.member.artifact, reference(1)],
     )?;
 
+    Ok((fixture, other))
+}
+
+#[test]
+fn select_path_unions_only_singleton_keyword_path_postings() -> Result<(), IndexError> {
+    use quanta_index_contract::{LqCase, LqExpr, LqFilter, LqLeaf, LqQuery, LqSelect, LqSpan};
+
+    let (fixture, _other) = path_projected_fixture()?;
     let keyword = |value: &str| LqExpr::Leaf(LqLeaf::Keyword(value.into()));
     let search = |expr, project| {
         let mut query = LqQuery::empty(LqSpan::synthetic(0));
@@ -844,6 +886,8 @@ fn repo_file_refuses_overlay_without_authenticated_repository_identity() -> Resu
         revision: 7,
         path: "body/a.rs",
         body: "one",
+        repository: None,
+        language: None,
     }];
     let query = parse_native_content_query("one AND repo:has.file(path:src/lib.rs) case:yes")
         .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
@@ -909,5 +953,118 @@ fn repo_file_selected_witness_obeys_work_and_refunds_source_memory() -> Result<(
         Err(IndexError::ResourceLimited)
     ));
     assert_eq!(denied_memory.live.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+/// A page answered from a captured order equals the re-ranked page, including
+/// each hit's representative `CodeSearch` witness.
+#[test]
+fn cached_order_pages_equal_ranked_pages_with_their_witness() -> Result<(), IndexError> {
+    use crate::native::{Bm25Policy, NativeTextReader, PlannedTextRead, TextReadResult};
+    use quanta_index_contract::{
+        LqCase, LqExpr, LqFilter, LqLeaf, LqPredicateArg, LqQuery, LqSelect, LqSpan,
+    };
+    use quanta_index_core::index::{IndexQueryPort, QueryReadContext, effort::ResourceNeed};
+
+    let (fixture, _other) = path_projected_fixture()?;
+    let leaf = |name: &str| {
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: name.into(),
+            args: vec![LqPredicateArg::RawString("one".into())],
+        })
+    };
+    let mut query = LqQuery::empty(LqSpan::synthetic(0));
+    query.expr = LqExpr::Any(vec![leaf("file.contains"), leaf("path.contains")]);
+    query.options.case = Some(LqCase::Sensitive);
+    query.filters.push(LqFilter::Select {
+        dim: LqSelect::Path,
+    });
+    let plan = || {
+        crate::planner::LexicalPlanner::plan(&query)
+            .map_err(|error| IndexError::InvalidInput(error.to_string()))
+    };
+    let reader = NativeTextReader::new(
+        fixture.recipe,
+        Bm25Policy { k1: 1.2, b: 0.75 },
+        ResourceNeed {
+            cpu_units: 1,
+            io_bytes: 64 * 1024,
+            memory_bytes: 4 * 1024 * 1024,
+            provider_units: 0,
+        },
+    )?;
+    let instance = context(fixture.recipe, fixture.ticket.view.source.owners).instance;
+    let read = |request: PlannedTextRead| -> Result<TextReadResult, IndexError> {
+        let mut budget = budget()?;
+        Ok(reader
+            .query(
+                &request,
+                &mut QueryReadContext {
+                    ticket: &fixture.ticket,
+                    instance: &instance,
+                    objects: &fixture.objects,
+                    maps: &fixture.maps,
+                    budget: &mut budget,
+                },
+            )?
+            .into_result())
+    };
+    let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+    let new =
+        |top_k| PlannedTextRead::new(plan()?, top_k, &constraints, |_bytes, _lifetime| Ok(None));
+    let mut first = read(new(1)?.with_order_capture())?;
+    let order = std::sync::Arc::new(
+        first
+            .take_order()
+            .ok_or_else(|| IndexError::BackendViolation("no order captured".into()))?,
+    );
+    check_eq!(first.matched, 2);
+    check_eq!(
+        u64::try_from(order.len()).map_err(|_e| IndexError::ResourceLimited)?,
+        2
+    );
+    check!(
+        order
+            .entries()
+            .iter()
+            .all(|entry| entry.code_search.is_some())
+    );
+    check!(first.hits.iter().all(|hit| hit.code_search.is_some()));
+    // The first page itself, from the order.
+    let cached_first = read(new(1)?.with_cached_order(std::sync::Arc::clone(&order)))?;
+    check_eq!(cached_first, first);
+    check_eq!(
+        cached_first.hits.first().map(|hit| hit.code_search),
+        first.hits.first().map(|hit| hit.code_search)
+    );
+    // The second page: re-ranked after the anchor, and from the order.
+    let anchor = first
+        .hits
+        .first()
+        .and_then(|hit| {
+            hit.path_group_repository_v1()
+                .map(|repository| (hit.score, repository.clone(), hit.path.clone()))
+        })
+        .ok_or_else(|| IndexError::BackendViolation("first page has no anchor".into()))?;
+    let ranked = read(new(1)?.with_path_rank_after_v1(Some(anchor.clone()), None))?;
+    let cached = read(
+        new(1)?
+            .with_path_rank_after_v1(Some(anchor), None)
+            .with_cached_order(order),
+    )?;
+    check_eq!(cached, ranked);
+    check_eq!(cached.remaining, 1);
+    check_eq!(
+        cached
+            .hits
+            .iter()
+            .map(|hit| hit.code_search)
+            .collect::<Vec<_>>(),
+        ranked
+            .hits
+            .iter()
+            .map(|hit| hit.code_search)
+            .collect::<Vec<_>>()
+    );
     Ok(())
 }

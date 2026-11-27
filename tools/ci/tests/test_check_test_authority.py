@@ -72,7 +72,8 @@ def _write_catalog(path: Path, body: str) -> Path:
     for pattern in (
         "crates/*/tests/*.rs",
         "benchmarks/*/tests/*.rs",
-        "vendor/ciborium-0.2.2/tests/*.rs",
+        "shared/*/tests/*.rs",
+        "tools/testing/*/tests/*.rs",
     ):
         for source in path.glob(pattern):
             manifest = source.parent.parent / "Cargo.toml"
@@ -250,6 +251,35 @@ def test_rail_binding_requires_an_executed_command() -> None:
     )
     assert not module._executes_declared_command("set +e\n" + command + "\ntrue", command)
     assert not module._executes_declared_command("cd missing && " + command + "\ntrue", command)
+
+
+def test_python_rail_junit_output_preserves_exact_test_selection() -> None:
+    module = _load_module()
+    command = (
+        "uv run --frozen --extra dev python -m pytest tools -q "
+        "--ignore=tools/ci/tests/test_semgrep_policy.py "
+        "--ignore=tools/ci/tests/test_check_rust_fallbacks.py -x -vv"
+    )
+    setup = (
+        "set -euo pipefail\n"
+        "unset BASH_ENV ENV\n"
+        'projection_report="$(mktemp)"\n'
+        "trap 'rm -f \"$projection_report\"' EXIT\n"
+    )
+    run = setup + command + ' --junitxml="$projection_report"\n'
+    assert module._executes_declared_command(run, command, allow_pytest_junit_output=True)
+    assert not module._executes_declared_command(run, command)
+    for extra in (" -k selected", " --ignore=tools/ci/tests/test_check_test_authority.py"):
+        assert not module._executes_declared_command(
+            setup + command + extra + ' --junitxml="$projection_report"\n',
+            command,
+            allow_pytest_junit_output=True,
+        )
+    assert not module._executes_declared_command(
+        setup.replace("rm -f", "exit 0") + command + ' --junitxml="$projection_report"\n',
+        command,
+        allow_pytest_junit_output=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -649,20 +679,14 @@ def test_orphan_integration_target_fails_closed(tmp_path: Path):
     assert any("orphan integration test target" in violation.message for violation in violations)
 
 
-def test_workspace_owned_ciborium_targets_are_discovered_and_unregistered_targets_fail_closed(
-    tmp_path: Path,
-) -> None:
+def test_standalone_integration_targets_are_inventoried(tmp_path: Path) -> None:
     module = _load_module()
-    codec_tests = tmp_path / "vendor" / "ciborium-0.2.2" / "tests"
-    codec_tests.mkdir(parents=True)
-    (codec_tests.parent / "Cargo.toml").write_text(
-        '[package]\nname = "ciborium"\nversion = "0.2.2"\n', encoding="utf-8"
-    )
-    (codec_tests / "canonical.rs").write_text("", encoding="utf-8")
-    (codec_tests / "unregistered.rs").write_text("", encoding="utf-8")
-    unrelated_vendor = tmp_path / "vendor" / "other-crate" / "tests"
-    unrelated_vendor.mkdir(parents=True)
-    (unrelated_vendor / "unowned.rs").write_text("", encoding="utf-8")
+    standalone = tmp_path / "tools/testing/demo/tests/checked_close.rs"
+    standalone.parent.mkdir(parents=True)
+    standalone.write_text("#[test]\nfn checked_close() {}\n", encoding="utf-8")
+    shared = tmp_path / "shared/owned/tests/retained.rs"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("#[test]\nfn retained() {}\n", encoding="utf-8")
     catalog = _write_catalog(
         tmp_path,
         """
@@ -672,42 +696,100 @@ def test_workspace_owned_ciborium_targets_are_discovered_and_unregistered_target
         tier = "pr"
         command = "./scripts/cargow nextest run --workspace --all-features --locked"
         target_kind = "integration"
-
-        [[integration_targets]]
-        id = "ciborium-canonical"
-        path = "vendor/ciborium-0.2.2/tests/canonical.rs"
-        owner = "ciborium"
-        rail = "pr-workspace"
         """,
     )
+
     discovered = module._discover_integration_targets(tmp_path)
-    assert "vendor/ciborium-0.2.2/tests/canonical.rs" in discovered
-    assert "vendor/ciborium-0.2.2/tests/unregistered.rs" in discovered
-    assert "vendor/other-crate/tests/unowned.rs" not in discovered
+    assert standalone.relative_to(tmp_path).as_posix() in discovered
+    assert shared.relative_to(tmp_path).as_posix() in discovered
     violations = module.audit_catalog(tmp_path, catalog)
-    assert any(
-        "orphan integration test target" in violation.message
-        and violation.path == codec_tests / "unregistered.rs"
-        for violation in violations
-    )
-    (codec_tests / "unregistered.rs").unlink()
-    assert module.audit_catalog(tmp_path, catalog) == []
+    for source in (standalone, shared):
+        assert any(
+            violation.path == source and "orphan integration test target" in violation.message
+            for violation in violations
+        )
 
 
-def test_live_ciborium_no_std_target_uses_a_separate_disabled_default_feature_rail() -> None:
+def test_catalog_checked_close_has_dedicated_reachable_correctness_rail() -> None:
     module = _load_module()
-    catalog = module.tomllib.loads((REPO_ROOT / "tools/ci/test-authority.toml").read_text())
+    data = module.tomllib.loads((REPO_ROOT / "tools/ci/test-authority.toml").read_text())
     target = next(
-        entry for entry in catalog["integration_targets"] if entry["id"] == "ciborium-no-std"
+        entry for entry in data["integration_targets"] if entry["id"] == "catalog-checked-close"
     )
-    rail = catalog["rails"][target["rail"]]
-    assert target["owner"] == "ciborium"
-    assert target["path"] == "vendor/ciborium-0.2.2/tests/no_std.rs"
-    assert rail["command"] == (
-        "./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium "
-        "--no-default-features --test no_std --locked"
+    assert target["path"] == "tools/testing/catalog-checked-close/tests/checked_close.rs"
+    assert target["owner"] == "quanta-index-catalog-checked-close"
+    rail = data["rails"][target["rail"]]
+    assert rail["tier"] == "correctness"
+    assert rail["command"] == "just rust-test-catalog-checked-close"
+    assert rail["workflow"] == ".circleci/config.yml"
+    assert rail["job"] == "heavy-correctness"
+    assert rail["step"] == "Catalog checked-close integration"
+    assert module.audit_catalog(REPO_ROOT, REPO_ROOT / "tools/ci/test-authority.toml") == []
+
+
+def test_standalone_rail_requires_its_manifest_even_with_workspace_flag(tmp_path: Path) -> None:
+    module = _load_module()
+    manifest = "tools/testing/catalog-checked-close/Cargo.toml"
+    target = "checked_close"
+    selects = module._standalone_rail_selects_manifest
+    assert selects(REPO_ROOT, "just rust-test-catalog-checked-close", manifest, target)
+    assert selects(
+        REPO_ROOT,
+        f"./scripts/cargow test --manifest-path {manifest} --workspace --locked",
+        manifest,
+        target,
     )
-    assert "--all-features" not in rail["command"]
+    assert not selects(
+        REPO_ROOT, "./scripts/cargow nextest run --workspace --locked", manifest, target
+    )
+    assert not selects(
+        REPO_ROOT, f"./scripts/cargow test --manifest-path {manifest} --lib", manifest, target
+    )
+
+    catalog = (REPO_ROOT / "tools/ci/test-authority.toml").read_text(encoding="utf-8")
+    assert catalog.count('rail = "correctness-catalog-checked-close"') == 1
+    wrong = tmp_path / "test-authority.toml"
+    wrong.write_text(
+        catalog.replace(
+            'rail = "correctness-catalog-checked-close"',
+            'rail = "manual-heavy-workspace-nextest"',
+        ),
+        encoding="utf-8",
+    )
+    assert any(
+        "standalone integration target catalog-checked-close rail does not select its manifest"
+        in finding.message
+        for finding in module.audit_catalog(REPO_ROOT, wrong)
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "./scripts/cargow test --workspace -- --manifest-path tools/testing/catalog-checked-close/Cargo.toml",
+        "./scripts/cargow metadata --manifest-path tools/testing/catalog-checked-close/Cargo.toml test",
+        "./scripts/cargow nextest list --manifest-path tools/testing/catalog-checked-close/Cargo.toml run",
+        "./scripts/cargow test --manifest-path tools/testing/catalog-checked-close/Cargo.toml --test other",
+        "./scripts/cargow test --manifest-path tools/testing/catalog-checked-close/Cargo.toml --test",
+    ],
+)
+def test_standalone_rail_rejects_commands_that_do_not_run_target(
+    tmp_path: Path, command: str
+) -> None:
+    module = _load_module()
+    catalog = (REPO_ROOT / "tools/ci/test-authority.toml").read_text(encoding="utf-8")
+    wrong = tmp_path / "test-authority.toml"
+    wrong.write_text(
+        catalog.replace(
+            'command = "just rust-test-catalog-checked-close"', f'command = "{command}"'
+        ),
+        encoding="utf-8",
+    )
+    assert any(
+        "standalone integration target catalog-checked-close rail does not select its manifest"
+        in finding.message
+        for finding in module.audit_catalog(REPO_ROOT, wrong)
+    )
 
 
 def test_invalid_target_reference_and_missing_p0_proof_fail_closed(tmp_path: Path):

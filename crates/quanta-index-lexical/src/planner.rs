@@ -263,6 +263,22 @@ impl LexicalPlanner {
                 needle: needle.clone(),
             });
         }
+        if name == "path.contains"
+            && let [LqPredicateArg::RawString(needle)] = args
+            && file_contains_raw_literal_supported(needle)
+        {
+            return Ok(PlanLeaf::PathContains {
+                needle: needle.clone(),
+            });
+        }
+        if name == "path.regex"
+            && let [LqPredicateArg::RawString(source)] = args
+            && !source.is_empty()
+        {
+            return Ok(PlanLeaf::PathRegex {
+                source: source.clone(),
+            });
+        }
         if let Some(predicate) = LexicalPredicateV1::from_canonical_name(name)
             && predicate
                 .exact_symbol_name_argument(args)
@@ -469,6 +485,8 @@ fn describe_leaf(leaf: &PlanLeaf) -> String {
         PlanLeaf::Path { pattern } => format!("path:{pattern}"),
         PlanLeaf::Predicate { name } => format!("predicate:{name}"),
         PlanLeaf::FileContains { .. } => "predicate:file.contains".to_owned(),
+        PlanLeaf::PathContains { .. } => "predicate:path.contains".to_owned(),
+        PlanLeaf::PathRegex { source } => format!("predicate:path.regex:{source}"),
         PlanLeaf::RepoHasFile { .. } => {
             format!("predicate:{}", LexicalPredicateV1::RepoHasFile.name())
         }

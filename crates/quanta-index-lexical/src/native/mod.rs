@@ -13,20 +13,28 @@ mod literal_reader;
 mod literal_work;
 mod metadata;
 mod text;
+mod text_code_search_rank;
+mod text_contains;
 mod text_filter;
 mod text_inventory_descriptor;
+mod text_literal_anchor;
+mod text_match_reader;
+mod text_match_scan;
 mod text_memory;
 mod text_occurrence;
 mod text_overlay;
 mod text_path;
+mod text_path_census;
 mod text_path_group;
 mod text_phrase;
 mod text_preflight;
 mod text_query;
+mod text_rank_order;
 mod text_regex;
 mod text_repo_predicate;
+mod text_required_literals;
 mod text_universe;
-pub use text_preflight::validate_native_text_input;
+pub use text_preflight::{NativeTextPlanBacking, validate_native_text_input};
 mod text_reader;
 mod text_spool;
 mod text_statistics;
@@ -41,10 +49,16 @@ pub use text::{
     CaseMode, MAX_TEXT_INSPECT_TERM_BYTES, NativeTextIndex, TextCandidate, TextPlan,
     TextReadContext, TextRecipe, TextStatistics, TextTermHit, TextTermScan,
 };
+pub use text_code_search_rank::{CodeSearchMatch, CodeSearchScore};
+pub use text_match_reader::{NativeTextMatchReader, NativeTextMatchResult};
 pub use text_overlay::{TextOverlayCorpus, TextOverlayInput};
 pub use text_query::{
     Bm25Policy, NativeTextHitSource, NativeTextRankedHit, NativeTextRanking, TextContentExecution,
     TextOverlaySource,
+};
+pub use text_rank_order::{
+    MAX_TEXT_RANK_ORDER, MAX_TEXT_RANK_ORDER_BYTES, TextRankEntry, TextRankMemoryPort,
+    TextRankOrder,
 };
 pub use text_reader::{
     NativeTextReader, PlannedTextRead, TextOverlayReadDocument, TextReadHit, TextReadResult,

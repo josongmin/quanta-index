@@ -104,7 +104,13 @@ def _external_join_fixture(tmp_path):
             "schema_version": 2,
             "products": [name],
             "release_digest": "sha256:" + "a" * 64,
-            "binding": {"source": "fixed independent fixture"},
+            "binding": {
+                "source": "fixed independent fixture",
+                "suite_digest": "sha256:"
+                + hashlib.sha256((root / "suite.json").read_bytes()).hexdigest(),
+                "query_pack_digest": "sha256:"
+                + hashlib.sha256((root / "query-pack.json").read_bytes()).hexdigest(),
+            },
             "rows_sha256": {name: "b" * 64},
         }
     return native, roots, summaries
@@ -128,6 +134,8 @@ def test_external_join_replays_each_root_before_and_after_existing_scorer(tmp_pa
             assert paths[name + "_rows"] == root / (name + "_rows.jsonl")
         return {
             "status": "diagnostic_unqualified",
+            "suite_sha256": hashlib.sha256(paths["suite"].read_bytes()).hexdigest(),
+            "query_pack_sha256": hashlib.sha256(paths["query_pack"].read_bytes()).hexdigest(),
             "products": {name: {"raw_sha256": "b" * 64} for name in roots},
         }
 
@@ -168,7 +176,10 @@ def test_external_join_refuses_independent_coverage_and_binding_faults(
         owner.evaluate_external_captures(native, roots)
 
 
-@pytest.mark.parametrize("fault", ["metadata", "capture_bytes", "native_pack", "scored_rows"])
+@pytest.mark.parametrize(
+    "fault",
+    ["metadata", "capture_bytes", "native_pack", "scored_rows", "scored_suite", "scored_pack"],
+)
 def test_external_join_refuses_mutation_during_scoring(tmp_path, monkeypatch, fault):
     from tools.benchmark.retrieval import lexical_file_comparison as owner
     from tools.benchmark.retrieval import live_lexical_external as live
@@ -177,6 +188,17 @@ def test_external_join_refuses_mutation_during_scoring(tmp_path, monkeypatch, fa
     monkeypatch.setattr(live, "verify", lambda root: dict(summaries[root]))
 
     def score(paths):
+        replaced = None
+        if fault in ("scored_suite", "scored_pack"):
+            replaced = paths["suite" if fault == "scored_suite" else "query_pack"]
+            original = replaced.read_bytes()
+            replaced.write_bytes(b"temporarily changed scoring input")
+        inputs = {
+            "suite_sha256": hashlib.sha256(paths["suite"].read_bytes()).hexdigest(),
+            "query_pack_sha256": hashlib.sha256(paths["query_pack"].read_bytes()).hexdigest(),
+        }
+        if replaced is not None:
+            replaced.write_bytes(original)
         if fault == "metadata":
             summaries[roots["cs"]] = {**summaries[roots["cs"]], "tasks": 99}
         elif fault == "capture_bytes":
@@ -185,6 +207,7 @@ def test_external_join_refuses_mutation_during_scoring(tmp_path, monkeypatch, fa
             native["query_pack"].write_bytes(b"changed native pack")
         return {
             "status": "diagnostic_unqualified",
+            **inputs,
             "products": {
                 name: {"raw_sha256": ("c" if fault == "scored_rows" and name == "cs" else "b") * 64}
                 for name in roots
@@ -192,7 +215,26 @@ def test_external_join_refuses_mutation_during_scoring(tmp_path, monkeypatch, fa
         }
 
     monkeypatch.setattr(owner, "evaluate_capture", score)
-    with pytest.raises(ValueError, match="changed during|scored external rows differ"):
+    with pytest.raises(
+        ValueError, match="changed during|scored external rows differ|scored controls differ"
+    ):
+        owner.evaluate_external_captures(native, roots)
+
+
+def test_external_join_refuses_controls_that_only_match_after_replay(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+    from tools.benchmark.retrieval import live_lexical_external as live
+
+    native, roots, summaries = _external_join_fixture(tmp_path)
+    for summary in summaries.values():
+        summary["binding"]["suite_digest"] = "sha256:" + "c" * 64
+    monkeypatch.setattr(live, "verify", lambda root: dict(summaries[root]))
+
+    def must_not_score(_paths):
+        raise AssertionError("different verified suite bytes reached the scorer")
+
+    monkeypatch.setattr(owner, "evaluate_capture", must_not_score)
+    with pytest.raises(ValueError, match="replayed external controls differ"):
         owner.evaluate_external_captures(native, roots)
 
 
@@ -464,6 +506,54 @@ def test_common_population_rejects_cross_product_answerability_disagreement():
     result = comparison_validity({"Q1"}, products, "code_search_file")
     assert result["status"] == "BLOCKED"
     assert "inconsistent_product_answerability" in result["reasons"]
+    assert result["common_eligible_task_ids"] == []
+
+
+@pytest.mark.parametrize("answerable", [True, False])
+def test_abstained_file_observations_require_empty_results_in_common_comparison(answerable):
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = _comparison_products()
+    if not answerable:
+        for product in products.values():
+            product["per_query"][0].update(
+                answerable=False,
+                file_hit_at_10="not_applicable",
+                file_recall_at_10="not_applicable",
+                file_ndcg_at_10="not_applicable",
+                no_gold_empty_at_10=False,
+            )
+    selected = products["quanta_lexical"]["per_query"][0]
+    selected["status"] = "abstained"
+    result = comparison_validity({"Q1"}, products, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert "malformed_product_observation" in result["reasons"]
+    assert result["common_eligible_task_ids"] == []
+
+    if answerable:
+        selected.update(file_hit_at_10=False, file_recall_at_10=0.0, file_ndcg_at_10=0.0)
+    else:
+        selected["no_gold_empty_at_10"] = True
+    result = comparison_validity({"Q1"}, products, "code_search_file")
+    assert result["status"] == "VERIFIED_DIAGNOSTIC"
+    assert result["common_eligible_task_ids"] == ["Q1"]
+
+
+@pytest.mark.parametrize("reported", [{"paths": ["unexpected.rs"]}, {"candidates": 1}])
+def test_abstained_file_observations_refuse_reported_candidates_even_with_zero_score(reported):
+    from tools.benchmark.retrieval.lexical_file_comparison import comparison_validity
+
+    products = _comparison_products()
+    products["quanta_lexical"]["per_query"][0].update(
+        status="abstained",
+        file_hit_at_10=False,
+        file_recall_at_10=0.0,
+        file_ndcg_at_10=0.0,
+        **reported,
+    )
+    result = comparison_validity({"Q1"}, products, "code_search_file")
+    assert result["status"] == "BLOCKED"
+    assert "malformed_product_observation" in result["reasons"]
     assert result["common_eligible_task_ids"] == []
 
 

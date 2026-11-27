@@ -209,7 +209,7 @@ installation or release qualification. Reuse this helper in the same original
 
 Mixed [managed Native builds](../../tools/benchmark/retrieval/causal_cost_build.py)
 still specify the bench profile. Local build/binary custody does not establish
-signed shipping-release identity. The existing [retirement gate](../plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md#출하-바이너리와-벤치-연결의-선행-작업)
+signed shipping-release identity. The existing [retirement gate](../plans/nov-20-native-cutover-closeout/tickets/07-product-qualification.md#출하-벤치와-비교-입력)
 requires actual release-daemon/config/install binding and the benchmark caller's
 own build receipt; that remains implementation/qualification work with F.
 

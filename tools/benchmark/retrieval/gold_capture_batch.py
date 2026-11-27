@@ -19,6 +19,9 @@ def capture(
     other_release: Path,
     sampling: Path,
     output: Path,
+    *,
+    candidate_manifest_path: Path | None = None,
+    candidate_manifest_sha256: str | None = None,
 ) -> dict[str, dict]:
     releases = {}
     for root in (release, other_release):
@@ -41,6 +44,8 @@ def capture(
         recipes,
         output,
         (_read_control_file(sampling / "split-manifest.json"), releases),
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest_sha256=candidate_manifest_sha256,
     )
 
 
@@ -50,8 +55,19 @@ def main() -> int:
     parser.add_argument("--other-release", required=True, type=Path)
     parser.add_argument("--sampling", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--symbol-candidate-manifest", type=Path)
+    parser.add_argument("--symbol-candidate-manifest-sha256")
     args = parser.parse_args()
-    identities = capture(args.release, args.other_release, args.sampling, args.output)
+    if (args.symbol_candidate_manifest is None) != (args.symbol_candidate_manifest_sha256 is None):
+        parser.error("the symbol candidate manifest and SHA-256 must be supplied together")
+    identities = capture(
+        args.release,
+        args.other_release,
+        args.sampling,
+        args.output,
+        candidate_manifest_path=args.symbol_candidate_manifest,
+        candidate_manifest_sha256=args.symbol_candidate_manifest_sha256,
+    )
     print(f"captured {len(identities)} gold capsules at {args.output}")
     return 0
 

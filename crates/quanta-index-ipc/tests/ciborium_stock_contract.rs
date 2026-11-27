@@ -88,6 +88,56 @@ fn required_tag_and_dynamic_value_keep_fixed_wire() {
 }
 
 #[test]
+fn malformed_text_and_integer_keep_syntax_offsets() {
+    use ciborium::de::Error;
+
+    for (wire, offset) in [
+        (&[0x1e][..], 0),
+        (&[0x1f][..], 0),
+        (&[0x83, 0x01, 0x1f, 0x03][..], 2),
+        (&[0x7f, 0x61, b'a', 0x01, 0xff][..], 3),
+        (&[0x62, 0xc3, 0x28][..], 0),
+        (&[0x7f, 0x62, 0xc3, 0x28, 0xff][..], 1),
+    ] {
+        let decoded: Result<Value, _> = ciborium::de::from_reader(wire);
+        assert!(matches!(decoded, Err(Error::Syntax(actual)) if actual == offset));
+    }
+}
+
+#[test]
+fn long_utf8_and_dynamic_bytes_round_trip() {
+    let text = "ボ".repeat(2_000);
+    let text_wire = encode(&text);
+    let decoded: String = ciborium::de::from_reader(text_wire.as_slice()).expect("long UTF-8");
+    assert_eq!(decoded, text);
+
+    let value = Value::Bytes(vec![0, 0xff, 0x80, 1]);
+    let bytes = encode(&value);
+    assert_eq!(bytes, [0x44, 0, 0xff, 0x80, 1]);
+    let decoded: Value = ciborium::de::from_reader(bytes.as_slice()).expect("dynamic bytes");
+    assert_eq!(decoded, value);
+}
+
+#[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
+#[test]
+fn pointer_integer_bounds_keep_conversion_semantics() {
+    use ciborium::value::Integer;
+
+    for value in [0usize, 1, usize::MAX] {
+        let integer = Integer::from(value);
+        assert_eq!(usize::try_from(integer), Ok(value));
+        assert_eq!(u128::try_from(integer), u128::try_from(value));
+    }
+    for value in [isize::MIN, -1, 0, 1, isize::MAX] {
+        let integer = Integer::from(value);
+        assert_eq!(isize::try_from(integer), Ok(value));
+        assert_eq!(i128::try_from(value), Ok(i128::from(integer)));
+    }
+    assert!(usize::try_from(Integer::from(-1i8)).is_err());
+    assert!(isize::try_from(Integer::from(usize::MAX)).is_err());
+}
+
+#[test]
 fn recursion_limit_separates_nested_containers_from_incomplete_scalars() {
     use ciborium::de::{Error, from_reader_with_recursion_limit};
 
@@ -117,7 +167,7 @@ fn bounded_malformed_value_corpus_never_panics() {
     ];
     let mut rejected = 0_usize;
     for length in 0..32 {
-        for _case in 0..64 {
+        for _case in 0..4_096 {
             let mut bytes = Vec::with_capacity(length);
             for _byte in 0..length {
                 state ^= state.wrapping_shl(13);

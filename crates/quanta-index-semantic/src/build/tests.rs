@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use arrow_array::Array;
 use futures::TryStreamExt as _;
-use lancedb::query::ExecutableQuery as _;
+use lance::Dataset;
+use lance::dataset::{UpdateBuilder, builder::DatasetBuilder};
 use tempfile::tempdir;
 
 use quanta_index_contract::{
@@ -34,13 +35,12 @@ use super::{
     PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME,
     StreamScopeAuthorityV1, build_stream, build_stream_reported,
     build_stream_reported_with_diagnostic, column_as, ensure_generation_contract, failpoint,
-    open_connection, persist_generation_contract, stage_generation_contract,
+    persist_generation_contract, stage_generation_contract,
 };
 use crate::budget::{DenseLaneBudgetV1, DenseLaneTalliesV1};
 use crate::dataset_promotion::DatasetPromotion;
 use crate::durable_write::{set_atomic_write_fail_before_rename_action, write_atomic};
 use crate::generation_contract::GenerationContract;
-use crate::integrity::SealTalliesV1;
 use crate::layout::{
     self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CAPABILITY_STATUS,
     COLUMN_CARD_SCHEMA_VERSION, COLUMN_CORPUS_KIND, COLUMN_GENERATED, COLUMN_OWNER_ID,
@@ -48,9 +48,21 @@ use crate::layout::{
     COLUMN_SOURCE_DOC_ID, COLUMN_SOURCE_ROLE, COLUMN_VISIBILITY, TABLE_NAME,
 };
 use crate::manifest::SemanticManifest;
+use crate::seal_tallies::SealTalliesV1;
 use crate::search::open_generation;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+async fn open_table_dataset(generation_dir: &Path, name: &str) -> Result<Dataset, CoreError> {
+    let path = layout::dataset_dir(generation_dir).join(format!("{name}.lance"));
+    let uri = layout::dataset_dir_to_uri(&path)?;
+    DatasetBuilder::from_uri(&uri)
+        .load()
+        .await
+        .map_err(|error| {
+            CoreError::Storage(format!("open test dataset {}: {error}", path.display()))
+        })
+}
 
 const PROMOTION_CRASH_ROOT_ENV: &str = "QUANTA_INDEX_SEMANTIC_PROMOTION_CRASH_ROOT";
 
@@ -381,13 +393,26 @@ fn generation_batch_refuses_embedding_id_reuse_across_distinct_records() -> Test
     Ok(())
 }
 
+async fn append_fixture_rows(
+    dataset: &mut lance::Dataset,
+    rows: &[&EmbeddingRecord],
+) -> Result<(), CoreError> {
+    let batch = super::build_record_batch(rows, 3)?;
+    let schema = batch.schema();
+    let rows = arrow_array::RecordBatchIterator::new(std::iter::once(Ok(batch)), schema);
+    dataset
+        .append(rows, None)
+        .await
+        .map_err(|error| CoreError::Storage(format!("append fixture rows: {error}")))
+}
+
 #[test]
 fn sealed_row_commitment_refuses_duplicate_candidate_and_record_ids() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let temp = tempdir()?;
-    let tables = crate::run_blocking(&runtime, super::open_working_tables(temp.path(), 3))?;
+    let mut tables = crate::run_blocking(&runtime, super::open_working_tables(temp.path(), 3))?;
     let first = embedding(
         "first",
         "src/ids.rs",
@@ -406,45 +431,28 @@ fn sealed_row_commitment_refuses_duplicate_candidate_and_record_ids() -> TestRes
     )?;
     crate::run_blocking(&runtime, async {
         let rows = [&first, &second];
-        let _added = tables
-            .table
-            .add(super::build_record_batch(&rows, 3)?)
-            .execute()
-            .await
-            .map_err(|error| CoreError::Storage(format!("seed semantic rows: {error}")))?;
+        append_fixture_rows(&mut tables.table, &rows).await?;
         let _commitment =
-            crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&tables.table).await?;
+            crate::semantic_row_integrity_v1::dataset_row_commitment_v1(&tables.table).await?;
         let mut duplicate = second.clone();
         duplicate.record_id = "record-third".into();
         duplicate.embedding_id = first.embedding_id.clone();
-        let _added = tables
-            .table
-            .add(super::build_record_batch(&[&duplicate], 3)?)
-            .execute()
-            .await
-            .map_err(|error| {
-                CoreError::Storage(format!("append duplicate semantic ID: {error}"))
-            })?;
+        append_fixture_rows(&mut tables.table, &[&duplicate]).await?;
         assert!(matches!(
-            crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&tables.table).await,
+            crate::semantic_row_integrity_v1::dataset_row_commitment_v1(&tables.table).await,
             Err(CoreError::Storage(message)) if message.contains("duplicate embedding_id")
         ));
         Ok::<(), CoreError>(())
     })?;
     let record_temp = tempdir()?;
-    let record_tables =
+    let mut record_tables =
         crate::run_blocking(&runtime, super::open_working_tables(record_temp.path(), 3))?;
     let mut duplicate_record = second;
     duplicate_record.record_id = first.record_id.clone();
     crate::run_blocking(&runtime, async {
-        let _added = record_tables
-            .table
-            .add(super::build_record_batch(&[&first, &duplicate_record], 3)?)
-            .execute()
-            .await
-            .map_err(|error| CoreError::Storage(format!("seed duplicate record ID: {error}")))?;
+        append_fixture_rows(&mut record_tables.table, &[&first, &duplicate_record]).await?;
         assert!(matches!(
-            crate::semantic_row_integrity_v1::semantic_row_commitment_v1(&record_tables.table)
+            crate::semantic_row_integrity_v1::dataset_row_commitment_v1(&record_tables.table)
                 .await,
             Err(CoreError::Storage(message)) if message.contains("duplicate record_id")
         ));
@@ -888,6 +896,7 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&symbol_batch),
         None,
+        None,
     )?;
     assert_eq!(symbol_contract.required_corpora, vec!["SymbolCard"]);
     assert!(!layout::build_contract_path(&generation_dir).exists());
@@ -909,6 +918,7 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&module_batch),
         None,
+        None,
     )?;
     assert_eq!(
         merged_contract.required_corpora,
@@ -928,6 +938,7 @@ fn generation_contract_accumulates_corpora_across_mutation_and_seal_batches() ->
     let sealed_contract = ensure_generation_contract(
         &generation_dir,
         &SemanticIngestHeaderV1::of_batch(&seal_batch),
+        None,
         None,
     )?;
     assert_eq!(
@@ -1355,12 +1366,8 @@ fn scv2_02_v4_round_trip_preserves_metadata_fields() -> TestResult {
         Some("policy:semantic:v1".to_string())
     );
 
-    let connection = crate::run_blocking(
-        &runtime,
-        open_connection(&layout::dataset_dir(&generation_dir)),
-    )?;
-    let table = crate::run_blocking(&runtime, connection.open_table(TABLE_NAME).execute())?;
-    let stream = crate::run_blocking(&runtime, table.query().execute())?;
+    let table = crate::run_blocking(&runtime, open_table_dataset(&generation_dir, TABLE_NAME))?;
+    let stream = crate::run_blocking(&runtime, table.scan().try_into_stream())?;
     let batches: Vec<arrow_array::RecordBatch> =
         crate::run_blocking(&runtime, stream.try_collect())?;
     let batch = batches
@@ -1983,15 +1990,9 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
         .build()?;
     let replacement_dir =
         layout::generation_dir(&root, &repo_id(), &revision_id(), replacement_generation);
-    let connection = crate::run_blocking(
+    let mut membership_table = crate::run_blocking(
         &runtime,
-        open_connection(&layout::dataset_dir(&replacement_dir)),
-    )?;
-    let membership_table = crate::run_blocking(
-        &runtime,
-        connection
-            .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
-            .execute(),
+        open_table_dataset(&replacement_dir, CLUSTER_MEMBERSHIP_TABLE_NAME),
     )?;
     let _delete_result = crate::run_blocking(
         &runtime,
@@ -2013,11 +2014,8 @@ fn cluster_membership_same_seal_replace_base_clone_and_tombstone_v1() -> TestRes
     );
 
     let base_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), base_generation);
-    let base_connection =
-        crate::run_blocking(&runtime, open_connection(&layout::dataset_dir(&base_dir)))?;
-    crate::run_blocking(
-        &runtime,
-        base_connection.drop_table(CLUSTER_MEMBERSHIP_TABLE_NAME, &[]),
+    std::fs::remove_dir_all(
+        layout::dataset_dir(&base_dir).join(format!("{CLUSTER_MEMBERSHIP_TABLE_NAME}.lance")),
     )?;
     assert!(
         crate::run_blocking(
@@ -2214,17 +2212,13 @@ fn sealed_manifest_rejects_same_row_count_content_mutation() -> TestResult {
         )?,
     )?;
     let generation_dir = layout::generation_dir(&root, &repo_id(), &revision_id(), generation);
-    let connection = crate::run_blocking(
-        &runtime,
-        open_connection(&layout::dataset_dir(&generation_dir)),
-    )?;
-    let table = crate::run_blocking(&runtime, connection.open_table(TABLE_NAME).execute())?;
+    let table = crate::run_blocking(&runtime, open_table_dataset(&generation_dir, TABLE_NAME))?;
     let update = crate::run_blocking(
         &runtime,
-        table
-            .update()
-            .only_if("embedding_id = 'emb-root'")
-            .column(layout::COLUMN_SNIPPET, "'fn tampered() {}'")
+        UpdateBuilder::new(Arc::new(table))
+            .update_where("embedding_id = 'emb-root'")?
+            .set(layout::COLUMN_SNIPPET, "'fn tampered() {}'")?
+            .build()?
             .execute(),
     )?;
     assert_eq!(update.rows_updated, 1);
@@ -2423,12 +2417,7 @@ async fn promoted_row_count(
     generation: ManifestGeneration,
 ) -> Result<usize, CoreError> {
     let generation_dir = layout::generation_dir(root, &repo_id(), &revision_id(), generation);
-    let connection = open_connection(&layout::dataset_dir(&generation_dir)).await?;
-    let table = connection
-        .open_table(TABLE_NAME)
-        .execute()
-        .await
-        .map_err(|err| CoreError::Storage(format!("open promoted table: {err}")))?;
+    let table = open_table_dataset(&generation_dir, TABLE_NAME).await?;
     table
         .count_rows(None)
         .await
@@ -3327,7 +3316,7 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
         .enable_all()
         .build()?;
     let temp = tempdir()?;
-    let tables = crate::run_blocking(&runtime, super::open_working_tables(temp.path(), 3))?;
+    let mut tables = crate::run_blocking(&runtime, super::open_working_tables(temp.path(), 3))?;
     let hostile = "a' OR 1=1 --";
     let specifications = [
         (
@@ -3408,14 +3397,10 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
     };
     crate::run_blocking(&runtime, async {
         let rows: Vec<_> = seed.embeddings.iter().collect();
-        let _added = tables
-            .table
-            .add(super::build_record_batch(&rows, 3)?)
-            .execute()
-            .await
-            .map_err(|error| CoreError::Storage(format!("seed semantic rows: {error}")))?;
+        append_fixture_rows(&mut tables.table, &rows).await?;
         let mut report = IngestStageReport::default();
-        super::append_cluster_membership_scope(&tables.membership_table, &seed, &mut report).await
+        super::append_cluster_membership_scope(&mut tables.membership_table, &seed, &mut report)
+            .await
     })?;
     let replacements = [0, 2, 5, 6]
         .into_iter()
@@ -3456,7 +3441,7 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
     crate::run_blocking(
         &runtime,
         super::apply_window(
-            &tables,
+            &mut tables,
             &window,
             3,
             &mut replacement_report,
@@ -3494,11 +3479,11 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
     // All eight rows remain exactly once: replacement removed its old rows
     // before append and did not touch any of the cross-product neighbors.
     let read_ids =
-        |table: &lancedb::Table, column: &'static str| -> Result<Vec<String>, CoreError> {
+        |dataset: &lance::Dataset, column: &'static str| -> Result<Vec<String>, CoreError> {
             crate::run_blocking(&runtime, async {
-                let batches = table
-                    .query()
-                    .execute()
+                let batches = dataset
+                    .scan()
+                    .try_into_stream()
                     .await
                     .map_err(|error| CoreError::Storage(format!("query fixture: {error}")))?
                     .try_collect::<Vec<_>>()
@@ -3539,7 +3524,7 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
     crate::run_blocking(
         &runtime,
         super::apply_tombstones(
-            &tables,
+            &mut tables,
             &tombstones,
             two,
             &mut tombstone_report,
@@ -3571,7 +3556,7 @@ fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> T
     crate::run_blocking(
         &runtime,
         super::apply_tombstones(
-            &tables,
+            &mut tables,
             &[],
             two,
             &mut tombstone_report,

@@ -6,6 +6,7 @@ use quanta_index_contract::index::{Digest, ObjectRef, OperationKey, RetiredProje
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeCommandModeV1 {
     Serve,
+    PreflightWriter,
     Verify,
     VerifyCandidate,
     Select,
@@ -59,15 +60,20 @@ impl NativeStateCommandV1 {
         }) {
             bail!("protected Source route reference must be nonzero");
         }
-        if let Some(policy) = self
-            .identity
-            .and_then(|identity| identity.retired_projection_policy)
-        {
-            policy
-                .validate_v1()
-                .map_err(|reason| anyhow::anyhow!(reason))?;
+        if let Some(policy) = self.identity.and_then(|identity| identity.retired_projection_policy) {
+            policy.validate_v1().map_err(|reason| anyhow::anyhow!(reason))?;
         }
         match self.mode {
+            NativeCommandModeV1::PreflightWriter => {
+                if self.identity.is_some()
+                    || self.config_digest.is_none()
+                    || self.install_catalog_digest.is_some()
+                    || self.select_operation.is_some()
+                    || self.receipt_path.is_some()
+                {
+                    bail!("native writer preflight requires pinned config and no BOOT identity");
+                }
+            }
             NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. } => {
                 if self.identity.is_some()
                     || self.install_catalog_digest.is_some()
@@ -218,6 +224,33 @@ impl NativeCommandInput {
             .config_digest
             .map(|value| parse_digest(&value, "--config-digest"))
             .transpose()?;
+
+        if mode == NativeCommandModeV1::PreflightWriter {
+            if self.root_nonce.is_some()
+                || manifest_operation.is_some()
+                || self.manifest_object.is_some()
+                || self.source_cut_digest.is_some()
+                || self.protected_source_routes.is_some()
+                || self.retired_policy_object.is_some()
+                || self.retired_policy_sha256.is_some()
+                || self.retired_policy_identity_count.is_some()
+                || self.install_catalog_digest.is_some()
+                || self.receipt_path.is_some()
+            {
+                bail!("native writer preflight accepts only config and digest");
+            }
+            let command = NativeStateCommandV1 {
+                mode,
+                config_path,
+                identity: None,
+                config_digest,
+                install_catalog_digest: None,
+                select_operation: None,
+                receipt_path: None,
+            };
+            command.validate()?;
+            return Ok(command);
+        }
 
         if matches!(
             mode,
@@ -378,9 +411,7 @@ fn parse_retired_policy(
         sha256: parse_digest(&sha256, "--retired-policy-sha256")?,
         identity_count: count.parse()?,
     };
-    reference
-        .validate_v1()
-        .map_err(|reason| anyhow::anyhow!(reason))?;
+    reference.validate_v1().map_err(|reason| anyhow::anyhow!(reason))?;
     Ok(Some(reference))
 }
 

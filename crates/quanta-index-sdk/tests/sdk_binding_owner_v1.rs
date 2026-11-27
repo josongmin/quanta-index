@@ -147,12 +147,17 @@ fn lexical_candidate(repo: RepoId) -> quanta_index_contract::LexicalCandidate {
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        start_line: 1,
-        end_line: 2,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 1,
+            end_line: 2,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "needle".to_string(),
+            snippet_hit_offset: None,
+            highlights: vec![],
+        }),
         score: 1.0,
-        snippet: "needle".to_string(),
-        snippet_hit_offset: None,
-        highlights: vec![],
+        native_source: None,
     }
 }
 
@@ -168,7 +173,10 @@ fn code_search_file_candidate() -> quanta_index_contract::LexicalCandidate {
         revision_id: revision_id(),
         source_sha256: [7; 32],
     };
-    row.snippet = row.repo_relative_path.as_str().to_string();
+    row.excerpt
+        .as_mut()
+        .expect("fixture row carries a match excerpt")
+        .snippet = row.repo_relative_path.as_str().to_string();
     row.source = Some(source.clone());
     row.preview = Some(PreviewMetadata {
         kind: PreviewKind::Path,
@@ -631,12 +639,17 @@ fn owner_hit(candidate_id: &str, score: f32) -> quanta_index_contract::LexicalCa
         revision_id: revision_id(),
         manifest_generation: ManifestGeneration::new(7),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        start_line: 1,
-        end_line: 2,
+        lines: Some(quanta_index_contract::LexicalLineRange {
+            start_line: 1,
+            end_line: 2,
+        }),
+        excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+            snippet: "needle".to_string(),
+            snippet_hit_offset: None,
+            highlights: vec![],
+        }),
         score,
-        snippet: "needle".to_string(),
-        snippet_hit_offset: None,
-        highlights: vec![],
+        native_source: None,
     }
 }
 

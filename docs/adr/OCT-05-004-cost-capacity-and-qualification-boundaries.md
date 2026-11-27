@@ -167,10 +167,10 @@ physical I/O. Native segment reuse does not establish delta-proportional
 whole-call reads/CPU. A future compaction policy requires independent
 score/page parity and measured foreground, maintenance and residency budgets.
 
-Owners: [document census](../../crates/quanta-index-lexical/src/doc_census.rs),
-[live statistics](../../crates/quanta-index-lexical/src/sealed_generation/live_bm25.rs),
-[native writer](../../crates/quanta-index-lexical/src/writer_cache.rs) and
-[selected scorer port](../../crates/quanta-index-lexical/src/searcher/port.rs).
+Owners: [document census](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/doc_census.rs),
+[live statistics](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/sealed_generation/live_bm25.rs),
+[native writer](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/writer_cache.rs) and
+[selected scorer port](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/searcher/port.rs).
 Retain fixed untouched-file/component and byte gates, independent fresh-rebuild
 score bits and cursor oracles, consecutive delta/delete/no-op/reopen fixtures,
 empty-generation cases and mandatory-sidecar corruption/refusal tests.
@@ -202,8 +202,8 @@ performance improvement claim. `TierMeasurement` gains a crate-visible field;
 external struct-literal construction is consequently restricted. Existing
 repository callers obtain measurements through the producer functions.
 
-Owners: [harness publication](../../crates/quanta-index-searchd-harness/src/harness.rs)
-and [Scale producer](../../crates/quanta-index-searchd-harness/src/scale.rs).
+Owners: [harness publication](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-harness/src/harness.rs)
+and [Scale producer](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-harness/src/scale.rs).
 Owner execution and matching-release stage attribution remain separate checks
 under [E4-01](../plans/oct-22-finalizing/E07-performance-operations.md).
 
@@ -227,86 +227,26 @@ found type/ownership and lint errors; those were repaired before these passes.
 
 ### XL repeated validation trace
 
-The clean `82bca2f25a94e8c33bcf73f72bf38c7ed6315efd` source completed one
-instrumented XL execution with the original 32,768 files, 64 repositories,
-113,023,546 source bytes, seed5864059738136528177 and unchanged admission.
-The release executable was built with Rust1.92 and `-C lto=off`; SHA-256 is
-`a428f424ddc426f795993e236868ece95bb5c7e6c7c29d0a9e48e534f18700b3`.
-The matching source and binary before/after, successful phase endings and
-stdout/stderr/profile digests are recorded in
-`/private/tmp/qi-delta-trace-5pgjzkan/xlarge/execution.json`.
-The execution exited0 in492.750s as `VERIFIED_DIAGNOSTIC`.
+The legacy XL diagnostics used 32,768 files, 64 repositories, seed
+5864059738136528177 and the same admission limits. On `82bca2f2`, six
+generation proof envelopes consumed 75.644s of a 90.611s delta seal. The
+61.645s file-authority reconstruction was nested. Post-repair `e227757a`
+passed full/delta/no-op/delete/query/reopen and independent replay. Delta
+seal took 42.517s, including 32.596s of proof envelopes. Activation remained
+a separate operation. These are two source-bound, instrumented macOS samples.
 
-A single 3,437-byte file replacement took90.610748458s through ingest/seal.
-The nonoverlapping partition was75.644136585s for six whole lexical generation
-proofs,7.093390917s for the remaining lexical build,0.687121541s for semantic
-build,1.274530542s for finalization and5.911568873s for other work. The proof
-calls comprise base and coverage checks before intent, the same two checks
-under the publication lock, build preparation coverage, and the new generation
-proof after build. File-authority reconstruction consumed61.645064999s
-*inside* those six proofs; it must not be added to that partition. No-op seal
-took91.640092666s, including74.690540167s of the same six proofs. Delta
-activation was a separate13.184379875s control operation.
+The packed planner now binary-searches strictly ordered `SourceFileKey`
+rows and validates the full binding. In one publication, the non-cloneable,
+non-serialized `PublicationValidationOwner` carries identity, root/manifest
+and policy commitments from independent membership verification. Refusals
+still authenticate current digest, path, length and inventory. Query/scrub
+and new-generation validation retain independent proof. This introduces no
+source-body, query-handle or metadata success cache.
 
-The per-seal carrier observed21.614164333s inside delta ingest, leaving
-68.996584125s unattributed by that carrier. The trace resolves most of that
-remainder to preflight and repeated validation; the two observation domains
-overlap. These are shared macOS diagnostics. The original5bf93.969s result
-had no such trace and used a different source/build configuration. Neither
-speed improvement nor current-main performance is established by this run.
-
-The packed-source planner additionally performed a linear inherited-root
-search for each unchanged source. It now binary-searches the strictly ordered
-`SourceFileKey` rows while retaining complete revision/digest equality and
-the existing byte-size, storage and symlink refusal paths. Owner execution
-with `./scripts/cargow --lane test-scale-f15-lane` passed the four `packed_plan`
-library tests,33 `l2_file_mutation` integration tests and lexical library/test
-Clippy with all features and `-D warnings`. The lookup repair alone does not
-remove the75.644s whole-proof bottleneck; the coupled repair is measured below.
-
-The structural repair now carries a non-cloneable, non-serialized
-`PublicationValidationOwner` through one publication. Adapter-private typed
-proofs retain only identity, root/manifest and policy commitments after a full
-independent source/normalization/posting walk. Every existing refusal boundary
-still authenticates current committed objects, lengths, digests, paths and
-inventory. Query and scrub doors retain independent full validation; no source
-bodies, postings, query handles or filesystem-metadata success cache are retained.
-Exact payload identity prevents owner reuse across different publications.
-
-The complete coupled core/lexical/search-plane/runtime bundle passed1,035 library
-tests (one ignored),36 `l2_file_mutation` tests and
-`just rust-test-e2e test-scale-f15-lane` (300 passed,10 skipped), plus strict
-Clippy, format, hexagonal boundaries and module snapshots in its isolated
-worktree. Main integration preserved exact tested bytes, including the packed
-planner repair. Regressions reject same-inode/size/restored-mtime tampering,
-missing/symlink/orphan objects, lineage/owner mismatches and changed sealed
-manifests; retry, rebuild/query parity and process restart remain covered.
-The clean main `e227757ab57e680801483e4d443853bfb768d8f2` completed the
-matching post-repair XL execution and independent canonical profile replay.
-`./scripts/cargow --lane test-scale-f15-lane rustc -p quanta-index-searchd-harness
---bin scale_matrix --all-features --release --locked -- -C lto=off` built the
-Rust1.92 executable in12m35s. SHA-256 is
-`c821b71467bb396cbf687651f4977808887b8b7df2b30825c92253c19c6c5630`.
-The actual capture exited0 in352.747s. Source, binary, all phase endings and
-independent replay are bound under `/private/tmp/qi-publication-proof-xl-e227757a/`.
-The replay equals the canonical capture profile after excluding only its added
-`scope.binary_source_binding` capture metadata.
-
-Original32,768files/64repos/113,023,546bytes, seed5864059738136528177,
-tier-manifest bytes, corpus digest and runtime configuration match the82bc trace.
-Process ceiling4GiB, history1GiB per pair/2GiB total and registry512MiB admission
-were not raised. Full/delta/no-op/delete/query/reopen passed. The3,437-byte delta
-seal took42.517229542s; its exclusive partition is32.596106375s for six proof
-envelopes,5.017497083s for the remaining lexical build,0.712974417s for semantic
-build,1.231631167s for finalization and2.959020500s for other work. Two independent
-cold walks remain12.585253833s and12.393015750s; four repeated authentications are
-1.757–2.298s. Nested file authority23.880954126s overlaps this partition.
-No-op seal45.034310666s and delete seal43.148191166s include six proof envelopes
-of33.357206292s and31.809186999s respectively; delta activation13.215161500s
-remains a separate operation. These are single profiled samples on shared macOS.
-They establish executed diagnostic scope, not qualified speed or a guarantee
-that all validation cost is removed. No broader source-body or mtime cache was
-introduced; cold custody and new-generation validation remain independent.
+The frozen coupled scope passed 1,035 lib tests, 36 mutation tests and 300
+E2E tests with 10 skipped, plus the stated strict checks. The original two
+builds, binaries, nested attribution and fault selections are recoverable below.
+[Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ### Publication plan custody and remaining structural cost
 
@@ -416,70 +356,20 @@ proof construction; neither repair establishes end-to-end O(delta) behavior.
 
 ### Post-repair matching XL diagnostic
 
-On2026-10-08 clean detached source
-`703d0e6899599ab4ab69c051089a9e4eda497ab0` completed an actual matching XL
-capture after main `4647097d` plan custody and `dfbf9213` publication-only output.
-`./scripts/cargow --lane test-scale-f15-lane rustc -p quanta-index-searchd-harness
---bin scale_matrix --all-features --release --locked -- -C lto=off` completed
-the release build in29m53s. The controller's first hash finalization failed on
-Python3.9; a subsequent guessed cache path selected the old e227 binary and was
-refused before native execution. `cargow` resets inherited `CARGO_TARGET_DIR`
-unless preservation is explicit. A hot recheck with `--message-format=json`
-selected Cargo's actual `compiler-artifact.executable`, then pinned the copy:
-`641f6b37eea3d8a10cef7cbe9742b951aa824c98d2e7aeb36950a64c6807e831`.
-Both controller failures and successful build logs remain outside the checkout.
+Frozen `703d0e68` exited 0 in 361.748s after the plan-custody and
+publication-only repairs. The original XL corpus, configuration and 4 GiB /
+history / registry admission matched `e227757a`. All ten phases completed
+and independent replay matched the canonical profile after excluding its
+capture-only binding metadata. The controller had refused an earlier stale
+binary; the successful run pinned Cargo's actual executable.
 
-The canonical `tools.benchmark.retrieval.causal_cost_capture` ran with
-`--tier xlarge --seed 5864059738136528177 --max-seconds 1100`, the exact source
-and binary digest, under the shared resource-admission lock. Native exit0 in
-361.748152s, all10 phase endings, full/delta/no-op/delete/query assertions and
-same-process reopen passed. Source and executable identities matched before
-and after; the source stayed clean. The separate
-`tools.benchmark.retrieval.causal_cost_profile` replay reproduces the canonical
-profile bytes after deleting only the capture-added `scope.binary_source_binding`.
-Artifacts are in `/private/tmp/qi-local-scale-703d-ky1zujs_/`: `build.json`,
-`build-wrong-cache.json`, `xlarge/{execution.json,causal-profile.json,artifact/summary.json}`,
-`independent-profile-replay.json` and `comparison.json`.
-
-The e227 and703d tier-manifest bytes,32,768files/64repos/113,023,546source bytes,
-seed, corpus digest `dbc4b0d39b458aa4fd838a28e01caf95c0146601b1fae50bfc5d3b197dd59821`,
-config digest `a1869a15783402e5710fba038165e190665db346515808da10dc0e3a020f7cdc`
-and complete runtime configuration are identical. Process4GiB, history1GiB per
-pair/2GiB total and registry512MiB admission remain unchanged.
-
-| Observed operation | e227 sample, seconds | 703d sample, seconds |
-| --- | --- | --- |
-| Full seal | 129.469351375 | 132.434367041 |
-| Delta seal,3,437changed bytes | 42.517229542 | 40.970795167 |
-| No-op seal | 45.034310666 | 45.405355541 |
-| Delete seal | 43.148191166 | 43.948350000 |
-| Delta activation | 13.215161500 | 13.395811292 |
-| Same-process reopen | 13.848056125 | 14.328692292 |
-
-The new delta still performs six generation-proof envelopes totaling32.609455209s:
-two cold walks13.006949625s/12.346616542s and four authentications1.718–1.976s.
-Nested file-authority work23.880979668s overlaps those envelopes; it is not an
-additional exclusive partition. The new plan marker records one derivation per
-seal and three storage revalidations. For delta these total1.043844000s and
-2.808988124s respectively; root/manifest reads and operation binding precede the
-markers. No-op and delete keep their full independent proofs as well.
-
-Sampled RSS max2,457,288,704bytes and largest RSS observation gap114.818ms are
-within the selected4GiB/500ms bounds; the samples do not establish the true peak.
-Registry accounting326,813,495bytes remains below536,870,912bytes. Exact retained
-file bytes after full/delta/no-op/delete are923,876,747/960,972,849/924,133,708/
-939,211,892; this gauge is separate from RSS and filesystem allocated bytes.
-
-`VERIFIED` applies to this local matching diagnostic and independent replay.
-Two instrumented samples on shared macOS do not establish a randomized paired
-effect, quiet-host speed/RSS improvement, physical-I/O attribution or Linux
-qualification. The harness has no SDK dependency; frozen703d predates the later
-SDK replay-CAS repair, whose actual debug OS-child regression is owned by the
-[lifecycle ADR](OCT-05-003-active-query-and-runtime-lifecycle.md#replay-cas-preflight-authority-repair).
-Same-process reopen here is not OS-child restart, installed-provider/release or
-Semantica Runtime qualification. Current-byte authentication, independent cold
-membership proofs and full metadata/inventory traversal remain measured cost
-boundaries; the repairs do not make end-to-end work O(delta).
+Delta seal took 40.971s, with 32.609s in six generation-proof envelopes. Nested
+file-authority work was 23.881s. One plan derivation and three storage
+revalidations remained, along with full metadata and inventory traversals.
+Same-process reopen is the recorded scope. Sampled RSS and retained logical
+bytes do not establish continuous RSS or physical allocated space. A single
+profiled macOS run provides no paired speed or Linux release qualification.
+[Later SDK replay-CAS proof](OCT-05-003-active-query-and-runtime-lifecycle.md#replay-cas-preflight-authority-repair) · [Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ## Paged term directory
 
@@ -536,11 +426,11 @@ truncate a declared 600-second scale query. Bounded socket fixtures independentl
 check late valid responses, terminal read timeout and non-refreshed deadlines.
 
 The former `text_authority/reader.rs` owner was replaced by the
-[paged Native reader](../../crates/quanta-index-lexical/src/text_authority/paged_reader.rs).
+[paged Native reader](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/text_authority/paged_reader.rs).
 Related owners:
-[candidate integrity](../../crates/quanta-index-lexical/src/searcher/candidates.rs),
-[snapshot accounting](../../crates/quanta-index-lexical/src/adapter_open.rs) and
-[harness deadline](../../crates/quanta-index-searchd-harness/src/harness.rs).
+[candidate integrity](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/searcher/candidates.rs),
+[snapshot accounting](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/adapter_open.rs) and
+[harness deadline](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-harness/src/harness.rs).
 Retain fixed raw/phrase/regex result sets, aggregate candidate refusals, pinned
 old-reader GC/unlink/concurrency controls and corruption/cancellation outcomes.
 
@@ -587,8 +477,8 @@ borrows replacement/tombstone inputs and discards displaced shared rows without
 cloning unused return values. The candidate owns its new rows. These reductions
 preserve authenticated base walks, source lineage, retry, publication identity,
 old readers and independent open; they do not establish a whole-pipeline bound.
-Owners: [coverage reader/cache](../../crates/quanta-index-lexical/src/sealed_generation/coverage.rs)
-and [delta planning](../../crates/quanta-index-lexical/src/adapter_ingest.rs).
+Owners: [coverage reader/cache](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/sealed_generation/coverage.rs)
+and [delta planning](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/adapter_ingest.rs).
 Retain fixed effective-row, cached corruption/refusal-eviction/retry, uncached
 oversize/cardinality and preflight/build mutation controls.
 
@@ -620,7 +510,7 @@ binds this policy. File recovery does not establish declaration-position recover
   batching and ranking selection remain conditional on judged unused holdout and
   complete-call/resource acceptance, not observed Gin or experimental weights.
 
-Owners: [selected scorer/Explain](../../crates/quanta-index-lexical/src/searcher/code_search.rs),
+Owners: [selected scorer/Explain](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/searcher/code_search.rs),
 [public Explain](../../crates/quanta-index-search-plane/src/query_dispatcher/routes/explain.rs)
 and [rank study](../../tools/benchmark/retrieval/code_search_rank_study.py).
 Retain independent score/cursor/source/unit mutations, long NFC/NFD/case-expansion
@@ -641,10 +531,10 @@ host and source/binary qualification remain separate.
 
 ## Owners and retained proof
 
-- [Lexical authority](../../crates/quanta-index-lexical/src/file_authority.rs),
-  [query execution](../../crates/quanta-index-lexical/src/searcher/code_search.rs),
+- [Lexical authority](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/file_authority.rs),
+  [query execution](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/searcher/code_search.rs),
   [scanner comparison](../../tools/benchmark/retrieval/query_timing_overhead.py).
-- [Scale](../../crates/quanta-index-searchd-harness/src/scale.rs),
+- [Scale](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-harness/src/scale.rs),
   [open loop](../../crates/quanta-index-searchd-harness/src/open_loop.rs),
   [benchmark admission](../../tools/benchmark/retrieval/run.py).
 - [Source closure](../../tools/ci/source_closure.py),
@@ -686,8 +576,8 @@ for the ordinary SDK/inline/default request contract.
 Owners: [staged transport](../../crates/quanta-index-ipc/src/source_upload.rs),
 [SDK publication](../../crates/quanta-index-sdk/src/lexical.rs),
 [request budget](../../crates/quanta-index-core/src/request_budget.rs),
-[paged File codec/producer](../../crates/quanta-index-lexical/src/file_authority/paged.rs),
-[scale profile](../../crates/quanta-index-searchd-harness/src/scale.rs) and
+[paged File codec/producer](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/file_authority/paged.rs),
+[scale profile](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-searchd-harness/src/scale.rs) and
 [feature policy](../../deny.toml). Preserve independent EOF/overflow/oversize,
 Unicode/native refusal and original lifecycle/crash oracles.
 
@@ -702,7 +592,7 @@ root through `index_store::write_atomic_durable`, then retires unused objects
 and staging. The root writer uses write → file sync → rename → parent sync.
 The broader daemon matrix covers declared track seal/GC points; it does not
 substitute for cuts inside this sequence. Main `8599f2e8` adds the independent
-[publication oracle](../../crates/quanta-index-lexical/src/publication_faults/tests.rs)
+[publication oracle](https://github.com/josongmin/quanta-index/blob/d8a490565e6f9997c6a6cc0c87f92867ea7e9eb1/crates/quanta-index-lexical/src/publication_faults/tests.rs)
 and test-only before/after instrumentation: 32 injected I/O cases and 32 actual
 child SIGKILL cases. Fixed source bytes and independently decoded root, source
 packs and postings determine the expected result; inherited inode custody,
@@ -748,130 +638,44 @@ Owners: [causal capture](../../tools/benchmark/retrieval/causal_cost_capture.py)
 
 ## Completed source-bound checkpoints
 
-Rechecked on 2026-10-07 against current main, owned worktrees, actual terminal
-output and original artifacts. These completions retain their consumed source;
-later source changes and new measurement profiles require affected checks.
+The dated hosted main receipts run from `c6a9120d` through
+`6c5cda3c`. At `b9c058e1`, the final verify executor initially failed before
+checkout; a failed-only retry completed using the same five worker receipts.
+At `b2599e70`, Rust 4,286/4,286 passed, while the Linux Python job failed on
+the macOS-only `/private/tmp` default. The subsequent `48fdc700` workflow
+passed all six regular contexts. Bench context counts compilation. Rust,
+overlapping F15/P00 selections, Python and workflow outcomes keep their
+original source and denominator.
 
-| Source / scope | Observed completion | Boundary |
-| --- | --- | --- |
-| `c6a9120dc71d9878ea62e37384a289535191b42f` hosted main | Required docs/static/Python/tests/bench/verify GitHub contexts succeeded. [CircleCI tests job2011 artifacts](https://circleci.com/api/v2/project/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/2011/artifacts): receipt revision matches; raw/inventory SHA-256 matches; 159 terminal suites, 4,241 passed, zero failed | Auxiliary PR coverage was pending; it is separate from this completed main scope. Bench is compilation. This is not a receipt for later source |
-| `8642fa9b3b47ac58e4b3d9f2feaea66c599be29d` hosted main | Scale/Scanner owners checked all six terminal jobs in [workflow1019](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1019/workflows/a9eb1372-fe07-468c-a8b0-f809cff35b7c). Rust: 4,268 passed, zero failed, 30 skipped; source SHA, command, inventory and raw/result digests matched the receipt. F15 selected9 also passed | Complete regular main CI at this source; bench is compilation. Later cache test-only extensions and their hosted result remain separate |
-| `888c434dc4891f8db79ab495e66595df015cc5e8` hosted main | All six terminal jobs in [workflow1031](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1031/workflows/bc9b8b80-5178-4881-8288-1b3e9974652a) succeeded with matching job revisions. Rust receipt/inventory/raw digests independently agree: 4,280 selected/executed/passed, zero failed, 30 ignored. Python: 4,321 passed, 30 skipped; Ruff check/format passed | Complete regular main CI at this source; bench is compilation. Later SourceFile buffer sharing requires its own source-bound result |
-| `5bf6b15216968afde597606033870cc710cb9bc8` hosted source-sharing checkpoint | All six terminal jobs in [workflow1033](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1033/workflows/35192a12-61e0-4be6-b485-5c587a415019) succeeded: tests2247, bench2248, docs2249, static2250, verify2251 and Python2252. Pipeline and all job revisions match5bf. Rust receipt/inventory/raw digests independently agree: 4,281 selected/executed/passed, zero failed, 30 ignored. Python: 4,321 passed, 30 skipped; subsequent checks passed | Complete regular CI at this code checkpoint. Bench is compilation; matching-release runtime diagnostics are separate rows. Later docs-only revisions retain their own lint/source identity and are not relabeled as this CI run |
-| `0d0eaa9312baf429e836f5a04be4f7364f7fc1c7` hosted capture-refusal checkpoint | All six terminal jobs in [workflow1036](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1036/workflows/548df841-2b6d-4d32-8b1b-b792ff4f7509) succeeded: tests2265, Python2266, docs2267, bench2268, static2269 and verify2270. Pipeline and every job revision match `0d`. Rust source-bound receipt, inventory and raw digests independently agree: 4,281 selected/executed/passed, zero failed, 30 ignored. Python: 4,323 passed, 30 skipped; Ruff check/format passed | Complete regular CI at this code checkpoint, including the two new cleanup-refusal regressions. Bench is compilation. Selected Contract/TSan and runtime diagnostics retain their own scopes; later documentation is not relabeled as this CI source. Superseded docs-only workflows1034/1035 were canceled while preserving their completed job outcomes |
-| `b9c058e15d7349ed76adaa408abbd43f123aa65a` hosted closure checkpoint | Pipeline1037's original workers docs2271, bench2272, static2273, tests2274 and Python2276 succeeded at matching source. Final verify2275 failed before executor start (`infrastructure_fail`), so its checkout/source command was `NOT_RUN`. A failed-only retry in [workflow1037](https://app.circleci.com/pipelines/circleci/Q3G2VbitoZmaQSKihvptcF/MdEMYnJmwKC7e6XooHrif4/1037/workflows/7f0e4a3e-87e3-4846-84ba-3f2d624398b7) succeeded: actual checkout and source-equality command in verify2277 exited0, inheriting the same five successful worker IDs. Original Rust raw/inventory/receipt agree: 4,281 selected/executed/passed, zero failed, 30 ignored; Python4,323 passed/30 skipped and Ruff check/format passed | Regular CI is complete at `b9` through the successful retry; original workflow `03c67383-3d37-4395-979a-b1267b555eaa` remains failed and is preserved. Workers were not rerun or counted twice. Bench remains compilation; SDK and selected Bat runtime capture retain separate scope. Artifacts: `/Users/songmin/.codex/task-evidence/scale-shared-final-20261007-1bl40iuo/ci-b9c058e1/` and its `retry-7f0e4a3e/` subtree |
-| `b2599e70b262d707771a69440f0e9a0f0c587e2b` hosted Rust observation/tooling checkpoint | Rust tests1570 succeeded at matching revision. Original receipt/raw/inventory digests agree: 4,286 selected/executed/passed, zero failed, 30 ignored inventory entries. Rust static/docs/bench and final verify contexts succeeded in [workflow](https://app.circleci.com/workflow/5b689098-0c80-4c51-9952-9dadab89d3d0). Python1569 executed and failed at the default paired-runner temporary directory: `/private/tmp` is absent on Linux | Rust scope is `VERIFIED`; regular CI at this source is `FAILED`. Bench is compilation. The Python failure is a product portability defect and is preserved separately from its later repair; local macOS focused passes cannot replace the Linux result |
-| `48fdc70045f3edcfc30378c8f9a048adc2cd56f9` hosted Python portability repair | All six regular contexts in [workflow](https://app.circleci.com/workflow/86a9d214-6bf7-4acb-81e7-ae24bd8a105c) succeeded. [Python1576](https://circleci.com/gh/josongmin/quanta-index/1576):4,355 passed,30 skipped; Ruff check/406-file format passed. Overlapping P00 selection386 is separate. [Rust1578](https://circleci.com/gh/josongmin/quanta-index/1578) receipt/source/raw/inventory digests independently agree:4,286 selected/executed/passed,zero failed,30 ignored inventory entries. Docs1575/static1579/bench1577 match source | Regular CI is `VERIFIED`; bench is compilation. Do not sum P00 or qualify later paired-tooling source with this receipt |
-| `c38decbf04bdd9522e5c859423f05dc346cdecaf` hosted packed-source planner checkpoint | All six regular contexts in [workflow](https://app.circleci.com/workflow/3b302ad1-2cc4-419b-bbde-7c05ef71ad67) succeeded at matching source. Rust1584 receipt/raw/inventory/source independently agree:4,290 selected/executed/passed,zero failed,30 ignored. Python1582:4,355 passed,30 skipped; its overlapping P00 selection386 is separate. Docs1581/static1585/bench1583/final1586 succeeded | Regular CI is `VERIFIED` at this source; bench remains compilation and the later paired adapter/ARB scorer need their own affected results |
-| `e227757ab57e680801483e4d443853bfb768d8f2` hosted coupled publication/scorer/R5 checkpoint | All six regular jobs in [workflow](https://app.circleci.com/workflow/24bb4cb4-8663-4e2a-9cdf-41885a015188) succeeded: bench1605/docs1606/Python1607/static1608/Rust1609/final1610. Rust receipt/raw/inventory/source independently agree:4,299 selected/executed/passed,zero failed,30 ignored inventory. Python4,409passed/35skipped; repaired pre-commit hook succeeded | Regular CI is `VERIFIED` at e227. Repeated reporter suite ignored counters are not summed. Bench is compilation; later6c5 scorer projection code has45 focused tests and separate actual corrected score/replay. Its hosted results retain their own source. Artifacts: `/private/tmp/quanta-ci-e227-python/` |
-| `6c5cda3cc0a5051d76ad780ce320ed95e5cc02df` ARB projection correction | All six regular jobs in [workflow](https://app.circleci.com/workflow/124014dc-b8e8-40d1-9c4c-bd9a92f3725c) succeeded at matching source: bench1611/static1612/docs1613/Python1614/Rust1615/final1616. Rust receipt/raw/inventory/source independently agree: 4,299 selected/executed/passed, zero failed, 30 ignored inventory entries. Python: 4,410 passed/35 skipped in 911.82s; pre-commit hooks succeeded. The focused scorer/corpus selection passed 45/45 and all three actual official score/replay pairs agree on 128 captured cases/384 route outcomes | Regular CI and corrected diagnostic scoring are `VERIFIED` at 6c5. Bench is compilation. Rust source, exact inventory/event names and raw/receipt digests are under `/private/tmp/quanta-ci-6c5-rust/`; Python raw/action digests are under `/private/tmp/quanta-ci-6c5-python/`. Later documentation-only publication has its own source and focused lint result |
-| F15 candidate integrated as main `8599f2e8` | Five publication tests passed (72.842s), exercising 32 I/O and 32 SIGKILL cuts. Selected mutation/seal/cost integration tests: 73 passed. Strict lexical all-target Clippy: exit0 | Owner worktree execution preceded integration. Later recovered-query assertions and daemon/scale execution are separate |
-| F15 follow-ups `b09c4aa7` / `70521514` | Recovered-query parity and interrupted delta clone retry implemented. Owner reports 36 I/O + 36 SIGKILL cuts, corrected partial-clone controls, 73 storage regressions and strict lexical Clippy passing. Fixed705 daemon214 also passed | Complete focused code/recovery scope; latest hosted and Large/XL cost/RSS retain their own source binding |
-| `eb97e7c2` restart custody | Medium OS-process restart/delete and release-binary identity controls: 2 passed. The process harness checks daemon SHA-256 before each restart | Existing fixture and selected binary; not Large/XL or real-provider cache proof |
-| `8642fa9b` Medium causal capture | Registered matching-release capture exited0 in22.062s; source and binary identities match before/after, with no dirty overlay. 256 files across four source repositories, 367,801 source bytes; sampled phase RSS max101,580,800bytes, largest RSS observation gap116.192ms within500ms. Full/delta/no-op/delete retained bytes and same-process reopen are recorded in `/Users/songmin/.codex/task-evidence/scale-final-20261007-8642fa9b-f8xdnze5/medium-causal/{execution.json,artifact/summary.json}` | Shared macOS `VERIFIED_DIAGNOSTIC`; sampled maxima are not true peaks. No Linux physical-I/O, quiet-host qualification, Large/XL or OS-child restart result is issued by this capture |
-| `5c2b6843` text/deadline repair | Focused 15/15, lexical 417/417 and `just rust-profile test-daemon` 300/300 passed; lexical and harness strict Clippy, format, hexagonal and Cargo-module checks passed. The daemon scope includes independent Large4,096 OS-child restart and ranked-page assertions | These selections overlap and are not additive unique-test counts. Ten daemon extras were skipped, including separately selected scale-restart tests; these owner checks do not issue capacity or speed qualification |
-| `5bf6b152` verified source-surface sharing | Stable owned changes passed lexical/harness `./scripts/cargow --lane test-scale-f15-lane clippy -p quanta-index-lexical -p quanta-index-searchd-harness --lib --tests --all-features --locked -- -D warnings`, lexical library plus resident/sealed/regex/preview integration selection 418/418 (one skipped, 127.751s), and `just rust-profile test-daemon` 300/300 (ten skipped, 413.285s). Format and staged diff checks passed before the three-path checkpoint was pushed | Selections overlap; this is code/query/storage/restart regression proof. Matching-release XL cache admission, sampled RSS, offered-load and selected OS-restart remain separate executions |
-| `5bf6b152` Large causal capture | Matching preserved release exit0 in59.592s; original4,096files/16repos and corpus digest `6c51fe0d9c33679eb6b5e5687b5e5a0c16aab5acbc8bfcefc48a71ac79a085ca`. Registry resident30,246,387bytes; sampled RSS max730,087,424bytes and observation gap109.087ms. Full/delta/no-op/delete retained bytes88,348,385/108,065,497/88,560,752/90,429,887. Independent replay plus the capture producer's fixed binary-source annotation reproduces the stored canonical profile bytes | Shared macOS `VERIFIED_DIAGNOSTIC`; same-process reopen and fixed query/probe assertions passed. Historical5c and new5bf runs are not randomized paired speed/RSS comparisons |
-| `5bf6b152` XL causal capture | Matching preserved release exit0 in518.054s; original32,768files/64repos,113,023,546raw source bytes and corpus digest `dbc4b0d39b458aa4fd838a28e01caf95c0146601b1fae50bfc5d3b197dd59821`. All ten lifecycle phase endings passed, including same-process reopen. Registry resident326,772,711bytes is below unchanged536,870,912-byte admission. Sampled RSS max3,167,567,872bytes and gap114.778ms; full/delta/no-op/delete retained bytes923,860,540/960,956,447/924,117,321/939,220,849. Independent replay plus the same fixed producer annotation reproduces the stored canonical profile bytes | Shared macOS `VERIFIED_DIAGNOSTIC`; samples are not true RSS peaks, physical-I/O attribution or qualified Linux performance. Registry accounting, retained files and process RSS are distinct measurements |
-| `5bf6b152` XL open-loop | Matching preserved release exit0 in191.424s. Default25/50/100/200QPS ladder,10s/point, seeded Poisson,32 client workers,256 queue and2s request timeout; offered=served3,743 with zero drops, timeouts, typed/transport errors or invalid results. Independent JSON/hash/accounting checks passed | Shared macOS `VERIFIED_DIAGNOSTIC`. Target200QPS was saturated: offered195.8/s, achieved180.039/s, p99 latency1,089.176ms. This does not qualify stable200QPS service |
-| `5bf6b152` selected XL OS-process restart/delete | Original Nextest process exit0; exactly one selected ignored test passed in284.838s using the SHA-bound preserved release daemon. Original inventory95cases/9ignored, six raw events, stderr summary, source and executable identities independently agree. Separate `xlarge-restart-verification-v2.json` is `VERIFIED_DIAGNOSTIC`; 13 missing/additional/altered-input controls were rejected, including integer-type and duplicate-JSON-key controls | The external execution wrapper remains `FAILED` because its generic Nextest parser rejected ignored-test reporter counters. The original wrapper record is preserved; the actual test ran once. Inventory was collected after execution at the same frozen source/selector; this is not a pre-run required-CI receipt or performance result |
-| `5c2b6843` Large causal capture | Matching release exit0 in97.888s; clean source and executable epoch agree before/after. Original4,096files/16repos and corpus digest `6c51fe0d9c33679eb6b5e5687b5e5a0c16aab5acbc8bfcefc48a71ac79a085ca` are unchanged. Sampled phase RSS max518,455,296bytes, largest RSS gap117.495ms; full/delta/no-op/delete retained bytes are88,365,586/108,082,699/88,577,959/90,435,321. Artifacts: `/Users/songmin/.codex/task-evidence/scale-paged-final-20261007-5c2b6843-mwatpufl/large-causal/{execution.json,causal-profile.json,artifact/summary.json}` | Shared macOS `VERIFIED_DIAGNOSTIC`; one instrumented run, no paired speed claim, true peak or Linux physical-I/O claim. Profile defaults and same-process reopen remain distinct from the XL/open-loop/release OS-restart scopes |
-| CI admission integrated as main `9def97ac` | Config and test-authority preflight admit supported receipt tier/context combinations and reject unsupported ones | Implementation is present; the new source's hosted result is separate from C6 |
-| Frozen `492d2fdccc0fc42ec42e4da19db7833ecbf032ea` XL lifecycle | Original `xl-result.json`: exit0, `VERIFIED`, 287.843s, existing frozen binary, `query_dispatch_budget_ms=600000` | Functional publish/delete/restart scope. Latest main Large/XL cost/RSS and qualified performance remain separate |
-
-C6's actual test command was `./scripts/cargow nextest run --workspace
---all-features --locked --message-format libtest-json-plus
---message-format-version 0.1`.
-The F15 owner ran `./scripts/cargow --lane test-scale-f15-lane nextest run
--p quanta-index-lexical --lib --all-features --locked --no-tests fail
---test-threads 1 --no-fail-fast -E 'test(/^publication_faults::tests::f15_/)'`.
-The 73-test run selected `l2_file_mutation`, `sealed_manifest` and
-`sealed_commitment_cost`; Clippy selected the lexical package with
-`--all-targets --all-features --locked -- -D warnings`.
-These are observed prior owner terminals, not Rust runs performed by the doc edit.
-The original XL result remains at
-`/Users/songmin/.codex/task-evidence/quanta-scale-recovery-20261006-01a10d0b/xl-result.json`.
-The matching `5bf6b152` execution and replay inputs remain under
-`/Users/songmin/.codex/task-evidence/scale-shared-final-20261007-1bl40iuo`:
-`build-binding.json`, `preserved-release/`,
-`{large,xlarge}-causal/{execution.json,causal-profile.json,artifact/summary.json}`,
-`xlarge-open-loop/{summary.json}`, `xlarge-open-loop-execution.json` and
-`xlarge-restart-verification-v2.json`. The failed original restart-wrapper record
-and the interrupted5c XL attempt remain separately preserved. Product parser
-required-test admission was not relaxed for this selected ignored diagnostic.
+The matching-release Medium, Large/XL causal, XL open-loop and selected
+OS-process restart/delete checks were separate results. The `5bf6b152`
+open-loop run offered and served 3,743 requests; the selected XL OS-process
+case passed in 284.838s on its pinned daemon. The `492d2fdc` XL lifecycle
+passed on the frozen binary with a 600,000ms dispatch budget. Those scopes
+leave current-host cost, installed acceptance and affected changes to their
+own gates. [Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ## Observed scanner two-arm diagnostic
 
-On 2026-10-07 the recovered Bat corpus (revision
-`4608fc959aa8abf80d32198836511a570b7ae9ea`) was captured in both actual scanner arms:
-79 files, 338 queries, six incomplete files, warmup1 and measurement repetitions3.
-The frozen source is `a5e87614bee79bf9d67c8358df01313242548798`; Unicode-control/ASCII
-source identities are `221118289b91942f420053fb347dc0b32f9e60dab86d46d04de5ddb6a6fbaa77`
-and `8870872d6e69f854b2dcc95247158ef31f2c6cc3902f23f8474f44d145111e1d`.
-Socket-path preflight repairs `a5e87614`/`a80eb83d` precede expensive builds and
-refuse excessive UTF-8 byte lengths and resolved-parent paths. Custody/source47,
-existing runner-path2 and additional byte-versus-character/symlink3 regressions passed.
-
-Baseline v3 release build completed in30m37s, but its default `require-complete`
-capture refused ParseFailed6/79. A separate explicit `allow-incomplete` capture
-exited0. Candidate's initial fresh build was interrupted at14m16s with exit143
-to yield to code validation. Normal resume of that owned target then exited0
-in1793.091s including resource admission wait, and candidate live capture exited0.
-The strict failure and interrupted build remain separate from these completions.
-Earlier v2's42m58s build and failed155-byte macOS socket path are not replay success.
-
-Actual pre/post source inventories, binaries, tool bytes/versions, inputs and
-capture-output digests were rechecked; the pair differs only by the approved
-scanner source overlay. Individual environment fingerprints remained stable;
-two-arm execution-path differences are `CARGO_TARGET_DIR`, `PATH` and `PYTHONPATH`.
-The existing `compare_scanner` component verified338 rows with matching status,
-path/order/score bits, completed responses, cursor, work counts and configuration.
-Both arms retain325 success and13 capped outcomes; capped is not successful coverage.
-Result: `diagnostic_unqualified`, with no speed/adoption decision. Evidence stays
-outside the checkout at `/Users/songmin/.codex/sab7v3/`, including
-`baseline-diagnostic-observed.json`, `candidate-diagnostic-observed.json` and
-`observed-scanner-comparison.json`. Executed comparison command:
-`PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B /Users/songmin/.codex/sab7v3/compare-observed.py`.
-
-These are observed local builds/captures and external identity rechecks, not
-completed `scanner_build_custody` combined receipts. Canonical
-`query_timing_overhead.py --scanner-ab` two closed-receipt validation at that
-source is `NOT_RUN`.
-Frozen a5 does not qualify later lazy-reader/deadline or buffer-sharing source,
-and this fresh diagnostic does not recover the absent historical binary replay.
-Admitted-host inputs, declared repetitions and whole-caller acceptance retain
-[E4-03](../plans/oct-22-finalizing/E07-performance-operations.md)/
-[E4-06](../plans/oct-22-finalizing/E07-performance-operations.md) boundaries.
+Frozen `a5e87614` covered the original Bat 79 files, 338 queries and
+six incomplete files. The baseline initially refused strict completeness and
+then both arms completed explicitly admitted partial captures. Comparison
+matched all 338 rows, including 325 successful and 13 capped outcomes, plus
+path/order/score bits, cursor, work and configuration. The interrupted initial
+candidate build and baseline strict refusal remain separate events. This was
+`diagnostic_unqualified`; canonical closed scanner receipts were `NOT_RUN`
+for this source. [Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ## Closed scanner build and capture diagnostic
 
-On 2026-10-08, a separate clean-build pair at
-`f60609fe2d2882f1193d4ba68deb8704e8972138` completed both fresh release builds
-and native captures with exit0. The Unicode control applies only the declared
-`code_search.rs` overlay; the ASCII candidate uses the unmodified source.
-The same Bat revision, 79 files, 338 queries, six admitted incomplete files,
-top-k10, seed1907, warmup1 and three measured repetitions were retained.
-The original interrupted a5 build is not part of these new receipts.
-
-`python -m tools.benchmark.retrieval.query_timing_overhead --scanner-ab`
-verified the two closed `scanner_build_custody` receipts and all 338 response,
-score-bit, ordering, cursor, configuration and work-counter parity rows.
-Receipt SHA-256 is
-`5367af80a40aa8bb31e9a84fb958c362fe5736d8565936d788d62085674b4b73`
-for Unicode and
-`1c9480c957cebe78c109e5d07f286f4a5a653b3664ae92f8aa8a6b918d2921f4`
-for ASCII. Source inventories, original inputs, tool bytes/versions, execution
-environment, fresh binaries and capture bytes are bound by those receipts.
-Original specs, build/capture logs, both receipts and `closed-comparison.json`
-remain at `/private/tmp/qs1iztd4ov/`; the frozen source worktrees remain available
-for verification. The canonical comparison exited0.
-
-Status remains `diagnostic_unqualified`: local source/build custody is
-`VERIFIED`, while admitted-host performance, repeated schedules and adoption
-criteria remain absent. Orchestrator elapsed time includes lease waiting and
-cannot be used as a build or query latency metric. This scope does not recover
-the missing historical replay, qualify current-main performance, or promote
-the earlier observed a5 capture to a closed receipt.
+The separate clean `f60609fe` pair ran both fresh release builds and
+captures under the same Bat corpus, top-k10, seed1907, one warmup and three
+measured repetitions. Its approved Unicode overlay is the only source
+difference. Canonical `query_timing_overhead --scanner-ab` validated both
+closed `scanner_build_custody` receipts and all 338 parity rows. The verdict
+was `diagnostic_unqualified`. Lease wait is outside build/query latency;
+admitted repeated performance and adoption retain their separate gates.
+[Run details and original receipts](../ARCHIVE-INDEX.md#earlier-benchmark-diagnostics)
 
 ## Operational actions
 

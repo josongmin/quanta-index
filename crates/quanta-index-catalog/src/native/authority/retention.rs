@@ -1,7 +1,8 @@
 //! Explicit Exact-admission floor and bounded retirement of catalog view rows.
 
 use quanta_index_contract::index::{
-    NativeProtectedNativeOriginV1, native_protected_view_marker_ref_v1,
+    MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1, NativeProtectedNativeOriginV1,
+    native_protected_view_marker_ref_v1,
 };
 use quanta_index_core::index::ports::{CatalogExactHistoryPort, ViewRetirementPage};
 use quanta_index_core::index::{
@@ -319,7 +320,7 @@ fn next_retire_candidate(
     workspace: WorkspaceKey,
     epoch: u64,
     after: Option<u64>,
-    floor: u64,
+    scan_before: u64,
     budget: &mut WorkBudget,
 ) -> Result<Option<CatalogView>, IndexError> {
     let workspace_blob = workspace_key(workspace)?;
@@ -335,7 +336,7 @@ fn next_retire_candidate(
                     CASE WHEN typeof(payload)='blob' THEN length(payload) END,
                     CASE WHEN typeof(row_digest)='blob' THEN length(row_digest) END
              FROM native_view_v1 WHERE workspace=?1 AND epoch=?2 AND sequence>?3 AND sequence<?4 ORDER BY sequence LIMIT 1",
-            params![&workspace_blob, int(epoch)?, after_integer, int(floor)?],
+            params![&workspace_blob, int(epoch)?, after_integer, int(scan_before)?],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
@@ -1020,13 +1021,35 @@ fn delete_retired_view(
             "retiring view root count invalid".into(),
         ));
     }
+    // The view FK removes the historical route bindings in this transaction.
+    // Include them in the retirement grant before starting the deletion.
+    budget.charge(WorkUsage {
+        reads: 1,
+        ..WorkUsage::default()
+    })?;
+    let bindings: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM native_protected_source_view_v1
+             WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+            params![&workspace_blob, epoch, sequence],
+            |row| row.get(0),
+        )
+        .map_err(|error| sql(&error))?;
+    if usize::try_from(bindings).map_err(|_| IndexError::DigestConflict)?
+        > MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1
+    {
+        return Err(IndexError::DigestConflict);
+    }
     let writes = u64::try_from(root_count)
         .map_err(|_error| IndexError::ResourceLimited)?
         .checked_add(1)
         .ok_or(IndexError::ResourceLimited)?;
+    let total_writes = writes
+        .checked_add(uint(bindings)?)
+        .ok_or(IndexError::ResourceLimited)?;
     budget.charge(WorkUsage {
-        writes,
-        mutations: writes,
+        writes: total_writes,
+        mutations: total_writes,
         ..WorkUsage::default()
     })?;
     let removed_roots = connection
@@ -1229,6 +1252,32 @@ impl CatalogExactHistoryPort for SqliteCatalog {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<ViewRetirementPage, IndexError> {
+        self.retire_exact_history_page_impl(workspace, epoch, after, None, limit, budget)
+    }
+
+    fn retire_exact_history_page_through(
+        &self,
+        workspace: WorkspaceKey,
+        epoch: u64,
+        after: Option<u64>,
+        through: u64,
+        limit: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<ViewRetirementPage, IndexError> {
+        self.retire_exact_history_page_impl(workspace, epoch, after, Some(through), limit, budget)
+    }
+}
+
+impl SqliteCatalog {
+    fn retire_exact_history_page_impl(
+        &self,
+        workspace: WorkspaceKey,
+        epoch: u64,
+        after: Option<u64>,
+        through: Option<u64>,
+        limit: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<ViewRetirementPage, IndexError> {
         if !(1..=MAX_RETIRE_VIEWS).contains(&limit) {
             return Err(IndexError::InvalidInput(
                 "view retirement page limit must be in 1..=256".into(),
@@ -1244,9 +1293,10 @@ impl CatalogExactHistoryPort for SqliteCatalog {
             ..WorkUsage::default()
         })?;
         let floor = exact_floor_for_epoch(&tx, workspace, epoch)?;
+        let scan_before = through.map_or(floor, |upper| floor.min(upper.saturating_add(1)));
         let current =
             charged_current_view(&tx, workspace, budget)?.ok_or(IndexError::SnapshotUnavailable)?;
-        if floor == 0 || after.is_some_and(|sequence| sequence >= floor) {
+        if scan_before == 0 || after.is_some_and(|sequence| sequence >= scan_before) {
             budget.checkpoint()?;
             tx.commit().map_err(|error| sql(&error))?;
             drop(guard);
@@ -1279,7 +1329,7 @@ impl CatalogExactHistoryPort for SqliteCatalog {
         completed_quarantine_bodies
             .try_reserve(usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?)
             .map_err(|_allocation_error| IndexError::ResourceLimited)?;
-        let mut next = next_retire_candidate(&tx, workspace, epoch, cursor, floor, budget)?;
+        let mut next = next_retire_candidate(&tx, workspace, epoch, cursor, scan_before, budget)?;
         if next.is_some() {
             self.require_pin_integrity(&tx, budget)?;
         }
@@ -1316,7 +1366,7 @@ impl CatalogExactHistoryPort for SqliteCatalog {
             }
             examined = examined.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             cursor = Some(identity.sequence);
-            next = next_retire_candidate(&tx, workspace, epoch, cursor, floor, budget)?;
+            next = next_retire_candidate(&tx, workspace, epoch, cursor, scan_before, budget)?;
         }
         // Validate page+1 before commit so corruption cannot strand a
         // partially retired page behind an apparently usable cursor.
@@ -1333,6 +1383,9 @@ impl CatalogExactHistoryPort for SqliteCatalog {
             super::view_quarantine::clear_transient_view(self, identity);
         }
         drop(guard);
+        if retired > 0 {
+            self.record_reclaim_demand();
+        }
         Ok(ViewRetirementPage {
             after: cursor,
             examined,

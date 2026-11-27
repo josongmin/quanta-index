@@ -185,6 +185,7 @@ python3 -m tools.benchmark.retrieval evaluate \
 | `--embedder potion-code-full-v2` | Fresh vector generation; uncapped tokenizer with 16 KiB/text, 4 MiB/1,024-text batch admission. Exploratory, no quality/speed/same-model claim. |
 | `symbol_total_timeout_ms` in spec | Forwards `--symbol-total-timeout-ms`; default 120,000 ms for complete preflight/source validation. Replay binds overrides; per-file and producer refusals remain. |
 | `symbol_coverage_policy` | Default `require-complete`; explicit `allow-incomplete` is diagnostic text coverage. Parse/time/resource failures refuse under either policy. Inspect `symbol-preflight.json`; native `preflight` starts no daemon. |
+| `symbol_candidate_manifest` + `symbol_candidate_manifest_sha256` | Required for Go, JavaScript, TypeScript or TSX in the admitted corpus. The absolute manifest path and pinned SHA-256 bind Rust symbol preflight and the independent Python oracle to the same installed helper artifacts. Standalone capture is exploratory. A qualified pair also records a census of every affected admitted file and verifies the census during verdict replay. |
 
 Symbol phrase/regex/raw-string refuses with `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`.
 A literal policy does not turn it into symbol keyword search.
@@ -329,7 +330,7 @@ reserve. These are fixture inputs, not Native operator defaults or a required
 20ms policy. Original4K vector-row, Large file-tier and mixed-load results retain
 their separate input contracts. Kernel occurrence-input counts and object
 reserve/confirm entry counts do not measure unique file births or device writes.
-See the [counter and maintenance interpretation contract](../../../docs/history/nov-5-indexing-bugbash/E07-performance-operations.md#비용-계수유지보수-설정-해석).
+See the [counter and maintenance interpretation contract](../../../docs/plans/oct-22-finalizing/E07-performance-operations.md#비용-계수와-maintenance-설정-해석).
 
 ## Select the query policy and result unit
 

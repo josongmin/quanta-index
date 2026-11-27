@@ -1,5 +1,5 @@
 use self::scoped_memory::ScopedMemoryBudget;
-use super::{Digest, IndexError, OperationKey};
+use super::IndexError;
 use std::{
     any::Any,
     fmt,
@@ -163,7 +163,6 @@ pub struct WorkUsage {
 pub struct WorkBudget {
     limits: WorkLimits,
     usage: WorkUsage,
-    retirement_check_v2: Option<RetirementCheckV2>,
     request: crate::RequestBudgetV1,
     memory: Option<super::MemoryScope>,
     // During scoped credit, optional allocations use only the original
@@ -182,13 +181,6 @@ pub struct WorkBudget {
     denied_memory: OnceLock<DeniedMemory>,
     external_resource_refusal: OnceLock<ExternalResourceRefusal>,
     failed_stage: OnceLock<crate::DiagnosticStageV1>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RetirementCheckV2 {
-    pub operation: OperationKey,
-    pub request_sha256: Digest,
-    pub policy_sha256: Digest,
 }
 
 impl fmt::Debug for WorkBudget {
@@ -224,7 +216,6 @@ impl WorkBudget {
         Self {
             limits,
             usage: WorkUsage::default(),
-            retirement_check_v2: None,
             request,
             memory: None,
             optional_memory: None,
@@ -237,20 +228,6 @@ impl WorkBudget {
             external_resource_refusal: OnceLock::new(),
             failed_stage: OnceLock::new(),
         }
-    }
-
-    pub fn set_retirement_check_v2(&mut self, check: RetirementCheckV2) -> Result<(), IndexError> {
-        if self.retirement_check_v2.is_some() {
-            return Err(IndexError::BackendViolation(
-                "retirement check was replaced".into(),
-            ));
-        }
-        self.retirement_check_v2 = Some(check);
-        Ok(())
-    }
-
-    pub const fn retirement_check_v2(&self) -> Option<RetirementCheckV2> {
-        self.retirement_check_v2
     }
 
     /// Record the first enclosing stage to observe an unsuccessful result.

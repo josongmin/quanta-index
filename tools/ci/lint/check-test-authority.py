@@ -9,8 +9,8 @@ targets are fully inventoried:
   nested helpers such as ``tests/common/*.rs`` are modules, not targets.
 * ``benchmarks/*/tests/*.rs`` -- benchmark workspace members follow the same
   rule as crates.
-* ``vendor/ciborium-0.2.2/tests/*.rs`` -- the one workspace-owned CBOR codec
-  fork has its own integration binaries; unrelated vendor crates are excluded.
+* ``shared/*/tests/*.rs`` and ``tools/testing/*/tests/*.rs`` -- owned standalone
+  packages have integration binaries outside the root workspace.
 * ``crates/*/fuzz/fuzz_targets/*.rs`` -- cargo-fuzz executables declared by
   the sibling fuzz manifest.
 
@@ -110,7 +110,8 @@ def _discover_integration_targets(root: Path) -> set[str]:
     patterns = (
         "crates/*/tests/*.rs",
         "benchmarks/*/tests/*.rs",
-        "vendor/ciborium-0.2.2/tests/*.rs",
+        "shared/*/tests/*.rs",
+        "tools/testing/*/tests/*.rs",
     )
     found: set[str] = set()
     for pattern in patterns:
@@ -504,7 +505,9 @@ def _validate_circleci_rail_binding(
         return
     script = run["command"]
     if script.lstrip().startswith("set -euo pipefail\n") and _executes_declared_command(
-        script, command
+        script,
+        command,
+        allow_pytest_junit_output=rail_id == "pr-benchmark-control-python",
     ):
         return
     violations.append(
@@ -619,7 +622,13 @@ def _literal_shell_argv(text: str) -> list[str] | None:
     return words or None
 
 
-def _executes_declared_command(run: str, command: str, *, shell_pipefail: bool = False) -> bool:
+def _executes_declared_command(
+    run: str,
+    command: str,
+    *,
+    shell_pipefail: bool = False,
+    allow_pytest_junit_output: bool = False,
+) -> bool:
     """Require a foreground top-level command; shell text is not execution.
 
     Authority rails use straight-line shell commands. Conditional lists,
@@ -639,6 +648,29 @@ def _executes_declared_command(run: str, command: str, *, shell_pipefail: bool =
     declared = _literal_shell_argv(command)
     if declared is None:
         return False
+    junit_output = allow_pytest_junit_output and declared[:8] == [
+        "uv",
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "python",
+        "-m",
+        "pytest",
+    ]
+    report_created = False
+    report_cleanup = False
+
+    def literal_command(raw: str) -> tuple[str, bool]:
+        if junit_output and report_created and report_cleanup:
+            match = re.search(
+                r'(?:[ \t]*\\\n[ \t]*|[ \t]+)--junitxml="\$projection_report"[ \t]*$',
+                raw,
+            )
+            if match:
+                return raw[: match.start()], True
+        return raw, False
+
     pipefail_enabled = shell_pipefail
     for node in tree.root_node.children:
         if node.type in {"comment", ";", "\n"}:
@@ -682,11 +714,17 @@ def _executes_declared_command(run: str, command: str, *, shell_pipefail: bool =
                 return False
             continue
         if node.type == "command":
+            raw_command = source[node.start_byte : node.end_byte].decode("utf-8")
+            if raw_command == "trap 'rm -f \"$projection_report\"' EXIT":
+                if not junit_output or not report_created:
+                    return False
+                report_cleanup = True
+                continue
             if any(child.type == "variable_assignment" for child in node.named_children):
                 # Prefix assignments are not argv[0] and can change command
                 # resolution. Never let them hide a shell-control builtin.
                 return False
-            words = _literal_shell_argv(source[node.start_byte : node.end_byte].decode())
+            words = _literal_shell_argv(literal_command(raw_command)[0])
             if words is None:
                 return False
             executable = words[0]
@@ -738,27 +776,36 @@ def _executes_declared_command(run: str, command: str, *, shell_pipefail: bool =
             # Setup assignments/declarations are harmless. Unknown control
             # flow before the rail cannot prove that the rail is reachable.
             if node.type in {"variable_assignment", "declaration_command"}:
+                if (
+                    junit_output
+                    and source[node.start_byte : node.end_byte] == b'projection_report="$(mktemp)"'
+                ):
+                    report_created = True
                 continue
             return False
         candidate = node.named_children[0] if node.type == "pipeline" else node
         if candidate.type == "redirected_statement":
             candidate = candidate.child_by_field_name("body")
         if candidate is not None and candidate.type == "command":
-            if any(
-                descendant.type
-                in {
-                    "expansion",
-                    "simple_expansion",
-                    "command_substitution",
-                    "ansi_c_string",
-                    "variable_assignment",
-                }
-                for descendant in _shell_nodes(candidate)
+            candidate_text, junit_candidate = literal_command(
+                source[candidate.start_byte : candidate.end_byte].decode("utf-8")
+            )
+            if (
+                any(
+                    descendant.type
+                    in {
+                        "expansion",
+                        "simple_expansion",
+                        "command_substitution",
+                        "ansi_c_string",
+                        "variable_assignment",
+                    }
+                    for descendant in _shell_nodes(candidate)
+                )
+                and not junit_candidate
             ):
                 continue
-            invocation = _literal_shell_argv(
-                source[candidate.start_byte : candidate.end_byte].decode()
-            )
+            invocation = _literal_shell_argv(candidate_text)
             if invocation is None or invocation != declared:
                 continue
             # A trailing '&' is a separate program child, outside the command.
@@ -1225,7 +1272,7 @@ def _validate_targets(
 ) -> dict[str, dict[str, str]]:
     targets: dict[str, dict[str, str]] = {}
     paths: set[str] = set()
-    package_owners: dict[Path, str | None] = {}
+    package_owners: dict[Path, tuple[str | None, bool]] = {}
     for index, entry in enumerate(entries):
         prefix = f"{collection}[{index}]"
         target_id = _string(
@@ -1294,12 +1341,28 @@ def _validate_targets(
                 package_owners[manifest] = _test_package_owner(
                     root=root, manifest=manifest, catalog=catalog, violations=violations
                 )
-            package_owner = package_owners[manifest]
+            package_owner, standalone = package_owners[manifest]
             if package_owner is not None and owner != package_owner:
                 violations.append(
                     _violation(
                         catalog,
                         f"target {target_id} owner {owner!r} differs from package.name {package_owner!r}",
+                    )
+                )
+            if (
+                standalone
+                and rail in rails
+                and not _standalone_rail_selects_manifest(
+                    root,
+                    rails[rail]["command"],
+                    manifest.relative_to(root).as_posix(),
+                    Path(path).stem,
+                )
+            ):
+                violations.append(
+                    _violation(
+                        catalog,
+                        f"standalone integration target {target_id} rail does not select its manifest",
                     )
                 )
         targets[target_id] = {
@@ -1321,7 +1384,7 @@ def _validate_targets(
 
 def _test_package_owner(
     *, root: Path, manifest: Path, catalog: Path, violations: list[Violation]
-) -> str | None:
+) -> tuple[str | None, bool]:
     resolved = _resolve_test_source(
         root=root,
         path=manifest,
@@ -1330,18 +1393,100 @@ def _test_package_owner(
         violations=violations,
     )
     if resolved is None:
-        return None
+        return None, False
     try:
         data = tomllib.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         violations.append(_violation(manifest, f"cannot parse test package: {error}"))
-        return None
+        return None, False
     package = data.get("package")
     name = package.get("name") if isinstance(package, dict) else None
     if not isinstance(name, str) or not name:
         violations.append(_violation(manifest, "test package has no package.name"))
-        return None
-    return name
+        return None, False
+    return name, isinstance(data.get("workspace"), dict)
+
+
+def _standalone_rail_selects_manifest(root: Path, command: str, manifest: str, target: str) -> bool:
+    """A root --workspace rail cannot cover an independently rooted test package."""
+    tokens = _literal_shell_argv(command)
+    if tokens is None:
+        return False
+    if len(tokens) == 2 and tokens[0] == "just":
+        try:
+            justfile = (root / "Justfile").read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if not re.search(r'^cargo := "\./scripts/cargow"$', justfile, flags=re.MULTILINE):
+            return False
+        header = re.compile(rf"^{re.escape(tokens[1])}(?:\s+[^:]*)?:\s*(?:#.*)?$")
+        body: list[str] = []
+        lines = justfile.splitlines()
+        lane_default: str | None = None
+        for index, line in enumerate(lines):
+            if header.fullmatch(line):
+                lane_match = re.search(r'\blane="([a-z0-9-]+)"', line)
+                lane_default = lane_match.group(1) if lane_match else None
+                for candidate in lines[index + 1 :]:
+                    if candidate and not candidate[0].isspace():
+                        break
+                    if candidate.strip() and not candidate.strip().startswith("#"):
+                        body.append(candidate.strip())
+                break
+        if len(body) != 1 or not body[0].startswith("{{cargo}} "):
+            return False
+        expanded = body[0].replace("{{cargo}}", "./scripts/cargow", 1)
+        if "{{lane}}" in expanded:
+            if lane_default is None:
+                return False
+            expanded = expanded.replace("{{lane}}", lane_default)
+        tokens = _literal_shell_argv(expanded)
+        if tokens is None:
+            return False
+    if not tokens or tokens[0] != "./scripts/cargow":
+        return False
+    args = tokens[1:]
+    if len(args) >= 2 and args[0] == "--lane" and args[1]:
+        args = args[2:]
+    if args[:1] == ["test"]:
+        args = args[1:]
+    elif args[:2] == ["nextest", "run"]:
+        args = args[2:]
+    else:
+        return False
+    selected: list[str] = []
+    explicit_targets: list[str] = []
+    flags = {
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--no-default-features",
+        "--offline",
+        "--tests",
+        "--workspace",
+    }
+    values = {"--manifest-path": selected, "--test": explicit_targets}
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in flags:
+            index += 1
+            continue
+        option, sep, value = arg.partition("=")
+        if option not in values:
+            return False
+        if not sep:
+            index += 1
+            if index == len(args):
+                return False
+            value = args[index]
+        if not value or value.startswith("-"):
+            return False
+        values[option].append(value)
+        index += 1
+    if selected != [manifest]:
+        return False
+    return not explicit_targets or explicit_targets == [target]
 
 
 def _resolve_test_source(

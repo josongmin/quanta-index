@@ -15,6 +15,8 @@ compile_error!("quanta-explicit-fd-process supports only Linux and macOS");
 mod borrowed_environment_v1;
 mod bounded_exchange_v1;
 mod child;
+#[cfg(target_os = "macos")]
+mod darwin_directory;
 mod error;
 mod git_bootstrap_authority_v1;
 mod inherited;
@@ -33,17 +35,19 @@ pub use bounded_exchange_v1::{
     BoundedExchangeOutputV1, BoundedExchangePollErrorV1, BoundedExchangeSessionV1,
 };
 pub use child::ExplicitFdChildV1;
+#[cfg(target_os = "macos")]
+pub use darwin_directory::{DarwinDirectoryVisitErrorV1, visit_darwin_directory_batch_v1};
 pub use error::ExplicitFdProcessErrorV1;
 pub use git_bootstrap_authority_v1::GitProcessBootstrapAuthorityV1;
 pub use inherited::{
+    try_duplicate_optional_inherited_regular_file_v1,
     try_duplicate_inherited_read_only_regular_file_v1, try_duplicate_inherited_read_pipe_v1,
     try_duplicate_inherited_regular_file_v1, try_duplicate_inherited_unix_datagram_v1,
-    try_duplicate_optional_inherited_regular_file_v1,
 };
 pub use mutation::PathMutationGuardV1;
+pub use pin::{PinnedExecutableV1, PinnedReadOnlyFileV1, PinnedWorkingDirectoryV1};
 #[cfg(target_os = "linux")]
 pub use pin::ObservedExecutableImageV1;
-pub use pin::{PinnedExecutableV1, PinnedReadOnlyFileV1, PinnedWorkingDirectoryV1};
 pub use pipe::try_create_cloexec_pipe_v1;
 pub use request::ExplicitFdSpawnRequestV1;
 pub use request::{

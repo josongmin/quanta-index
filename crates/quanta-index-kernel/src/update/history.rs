@@ -3,11 +3,42 @@
 
 use quanta_index_core::index::{
     AttemptContext, GroupActivation, HistoryAppendV1, HistoryGenerationAdvanceV1,
-    HistorySourceCutV1, HistoryTransition, IndexError, InputDomain, InstanceSpec, MemberBinding,
-    ObjectRef, WorkBudget,
+    HistorySourceCutV1, HistoryTransition, IndexError, IndexProfile, InputDomain, InstanceSpec,
+    MapRoot, MemberBinding, ObjectRef, SourceCut, WorkBudget,
 };
 
 use crate::{member_staging::ProfileIndex, registry::AdapterRegistry};
+
+pub(super) fn validate_bootstrap_source(
+    base: SourceCut,
+    transition: &HistoryTransition,
+) -> Result<(), IndexError> {
+    if transition.expected.is_some() {
+        return Err(IndexError::InvalidInput(
+            "Source and History bootstrap requires a first History input".into(),
+        ));
+    }
+    if base.owners != MapRoot(None)
+        || base.paths != MapRoot(None)
+        || base.frontiers != MapRoot(None)
+    {
+        return Err(IndexError::Conflict);
+    }
+    Ok(())
+}
+
+pub(super) fn require_no_prior_history(
+    profile: &IndexProfile,
+    budget: &WorkBudget,
+) -> Result<(), IndexError> {
+    for spec in &profile.instances {
+        budget.checkpoint()?;
+        if spec.input_domain == InputDomain::History {
+            return Err(IndexError::Conflict);
+        }
+    }
+    budget.checkpoint()
+}
 
 pub(crate) fn validate_target_profile(
     prior: &ProfileIndex<'_>,
@@ -168,6 +199,7 @@ pub(super) fn prepare_required_member(
         spec,
         prior.as_ref().map(|(_, binding)| binding),
         transition,
+        next_view_sequence,
         context,
     )?;
     // The sealed input is a carrier; its reference need not equal the

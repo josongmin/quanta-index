@@ -501,11 +501,20 @@ def test_operational_target_refuses_broad_aliasing_or_overlapping_paths(evidence
         module.validate_contract(root, proof, json.dumps(contract).encode())
 
 
-def test_overlapping_target_refuses_before_host_probe_or_actor(evidence, monkeypatch):
+@pytest.mark.parametrize("aliased", [False, True], ids=["direct", "symlink"])
+def test_overlapping_target_refuses_before_host_probe_or_actor(evidence, monkeypatch, aliased):
     root, proof, binding, result, _ = evidence
     contract_path = root / result["contract"]
     contract = json.loads(contract_path.read_text())
-    contract["target"]["binary_path"] = contract["target"]["state_root"] + "/searchd"
+    if aliased:
+        state = root / "state"
+        state.mkdir()
+        binary_directory = root / "bin"
+        binary_directory.symlink_to(state, target_is_directory=True)
+        contract["target"]["state_root"] = str(state)
+        contract["target"]["binary_path"] = str(binary_directory / "searchd")
+    else:
+        contract["target"]["binary_path"] = contract["target"]["state_root"] + "/searchd"
     contract_path.write_text(json.dumps(contract))
     monkeypatch.setattr(
         module, "observed_host_identity", lambda: pytest.fail("host probed before validation")
@@ -580,6 +589,7 @@ def test_actual_frontdoor_retains_staged_refusal(proof_id, monkeypatch, tmp_path
     (
         "no-transition",
         "actor-drift",
+        "target-overlap",
         "output-drift",
         "signing-output-drift",
         "signing-events-drift",
@@ -606,7 +616,21 @@ def test_real_process_orchestration_checks_independent_state(evidence, monkeypat
             ambient_agent.bind("actor-agent")
     monkeypatch.setenv(module.p11_attestation.SOCKET_ENV, signer_socket)
     monkeypatch.setenv("SSH_AUTH_SOCK", ssh_socket)
-    contract = json.loads((root / proof["operational_contract"]).read_text())
+    contract_path = root / proof["operational_contract"]
+    contract = json.loads(contract_path.read_text())
+    if change == "target-overlap":
+        state_root = root / "target-state"
+        state_root.mkdir()
+        binary_directory = root / "target-bin"
+        contract["target"]["binary_path"] = str(binary_directory / "searchd")
+        contract["target"]["state_root"] = str(state_root)
+        contract_path.write_text(json.dumps(contract))
+        binding = fixture_binding(root, proof["operational_contract"])
+
+    def before_action():
+        if change == "target-overlap":
+            binary_directory.symlink_to(state_root, target_is_directory=True)
+
     pre, post = fixture_states(contract)
     state = root / "observed-state.json"
     state.write_text(json.dumps(post if change == "no-transition" else pre))
@@ -656,18 +680,23 @@ def test_real_process_orchestration_checks_independent_state(evidence, monkeypat
     binding["source"]["head"] = commit_fixture_sources(root, list(contract["actors"].values()))
     monkeypatch.setattr(module, "observed_host_identity", lambda: binding["host_identity_digest"])
     monkeypatch.setattr(module, "_check_source_binding", lambda *a: None)
-    if change in {"no-transition", "actor-drift", "output-drift"} or signing_drift is not None:
-        with pytest.raises(ValueError, match="transition|changed during|output custody changed"):
+    if change in {"no-transition", "actor-drift", "output-drift", "target-overlap"} or signing_drift is not None:
+        with pytest.raises(
+            ValueError, match="transition|changed during|output custody changed|paths must not overlap"
+        ):
             module.run_action(
                 root,
                 proof,
                 binding,
                 output,
                 paired_checkout=root / "pair",
-                before_action=lambda: None,
+                before_action=before_action,
             )
         assert (output / "events.json").exists() == (signing_drift is not None)
         assert not (output / "events.json.sig").exists()
+        if change == "target-overlap":
+            assert json.loads(state.read_text()) == pre
+            assert not (output / "action/execution.json").exists()
     else:
         result, sources = module.run_action(
             root, proof, binding, output, paired_checkout=root / "pair", before_action=lambda: None

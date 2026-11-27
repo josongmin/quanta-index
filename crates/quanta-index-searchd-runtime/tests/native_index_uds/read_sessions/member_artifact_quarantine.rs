@@ -1,7 +1,8 @@
 //! Selected Native member-root reproof through the production maintenance port.
 
 use super::*;
-use quanta_index_core::index::WorkUsage;
+use quanta_index_core::index::ports::{ImmutableObjectPort, PersistentMapPort};
+use quanta_index_core::index::{WorkUsage, decode_member_binding, member_map_key};
 use std::fs;
 
 fn member_artifact_service(
@@ -59,6 +60,121 @@ fn assert_exact_view_refused(
             if error.code == NativeIndexErrorCode::CorruptObject),
         "{label}: {result:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn scrub_reproves_a_second_member_root_in_an_already_quarantined_view() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let bind = || member_artifact_service(root.path(), &socket);
+    let writer = NativeServiceGuard::start(bind()?);
+    let client = NativeUdsClient::new(socket.as_path());
+    let NativeIndexResponse::Created(genesis) = client
+        .request(
+            NativeIndexRequest::CreateWorkspace {
+                workspace: workspace(),
+                epoch: 1,
+            },
+            &budget(),
+        )
+        .map_err(|error| format!("create two-member workspace: {error}"))?
+    else {
+        return Err("two-member workspace genesis reply differs".into());
+    };
+    let ingress = client
+        .begin_input(operation(1), &budget())
+        .map_err(|error| format!("begin two-member profile: {error}"))?;
+    let profile = client
+        .stage_profile(
+            ingress,
+            IndexProfile {
+                instances: vec![literal_spec(), native_text_spec()],
+            },
+            &budget(),
+        )
+        .map_err(|error| format!("stage two-member profile: {error}"))?;
+    let configured = published(
+        &client
+            .submit(
+                UpdateRequest {
+                    operation: operation(1),
+                    expected_view: genesis,
+                    kind: UpdateKind::Reconfigure { profile },
+                },
+                &budget(),
+            )
+            .map_err(|error| format!("submit two-member profile: {error}"))?,
+    )
+    .map_err(|error| format!("publish two-member profile: {error}"))?;
+    let (selected, _source) = publish_text_owner(
+        &client,
+        configured,
+        2,
+        1,
+        "src/two-roots.rs",
+        "two-root-witness",
+    )
+    .map_err(|error| format!("publish two-member Source: {error}"))?;
+    let view = client.read_view(ViewSelection::Exact(selected), &budget())?;
+    writer.stop()?;
+
+    let object_root = root.path().join("native-objects");
+    let (first, second) = {
+        let store = FileObjectStore::open(&object_root)?;
+        let mut work = WorkBudget::with_request(work_limits(), budget());
+        let artifact =
+            |instance: IndexInstanceId, work: &mut WorkBudget| -> TestResult<ObjectRef> {
+                let member_ref = store
+                    .lookup_object(view.members, &member_map_key(instance), work)?
+                    .ok_or("selected member absent")?;
+                let member = store.get(member_ref, work)?;
+                Ok(decode_member_binding(&member.payload, work)?.artifact)
+            };
+        (
+            artifact(literal_spec().instance, &mut work)?,
+            artifact(native_text_spec().instance, &mut work)?,
+        )
+    };
+    assert_ne!(first, second);
+    let damage = |reference| -> TestResult<(std::path::PathBuf, Vec<u8>)> {
+        let path = native_object_files::object_file(&object_root, reference)?;
+        let original = fs::read(&path)?;
+        let mut changed = original.clone();
+        *changed.last_mut().ok_or("empty member root")? ^= 1;
+        fs::write(&path, changed)?;
+        Ok((path, original))
+    };
+
+    let service = bind()?;
+    let maintenance = service.maintenance_handle();
+    let running = NativeServiceGuard::start(service);
+    let (first_path, first_wire) = damage(first)?;
+    assert_eq!(
+        scrub_member_artifact(&maintenance, selected, literal_spec().instance)?,
+        Some(first)
+    );
+    assert_exact_view_refused(&client, selected, "first root did not fence normal reads")?;
+    let (second_path, second_wire) = damage(second)?;
+    assert_eq!(
+        scrub_member_artifact(&maintenance, selected, native_text_spec().instance)?,
+        Some(second)
+    );
+    drop(maintenance);
+    running.stop()?;
+
+    fs::write(first_path, first_wire)?;
+    fs::write(second_path, second_wire)?;
+    let service = bind()?;
+    let maintenance = service.maintenance_handle();
+    let reopened = NativeServiceGuard::start(service);
+    assert_eq!(
+        scrub_member_artifact(&maintenance, selected, native_text_spec().instance)?,
+        Some(second),
+        "restoring bytes erased the second durable object incident"
+    );
+    drop(maintenance);
+    reopened.stop()?;
     Ok(())
 }
 

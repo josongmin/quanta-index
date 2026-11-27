@@ -111,6 +111,35 @@ fn protected_source_resolution_wire_carries_only_repository_pair()
 }
 
 #[test]
+fn protected_source_retained_view_wire_carries_exact_lookup_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    let request = NativeIndexRequest::ResolveProtectedSourceViewV1 {
+        repo_id: crate::RepoId::new("repo")?,
+        revision_id: crate::RevisionId::new("revision")?,
+        view: fixture()?.view.identity,
+    };
+    let value = serde_json::to_value(&request)?;
+    let fields = value
+        .get("ResolveProtectedSourceViewV1")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("retained Source lookup missing")?;
+    assert_eq!(fields.len(), 3);
+    for key in ["repo_id", "revision_id", "view"] {
+        assert!(fields.contains_key(key));
+    }
+    assert_eq!(serde_json::from_value::<NativeIndexRequest>(value)?, request);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&request, &mut bytes)?;
+    assert_eq!(
+        ciborium::de::from_reader::<NativeIndexRequest, _>(bytes.as_slice())?,
+        request
+    );
+    Ok(())
+}
+
+
+
+#[test]
 fn candidate_installation_wire_has_no_workspace_selector() -> Result<(), Box<dyn std::error::Error>>
 {
     let request = NativeIndexRequest::ObserveCandidateInstallationV1;

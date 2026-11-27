@@ -30,6 +30,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from workspace_metadata import library_target_name, load_workspace_members
+
 ROOT = Path(__file__).resolve().parents[3]
 BASELINE_DIR = ROOT / "tools" / "ci" / "lint" / "baselines" / "public-api"
 
@@ -77,7 +79,11 @@ def cargo_env(default_lane: str) -> dict[str, str]:
     return env
 
 
-def render_public_api(package: str) -> str:
+def validate_workspace_dependencies() -> dict[str, dict]:
+    return load_workspace_members(ROOT, cargo_env("public-api-lane"))
+
+
+def render_public_api(package: str, library_name: str) -> str:
     cmd = [
         "cargo",
         "public-api",
@@ -97,7 +103,7 @@ def render_public_api(package: str) -> str:
     # Normalize trailing whitespace + force trailing newline so diffs stay
     # stable across editors.
     body = "\n".join(line.rstrip() for line in result.stdout.splitlines())
-    expected_root = f"pub mod {package.replace(chr(45), chr(95))}"
+    expected_root = f"pub mod {library_name}"
     if next((line for line in body.splitlines() if line.strip()), None) != expected_root:
         raise RuntimeError(f"cargo public-api returned missing or wrong crate root for {package}")
     return body + "\n"
@@ -116,9 +122,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    present = validate_workspace_dependencies()
+    missing = [package for package in args.packages if package not in present]
+    for package in missing:
+        print(
+            f"{package}: protected crate is absent from workspace.members; update the guarded contract explicitly",
+            file=sys.stderr,
+        )
+    if missing:
+        return 1
+
     # Render every selected API before writing any baseline. A later producer
     # failure must not leave the earlier package's snapshot promoted.
-    rendered = {pkg: render_public_api(pkg) for pkg in args.packages}
+    rendered = {
+        pkg: render_public_api(pkg, library_target_name(pkg, present[pkg])) for pkg in args.packages
+    }
     if args.update_baseline:
         BASELINE_DIR.mkdir(parents=True, exist_ok=True)
         for pkg, current in rendered.items():

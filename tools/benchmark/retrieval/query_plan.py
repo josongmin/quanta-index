@@ -30,7 +30,8 @@ TEXT_NORMALIZER_VERSION = "2.0"
 MAX_TOKEN_BYTES = 256
 MAX_INPUT_BYTES = 16 * 1024
 UNICODE_LOWERCASE_TABLE = (
-    Path(__file__).resolve().parents[3] / "vendor/unicode/17.0.0/lowercase.json"
+    Path(__file__).resolve().parents[3]
+    / "benchmarks/retrieval/tests/fixtures/unicode/17.0.0/lowercase.json"
 )
 UNICODE_LOWERCASE_SHA256 = "816553919f8ef756f202f475d00455c4de7039aaf72d934bbbeb81b1c0e870f6"
 
@@ -582,11 +583,7 @@ GO_TRACE_SEMANTIC_MAX_BYTES = 16 * 1024
 
 def go_trace_semantic_digest(value: object) -> str:
     if not isinstance(value, dict) or set(value) != {
-        "profile",
-        "text",
-        "text_sha256",
-        "failure_excerpt",
-        "failure_excerpt_sha256",
+        "profile", "text", "text_sha256", "failure_excerpt", "failure_excerpt_sha256"
     }:
         raise QueryPlanError("invalid Go trace semantic input fields")
     if value["profile"] != GO_TRACE_SEMANTIC_PROFILE:

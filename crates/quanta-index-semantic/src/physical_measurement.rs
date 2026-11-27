@@ -35,7 +35,7 @@ impl TrackPhysicalByteSession for SemanticPhysicalSession<'_> {
         budget: &RequestBudgetV1,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<u64, CoreError> {
-        crate::observe_result(diagnostic, DiagnosticStageV1::PhysicalInodeCensus, |_| {
+        super::observe_result(diagnostic, DiagnosticStageV1::PhysicalInodeCensus, |_| {
             budget.checkpoint("semantic-physical-snapshot:entry")?;
             match std::fs::symlink_metadata(&self.adapter.state_root) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),

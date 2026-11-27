@@ -7,8 +7,8 @@ Source-scoped results remain in [VALIDATION](../plans/oct-22-finalizing/VALIDATI
 
 This runbook owns procedures and safety contracts. Dated progress/implementation statements below are historical checkpoints, not a live task queue or current-source verdict. Do not recreate work or infer current completion from their percentages, diagnostics or pending lists.
 
-Offline state backup/restore and the RepoMap single-mutation
-producer cutover. Offline backup/restore commands require the daemon fully
+Offline state backup, restore, and Native producer cutover. Offline
+backup/restore commands require the daemon fully
 stopped. Native SDK inventory recovery uses the running Native service.
 
 ## Current command and format authority
@@ -21,6 +21,30 @@ and the catalog stamp is defined independently by the
 [Catalog](../../crates/quanta-index-catalog/src/native/authority/capture_format.rs).
 Use the selected binary and its matching source to determine the current format.
 Prior Native markers require an explicit rebuild or a new incarnation.
+
+## Native SQLite write profile
+
+Native writes require a Linux StateRoot on XFS with enforced project block
+and inode quotas. Configure `state_root_quota` with the verifier socket,
+project ID and hard limits, and set `stock_sqlite_max_process_fds`. The
+launcher binds SQLite temp files to the held StateRoot and enforces the
+process FD limit. Catalog and Scratch use the same stock SQLite profile.
+
+For a previous no-quota deployment, stop publishers and reconcile the last
+acknowledged operation with the durable Catalog frontier. Retain the approved
+old selection, executable, Root and History. Provision a fresh quota Root and
+use the verified recovery sequence below to carry its state forward before
+switching service. If the new Root has published, reconcile its durable
+frontier before any recovery selection.
+
+macOS supports the protected Catalog reader and held-directory inventory
+used for offline inspection. Stop the writer before acquiring the Root and
+Catalog locks. The service account needs permission to acquire SQLite's
+exclusive Main file lock. Provide private temporary storage outside the old
+Root for the bounded Main/WAL copy. Production writes and the approved installed
+restore-forward path use Linux XFS. Check the status of the macOS export bodies
+before qualifying a macOS recovery host.
+[macOS offline support status](../plans/nov-23-vendor-retirement/02-sqlite-and-storage-limits.md#macos-오프라인-잔여)
 
 ## Historical cutover checkpoint (2026-10-12)
 
@@ -49,7 +73,7 @@ the original operation and switches epoch only with the complete baseline,
 view and receipt; pending resync does not expose the new epoch. Source events
 start at ordinal one independently of operation attempts. Paging is recovery
 input, not proof of actual V9 delivery or supported Native backup/restore.
-[Original API/verification scope](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2363-f07-paged-producer-inventory-and-epoch-recovery-2026-10-13)
+[Original API/verification scope](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages)
 
 ## Offline staging custody
 
@@ -147,13 +171,15 @@ restore never convert an old format into the current one.
   restore-forward from a backup is the only path back.
 - There is no post-cutover backward write compatibility.
 
-## RepoMap single-mutation producer contract (S21-12)
+## Historical RepoMap single-mutation producer contract (S21-12)
 
-- The SDK exposes only `repomap().publish(&RepoMapPublishBundleRequestV2)` and
-  `repomap().activate(RepoMapActivateGenerationRequestV2)`. The old V1 IPC
-  opcodes, SDK methods, core mutation ports, and direct-store V1 methods are
-  removed. `RepoMapActivateGenerationRequestV2` carries its identity fields
-  directly; a nested `request_v1` map is refused.
+The previous RepoMap installation used the V2 publish and activate contract
+below. The Source-only release removes these SDK calls and rejects the old
+product wire. Use the [installed recovery procedure](#installed-offline-recovery)
+for previously selected Native `Required` data.
+
+- `RepoMapActivateGenerationRequestV2` carried its identity fields directly.
+  The previous decoder refused a nested `request_v1` map.
 - V2 publish carries the exact full source-bundle digest; the daemon
   recomputes it before mutation and seals manifest digest + source-bundle
   digest into durable `projection_meta`.
@@ -226,8 +252,8 @@ resource custody, SDK staging/Submit and typed Native terminal cold readback
 were then unimplemented. The ordinary host selected the existing publisher;
 these replay fields alone did not establish a Native deployment switch.
 
-Current recovery/producer work is owned by [W2-02](../plans/oct-22-finalizing/E02-publication-recovery.md) and [W2-05](../plans/oct-22-finalizing/E01-producer-generation.md). [RFC §23.65](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2365-f07-durable-native-preparation-and-write-once-request-custody-2026-10-13)
-and [VALIDATION](../history/oct-22-finalizing/oct-10-index-closeout/VALIDATION.md#2365-durable-native-preparation-and-write-once-request-checkpoint-2026-10-13) preserve historical context and source-scoped results.
+Current recovery/producer work is owned by [W2-02](../plans/oct-22-finalizing/E02-publication-recovery.md) and [W2-05](../plans/oct-22-finalizing/E01-producer-generation.md). [RFC §23.65](../ARCHIVE-INDEX.md#oct-10-rfc-and-lexical-preimages)
+and [VALIDATION](../ARCHIVE-INDEX.md#oct-22-validation-and-w2-preimages) preserve historical context and source-scoped results.
 Do not promote static source checks or the Quanta scalar/capture tests to
 producer restart, existing-state cutover or Native performance qualification.
 
@@ -371,9 +397,22 @@ Published and the candidate process has stopped:
    exact config bytes during selection.
 2. Run `python3 tools/deployment/launcher.py install-native --selection ABS_SELECTION
    --binary ABS_BINARY --state-root ABS_ROOT --config ABS_CONFIG --receipt ABS_RECEIPT`.
-   The launcher hashes the actual config and binary, runs the real read-only
-   verifier, then durably replaces its selection. Candidate verification failure
-   preserves the prior selection.
+   The launcher holds the deployment lock, hashes the actual config and binary,
+   runs `verify-native-state`, then runs the same pinned binary's
+   `preflight-native-writer` before replacing the selection. It rechecks the
+   pinned binary and config before each subprocess and once after the last
+   subprocess, while still holding the deployment lock. The preflight
+   acquires the candidate StateRoot lease and checks the XFS quota, verifier,
+   process FD limit, Root-local `SQLITE_TMPDIR`, socket parent and kernel write
+   confinement. The verifier exchange uses one deadline for connect, FD
+   transfer and the complete response. The XFS scan checks that each entry
+   still names the inode returned by directory enumeration.
+   A failed check or an interrupt during either verification subprocess
+   preserves the prior selection. Provision the verifier socket and project
+   limits for the service UID before installation.
+   Give the service socket its own canonical, service-owned mode `0700`
+   directory. Put config and diagnostic output in a different directory.
+   Read-only inspection of an older Root uses its offline verification path.
 3. Run `python3 tools/deployment/launcher.py serve --selection ABS_SELECTION`.
    Selected serve checks the pinned config, Catalog-issued identity and physical
    request/profile/SourceCut closure under the same root lease used by the service.
@@ -527,6 +566,18 @@ Restore-forward from a selected Native root or a different Legacy SDK
 snapshot requires the producer's old-head replay coverage. Installed Linux
 acceptance remains open in
 [NC-D](../plans/nov-12-native-cutover/tickets/NC-D-boot.md).
+
+For RepoMap retirement from an installed Native `Required` root, use the
+resident `native-offline-cutover --mode restore-forward` path above. The
+ordinary launcher `switch-native` still refuses a Native predecessor. The
+recovery helper authenticates the previous signed Source, History and physical
+RepoMap evidence, compares the Source-only candidate with its sealed BOOT
+retirement policy, and performs selection CAS. The candidate carries the
+previous Source and History without installing the retired RepoMap data or
+routes. Installed Linux verification of the forward CAS and fresh PID reads
+remains open. A return to the previous Native selection before the first
+durable commit requires an approved recovery action with an executed proof.
+[RepoMap retirement acceptance](../plans/nov-23-repomap-retirement/04-integration-acceptance.md#설치-절체와-중단-지점)
 
 For a fresh operation, require `Applied`, inspect the active selection and
 confirm the actual change to the candidate digest. When Q completed the original

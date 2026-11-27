@@ -7,6 +7,7 @@ use super::text::{
 };
 use super::text_memory::{PreparedKey, PreparedRows};
 use super::text_occurrence::positions::{MAX_POSITIONS_PER_TERM, PreparedPositions};
+use quanta_index_contract::RepoId;
 use quanta_index_core::index::{
     Digest, IndexError, MemberBinding, OwnerKey, ViewRef, WorkBudget, WorkUsage,
 };
@@ -25,6 +26,21 @@ pub struct TextOverlayInput<'a> {
     pub owner: OwnerKey,
     pub revision: u64,
     pub text: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TextOverlaySource<'a> {
+    pub owner: OwnerKey,
+    pub revision: u64,
+    pub path: &'a str,
+    pub body: &'a str,
+    /// Authenticated repository: the durable record's for a durable owner,
+    /// the repository witness record's for a new file.
+    pub repository: Option<&'a RepoId>,
+    /// The durable record's language for a durable owner. A new file has no
+    /// authenticated language and never inherits its witness's, so it is
+    /// `None` and a `lang:` filter refuses the row.
+    pub language: Option<&'a quanta_index_contract::lex::LanguageCode>,
 }
 
 struct OccurrenceRow {

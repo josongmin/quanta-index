@@ -51,6 +51,9 @@ impl SearchdCommand {
         let mut recovery_input = NativeRecoveryInput::default();
         let mut history_generation_json: Option<String> = None;
         let mut history_inventory_repo_id: Option<String> = None;
+        let mut all_history_inventory: Option<String> = None;
+        let mut all_history_checkpoint_json: Option<String> = None;
+        let mut all_native_history_inventory: Option<String> = None;
         let mut protected_native_heads: Option<String> = None;
         let mut source_only_native = false;
         let mut native_mode: Option<NativeCommandModeV1> = None;
@@ -100,9 +103,22 @@ impl SearchdCommand {
                         "--inventory-repo-id",
                     )?;
                 }
+                "--all-history-inventory" => {
+                    set_once(&mut all_history_inventory, &mut args, "--all-history-inventory")?;
+                }
+                "--all-history-checkpoint-json" => {
+                    set_once(&mut all_history_checkpoint_json, &mut args, "--all-history-checkpoint-json")?;
+                }
+                "--all-native-history-inventory" => {
+                    set_once(&mut all_native_history_inventory, &mut args, "--all-native-history-inventory")?;
+                }
                 "serve-native" => {
                     select_command(&mut selected_command, "serve-native")?;
                     native_mode = Some(NativeCommandModeV1::Serve);
+                }
+                "preflight-native-writer" => {
+                    select_command(&mut selected_command, "preflight-native-writer")?;
+                    native_mode = Some(NativeCommandModeV1::PreflightWriter);
                 }
                 "serve-native-candidate" => {
                     select_command(&mut selected_command, "serve-native-candidate")?;
@@ -275,6 +291,9 @@ impl SearchdCommand {
         }
         if (history_generation_json.is_some()
             || history_inventory_repo_id.is_some()
+            || all_history_inventory.is_some()
+            || all_history_checkpoint_json.is_some()
+            || all_native_history_inventory.is_some()
             || protected_native_heads.is_some())
             && selected_command != Some("export-native-history-checkpoint")
         {
@@ -307,6 +326,9 @@ impl SearchdCommand {
                 history_generation_json.take(),
                 history_inventory_repo_id.take(),
                 protected_native_heads.take(),
+                all_history_inventory.take(),
+                all_history_checkpoint_json.take(),
+                all_native_history_inventory.take(),
                 config_path,
                 config_digest,
             )?)
@@ -566,6 +588,69 @@ mod tests {
     }
 
     #[test]
+    fn native_writer_preflight_requires_only_pinned_config() -> Result<()> {
+        let digest = "11".repeat(32);
+        let operation = operation_json()?;
+        let args = [
+            "preflight-native-writer",
+            "--config",
+            "/tmp/native.json",
+            "--config-digest",
+            digest.as_str(),
+        ];
+        let command = parse(&args)?
+            .native_command()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("native writer preflight command missing"))?;
+        assert_eq!(command.mode, NativeCommandModeV1::PreflightWriter);
+        assert_eq!(command.config_path, PathBuf::from("/tmp/native.json"));
+        assert_eq!(
+            command.config_digest,
+            Some(quanta_index_contract::index::Digest([0x11; 32]))
+        );
+        command.validate()?;
+        assert!(parse(&args[..3]).is_err());
+        for (flag, value) in [
+            ("--root-nonce", digest.as_str()),
+            ("--manifest-operation", operation.as_str()),
+            ("--manifest-object", digest.as_str()),
+            ("--source-cut-digest", digest.as_str()),
+            ("--protected-source-routes", digest.as_str()),
+            ("--retired-policy-object", digest.as_str()),
+            ("--retired-policy-sha256", digest.as_str()),
+            ("--retired-policy-identity-count", "1"),
+            ("--catalog-content-digest", digest.as_str()),
+            ("--receipt", "/tmp/boot.json"),
+            ("--diagnostic-trace", "/tmp/trace.json"),
+            ("--state-root", "/tmp/state"),
+            ("--selection-path", "/tmp/selection.json"),
+            ("--config", "/tmp/other.json"),
+            ("--config-digest", digest.as_str()),
+        ] {
+            let mut mixed = args.to_vec();
+            mixed.extend([flag, value]);
+            assert!(parse(&mixed).is_err(), "preflight accepted {flag}");
+        }
+        for subcommand in ["serve-native", "select-native-state", "verify-native-state"] {
+            let mut mixed = args.to_vec();
+            mixed.push(subcommand);
+            assert!(parse(&mixed).is_err(), "preflight accepted {subcommand}");
+        }
+        for path in ["", "native.json"] {
+            let mut invalid = args;
+            invalid[2] = path;
+            assert!(parse(&invalid).is_err(), "preflight accepted path {path:?}");
+        }
+        let non_hex_digest = "zz".repeat(32);
+        for invalid_digest in ["", "11", non_hex_digest.as_str()] {
+            let mut invalid = args;
+            invalid[4] = invalid_digest;
+            assert!(parse(&invalid).is_err(), "preflight accepted invalid digest shape");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn history_export_requires_exact_private_binding() -> Result<()> {
         use quanta_index_contract::index::AuxiliaryGenerationKeyV1;
         use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
@@ -648,11 +733,78 @@ mod tests {
             parse(&["--inventory-repo-id", "repo"])
                 .unwrap_err()
                 .to_string()
+                .contains("requires an explicit subcommand")
+        );
+        ensure!(
+            parse(&["serve", "--inventory-repo-id", "repo"])
+                .unwrap_err()
+                .to_string()
                 .contains("requires export-native-history-checkpoint")
         );
         let mut duplicate = args.to_vec();
         duplicate.extend(["--inventory-repo-id", "repo"]);
         ensure!(parse(&duplicate).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn all_history_export_scopes_are_private_and_exclusive() -> Result<()> {
+        let digest = "11".repeat(32);
+        let base = [
+            "export-native-history-checkpoint", "--selection-path", "/tmp/active.json",
+            "--expected-current-sha256", &digest, "--config", "/tmp/native.json",
+            "--config-digest", &digest,
+        ];
+        let mut inventory = base.to_vec();
+        inventory.extend(["--all-history-inventory", "true"]);
+        ensure!(matches!(
+            parse(&inventory)?.history_export_command().map(|command| &command.scope),
+            Some(super::super::NativeHistoryExportScopeV1::InventoryAll)
+        ));
+        let mut checkpoint = base.to_vec();
+        let generation = quanta_index_contract::index::AuxiliaryGenerationKeyV1 {
+            repo_id: quanta_index_contract::RepoId::new("history-only")?,
+            revision_id: quanta_index_contract::RevisionId::new("revision")?,
+            generation: quanta_index_contract::ManifestGeneration::new(1),
+        };
+        let generation_json = serde_json::to_string(&generation)?;
+        checkpoint.extend(["--all-history-checkpoint-json", &generation_json]);
+        ensure!(matches!(
+            parse(&checkpoint)?.history_export_command().map(|command| &command.scope),
+            Some(super::super::NativeHistoryExportScopeV1::CheckpointAll(actual))
+                if actual == &generation
+        ));
+        let mut mixed = inventory.clone();
+        mixed.extend(["--inventory-repo-id", "history-only"]);
+        ensure!(parse(&mixed).is_err());
+        let mut false_inventory = base.to_vec();
+        false_inventory.extend(["--all-history-inventory", "false"]);
+        ensure!(parse(&false_inventory).is_err());
+        ensure!(parse(&["--all-history-inventory", "true"]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn all_native_history_inventory_requires_one_exact_private_scope() -> Result<()> {
+        let digest = "11".repeat(32);
+        let base = [
+            "export-native-history-checkpoint", "--selection-path", "/tmp/active.json",
+            "--expected-current-sha256", &digest, "--config", "/tmp/native.json",
+            "--config-digest", &digest,
+        ];
+        let mut args = base.to_vec();
+        args.extend(["--all-native-history-inventory", "true"]);
+        ensure!(matches!(
+            parse(&args)?.history_export_command().map(|command| &command.scope),
+            Some(super::super::NativeHistoryExportScopeV1::NativeInventoryAll)
+        ));
+        let mut mixed = args.clone();
+        mixed.extend(["--inventory-repo-id", "repo"]);
+        ensure!(parse(&mixed).is_err());
+        let mut false_inventory = base.to_vec();
+        false_inventory.extend(["--all-native-history-inventory", "false"]);
+        ensure!(parse(&false_inventory).is_err());
+        ensure!(parse(&["--all-native-history-inventory", "true"]).is_err());
         Ok(())
     }
 
@@ -716,11 +868,9 @@ mod tests {
         ensure!(!export.source_only_native);
         let mut native = args.to_vec();
         native.push("--source-only-native");
-        ensure!(
-            parse(&native)?
-                .source_export_command()
-                .is_some_and(|export| export.source_only_native)
-        );
+        ensure!(parse(&native)?
+            .source_export_command()
+            .is_some_and(|export| export.source_only_native));
         native.push("--source-only-native");
         ensure!(parse(&native).is_err());
         ensure!(parsed.into_config().is_err());
@@ -1290,7 +1440,7 @@ mod tests {
                 protected_source_routes: Some(quanta_index_contract::index::ObjectRef(
                     quanta_index_contract::index::Digest([0x33; 32])
                 )),
-                retired_projection_policy: None,
+                    retired_projection_policy: None,
             }));
         Ok(())
     }

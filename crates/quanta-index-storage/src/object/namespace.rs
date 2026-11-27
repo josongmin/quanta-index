@@ -52,7 +52,8 @@ pub(super) struct NamespaceLease {
     root_path: PathBuf,
     lease_path: PathBuf,
     root: HeldDirectory,
-    lock: NamespaceFile,
+    locked_inode: u64,
+    _lock: NamespaceFile,
     objects: Option<HeldDirectory>,
 }
 
@@ -128,7 +129,8 @@ impl NamespaceLease {
                 })?,
             ))
         };
-        let opened_lock = lock.file()?.metadata().map_err(|error| {
+        let lock_file = lock.file()?;
+        let opened_lock = lock_file.metadata().map_err(|error| {
             IndexError::Storage(format!("inspect object namespace lease: {error}"))
         })?;
         validate_private_lease(&opened_lock, opened_root.dev())?;
@@ -136,7 +138,7 @@ impl NamespaceLease {
             .map_err(|error| {
                 IndexError::Storage(format!("inspect object namespace lease name: {error}"))
             })?;
-        let held_lock = rustix::fs::fstat(lock.file()?).map_err(|error| {
+        let held_lock = rustix::fs::fstat(lock_file).map_err(|error| {
             IndexError::Storage(format!("inspect held object namespace lease: {error}"))
         })?;
         if linked_lock.st_dev != held_lock.st_dev || linked_lock.st_ino != held_lock.st_ino {
@@ -145,9 +147,9 @@ impl NamespaceLease {
             ));
         }
         let lock_result = if exclusive {
-            lock.file()?.try_lock()
+            lock_file.try_lock()
         } else {
-            lock.file()?.try_lock_shared()
+            lock_file.try_lock_shared()
         };
         match lock_result {
             Ok(()) => {}
@@ -170,7 +172,7 @@ impl NamespaceLease {
             ));
         }
         if create {
-            lock.file()?.sync_all().map_err(|error| {
+            lock_file.sync_all().map_err(|error| {
                 IndexError::Storage(format!("sync object namespace lease: {error}"))
             })?;
             root_file.sync_all().map_err(|error| {
@@ -181,7 +183,8 @@ impl NamespaceLease {
             root_path: root.to_path_buf(),
             lease_path: root.join(LEASE_NAME),
             root: HeldDirectory::new(root_file, &opened_root),
-            lock,
+            locked_inode: opened_lock.ino(),
+            _lock: lock,
             objects: None,
         })
     }
@@ -225,14 +228,12 @@ impl NamespaceLease {
         if !self.root.names_same_inode(&linked_root) {
             return Err(IndexError::Storage("object root name changed".into()));
         }
-        let held_lock = self.lock.file()?.metadata().map_err(|error| {
-            IndexError::Storage(format!("inspect held namespace lease: {error}"))
-        })?;
+        // The open lock FD keeps its inode from being reused. Metadata on the
+        // matching live name supplies the current mode, owner and link count.
         let linked_lock = fs::symlink_metadata(&self.lease_path)
             .map_err(|error| IndexError::Storage(format!("inspect namespace lease: {error}")))?;
-        validate_private_lease(&held_lock, self.root.device)?;
         validate_private_lease(&linked_lock, self.root.device)?;
-        if held_lock.dev() != linked_lock.dev() || held_lock.ino() != linked_lock.ino() {
+        if linked_lock.ino() != self.locked_inode {
             return Err(IndexError::Storage(
                 "object namespace lease name changed".into(),
             ));
@@ -251,8 +252,8 @@ impl NamespaceLease {
             root_inode: self.root.inode,
             objects_device: held_objects.device,
             objects_inode: held_objects.inode,
-            lease_device: held_lock.dev(),
-            lease_inode: held_lock.ino(),
+            lease_device: self.root.device,
+            lease_inode: self.locked_inode,
         })
     }
 

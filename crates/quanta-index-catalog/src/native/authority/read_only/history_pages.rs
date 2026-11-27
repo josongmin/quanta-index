@@ -24,7 +24,8 @@ use serde::Serialize;
 
 use super::{
     CatalogReadOnlyIoAdmission, LegacyHistorySnapshotObservationV1, Path,
-    observe_history_in_snapshot, with_quiescent_legacy_history_v1,
+    observe_history_in_snapshot, with_quiescent_legacy_history_all_v2,
+    with_quiescent_legacy_history_v1,
 };
 
 /// One provisional page from a quiescent Legacy History read. An oversized
@@ -365,28 +366,52 @@ pub fn visit_legacy_history_checkpoint_pages_v1(
         &generation.repo_id,
         budget,
         |connection, path, budget| {
-            let mut pages = Pages {
-                generation,
-                packing_bytes: packed_page_bytes(budget)?,
-                next_ordinal: 1,
-                row_count: 0,
-                active: None,
-                sink,
-            };
-            let observation = observe_history_in_snapshot(
-                connection,
-                path,
-                generation,
-                budget,
-                &mut |row, budget| pages.accept(row, budget).map_err(Into::into),
-            )?;
-            pages.flush(budget)?;
-            if pages.row_count != observation.row_count {
-                return Err(IndexError::DigestConflict);
-            }
-            Ok(observation)
+            visit_checkpoint_pages_in_snapshot_v1(connection, path, generation, budget, sink)
         },
     )
+}
+
+/// Admit one checkpoint among all physical Legacy History repositories. The
+/// page and ACK encoding is identical to the original repository-local path.
+pub fn visit_legacy_history_checkpoint_pages_all_v2(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    generation: &AuxiliaryGenerationKeyV1,
+    budget: &mut WorkBudget,
+    sink: &mut dyn FnMut(LegacyHistoryCheckpointPageV1<'_>, &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<LegacyHistorySnapshotObservationV1, IndexError> {
+    with_quiescent_legacy_history_all_v2(state_root, io, budget, |connection, path, budget| {
+        visit_checkpoint_pages_in_snapshot_v1(connection, path, generation, budget, sink)
+    })
+}
+
+fn visit_checkpoint_pages_in_snapshot_v1(
+    connection: &rusqlite::Connection,
+    path: &Path,
+    generation: &AuxiliaryGenerationKeyV1,
+    budget: &mut WorkBudget,
+    sink: &mut dyn FnMut(LegacyHistoryCheckpointPageV1<'_>, &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<LegacyHistorySnapshotObservationV1, IndexError> {
+    let mut pages = Pages {
+        generation,
+        packing_bytes: packed_page_bytes(budget)?,
+        next_ordinal: 1,
+        row_count: 0,
+        active: None,
+        sink,
+    };
+    let observation = observe_history_in_snapshot(
+        connection,
+        path,
+        generation,
+        budget,
+        &mut |row, budget| pages.accept(row, budget).map_err(Into::into),
+    )?;
+    pages.flush(budget)?;
+    if pages.row_count != observation.row_count {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok(observation)
 }
 
 #[cfg(test)]

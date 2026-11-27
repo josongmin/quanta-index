@@ -57,6 +57,14 @@ impl TicketReadAttempt<'_> {
 
 /// Exact immutable view lease. The catalog closes its read transaction before
 /// returning this ticket; the lease protects roots until release.
+///
+/// Pin ownership: this ticket owns its durable pin until the issuing Catalog
+/// confirms one release. An explicit `release`/`try_release` failure keeps the
+/// ticket as owner, and dropping it retries once. If that final attempt also
+/// fails, `Drop` transfers the exact pin to the issuing Catalog through
+/// `abandon_ticket`; the Catalog's read-maintenance round then retries until
+/// the pin is gone, so a transient Catalog fault never orphans the pin until
+/// restart. Process death leaves the pin to dead-session recovery instead.
 pub struct ReadTicket {
     record: TicketRecord,
     released: bool,
@@ -245,7 +253,15 @@ impl ReadTicket {
 
 impl Drop for ReadTicket {
     fn drop(&mut self) {
-        drop(self.try_release());
+        if self.try_release().is_err() {
+            // No owner remains after drop: hand settlement custody to the
+            // issuing Catalog. A refused transfer leaves only dead-session
+            // recovery, which still settles the pin when this process exits.
+            drop(
+                self.catalog
+                    .abandon_ticket(Arc::clone(&self.session), self.record.lease),
+            );
+        }
     }
 }
 

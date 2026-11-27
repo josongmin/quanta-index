@@ -6,22 +6,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_CONTROL = ROOT / "crates/quanta-index-contract/src/ipc/control.rs"
 CONTRACT_SPLIT = ROOT / "crates/quanta-index-contract/src/ipc/split.rs"
+CONTRACT_INGEST_OBSERVATION = ROOT / "crates/quanta-index-contract/src/ipc/ingest_observation.rs"
 DISPATCHER = ROOT / "crates/quanta-index-search-plane/src/control_dispatcher.rs"
 # The readiness module is a directory since the QI-BB-013 split; the fence
 # reads every production file of it as one text.
 READINESS_DIR = ROOT / "crates/quanta-index-search-plane/src/readiness"
-SDK_CLIENT = ROOT / "crates/quanta-index-sdk/src/client.rs"
-SDK_BINDING = ROOT / "crates/quanta-index-sdk/src/binding.rs"
-SDK_CORPUS = ROOT / "crates/quanta-index-sdk/src/lexical.rs"
-SDK_GENERATIONS = ROOT / "crates/quanta-index-sdk/src/generations.rs"
-SDK_LIB = ROOT / "crates/quanta-index-sdk/src/lib.rs"
-SDK_REPOMAP = ROOT / "crates/quanta-index-sdk/src/repomap.rs"
+SDK_ROOT = ROOT / "crates/quanta-index-sdk/src"
+SDK_CLIENT = SDK_ROOT / "client.rs"
+SDK_BINDING = SDK_ROOT / "binding.rs"
+SDK_CORPUS = SDK_ROOT / "lexical.rs"
+SDK_GENERATIONS = SDK_ROOT / "generations.rs"
 SDK_TESTS = ROOT / "crates/quanta-index-sdk/src/tests.rs"
 SDK_CORPUS_INGEST_TESTS = ROOT / "crates/quanta-index-sdk/src/tests/corpus_ingest_tests.rs"
 SDK_CONTROL_TESTS = ROOT / "crates/quanta-index-sdk/src/tests/control_tests.rs"
 ROLLBACK_PRODUCTION_ROOTS = (
     ROOT / "crates/quanta-index-contract/src",
-    ROOT / "crates/quanta-index-sdk/src",
+    SDK_ROOT,
     ROOT / "crates/quanta-index-search-plane/src",
     ROOT / "crates/quanta-index-searchd-harness/src",
     ROOT / "crates/quanta-index-searchd-runtime/src",
@@ -96,10 +96,7 @@ def test_sdk_only_emits_composite_activation_ingress_v1() -> None:
 def test_rollback_contract_is_composite_only_v1() -> None:
     control = read_source(CONTRACT_CONTROL)
     split = read_source(CONTRACT_SPLIT)
-    sdk_sources = "\n".join(
-        read_source(path)
-        for path in (SDK_CLIENT, SDK_CORPUS, SDK_GENERATIONS, SDK_LIB, SDK_REPOMAP)
-    )
+    sdk_sources = read_rust_corpus((SDK_ROOT,))
     production_sources = read_rust_corpus(ROLLBACK_PRODUCTION_ROOTS)
 
     for legacy_symbol in (
@@ -107,7 +104,6 @@ def test_rollback_contract_is_composite_only_v1() -> None:
         "SearchPlaneRollbackGenerationAck",
     ):
         assert legacy_symbol not in control, legacy_symbol
-        assert legacy_symbol not in sdk_sources, legacy_symbol
         assert legacy_symbol not in production_sources, legacy_symbol
 
     for legacy_variant_prefix in ("RollbackGeneration(", "RollbackAck("):
@@ -183,13 +179,22 @@ def test_activation_relation_validation_is_contract_owned_v1() -> None:
 def test_sdk_search_corpus_receipt_is_exact_bound_before_activation_v1() -> None:
     corpus = read_source(SDK_CORPUS)
     binding = read_source(SDK_BINDING)
+    contract = read_source(CONTRACT_INGEST_OBSERVATION)
     assert "mod corpus_ingest_tests;" in read_source(SDK_TESTS)
     tests = read_source(SDK_CORPUS_INGEST_TESTS)
 
     assert "validate_search_corpus_publish_receipt_v1(batch, &outcome.receipt)?" in corpus
-    assert "validate_receipt(requested, *sealed, &outcome.receipt)" in binding
-    assert "&receipt.generation != generation" in binding
-    assert "&receipt.batch_digest != digest" in binding
+    assert "validate_published_receipt(requested, *sealed, &outcome.receipt)" in binding
+    for predicate in (
+        "self.validate_receipt(requested, sealed, receipt)?",
+        "self.event != requested.event",
+        "receipt.generation != self.target.manifest_generation",
+        "receipt.manifest_digest.as_ref() != Some(&self.target.manifest_digest)",
+        "receipt.batch_digest != self.batch_digest",
+        "receipt.durable_sequence == 0",
+        "receipt.applied && self != requested",
+    ):
+        assert predicate in contract, predicate
     for field in (
         "sealed",
         "accepted_replace_scopes",

@@ -25,6 +25,7 @@ use crate::native_text_result::{
 pub(crate) struct ScopedCanonicalReply {
     result: Box<Option<NativeIndexResponse>>,
     _memory: Option<MemoryLease>,
+    _extra_memory: Option<MemoryLease>,
 }
 
 impl Serialize for ScopedCanonicalReply {
@@ -77,6 +78,7 @@ pub(crate) enum NativeReply {
     TextPreview(ScopedNativeTextPreviewResult),
     TextPaths(ScopedNativeTextPathResult),
     TextPathPage(ScopedNativeTextPathPage),
+    TextMatches(quanta_index_lexical::native::NativeTextMatchResult),
     TextPage(crate::native_read_session_transport::ScopedNativeTextPage),
     HybridFile(crate::native_semantic_result::ScopedNativeHybridFileResult),
     HistoryPage(crate::native_read_session_transport::ScopedNativeHistoryPage),
@@ -90,9 +92,7 @@ pub(crate) enum NativeReply {
     Stub(crate::native_stub_transport::ScopedStubReply),
     SourceOwners(ScopedNativeSourceOwnerLookup),
     ProjectionOwners(ScopedNativeProjectionOwnerLookup),
-    ProducerProjectionOwnersV1(
-        crate::native_projection_owner_lookup::ScopedProducerProjectionOwnersV1,
-    ),
+    ProducerProjectionOwnersV1(crate::native_projection_owner_lookup::ScopedProducerProjectionOwnersV1),
     ProducerSourceOwners(ScopedNativeProducerSourcePage),
     ProjectionSourceDiff(crate::native_projection_source_diff::ScopedNativeProjectionSourceDiff),
     StagedSources(quanta_index_core::index::StagedObjectReferences),
@@ -104,7 +104,15 @@ pub(crate) struct CanonicalReplySlot {
 }
 
 impl CanonicalReplySlot {
-    pub(crate) fn finish(mut self, payload: NativeIndexResponse) -> NativeReply {
+    pub(crate) fn finish(self, payload: NativeIndexResponse) -> NativeReply {
+        self.finish_with_extra_memory(payload, None)
+    }
+
+    pub(crate) fn finish_with_extra_memory(
+        mut self,
+        payload: NativeIndexResponse,
+        extra_memory: Option<MemoryLease>,
+    ) -> NativeReply {
         if let NativeIndexResponse::Error(error) = payload {
             return NativeReply::Error(error);
         }
@@ -112,6 +120,7 @@ impl CanonicalReplySlot {
         NativeReply::Plain(ScopedCanonicalReply {
             result: self.storage,
             _memory: self.memory,
+            _extra_memory: extra_memory,
         })
     }
 }
@@ -142,6 +151,7 @@ impl NativeReply {
             | Self::TextPreview(_)
             | Self::TextPaths(_)
             | Self::TextPathPage(_)
+            | Self::TextMatches(_)
             | Self::ReadSessionProfile { .. }
             | Self::ReadSessionHistoryCut { .. }
             | Self::EffortDone(_)
@@ -175,6 +185,7 @@ impl NativeReply {
             | Self::TextPreview(_)
             | Self::TextPaths(_)
             | Self::TextPathPage(_)
+            | Self::TextMatches(_)
             | Self::Semantic(_)
             | Self::OverlayText(_)
             | Self::OverlaySemantic(_)
@@ -211,9 +222,12 @@ impl Serialize for NativeReply {
                     serializer,
                 )
             }
-            Self::ReadSessionHistoryCut { value, .. } => {
-                serializer.serialize_newtype_variant("NativeIndexResponse", 40, "HistoryCut", value)
-            }
+            Self::ReadSessionHistoryCut { value, .. } => serializer.serialize_newtype_variant(
+                "NativeIndexResponse",
+                40,
+                "HistoryCut",
+                value,
+            ),
             Self::TextPage(result) => serializer.serialize_newtype_variant(
                 "NativeIndexResponse",
                 35,
@@ -250,6 +264,9 @@ impl Serialize for NativeReply {
             Self::TextPathPage(result) => {
                 NativeIndexResponse::serialize_text_path_page_ref(result, serializer)
             }
+            Self::TextMatches(result) => {
+                NativeIndexResponse::serialize_text_match_page_ref(result, serializer)
+            }
             Self::OverlaySemantic(result) => {
                 NativeIndexResponse::serialize_overlay_semantic_ref(result, serializer)
             }
@@ -266,10 +283,7 @@ impl Serialize for NativeReply {
                 NativeIndexResponse::serialize_projection_owners_ref(result, serializer)
             }
             Self::ProducerProjectionOwnersV1(result) => serializer.serialize_newtype_variant(
-                "NativeIndexResponse",
-                72,
-                "ProducerProjectionOwnersV1",
-                &**result,
+                "NativeIndexResponse", 72, "ProducerProjectionOwnersV1", &**result,
             ),
             Self::ProjectionSourceDiff(result) => {
                 NativeIndexResponse::serialize_projection_source_diff_ref(result, serializer)
@@ -347,6 +361,7 @@ impl ResponseEnvelope<NativeReply> for NativeReplyEnvelope {
             | NativeReply::TextPreview(_)
             | NativeReply::TextPaths(_)
             | NativeReply::TextPathPage(_)
+            | NativeReply::TextMatches(_)
             | NativeReply::TextPage(_)
             | NativeReply::DslPageV1(_)
             | NativeReply::HistoryPage(_)
@@ -501,6 +516,7 @@ mod tests {
             NativeReply::Plain(ScopedCanonicalReply {
                 result: Box::new(Some(payload)),
                 _memory: None,
+                _extra_memory: None,
             }),
         )
     }

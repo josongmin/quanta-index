@@ -17,13 +17,14 @@
 
 use std::collections::BTreeSet;
 
-use quanta_index_contract::{
-    EmbeddingNormalization, GenerationPin, ManifestGeneration, RepoId, RevisionId,
-};
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use quanta_index_contract::GenerationPin;
+use quanta_index_contract::{EmbeddingNormalization, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::CoreError;
 
-use crate::codec::{self, cbor_serde};
-use crate::codec::{decode_current_format, format_unsupported};
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
+use crate::codec;
+use crate::codec::{cbor_serde, decode_current_format, format_unsupported};
 use crate::generation_contract::{GenerationContract, ensure_field_eq, normalization_token};
 
 /// Distance metric the lancedb adapter actually serves at query time.
@@ -465,6 +466,7 @@ cbor_serde!(SemanticManifest {
 });
 
 /// What the main semantic table committed to at seal time.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) struct SemanticRowSealV1 {
     pub(crate) row_count: u64,
     pub(crate) root_digest: String,
@@ -472,6 +474,7 @@ pub(crate) struct SemanticRowSealV1 {
 }
 
 /// Which corpora the sealed generation carries, and under which policies.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) struct SemanticCorpusCoverageV1 {
     pub(crate) present: Vec<String>,
     pub(crate) required: Vec<String>,
@@ -481,6 +484,7 @@ pub(crate) struct SemanticCorpusCoverageV1 {
 }
 
 /// What the cluster-membership sidecar committed to at seal time.
+#[cfg(any(test, feature = "legacy-semantic-adapter"))]
 pub(crate) struct ClusterMembershipSealV1 {
     pub(crate) root_digest: String,
     pub(crate) cluster_count: u64,
@@ -556,6 +560,7 @@ impl SemanticManifest {
     /// arguments so a caller cannot transpose, say, the semantic row root and
     /// the membership root: they have different types now, not just different
     /// positions in a long list of `String`s and `u64`s.
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn from_generation_contract(
         scope: &GenerationPin,
         generation_contract: &GenerationContract,
@@ -593,6 +598,7 @@ impl SemanticManifest {
         }
     }
 
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
         let bytes = codec::encode(self, "semantic manifest")?;
         crate::legacy::limits::ensure_bounded(

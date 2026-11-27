@@ -110,7 +110,6 @@ impl PathPage {
         self.rows.is_empty()
     }
 
-    #[cfg(test)]
     pub(crate) fn as_slice(&self) -> &[PathRow] {
         &self.rows
     }

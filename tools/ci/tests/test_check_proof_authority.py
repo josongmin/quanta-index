@@ -205,19 +205,12 @@ def test_repository_registry_is_complete() -> None:
     assert MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH) == []
 
 
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("required_host", "any", "P04 release proof must use its exact Native read-view scope"),
-        ("binary_binding", "none", "P04 release proof must use its exact Native read-view scope"),
-        (
-            "command",
-            "just rust-profile test-read-view-lifetime",
-            "P04 release proof must use its exact Native read-view scope",
-        ),
-        ("launches", 1, "invalid P04 executable observation test"),
-    ],
-)
+@pytest.mark.parametrize(("field", "value", "message"), [
+    ("required_host", "any", "P04 release proof must use its exact Native read-view scope"),
+    ("binary_binding", "none", "P04 release proof must use its exact Native read-view scope"),
+    ("command", "just rust-profile test-read-view-lifetime", "P04 release proof must use its exact Native read-view scope"),
+    ("launches", 1, "invalid P04 executable observation test"),
+])
 def test_p04_registry_refuses_weaker_release_authority(field, value, message) -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proof = next(proof for proof in registry["proofs"] if proof["id"] == "p04-read-view-lifetime")
@@ -1261,18 +1254,13 @@ def test_source_snapshot_refuses_edits_hidden_by_the_git_index(tmp_path: Path, f
     assert not subprocess.check_output(["git", "-C", str(tmp_path), "status", "--porcelain"])
     with pytest.raises(RuntimeError, match="Git index hides proof source: tracked"):
         MODULE.source_snapshot(tmp_path)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "update-index", "--no-" + flag[2:], "--", "tracked"],
-        check=True,
-    )
+    subprocess.run(["git", "-C", str(tmp_path), "update-index", "--no-" + flag[2:], "--", "tracked"], check=True)
     assert MODULE.source_snapshot(tmp_path)["dirty_digest"] != before["dirty_digest"]
 
 
 def test_source_snapshot_refuses_git_replacement_refs(tmp_path: Path) -> None:
     _init_repo(tmp_path)
-    head = subprocess.check_output(
-        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"], text=True
-    ).strip()
+    head = subprocess.check_output(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], text=True).strip()
     (tmp_path / "tracked").write_bytes(b"replacement source\n")
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-a", "-qm", "replacement"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "replace", head, "HEAD"], check=True)
@@ -1463,6 +1451,7 @@ def test_code_gate_selects_only_canonical_code_proofs_and_prerequisites() -> Non
 
     assert selected == MODULE.EXPECTED_VERDICT_PROOFS["CODE_QUALIFIED"]
     assert len(selected) == 20
+    assert "p02a-repomap-compiler" not in selected
     assert not {
         "p02a-repomap-compiler",
         "p11-deployment",
@@ -1475,7 +1464,7 @@ def test_code_gate_selects_only_canonical_code_proofs_and_prerequisites() -> Non
         MODULE.code_qualified_proof_ids(registry)
 
 
-def test_current_proof_uses_native_owners_after_repomap_retirement() -> None:
+def test_native_owner_proofs_require_exact_raw_cases_and_source(tmp_path: Path) -> None:
     registry = MODULE._read_toml(REGISTRY_PATH)
     proofs = {proof["id"]: proof for proof in registry["proofs"]}
     assert "p02a-repomap-compiler" not in proofs
@@ -1483,24 +1472,79 @@ def test_current_proof_uses_native_owners_after_repomap_retirement() -> None:
         "contract-base-canonical-identity-v1",
         "contract-search-plane-error-code-v2",
     ]
+    assert proofs["p03-candidate-activation-owner"]["dependencies"] == [
+        "p02b-operation-journal"
+    ]
+    assert proofs["p03-candidate-activation-owner"]["family"] == "A"
+    assert proofs["p04-read-view-lifetime-owner"]["dependencies"] == [
+        "p03-candidate-activation-owner"
+    ]
+    for proof_id in ("p03-candidate-activation-owner", "p04-read-view-lifetime-owner"):
+        proof = proofs[proof_id]
+        assert proof["authority_state"] == "executable"
+        assert proof["execution_source_binding"] is True
+        payload = _manifest(tmp_path, proof)
+        payload["environment"]["features"] = ["all-features"]
+        findings = MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / f"{proof_id}.json",
+            proof=proof,
+            schema=json.loads(SCHEMA_PATH.read_text(encoding="utf-8")),
+            root=tmp_path,
+            bind_source=False,
+        )
+        assert any("lacks raw execution result" in finding.message for finding in findings)
+        payload["environment"]["features"] = []
+        findings = MODULE.check_manifest(
+            payload,
+            manifest_path=tmp_path / f"{proof_id}-wrong-features.json",
+            proof=proof,
+            schema=json.loads(SCHEMA_PATH.read_text(encoding="utf-8")),
+            root=tmp_path,
+            bind_source=False,
+        )
+        assert any("requires all-features execution" in finding.message for finding in findings)
+    assert proofs["p03-candidate-activation"]["test_authority_targets"] == [
+        "searchd-runtime-native-product-process"
+    ]
 
-    activation = proofs["p03-candidate-activation-owner"]
-    assert activation["dependencies"] == ["p02b-operation-journal"]
-    assert activation["family"] == "A"
-    assert activation["required_nextest_cases"] == {
-        "kernel-native-bootstrap": [
-            "existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens",
-        ],
-    }
 
-    read_view = proofs["p04-read-view-lifetime-owner"]
-    assert read_view["dependencies"] == ["p03-candidate-activation-owner"]
-    assert read_view["required_nextest_cases"] == {
-        "kernel-native-query-session-real": [
-            "real_text_then_semantic_and_text_keep_view_a_after_body_b_publishes",
-            "cancellation_of_original_request_after_fast_prevents_semantic_provider",
-        ],
+def test_native_owner_registry_refuses_changed_case_scope_or_source_binding() -> None:
+    for field, value in (
+        ("required_nextest_lib_cases", {"quanta-index-catalog": ["unrelated"]}),
+        ("test_authority_scopes", ["search-plane-read-view-lib"]),
+        ("execution_source_binding", False),
+    ):
+        registry = MODULE._read_toml(REGISTRY_PATH)
+        proof = next(
+            item for item in registry["proofs"]
+            if item["id"] == "p03-candidate-activation-owner"
+        )
+        proof[field] = value
+        findings = MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH)
+        assert any("exact Native Catalog owner cases" in item.message for item in findings)
+
+
+def test_native_owner_raw_result_refuses_missing_extra_or_foreign_cases() -> None:
+    proof_id = "p03-candidate-activation-owner"
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(item for item in registry["proofs"] if item["id"] == proof_id)
+    required = proof["required_nextest_lib_cases"]
+    passed = {
+        ("nextest-jsonl", f"quanta-index-catalog::quanta_index_catalog${case}")
+        for case in required["quanta-index-catalog"]
     }
+    MODULE._require_exact_native_owner_cases(proof_id, required, passed)
+    for wrong in (
+        set(sorted(passed)[:-1]),
+        passed | {("nextest-jsonl", "quanta-index-catalog::quanta_index_catalog$unrelated")},
+        {
+            (runner, name.replace("quanta-index-catalog::", "quanta-index-core::", 1))
+            for runner, name in passed
+        },
+    ):
+        with pytest.raises(ValueError, match="selected tests differ from exact cases"):
+            MODULE._require_exact_native_owner_cases(proof_id, required, wrong)
 
 
 def test_code_gate_requires_source_binding_and_does_not_require_operations(capsys) -> None:
@@ -1560,9 +1604,38 @@ def test_executable_test_proof_requires_scope_that_selects_registered_targets() 
 
     proof["test_authority_scopes"] = ["p02b-operation-journal"]
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
-    assert not any("test_authority_scopes" in message for message in messages)
-    assert not any("targets are not selected" in message for message in messages)
-    assert not any("command/profile binding differs" in message for message in messages)
+    assert any("requires generic journal and exact Native supplement" in message for message in messages)
+
+
+def test_p02b_native_supplement_refuses_legacy_target_and_case_drift() -> None:
+    for field, value in (
+        ("test_authority_targets", ["operation-journal-owner-v1", "catalog-idempotency"]),
+        ("required_nextest_lib_cases", {"quanta-index-catalog": ["unrelated"]}),
+        ("execution_source_binding", False),
+    ):
+        registry = MODULE._read_toml(REGISTRY_PATH)
+        proof = next(item for item in registry["proofs"] if item["id"] == "p02b-operation-journal")
+        proof[field] = value
+        messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+        assert any("requires generic journal and exact Native supplement" in message for message in messages)
+
+
+def test_p02b_raw_result_requires_exact_native_cases_with_generic_journal() -> None:
+    registry = MODULE._read_toml(REGISTRY_PATH)
+    proof = next(item for item in registry["proofs"] if item["id"] == "p02b-operation-journal")
+    required = proof["required_nextest_lib_cases"]
+    native = {
+        ("nextest-jsonl", f"quanta-index-catalog::quanta_index_catalog${case}")
+        for case in required["quanta-index-catalog"]
+    }
+    generic = {("nextest-jsonl", "quanta-index-catalog::operation_journal$ack_loss_replay_does_zero_work")}
+    MODULE._require_exact_native_owner_cases(proof["id"], required, native | generic)
+    for wrong in (
+        set(sorted(native)[:-1]) | generic,
+        native | generic | {("nextest-jsonl", "quanta-index-catalog::quanta_index_catalog$unrelated")},
+    ):
+        with pytest.raises(ValueError, match="P02B Native supplement selected tests differ"):
+            MODULE._require_exact_native_owner_cases(proof["id"], required, wrong)
 
 
 def test_p10_owner_requires_the_migrated_case_roster() -> None:
@@ -1570,26 +1643,21 @@ def test_p10_owner_requires_the_migrated_case_roster() -> None:
     proof = next(item for item in registry["proofs"] if item["id"] == "p10-state-migration-owner")
     cases = proof["required_nextest_cases"]
     assert sum(len(names) for names in cases.values()) == 61
-    assert (
-        "backup_failure_and_interruption_keep_the_source_identical"
-        in cases["searchd-runtime-offline-state-custody"]
-    )
-    assert (
-        "kernel_file_limit_interrupts_offline_first_copy"
-        in cases["searchd-runtime-offline-state-custody"]
-    )
+    assert "backup_failure_and_interruption_keep_the_source_identical" in cases[
+        "searchd-runtime-offline-state-custody"
+    ]
+    assert "kernel_file_limit_interrupts_offline_first_copy" in cases[
+        "searchd-runtime-offline-state-custody"
+    ]
     cases.pop("searchd-runtime-offline-state-custody")
     lib_cases = proof.pop("required_nextest_lib_cases")
-    assert (
-        "app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus"
-        in lib_cases["quanta-index-searchd"]
-    )
+    assert "app::runtime::tests::potion_code_profile_uses_one_model_for_query_and_corpus" in lib_cases[
+        "quanta-index-searchd"
+    ]
 
     messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
     assert any("requires nextest cases for every registered target" in msg for msg in messages)
-    assert any(
-        "requires nextest lib cases for every declared library package" in msg for msg in messages
-    )
+    assert any("requires nextest lib cases for every declared library package" in msg for msg in messages)
 
 
 def test_executable_dedicated_proof_requires_existing_scope_bound_recipe() -> None:

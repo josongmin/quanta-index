@@ -1567,7 +1567,7 @@ mod tests {
     #[test]
     fn unicode_lowercase_matches_pinned_reference_for_every_scalar() {
         let reference: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../vendor/unicode/17.0.0/lowercase.json"
+            "../tests/fixtures/unicode/17.0.0/lowercase.json"
         ))
         .expect("Unicode reference JSON");
         assert_eq!(

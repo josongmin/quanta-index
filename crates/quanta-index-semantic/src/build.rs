@@ -31,12 +31,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use arrow_array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, StringArray, UInt32Array,
 };
-use arrow_schema::{DataType, Field};
+use arrow_schema::{DataType, Field, SchemaRef};
 use futures::TryStreamExt as _;
+use lance::Dataset;
+use lance::dataset::{WriteParams, builder::DatasetBuilder};
 use lance::session::Session;
-use lance_io::object_store::file_admission::FileAdmission;
-use lancedb::connect;
-use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
     EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, GenerationPin,
     IngestStageReport, OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1,
@@ -44,19 +43,21 @@ use quanta_index_contract::{
     canonical_order::first_canonical_order_break_v1, cluster_membership_content_digest_v1,
 };
 use quanta_index_core::domains::semantic::SemanticPolicy;
-use quanta_index_core::publication_admission::PublicationOutputAdmission;
+use quanta_index_core::publication_admission::{
+    PublicationObjectLifetimePort, PublicationOutputAdmission,
+};
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticSpanGuardV1, DiagnosticStageV1,
     SemanticGenerationContractV1, SemanticIngestHeaderV1, SemanticScopeSource,
     SemanticScopeWindowV1, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
 };
 
+use crate::SemanticGenerationFileIo;
 use crate::build_diagnostic::{begin_build_stage, finish_build_stage};
 use crate::dataset_promotion::DatasetPromotion;
 use crate::durable_write::{AtomicOutput, with_cleanup_context, write_atomic};
-use crate::errors::{arrow_err, fs_err, lancedb_err};
+use crate::errors::{admitted_fs_err, arrow_err, fs_err, lancedb_err};
 use crate::generation_contract::GenerationContract;
-use crate::integrity::SealTalliesV1;
 use crate::layout::{
     self, CLUSTER_MEMBERSHIP_TABLE_NAME, COLUMN_AUTHORITY_DIGEST, COLUMN_CORPUS_KIND,
     COLUMN_MEMBERSHIP_AUTHORITY_DIGEST, COLUMN_MEMBERSHIP_CLUSTER_RECORD_ID,
@@ -72,15 +73,16 @@ use crate::manifest::{
 use crate::membership_integrity::{
     ClusterMembershipCommitmentV1, ClusterMembershipStoredRowV1, cluster_membership_commitment_v1,
 };
-use crate::sealed_manifest::{build_sealed_manifest_bytes_with_admission, sealed_manifest_path};
-use crate::semantic_row_integrity_v1::semantic_row_commitment_v1;
+use crate::seal_tallies::SealTalliesV1;
+use crate::sealed_manifest::{build_sealed_manifest_bytes_with_lifetime, sealed_manifest_path};
+use crate::semantic_row_integrity_v1::dataset_row_commitment_v1;
 use crate::vector_index::{
     VectorIndexSealInputV1, inherited_index_contracted_v1, seal_vector_index_v1,
 };
 
 /// Sibling-of-`dataset/` staging dir used to make delta-base cloning
 /// crash-atomic — see `prepare_generation_dir`.
-const STAGING_DIR_NAME: &str = "dataset.staging";
+const STAGING_DIR_NAME: &str = crate::legacy::layout::DATASET_STAGING_DIR_NAME;
 #[cfg(test)]
 const BACKUP_DIR_NAME: &str = "dataset.backup";
 
@@ -260,12 +262,11 @@ fn is_dataset_local_entry(file_name: &std::ffi::OsStr) -> bool {
 fn inherit_dataset_tree(
     src: &Path,
     dst: &Path,
-    admission: Option<&dyn FileAdmission>,
+    generation_io: Option<&dyn SemanticGenerationFileIo>,
 ) -> Result<(), CoreError> {
-    if let Some(admission) = admission {
-        admission
-            .prepare_parent_dirs(&dst.join(".directory-parent-witness"))
-            .map_err(|err| fs_err("prepare inherited dataset dir", dst, &err))?;
+    if let Some(io) = generation_io {
+        io.prepare_staging_directory(dst)
+            .map_err(|error| admitted_fs_err("prepare inherited dataset dir", error))?;
     } else {
         fs::create_dir_all(dst).map_err(|err| fs_err("create inherited dataset dir", dst, &err))?;
     }
@@ -277,11 +278,21 @@ fn inherit_dataset_tree(
             .file_type()
             .map_err(|err| fs_err("inherited dataset entry type", &from, &err))?;
         if file_type.is_dir() {
-            inherit_dataset_tree(&from, &to, admission)?;
+            inherit_dataset_tree(&from, &to, generation_io)?;
         } else if is_dataset_local_entry(&entry.file_name()) {
-            crate::qualified_fs::copy_file(&from, &to, admission)?;
+            if let Some(io) = generation_io {
+                io.copy_inherited_file(&from, &to)
+                    .map_err(|error| admitted_fs_err("copy generation-local entry", error))?;
+            } else {
+                let _copied = fs::copy(&from, &to)
+                    .map_err(|error| fs_err("copy generation-local entry", &from, &error))?;
+            }
+        } else if let Some(io) = generation_io {
+            io.link_inherited_file(&from, &to)
+                .map_err(|error| admitted_fs_err("link inherited dataset entry", error))?;
         } else {
-            crate::qualified_fs::hard_link(&from, &to, admission)?;
+            fs::hard_link(&from, &to)
+                .map_err(|error| fs_err("link inherited dataset entry", &from, &error))?;
         }
     }
     Ok(())
@@ -291,11 +302,13 @@ fn inherit_dataset_tree(
 fn remove_dir_if_exists(
     action: &str,
     dir: &Path,
-    admission: Option<&dyn FileAdmission>,
+    generation_io: Option<&dyn SemanticGenerationFileIo>,
 ) -> Result<(), CoreError> {
     if dir.exists() {
-        match admission {
-            Some(admission) => crate::qualified_fs::remove_dir_all(dir, Some(admission))?,
+        match generation_io {
+            Some(io) => io
+                .remove_directory_and_sync(dir)
+                .map_err(|error| admitted_fs_err("remove dataset tree", error))?,
             None => fs::remove_dir_all(dir).map_err(|err| fs_err(action, dir, &err))?,
         }
     }
@@ -328,116 +341,61 @@ fn monotonic_nanos_since(started: Instant) -> u64 {
     }
 }
 
-#[cfg(test)]
-async fn open_connection(dataset_dir: &Path) -> Result<lancedb::Connection, CoreError> {
-    open_connection_with_session(dataset_dir, None).await
-}
-
-async fn open_connection_with_session(
-    dataset_dir: &Path,
-    session: Option<Arc<Session>>,
-) -> Result<lancedb::Connection, CoreError> {
-    let uri = layout::dataset_dir_to_uri(dataset_dir)?;
-    let mut builder = connect(&uri);
-    if let Some(session) = session {
-        builder = builder.session(session);
-    }
-    builder
-        .execute()
-        .await
-        .map_err(|err| lancedb_err(&format!("connect {uri}"), err))
-}
-
-async fn ensure_table(
-    connection: &lancedb::Connection,
-    dimension: usize,
-) -> Result<lancedb::Table, CoreError> {
-    let names = connection
-        .table_names()
-        .execute()
-        .await
-        .map_err(|err| lancedb_err("table_names", err))?;
-    if names.iter().any(|name| name == TABLE_NAME) {
-        let table = connection
-            .open_table(TABLE_NAME)
-            .execute()
+async fn ensure_working_dataset(
+    working_dataset: &Path,
+    name: &str,
+    schema: SchemaRef,
+    session: Arc<Session>,
+    mode: crate::qualified_fs::LanceUriMode,
+) -> Result<Dataset, CoreError> {
+    let path = working_dataset.join(format!("{name}.lance"));
+    let uri = crate::qualified_fs::lance_connection_uri(&path, mode)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => DatasetBuilder::from_uri(&uri)
+            .with_session(session)
+            .load()
             .await
-            .map_err(|err| lancedb_err(&format!("open_table {TABLE_NAME}"), err))?;
-        // Cross-batch contract guard: an already-existing unsealed table fixes
-        // the FixedSizeList vector dimension at the FIRST batch's contract dim.
-        // A follow-up batch on the same gen MUST match it, otherwise a typed
-        // `InvalidContract` is the correct surface (not the late opaque arrow
-        // schema-mismatch error that `table.add` would otherwise produce).
-        verify_table_dimension(&table, dimension).await?;
-        return Ok(table);
-    }
-    let schema = semantic_schema(dimension_to_i32(dimension)?);
-    connection
-        .create_empty_table(TABLE_NAME, schema)
-        .execute()
-        .await
-        .map_err(|err| lancedb_err(&format!("create_empty_table {TABLE_NAME}"), err))
-}
-
-async fn ensure_cluster_membership_table(
-    connection: &lancedb::Connection,
-) -> Result<lancedb::Table, CoreError> {
-    let names = connection
-        .table_names()
-        .execute()
-        .await
-        .map_err(|err| lancedb_err("table_names", err))?;
-    if names
-        .iter()
-        .any(|name| name == CLUSTER_MEMBERSHIP_TABLE_NAME)
-    {
-        let table = connection
-            .open_table(CLUSTER_MEMBERSHIP_TABLE_NAME)
-            .execute()
-            .await
-            .map_err(|err| {
-                lancedb_err(&format!("open_table {CLUSTER_MEMBERSHIP_TABLE_NAME}"), err)
-            })?;
-        let schema = table
-            .schema()
-            .await
-            .map_err(|err| lancedb_err("read cluster membership schema", err))?;
-        for expected in cluster_membership_schema().fields() {
-            let live = schema.field_with_name(expected.name()).map_err(|err| {
-                CoreError::Storage(format!(
-                    "semantic: cluster membership table missing column `{}`: {err}",
-                    expected.name()
-                ))
-            })?;
-            if live.data_type() != expected.data_type() || live.is_nullable() {
-                return Err(CoreError::Storage(format!(
-                    "semantic: cluster membership column `{}` has incompatible schema",
-                    expected.name()
-                )));
-            }
+            .map_err(|error| lancedb_err(&format!("open_table {name}"), error)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let empty = RecordBatch::new_empty(Arc::clone(&schema));
+            let rows = arrow_array::RecordBatchIterator::new(std::iter::once(Ok(empty)), schema);
+            let params = WriteParams {
+                session: Some(session),
+                ..WriteParams::default()
+            };
+            Dataset::write(rows, uri.as_str(), Some(params))
+                .await
+                .map_err(|error| lancedb_err(&format!("create_empty_table {name}"), error))
         }
-        return Ok(table);
+        Ok(_) => Err(CoreError::Storage(format!(
+            "semantic: {name} dataset path is not a directory: {}",
+            path.display()
+        ))),
+        Err(error) => Err(fs_err("inspect working dataset", &path, &error)),
     }
-    connection
-        .create_empty_table(CLUSTER_MEMBERSHIP_TABLE_NAME, cluster_membership_schema())
-        .execute()
-        .await
-        .map_err(|err| {
-            lancedb_err(
-                &format!("create_empty_table {CLUSTER_MEMBERSHIP_TABLE_NAME}"),
-                err,
-            )
-        })
 }
 
-async fn verify_table_dimension(
-    table: &lancedb::Table,
-    expected_dimension: usize,
-) -> Result<(), CoreError> {
-    let schema = table
-        .schema()
-        .await
-        .map_err(|err| lancedb_err("read table schema", err))?;
+fn verify_membership_schema(table: &Dataset) -> Result<(), CoreError> {
+    let schema = arrow_schema::Schema::from(table.schema());
+    for expected in cluster_membership_schema().fields() {
+        let live = schema.field_with_name(expected.name()).map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: cluster membership table missing column `{}`: {error}",
+                expected.name()
+            ))
+        })?;
+        if live.data_type() != expected.data_type() || live.is_nullable() {
+            return Err(CoreError::Storage(format!(
+                "semantic: cluster membership column `{}` has incompatible schema",
+                expected.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_table_dimension(table: &Dataset, expected_dimension: usize) -> Result<(), CoreError> {
+    let schema = arrow_schema::Schema::from(table.schema());
     let expected = semantic_schema(dimension_to_i32(expected_dimension)?);
     for expected_field in expected.fields() {
         let live = schema.field_with_name(expected_field.name()).map_err(|_error| {
@@ -776,17 +734,20 @@ fn column_as<'a, T: Array + 'static>(
 }
 
 async fn validate_cluster_membership_coverage_v1(
-    semantic_table: &lancedb::Table,
-    membership_table: &lancedb::Table,
+    semantic_table: &Dataset,
+    membership_table: &Dataset,
 ) -> Result<(), CoreError> {
     let cluster_predicate = format!(
         "{COLUMN_CORPUS_KIND} = {}",
         crate::sql::quote_sql_string(SemanticCorpusKindV1::ClusterCard.as_code_str())
     );
-    let mut semantic_stream = semantic_table
-        .query()
-        .only_if(cluster_predicate)
-        .execute()
+    let mut semantic_scan = semantic_table.scan();
+    let mut semantic_stream = semantic_scan
+        .filter(&cluster_predicate)
+        .map_err(|err| lancedb_err("query ClusterCard coverage", err))?
+        .batch_size(1024)
+        .strict_batch_size(true)
+        .try_into_stream()
         .await
         .map_err(|err| lancedb_err("query ClusterCard coverage", err))?;
     let mut expected = BTreeSet::new();
@@ -810,8 +771,10 @@ async fn validate_cluster_membership_coverage_v1(
         }
     }
     let mut membership_stream = membership_table
-        .query()
-        .execute()
+        .scan()
+        .batch_size(1024)
+        .strict_batch_size(true)
+        .try_into_stream()
         .await
         .map_err(|err| lancedb_err("query cluster membership coverage", err))?;
     let mut observed = BTreeSet::new();
@@ -842,7 +805,7 @@ async fn validate_cluster_membership_coverage_v1(
 }
 
 async fn collect_cluster_membership_commitment_v1(
-    membership_table: &lancedb::Table,
+    membership_table: &Dataset,
 ) -> Result<ClusterMembershipCommitmentV1, CoreError> {
     let row_count = membership_table
         .count_rows(None)
@@ -850,8 +813,10 @@ async fn collect_cluster_membership_commitment_v1(
         .map_err(|error| lancedb_err("count cluster membership rows", error))?;
     let mut rows = Vec::with_capacity(row_count);
     let mut stream = membership_table
-        .query()
-        .execute()
+        .scan()
+        .batch_size(1024)
+        .strict_batch_size(true)
+        .try_into_stream()
         .await
         .map_err(|error| lancedb_err("query cluster membership commitment", error))?;
     while let Some(batch) = stream
@@ -1296,7 +1261,7 @@ fn membership_scope_delete_predicate(scopes: &BTreeSet<SemanticScopeTuple<'_>>) 
 /// Bounded native deletes per table for the exact set of mutation owners. The
 /// logical scope counters are recorded by the callers, not by native calls.
 async fn delete_scope_batch(
-    tables: &WorkingTables,
+    tables: &mut WorkingTables,
     scopes: &BTreeSet<SemanticScopeTuple<'_>>,
     report: &mut IngestStageReport,
     deleted_rows: &mut u64,
@@ -1307,17 +1272,17 @@ async fn delete_scope_batch(
     }
     for batch in batches {
         if let Some(predicate) = semantic_scope_delete_predicate(&batch) {
-            delete_semantic_predicate(&tables.table, &predicate, report, deleted_rows).await?;
+            delete_semantic_predicate(&mut tables.table, &predicate, report, deleted_rows).await?;
         }
         if let Some(predicate) = membership_scope_delete_predicate(&batch) {
-            delete_membership_predicate(&tables.membership_table, &predicate, report).await?;
+            delete_membership_predicate(&mut tables.membership_table, &predicate, report).await?;
         }
     }
     Ok(())
 }
 
 async fn delete_semantic_predicate(
-    table: &lancedb::Table,
+    table: &mut Dataset,
     predicate: &str,
     report: &mut IngestStageReport,
     deleted_rows: &mut u64,
@@ -1337,7 +1302,7 @@ async fn delete_semantic_predicate(
 }
 
 async fn delete_membership_predicate(
-    table: &lancedb::Table,
+    table: &mut Dataset,
     predicate: &str,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
@@ -1355,7 +1320,7 @@ async fn delete_membership_predicate(
 }
 
 async fn delete_cluster_membership_for_surface(
-    table: &lancedb::Table,
+    table: &mut Dataset,
     surface: SearchScopeSurface,
     origin: WorkingDatasetOriginV1,
     report: &mut IngestStageReport,
@@ -1435,7 +1400,7 @@ fn semantic_surface_delete_predicate_v1(surface: SearchScopeSurface) -> Result<S
 }
 
 async fn delete_surface_rows(
-    table: &lancedb::Table,
+    table: &mut Dataset,
     surface: SearchScopeSurface,
     origin: WorkingDatasetOriginV1,
     report: &mut IngestStageReport,
@@ -1465,7 +1430,7 @@ async fn delete_surface_rows(
 /// Append every row of `window` as one batch, after its owners' rows are
 /// gone.
 async fn append_window(
-    table: &lancedb::Table,
+    table: &mut Dataset,
     window: &SemanticScopeWindowV1,
     dimension: usize,
     report: &mut IngestStageReport,
@@ -1498,9 +1463,10 @@ async fn append_window(
         })?;
     let batch = build_record_batch(&rows, dimension)?;
     let append_started = Instant::now();
-    let _result = table
-        .add(batch)
-        .execute()
+    let schema = batch.schema();
+    let rows = arrow_array::RecordBatchIterator::new(std::iter::once(Ok(batch)), schema);
+    table
+        .append(rows, None)
         .await
         .map_err(|err| lancedb_err("table.add", err))?;
     report.durations.semantic_append = report
@@ -1514,7 +1480,7 @@ async fn append_window(
 }
 
 async fn append_cluster_membership_scope(
-    table: &lancedb::Table,
+    table: &mut Dataset,
     scope: &SemanticReplaceScope,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
@@ -1522,9 +1488,10 @@ async fn append_cluster_membership_scope(
         return Ok(());
     };
     let append_started = Instant::now();
-    let _result = table
-        .add(batch)
-        .execute()
+    let schema = batch.schema();
+    let rows = arrow_array::RecordBatchIterator::new(std::iter::once(Ok(batch)), schema);
+    table
+        .append(rows, None)
         .await
         .map_err(|err| lancedb_err("cluster membership table.add", err))?;
     report.durations.membership_append = report
@@ -1535,25 +1502,19 @@ async fn append_cluster_membership_scope(
     Ok(())
 }
 
-fn recover_dataset_artifacts(
-    generation_dir: &Path,
-    admission: Option<Arc<dyn FileAdmission>>,
-) -> Result<(), CoreError> {
-    DatasetPromotion::recover_with_admission(generation_dir, admission)
-}
-
 fn ensure_generation_contract(
     generation_dir: &Path,
     header: &SemanticIngestHeaderV1,
-    admission: Option<&dyn FileAdmission>,
+    generation_io: Option<&dyn SemanticGenerationFileIo>,
+    lifetime: Option<&dyn PublicationObjectLifetimePort>,
 ) -> Result<GenerationContract, CoreError> {
     GenerationContract::validate_batch_shape(&header.contract)?;
     let contract_path = layout::build_contract_path(generation_dir);
     if contract_path.exists() {
-        let bytes = crate::control_file::read_bounded_with_admission(
+        let bytes = crate::control_file::read_bounded_for_generation(
             &contract_path,
             crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
-            admission,
+            lifetime,
         )
         .map_err(|err| fs_err("read generation contract", &contract_path, &err))?;
         let contract = GenerationContract::decode(&bytes)?;
@@ -1565,10 +1526,9 @@ fn ensure_generation_contract(
             generation_dir.display()
         )));
     }
-    if let Some(admission) = admission {
-        admission
-            .prepare_parent_dirs(&contract_path)
-            .map_err(|err| fs_err("prepare generation dir", generation_dir, &err))?;
+    if let Some(io) = generation_io {
+        io.prepare_entry_parent(&contract_path)
+            .map_err(|error| admitted_fs_err("prepare generation dir", error))?;
     } else {
         fs::create_dir_all(generation_dir)
             .map_err(|err| fs_err("create generation dir", generation_dir, &err))?;
@@ -1583,7 +1543,7 @@ pub(crate) fn preflight_contract(
     semantic_root: &Path,
     pin: &GenerationPin,
     contract: &SemanticGenerationContractV1,
-    admission: Option<&dyn FileAdmission>,
+    lifetime: Option<&dyn PublicationObjectLifetimePort>,
 ) -> Result<(), CoreError> {
     use quanta_index_contract::lex::LexicalErrorCode;
 
@@ -1629,10 +1589,10 @@ pub(crate) fn preflight_contract(
             &error,
         )
     })? {
-        let bytes = crate::control_file::read_bounded_with_admission(
+        let bytes = crate::control_file::read_bounded_for_generation(
             &target_contract_path,
             crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
-            admission,
+            lifetime,
         )
         .map_err(|error| {
             fs_err(
@@ -1680,23 +1640,19 @@ pub(crate) fn preflight_contract(
                 base_generation.get()
             )));
         }
-        let marker_digest = crate::control_file::read_string_bounded_with_admission(
+        let marker_digest = crate::control_file::read_string_for_generation(
             &marker_path,
             crate::control_file::MAX_SEALED_MARKER_BYTES,
-            admission,
+            lifetime,
         )
         .map_err(|error| fs_err("read delta base sealed marker", &marker_path, &error))?;
-        crate::sealed_manifest::verify_sealed_sidecars_with_admission(
-            &base_dir,
-            &marker_digest,
-            admission,
-        )?;
+        crate::sealed_manifest::verify_sealed_sidecars(&base_dir, &marker_digest, lifetime)?;
         let manifest_path = layout::manifest_path(&base_dir);
         let manifest = SemanticManifest::decode(
-            &crate::control_file::read_bounded_with_admission(
+            &crate::control_file::read_bounded_for_generation(
                 &manifest_path,
                 crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
-                admission,
+                lifetime,
             )
             .map_err(|error| fs_err("read delta base manifest", &manifest_path, &error))?,
         )?;
@@ -1709,10 +1665,10 @@ pub(crate) fn preflight_contract(
         }
         let base_contract_path = layout::build_contract_path(&base_dir);
         let base_contract = GenerationContract::decode(
-            &crate::control_file::read_bounded_with_admission(
+            &crate::control_file::read_bounded_for_generation(
                 &base_contract_path,
                 crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
-                admission,
+                lifetime,
             )
             .map_err(|error| {
                 fs_err(
@@ -1838,18 +1794,13 @@ fn prepare_staging_dataset(
     generation_contract: &GenerationContract,
     repo_id: &quanta_index_contract::RepoId,
     revision_id: &quanta_index_contract::RevisionId,
-    admission: Option<&Arc<dyn FileAdmission>>,
+    generation_io: Option<&dyn SemanticGenerationFileIo>,
 ) -> Result<PreparedWorkingDatasetV1, CoreError> {
-    recover_dataset_artifacts(generation_dir, admission.cloned())?;
     let dataset = layout::dataset_dir(generation_dir);
     let staging = generation_dir.join(STAGING_DIR_NAME);
-    remove_dir_if_exists(
-        "clean stale staging dir",
-        &staging,
-        admission.map(AsRef::as_ref),
-    )?;
+    remove_dir_if_exists("clean stale staging dir", &staging, generation_io)?;
     if dataset.exists() {
-        inherit_dataset_tree(&dataset, &staging, admission.map(AsRef::as_ref))?;
+        inherit_dataset_tree(&dataset, &staging, generation_io)?;
         return Ok(PreparedWorkingDatasetV1 {
             path: staging,
             origin: WorkingDatasetOriginV1::TargetContinuation,
@@ -1877,16 +1828,15 @@ fn prepare_staging_dataset(
                 revision_id.as_str()
             )));
         }
-        inherit_dataset_tree(&base_dataset, &staging, admission.map(AsRef::as_ref))?;
+        inherit_dataset_tree(&base_dataset, &staging, generation_io)?;
         return Ok(PreparedWorkingDatasetV1 {
             path: staging,
             origin: WorkingDatasetOriginV1::SealedBaseClone,
         });
     }
-    if let Some(admission) = admission.map(AsRef::as_ref) {
-        admission
-            .prepare_parent_dirs(&staging.join(".directory-parent-witness"))
-            .map_err(|err| fs_err("prepare staging dataset dir", &staging, &err))?;
+    if let Some(io) = generation_io {
+        io.prepare_staging_directory(&staging)
+            .map_err(|error| admitted_fs_err("prepare staging dataset dir", error))?;
     } else {
         fs::create_dir_all(&staging)
             .map_err(|err| fs_err("create staging dataset dir", &staging, &err))?;
@@ -1908,7 +1858,8 @@ async fn inherited_vector_index_seal_v1(
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
     session: Option<Arc<Session>>,
-    admission: Option<Arc<dyn FileAdmission>>,
+    control_lifetime: Option<&dyn PublicationObjectLifetimePort>,
+    mode: crate::qualified_fs::LanceUriMode,
 ) -> Result<Option<crate::search::VerifiedInheritedVectorIndexV1>, CoreError> {
     let Some(base_generation) = generation_contract.base_generation else {
         return Ok(None);
@@ -1919,7 +1870,8 @@ async fn inherited_vector_index_seal_v1(
         &header.pin.revision_id,
         base_generation,
         session,
-        admission.as_deref(),
+        control_lifetime,
+        mode,
     )
     .await?;
     Ok(Some(verified))
@@ -1946,14 +1898,15 @@ fn delta_base_dir_v1(
 /// whole working table after the last window and the tombstones.
 async fn build_manifest_bytes(
     semantic_root: &Path,
-    table: &lancedb::Table,
-    membership_table: &lancedb::Table,
+    table: &mut Dataset,
+    membership_table: &Dataset,
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
     session: Option<Arc<Session>>,
-    admission: Option<Arc<dyn FileAdmission>>,
+    control_lifetime: Option<&dyn PublicationObjectLifetimePort>,
+    mode: crate::qualified_fs::LanceUriMode,
 ) -> Result<Vec<u8>, CoreError> {
-    let semantic_rows = semantic_row_commitment_v1(table).await?;
+    let semantic_rows = dataset_row_commitment_v1(table).await?;
     let row_count_u64 = semantic_rows.row_count;
     let membership_commitment = collect_cluster_membership_commitment_v1(membership_table).await?;
 
@@ -1969,7 +1922,8 @@ async fn build_manifest_bytes(
         header,
         generation_contract,
         session,
-        admission,
+        control_lifetime,
+        mode,
     )
     .await?;
     let contracted = match inherited.as_ref() {
@@ -2034,8 +1988,8 @@ async fn build_manifest_bytes(
 /// The working tables of one build: the semantic table and its cluster
 /// membership table on the staging dataset.
 struct WorkingTables {
-    table: lancedb::Table,
-    membership_table: lancedb::Table,
+    table: Dataset,
+    membership_table: Dataset,
     origin: WorkingDatasetOriginV1,
 }
 
@@ -2049,6 +2003,7 @@ async fn open_working_tables(
         dimension,
         None,
         WorkingDatasetOriginV1::TargetContinuation,
+        crate::qualified_fs::LanceUriMode::File,
     )
     .await
 }
@@ -2058,10 +2013,27 @@ async fn open_working_tables_with_session(
     dimension: usize,
     session: Option<Arc<Session>>,
     origin: WorkingDatasetOriginV1,
+    mode: crate::qualified_fs::LanceUriMode,
 ) -> Result<WorkingTables, CoreError> {
-    let connection = open_connection_with_session(working_dataset, session).await?;
-    let table = ensure_table(&connection, dimension).await?;
-    let membership_table = ensure_cluster_membership_table(&connection).await?;
+    let session = session.unwrap_or_else(crate::qualified_fs::new_persisted_lance_session);
+    let table = ensure_working_dataset(
+        working_dataset,
+        TABLE_NAME,
+        semantic_schema(dimension_to_i32(dimension)?),
+        Arc::clone(&session),
+        mode,
+    )
+    .await?;
+    verify_table_dimension(&table, dimension)?;
+    let membership_table = ensure_working_dataset(
+        working_dataset,
+        CLUSTER_MEMBERSHIP_TABLE_NAME,
+        cluster_membership_schema(),
+        session,
+        mode,
+    )
+    .await?;
+    verify_membership_schema(&membership_table)?;
     Ok(WorkingTables {
         table,
         membership_table,
@@ -2070,15 +2042,22 @@ async fn open_working_tables_with_session(
 }
 
 async fn apply_clear_surfaces(
-    tables: &WorkingTables,
+    tables: &mut WorkingTables,
     surfaces: &[SearchScopeSurface],
     report: &mut IngestStageReport,
     deleted_rows: &mut u64,
 ) -> Result<(), CoreError> {
     for surface in surfaces {
-        delete_surface_rows(&tables.table, *surface, tables.origin, report, deleted_rows).await?;
+        delete_surface_rows(
+            &mut tables.table,
+            *surface,
+            tables.origin,
+            report,
+            deleted_rows,
+        )
+        .await?;
         delete_cluster_membership_for_surface(
-            &tables.membership_table,
+            &mut tables.membership_table,
             *surface,
             tables.origin,
             report,
@@ -2091,7 +2070,7 @@ async fn apply_clear_surfaces(
 /// Replace one admitted window: its exact owners are deleted in bounded batches, then the window's
 /// rows are appended as one batch and its memberships per scope.
 async fn apply_window(
-    tables: &WorkingTables,
+    tables: &mut WorkingTables,
     window: &SemanticScopeWindowV1,
     dimension: usize,
     report: &mut IngestStageReport,
@@ -2140,9 +2119,9 @@ async fn apply_window(
     let rows_before = appended.rows;
     let bytes_before = appended.bytes;
     let appended_result: Result<(), CoreError> = async {
-        append_window(&tables.table, window, dimension, report, appended).await?;
+        append_window(&mut tables.table, window, dimension, report, appended).await?;
         for scope in window.scopes() {
-            append_cluster_membership_scope(&tables.membership_table, scope, report).await?;
+            append_cluster_membership_scope(&mut tables.membership_table, scope, report).await?;
         }
         Ok(())
     }
@@ -2174,7 +2153,7 @@ async fn apply_window(
 }
 
 async fn apply_tombstones(
-    tables: &WorkingTables,
+    tables: &mut WorkingTables,
     tombstones: &[SemanticTombstoneScope],
     policy: SemanticStreamWindowPolicy,
     report: &mut IngestStageReport,
@@ -2193,21 +2172,23 @@ async fn apply_tombstones(
 
 async fn seal_manifest_bytes(
     semantic_root: &Path,
-    tables: &WorkingTables,
+    tables: &mut WorkingTables,
     header: &SemanticIngestHeaderV1,
     generation_contract: &GenerationContract,
     session: Option<Arc<Session>>,
-    admission: Option<Arc<dyn FileAdmission>>,
+    control_lifetime: Option<&dyn PublicationObjectLifetimePort>,
+    mode: crate::qualified_fs::LanceUriMode,
 ) -> Result<Vec<u8>, CoreError> {
     validate_cluster_membership_coverage_v1(&tables.table, &tables.membership_table).await?;
     build_manifest_bytes(
         semantic_root,
-        &tables.table,
+        &mut tables.table,
         &tables.membership_table,
         header,
         generation_contract,
         session,
-        admission,
+        control_lifetime,
+        mode,
     )
     .await
 }
@@ -2225,7 +2206,7 @@ async fn seal_manifest_bytes(
 )]
 fn apply_scope_stream(
     runtime: &tokio::runtime::Runtime,
-    tables: &WorkingTables,
+    tables: &mut WorkingTables,
     policy: SemanticStreamWindowPolicy,
     header: &SemanticIngestHeaderV1,
     authority: &mut StreamScopeAuthorityV1,
@@ -2329,7 +2310,9 @@ pub(crate) fn build_stream_reported_with_diagnostic(
         scopes,
         &BuildFileContext {
             seal_tallies,
-            lance_file_admission: None,
+            work_files: None,
+            dataset_read_lifetime: None,
+            lance_uri_mode: crate::qualified_fs::LanceUriMode::File,
         },
         publication,
         diagnostic,
@@ -2338,7 +2321,14 @@ pub(crate) fn build_stream_reported_with_diagnostic(
 
 pub(crate) struct BuildFileContext<'a> {
     pub(crate) seal_tallies: &'a SealTalliesV1,
-    pub(crate) lance_file_admission: Option<&'a Arc<dyn FileAdmission>>,
+    pub(crate) work_files: Option<&'a SemanticWorkFiles>,
+    pub(crate) dataset_read_lifetime: Option<&'a dyn PublicationObjectLifetimePort>,
+    pub(crate) lance_uri_mode: crate::qualified_fs::LanceUriMode,
+}
+
+pub(crate) struct SemanticWorkFiles {
+    pub(crate) generation: Arc<dyn SemanticGenerationFileIo>,
+    pub(crate) session: Arc<Session>,
 }
 
 pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
@@ -2352,8 +2342,15 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
     diagnostic: Option<&DiagnosticContextV1>,
 ) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
     let seal_tallies = files.seal_tallies;
-    let lance_file_admission = files.lance_file_admission;
-    let lance_session = lance_file_admission.map(crate::qualified_fs::lance_session);
+    let generation_io = files.work_files.map(|work| &work.generation);
+    let dataset_read_lifetime = files.dataset_read_lifetime;
+    if files.work_files.is_some() != dataset_read_lifetime.is_some() {
+        return Err(CoreError::InvalidContract(
+            "qualified semantic build requires both work files and generation reader lifetime"
+                .into(),
+        ));
+    }
+    let lance_session = files.work_files.map(|work| Arc::clone(&work.session));
     let build_started = Instant::now();
     let mut report = IngestStageReport::default();
     let mut appended = AppendedVectors::default();
@@ -2377,7 +2374,7 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
         semantic_root,
         &header.pin,
         &header.contract,
-        lance_file_admission.map(AsRef::as_ref),
+        dataset_read_lifetime,
     )?;
     if header.contract.model_contract.distance_metric != EmbeddingDistanceMetric::Cosine {
         return Err(CoreError::InvalidContract(format!(
@@ -2413,11 +2410,12 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
     let prepare_started = Instant::now();
     let prepare_span = begin_build_stage(diagnostic, DiagnosticStageV1::SemanticPrepare);
     let prepared = (|| {
-        recover_dataset_artifacts(&generation_dir, lance_file_admission.cloned())?;
+        DatasetPromotion::recover_with_admission(&generation_dir, generation_io.cloned())?;
         let generation_contract = ensure_generation_contract(
             &generation_dir,
             header,
-            lance_file_admission.map(AsRef::as_ref),
+            generation_io.map(AsRef::as_ref),
+            dataset_read_lifetime,
         )?;
         let working_dataset = prepare_staging_dataset(
             semantic_root,
@@ -2425,7 +2423,7 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
             &generation_contract,
             &header.pin.repo_id,
             &header.pin.revision_id,
-            lance_file_admission,
+            generation_io.map(AsRef::as_ref),
         )?;
         let tables = crate::run_blocking(
             runtime,
@@ -2434,12 +2432,13 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
                 dimension,
                 lance_session.clone(),
                 working_dataset.origin,
+                files.lance_uri_mode,
             ),
         )?;
         Ok::<_, CoreError>((generation_contract, tables))
     })();
     finish_build_stage(prepare_span, prepared.is_ok());
-    let (generation_contract, tables) = prepared?;
+    let (generation_contract, mut tables) = prepared?;
     report.durations.prepare = monotonic_nanos_since(prepare_started);
 
     let (tally, manifest_bytes) = {
@@ -2451,7 +2450,7 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
         let cleared = crate::run_blocking(
             runtime,
             apply_clear_surfaces(
-                &tables,
+                &mut tables,
                 &header.mutations.clear_surfaces,
                 &mut report,
                 &mut deleted_rows,
@@ -2484,7 +2483,7 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
         let scopes_before = report.owner_scopes;
         let streamed = apply_scope_stream(
             runtime,
-            &tables,
+            &mut tables,
             policy,
             header,
             &mut authority,
@@ -2519,7 +2518,7 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
         let deleted = crate::run_blocking(
             runtime,
             apply_tombstones(
-                &tables,
+                &mut tables,
                 &header.mutations.tombstone_scopes,
                 policy,
                 &mut report,
@@ -2551,11 +2550,12 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
                 runtime,
                 seal_manifest_bytes(
                     semantic_root,
-                    &tables,
+                    &mut tables,
                     header,
                     &generation_contract,
                     lance_session,
-                    lance_file_admission.cloned(),
+                    dataset_read_lifetime,
+                    files.lance_uri_mode,
                 ),
             );
             finish_build_stage(seal_span, sealed.is_ok());
@@ -2583,7 +2583,7 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
             &generation_dir,
             &staged_contract,
             publication,
-            lance_file_admission.cloned(),
+            generation_io.cloned(),
         )?;
         #[cfg(test)]
         exit_for_promotion_crash_boundary(PRE_DATASET_PROMOTION);
@@ -2631,11 +2631,11 @@ pub(crate) fn build_stream_reported_with_diagnostic_and_lance(
             // bytes hashed here are proportional to what this generation added
             // (QI-BB-006 #4); the measurement is tallied for the scrape.
             let base_dir = delta_base_dir_v1(semantic_root, header, &generation_contract);
-            let (sealed_manifest_bytes, measurement) = build_sealed_manifest_bytes_with_admission(
+            let (sealed_manifest_bytes, measurement) = build_sealed_manifest_bytes_with_lifetime(
                 &generation_dir,
                 header.batch.manifest_digest.as_str(),
                 base_dir.as_deref(),
-                lance_file_admission.map(AsRef::as_ref),
+                dataset_read_lifetime,
             )?;
             seal_tallies.record(measurement);
             let _sealed_manifest = write_atomic(

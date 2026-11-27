@@ -6454,15 +6454,18 @@ def _sdk_results(command, binary_digest, selected=6):
 
 
 def _nextest_evidence(identities):
+    from tools.ci.tests.p11_test_issuer import nextest_suite_id
+
     by_binary = {}
     for identity in identities:
-        binary_id, test_name = identity.split("$", 1)
-        by_binary.setdefault(binary_id, []).append(test_name)
+        event_prefix, test_name = identity.split("$", 1)
+        by_binary.setdefault(event_prefix, []).append(test_name)
     suites = {}
     rows = []
-    for binary_id, names in sorted(by_binary.items()):
-        package, binary = binary_id.split("::", 1)
+    for event_prefix, names in sorted(by_binary.items()):
+        package, binary = event_prefix.split("::", 1)
         kind = "lib" if binary == "quanta_index_retrieval_bench" else "test"
+        binary_id = nextest_suite_id(package, binary, kind)
         metadata = {"crate": package, "test_binary": binary, "kind": kind}
         suites[binary_id] = {
             "package-name": package,
@@ -6477,7 +6480,7 @@ def _nextest_evidence(identities):
             {"type": "suite", "event": "started", "test_count": len(names), "nextest": metadata}
         )
         for name in names:
-            event_name = f"{binary_id}${name}"
+            event_name = f"{event_prefix}${name}"
             rows.append({"type": "test", "event": "started", "name": event_name})
             rows.append({"type": "test", "event": "ok", "name": event_name})
         rows.append(
@@ -11392,11 +11395,12 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
 
     # A stale frozen gold contract must fail before the first product runs.
     invalid = dict(spec, output_root=str(tmp_path / "invalid-gold"))
-    monkeypatch.setattr(
-        pairrun,
-        "validate_suite",
-        lambda *_args: (_ for _ in ()).throw(ev.EvidenceError("stale source oracle")),
-    )
+
+    def reject_frozen_suite(_repo, _suite, *, candidate_manifest_path, candidate_manifest_sha256):
+        assert candidate_manifest_path is None and candidate_manifest_sha256 is None
+        raise ev.EvidenceError("stale source oracle")
+
+    monkeypatch.setattr(pairrun, "validate_suite", reject_frozen_suite)
     monkeypatch.setattr(
         pairrun,
         "run_quanta",
@@ -13288,6 +13292,7 @@ def test_current_manifest_schema():
         with pytest.raises(pairrun.RunError, match="artifacts|source closure"):
             pairrun._validate_manifest_shape(mutant)
 
+
     qualified = json.loads(json.dumps(_g0_manifest()))
     qualified["scope"] = "qualified"
     qualified["artifacts"].update(
@@ -13312,6 +13317,57 @@ def test_current_manifest_schema():
         mutator(mutant)
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(mutant, schema)
+
+
+def test_candidate_manifest_requires_paired_artifact_and_digest():
+    schema = _load_schema("run-manifest.schema.json")
+    manifest = _g0_manifest()
+    manifest["evidence"]["pair"]["candidate_manifest_sha256"] = "a" * 64
+    manifest["artifacts"]["symbol_candidate_manifest"] = "symbol-candidate-manifest.json"
+    jsonschema.validate(manifest, schema)
+    pairrun._validate_manifest_shape(manifest)
+    for mutation in ("missing_artifact", "missing_digest", "invalid_digest"):
+        changed = copy.deepcopy(manifest)
+        if mutation == "missing_artifact":
+            del changed["artifacts"]["symbol_candidate_manifest"]
+        elif mutation == "missing_digest":
+            del changed["evidence"]["pair"]["candidate_manifest_sha256"]
+        else:
+            changed["evidence"]["pair"]["candidate_manifest_sha256"] = "wrong"
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(changed, schema)
+        with pytest.raises(pairrun.RunError, match="candidate[ _]manifest"):
+            pairrun._validate_manifest_shape(changed)
+
+    qualified = copy.deepcopy(manifest)
+    qualified["scope"] = "qualified"
+    qualified["artifacts"].update(
+        {
+            "admission_manifest": "admission.json",
+            "experiment_custody": "experiment-custody.json",
+            "development_suite": "development-suite.json",
+            "license_receipt": "license.json",
+            "annotation_receipts": ["annotation-a.json", "annotation-b.json"],
+            "adjudication_receipt": "adjudication.json",
+            "symbol_independent_census": "symbol-independent-census.json",
+        }
+    )
+    qualified["provenance"]["admission"]["manifest_digest"] = _fake_sha("admission")
+    qualified["evidence"]["pair"]["independent_census_sha256"] = "b" * 64
+    jsonschema.validate(qualified, schema)
+    pairrun._validate_manifest_shape(qualified)
+    for mutation in ("missing_census", "missing_census_digest", "exploratory_census"):
+        changed = copy.deepcopy(qualified)
+        if mutation == "missing_census":
+            del changed["artifacts"]["symbol_independent_census"]
+        elif mutation == "missing_census_digest":
+            del changed["evidence"]["pair"]["independent_census_sha256"]
+        else:
+            changed["scope"] = "exploratory"
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(changed, schema)
+        with pytest.raises(pairrun.RunError, match="independent candidate census|qualified run manifest"):
+            pairrun._validate_manifest_shape(changed)
 
 
 def _g0_verdict() -> dict:

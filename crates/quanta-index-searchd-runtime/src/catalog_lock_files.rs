@@ -1,17 +1,120 @@
 //! Catalog lock files belong to the publication file authority, not SQLite.
 
-use std::{fs::File, os::unix::fs::MetadataExt as _, path::Path, sync::Arc};
+use std::{
+    cell::RefCell,
+    fs::File,
+    marker::PhantomData,
+    num::NonZeroU64,
+    os::unix::fs::MetadataExt as _,
+    path::Path,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::{
     CoreError, RequestBudgetV1,
     index::{IndexError, ObjectReadFile, ObjectReadIoPort as _, WorkBudget, WorkLimits},
+    publication_admission::CatalogPublicationFundingScope,
     publication_capacity::PublicationAllowance,
 };
 
 use crate::{
     native_object_read_io::NativeObjectReadIo, publication_file_capacity::PublicationFileCapacity,
 };
+
+/// Operation funding shared by regular Catalog files and any SQLite callbacks
+/// executing for the same owner. A foreign active owner cannot grant fallback.
+#[derive(Clone, Copy)]
+pub(crate) struct CatalogFileFunding(NonZeroU64);
+
+static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
+
+struct CurrentFunding {
+    owner: NonZeroU64,
+    parent: Arc<PublicationAllowance>,
+}
+
+thread_local! {
+    static CURRENT_FUNDING: RefCell<Option<CurrentFunding>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct CatalogFileFundingGuard {
+    previous: Option<CurrentFunding>,
+    _thread_local: PhantomData<Rc<()>>,
+}
+
+impl CatalogPublicationFundingScope for CatalogFileFundingGuard {}
+
+impl Drop for CatalogFileFundingGuard {
+    fn drop(&mut self) {
+        CURRENT_FUNDING.with(|slot| {
+            let _finished = slot.replace(self.previous.take());
+        });
+    }
+}
+
+pub(crate) struct ForeignCatalogFileFunding;
+
+impl CatalogFileFunding {
+    pub(crate) fn allocate() -> Result<Self, CoreError> {
+        let number = NEXT_SCOPE
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_error| CoreError::InvalidContract("SQLite scope IDs exhausted".into()))?;
+        let scope = NonZeroU64::new(number)
+            .ok_or_else(|| CoreError::InvalidContract("zero SQLite scope".into()))?;
+        Ok(Self(scope))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new(owner: NonZeroU64) -> Self {
+        Self(owner)
+    }
+
+    pub(crate) fn bind(self, parent: Arc<PublicationAllowance>) -> CatalogFileFundingGuard {
+        let previous = CURRENT_FUNDING.with(|slot| {
+            slot.replace(Some(CurrentFunding {
+                owner: self.0,
+                parent,
+            }))
+        });
+        CatalogFileFundingGuard {
+            previous,
+            _thread_local: PhantomData,
+        }
+    }
+
+    pub(crate) fn parent(
+        self,
+    ) -> Result<Option<Arc<PublicationAllowance>>, ForeignCatalogFileFunding> {
+        CURRENT_FUNDING.with(|slot| match slot.borrow().as_ref() {
+            Some(funding) if funding.owner == self.0 => Ok(Some(Arc::clone(&funding.parent))),
+            Some(_) => Err(ForeignCatalogFileFunding),
+            None => Ok(None),
+        })
+    }
+
+    pub(crate) fn open(
+        self,
+        common: Arc<PublicationFileCapacity>,
+        path: &Path,
+        create_new: bool,
+    ) -> Result<Box<dyn ObjectReadFile>, IndexError> {
+        let parent = if create_new {
+            self.parent().map_err(|_foreign| {
+                IndexError::BackendViolation("Catalog lock funding belongs to another scope".into())
+            })?
+        } else {
+            None
+        };
+        open(common, path, create_new, parent)
+    }
+}
 
 pub(crate) fn catalog_file_error(error: &CoreError) -> IndexError {
     if matches!(

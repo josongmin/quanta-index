@@ -496,7 +496,10 @@ fn count_dispatcher(
                 &format!("symbol-{id:02}"),
                 1.0,
             );
-            row.snippet = "x".repeat(snippet_bytes);
+            row.excerpt
+                .as_mut()
+                .expect("fixture row carries a match excerpt")
+                .snippet = "x".repeat(snippet_bytes);
             row
         })
         .collect();

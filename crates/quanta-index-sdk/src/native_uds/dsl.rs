@@ -11,11 +11,15 @@ use quanta_index_contract::{
     },
     native_protocol::{
         NATIVE_DSL_HEADER_OWNER_V1, NATIVE_DSL_POLICY_V1, NATIVE_DSL_PRODUCER_V1,
-        NATIVE_DSL_SCHEMA_V1, NativeDslCorpusV1, NativeDslCursorV1, NativeDslFileV1,
+        NATIVE_DSL_RUNTIME_CATALOG_MAX_BYTES_V1, NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1,
+        NATIVE_DSL_SCHEMA_V1,
+        MAX_NATIVE_DSL_STRUCTURAL_CHUNKS_PER_PAGE_V1, MAX_NATIVE_DSL_STRUCTURAL_CHUNK_BYTES_V1,
+        NativeDslStructuralChunksCursorV1,
+        NativeDslCorpusV1, NativeDslCursorV1, NativeDslFileV1,
         NativeDslKindV1, NativeDslPageV1, NativeDslQueryV1, NativeDslReplayBasisV1,
         NativeDslReplayV1, NativeDslRuntimeCatalogV1, NativeDslScopeV1, NativeIndexRequest,
         NativeIndexResponse, NativeReadSessionRequest, NativeReadSessionState,
-        NativeReadSessionStatus, native_dsl_context_v1, native_dsl_file_owner_v1,
+        NativeReadSessionStatus, NativeSealedDslSubmitV1, native_dsl_context_v1, native_dsl_file_owner_v1,
         native_dsl_sequence_v1,
     },
 };
@@ -27,6 +31,8 @@ use serde::{Deserialize, Serialize, de::Visitor};
 use sha2::{Digest as _, Sha256};
 
 use super::{AdmittedNativePublicationReply, NativeUdsClient, NativeUdsError};
+
+const MAX_PROJECTION_OBJECT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct NativeDslFileChangeV1 {
@@ -271,6 +277,12 @@ pub struct NativeDslPublicationV1 {
     pub authority: Digest,
     pub changes: NativeDslChangesV1,
 }
+
+/// Original candidate ingress and immutable Q request retained before admission.
+pub struct SealedNativeDslRequestV1 {
+    pub request: UpdateRequest,
+    pub submission: NativeSealedDslSubmitV1,
+}
 quanta_index_contract::native_serde_struct!([serde_identifier] NativeDslPublicationV1 {
     operation: OperationKey,
     expected_view: ViewRef,
@@ -367,7 +379,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         input: &NativeDslPublicationV1,
         budget: &RequestBudgetV1,
     ) -> Result<UpdateRequest, NativeUdsError> {
-        self.prepare_dsl_publication_scoped_v1(input, input.authority, budget, None)
+        self.prepare_dsl_publication_scoped_v1(input, input.authority, budget, None, None)
+            .map(|(request, _)| request)
     }
 
     pub fn prepare_dsl_publication_admitted_v1(
@@ -376,7 +389,38 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<UpdateRequest, NativeUdsError> {
-        self.prepare_dsl_publication_scoped_v1(input, input.authority, budget, Some(memory))
+        self.prepare_dsl_publication_scoped_v1(input, input.authority, budget, Some(memory), None)
+            .map(|(request, _)| request)
+    }
+
+    /// Seal the canonical request under the same ingress as its projection
+    /// inputs so the ordinary Submit preserves that fence.
+    pub fn prepare_dsl_publication_sealed_admitted_v1(
+        &self,
+        input: &NativeDslPublicationV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<SealedNativeDslRequestV1, NativeUdsError> {
+        let (request, ingress) = self.prepare_dsl_publication_scoped_v1(
+            input, input.authority, budget, Some(memory), None,
+        )?;
+        let request_ref = self.seal_dsl_request_borrowed_admitted_v1(
+            ingress, &request, budget, memory,
+        )?;
+        let (scope, kind) = input.changes.scope_kind();
+        let replay = NativeDslReplayV1 {
+            operation: input.operation,
+            projection: scope.projection(kind),
+            basis: NativeDslReplayBasisV1::Exact {
+                view: input.expected_view,
+                event_predecessor: input.event_predecessor,
+            },
+            authority: input.authority,
+        };
+        Ok(SealedNativeDslRequestV1 {
+            request,
+            submission: NativeSealedDslSubmitV1 { replay, ingress, request_ref },
+        })
     }
 
     fn prepare_dsl_publication_scoped_v1(
@@ -385,7 +429,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         authority: Digest,
         budget: &RequestBudgetV1,
         memory: Option<&MemoryScope>,
-    ) -> Result<UpdateRequest, NativeUdsError> {
+        checked_header_size: Option<usize>,
+    ) -> Result<(UpdateRequest, IngressRef), NativeUdsError> {
         let access = DslAccess {
             client: self,
             memory,
@@ -434,6 +479,11 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             .event_predecessor
             .checked_add(1)
             .ok_or_else(|| protocol("Native DSL event sequence overflow"))?;
+        let header_size = match checked_header_size {
+            Some(size) => size,
+            None => publication_header_size(&input.changes, budget)?,
+        };
+        super::read_session::admitted_budget_checkpoint(budget)?;
         let selection = ViewSelection::Exact(input.expected_view);
         let view = access.call(NativeIndexRequest::ReadView(selection), |response| {
             if let NativeIndexResponse::View(view) = response {
@@ -492,12 +542,18 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             prior,
         };
         let header = match &input.changes {
-            NativeDslChangesV1::Corpus { header, .. } => {
-                stage.replace(NATIVE_DSL_HEADER_OWNER_V1, None, Some(header))?
-            }
-            NativeDslChangesV1::RuntimeMetadata(runtime) => {
-                stage.replace(NATIVE_DSL_HEADER_OWNER_V1, None, Some(runtime))?
-            }
+            NativeDslChangesV1::Corpus { header, .. } => stage.replace(
+                NATIVE_DSL_HEADER_OWNER_V1,
+                None,
+                Some(header),
+                Some(header_size),
+            )?,
+            NativeDslChangesV1::RuntimeMetadata(runtime) => stage.replace(
+                NATIVE_DSL_HEADER_OWNER_V1,
+                None,
+                Some(runtime),
+                Some(header_size),
+            )?,
         }
         .ok_or_else(|| protocol("Native DSL header mutation is missing"))?;
         let changes = match &input.changes {
@@ -562,11 +618,12 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 .payload_digest()
                 .map_err(|error| NativeUdsError::Protocol(error.to_string()))?,
         });
-        Ok(UpdateRequest {
+        let request = UpdateRequest {
             operation: key,
             expected_view: input.expected_view,
             kind: UpdateKind::ProjectionAdvance(Box::new(transition)),
-        })
+        };
+        Ok((request, ingress))
     }
 
     pub fn publish_dsl_v1(
@@ -574,6 +631,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         input: &NativeDslPublicationV1,
         budget: &RequestBudgetV1,
     ) -> Result<SubmitOutcome, NativeUdsError> {
+        let header_size = publication_header_size(&input.changes, budget)?;
         let authority = publication_digest(input, budget)?;
         let (scope, kind) = input.changes.scope_kind();
         let replay = NativeDslReplayV1 {
@@ -595,8 +653,10 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         {
             return Ok(outcome);
         }
-        let request = match self.prepare_dsl_publication_scoped_v1(input, authority, budget, None) {
-            Ok(request) => request,
+        let request = match self.prepare_dsl_publication_scoped_v1(
+            input, authority, budget, None, Some(header_size),
+        ) {
+            Ok((request, _)) => request,
             Err(error) => match access.replay(replay) {
                 Ok(SubmitOutcome::Unknown(_)) | Err(NativeUdsError::Unknown(_)) => {
                     return Err(error);
@@ -620,6 +680,38 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             budget,
         }
         .replay(input)
+    }
+
+    /// Read an existing seal before recording the producer's publication claim.
+    pub fn read_sealed_dsl_admitted_v1(
+        &self,
+        replay: NativeDslReplayV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<Option<NativeSealedDslSubmitV1>, NativeUdsError> {
+        DslAccess { client: self, memory: Some(memory), budget }.call(
+            NativeIndexRequest::ReadSealedDslV1(replay),
+            |response| match response {
+                NativeIndexResponse::SealedDslRequestV1(seal) => Some(*seal),
+                _ => None,
+            },
+        )
+    }
+
+    pub fn submit_sealed_dsl_admitted_v1(
+        &self,
+        input: NativeSealedDslSubmitV1,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<SubmitOutcome, NativeUdsError> {
+        DslAccess { client: self, memory: Some(memory), budget }.call(
+            NativeIndexRequest::SubmitSealedDslV1(input),
+            |response| match response {
+                NativeIndexResponse::Submitted(reply) =>
+                    super::validate_submit_reply(input.replay.operation, reply.clone()).ok(),
+                _ => None,
+            },
+        )
     }
 
     pub fn search_dsl_in_read_session_v1(
@@ -678,6 +770,102 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             )?,
             NativeIndexResponse::Error(_) => {}
             _ => return Err(protocol("unexpected retained Native DSL response")),
+        }
+        super::read_session::admitted_budget_checkpoint(budget)?;
+        Ok(reply)
+    }
+
+    /// Read one byte page of the complete RuntimeMetadata predecessor. The
+    /// caller keeps the exact session open and checks immutable page identity
+    /// while assembling the catalog under its Original memory scope.
+    pub fn read_session_runtime_catalog_page_admitted_v1(
+        &self,
+        expected: &NativeReadSessionStatus,
+        scope: NativeDslScopeV1,
+        offset: u32,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        super::read_session::admitted_budget_checkpoint(budget)?;
+        if expected.state != NativeReadSessionState::Active
+            || !offset.is_multiple_of(NATIVE_DSL_RUNTIME_CATALOG_PAGE_BYTES_V1)
+        {
+            return Err(protocol("Native RuntimeMetadata session or offset differs"));
+        }
+        let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadDslRuntimeCatalogV1 {
+            session: expected.session,
+            scope,
+            offset,
+        });
+        let reply = self.request_publication_admitted_ref(&request, budget, memory)?;
+        match reply.response() {
+            NativeIndexResponse::DslRuntimeCatalogPageV1(page)
+                if page.session == expected.session
+                    && page.view == expected.view
+                    && page.matches_offset_v1(offset)
+                    && page.structural_certificate.0 != Digest([0; 32])
+                    && page.projection.0 != Digest([0; 32])
+                    && page.output.0 != Digest([0; 32]) => {}
+            NativeIndexResponse::Error(_) => {}
+            _ => return Err(protocol("Native RuntimeMetadata page binding differs")),
+        }
+        super::read_session::admitted_budget_checkpoint(budget)?;
+        Ok(reply)
+    }
+    /// Enumerate Structural chunk membership in one retained view. Continue
+    /// with the returned cursor until it is absent. A page may be empty while
+    /// advancing through owners with no chunks.
+    pub fn read_session_structural_chunks_admitted_v1(
+        &self,
+        expected: &NativeReadSessionStatus,
+        scope: NativeDslScopeV1,
+        after: Option<NativeDslStructuralChunksCursorV1>,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        super::read_session::admitted_budget_checkpoint(budget)?;
+        if expected.state != NativeReadSessionState::Active
+            || after.is_some_and(|cursor| cursor.view != expected.view)
+        {
+            return Err(protocol("Native Structural chunk session or cursor differs"));
+        }
+        let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::ReadDslStructuralChunksV1 {
+            session: expected.session, scope, after,
+        });
+        let reply = self.request_publication_admitted_ref(&request, budget, memory)?;
+        match reply.response() {
+            NativeIndexResponse::DslStructuralChunksPageV1(page)
+                if page.session == expected.session
+                    && page.view == expected.view
+                    && page.structural_certificate.0 != Digest([0; 32])
+                    && page.projection.0 != Digest([0; 32])
+                    && page.chunks.len() <= MAX_NATIVE_DSL_STRUCTURAL_CHUNKS_PER_PAGE_V1
+                    && page.chunks.iter().try_fold(0_usize, |bytes, chunk| {
+                        bytes.checked_add(chunk.chunk_id.as_str().len())
+                    }).is_some_and(|bytes| bytes <= MAX_NATIVE_DSL_STRUCTURAL_CHUNK_BYTES_V1)
+                    && page.chunks.iter().all(|chunk| {
+                        chunk.owner.producer == NATIVE_DSL_PRODUCER_V1
+                            && chunk.owner != NATIVE_DSL_HEADER_OWNER_V1
+                    })
+                    && page.chunks.windows(2).all(|pair| pair[0].owner <= pair[1].owner)
+                    && page.chunks.first().is_none_or(|chunk| after.is_none_or(|cursor| {
+                        chunk.owner > cursor.owner
+                            || (chunk.owner == cursor.owner && cursor.chunk_offset.is_some())
+                    }))
+                    && page.chunks.last().is_none_or(|chunk| {
+                        page.after.is_none_or(|cursor| cursor.owner >= chunk.owner)
+                    })
+                    && after.is_none_or(|cursor| cursor.projection == page.projection
+                        && cursor.structural_certificate == page.structural_certificate)
+                    && page.after.is_none_or(|cursor| cursor.view == page.view
+                        && cursor.projection == page.projection
+                        && cursor.structural_certificate == page.structural_certificate
+                        && after.is_none_or(|previous| cursor.owner > previous.owner
+                            || (cursor.owner == previous.owner
+                                && previous.chunk_offset.is_some_and(|offset|
+                                    cursor.chunk_offset.is_none_or(|next| next > offset))))) => {}
+            NativeIndexResponse::Error(_) => {}
+            _ => return Err(protocol("Native Structural chunk page binding differs")),
         }
         super::read_session::admitted_budget_checkpoint(budget)?;
         Ok(reply)
@@ -930,7 +1118,7 @@ impl<P: AsRef<Path>> PublicationStage<'_, P> {
         } else {
             None
         };
-        self.replace(owner, source, change.next.as_ref())
+        self.replace(owner, source, change.next.as_ref(), None)
     }
 
     fn replace<T: Serialize>(
@@ -938,6 +1126,7 @@ impl<P: AsRef<Path>> PublicationStage<'_, P> {
         owner: OwnerKey,
         source: Option<(OwnerKey, ObjectRef)>,
         next: Option<&T>,
+        checked_size: Option<usize>,
     ) -> Result<Option<OwnerMutation>, NativeUdsError> {
         let prior = if self.prior.is_some() {
             let owners = super::NativeSourceOwnerKeys::new(vec![owner]).map_err(protocol)?;
@@ -958,7 +1147,7 @@ impl<P: AsRef<Path>> PublicationStage<'_, P> {
         };
         let next = next
             .map(|value| {
-                let (payload, _memory) = encode_projection(value, &self.access)?;
+                let (payload, _memory) = encode_projection(value, checked_size, &self.access)?;
                 let stamp = Digest(Sha256::digest(&payload).into());
                 let children =
                     quanta_index_contract::native_protocol::NativeProjectionOutputChildren::new(
@@ -997,18 +1186,43 @@ impl<P: AsRef<Path>> PublicationStage<'_, P> {
     }
 }
 
-fn encode_projection(
+fn publication_header_size(
+    changes: &NativeDslChangesV1,
+    budget: &RequestBudgetV1,
+) -> Result<usize, NativeUdsError> {
+    match changes {
+        NativeDslChangesV1::Corpus { header, .. } => {
+            projection_payload_size(header, MAX_PROJECTION_OBJECT_BYTES, budget)
+        }
+        NativeDslChangesV1::RuntimeMetadata(runtime) => projection_payload_size(
+            runtime,
+            NATIVE_DSL_RUNTIME_CATALOG_MAX_BYTES_V1 as usize,
+            budget,
+        ),
+    }
+}
+
+fn projection_payload_size(
     value: &impl Serialize,
-    access: &DslAccess<'_, impl AsRef<Path>>,
-) -> Result<(Vec<u8>, Option<MemoryLease>), NativeUdsError> {
-    #[derive(Default)]
-    struct Count(usize);
-    impl std::io::Write for Count {
+    limit: usize,
+    budget: &RequestBudgetV1,
+) -> Result<usize, NativeUdsError> {
+    struct Count<'a> {
+        bytes: usize,
+        limit: usize,
+        budget: &'a RequestBudgetV1,
+        interruption: Option<NativeUdsError>,
+    }
+    impl std::io::Write for Count<'_> {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
+            if let Err(error) = super::read_session::admitted_budget_checkpoint(self.budget) {
+                self.interruption = Some(error);
+                return Err(std::io::Error::other("Native DSL projection measurement interrupted"));
+            }
+            self.bytes = self
+                .bytes
                 .checked_add(bytes.len())
-                .filter(|length| *length <= 16 * 1024 * 1024)
+                .filter(|length| *length <= self.limit)
                 .ok_or_else(|| std::io::Error::other("Native DSL output exceeds 16 MiB"))?;
             Ok(bytes.len())
         }
@@ -1016,14 +1230,36 @@ fn encode_projection(
             Ok(())
         }
     }
-    let mut size = Count::default();
-    ciborium::ser::into_writer(value, &mut size)
-        .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    super::read_session::admitted_budget_checkpoint(budget)?;
+    let mut size = Count {
+        bytes: 0,
+        limit,
+        budget,
+        interruption: None,
+    };
+    let encoded = ciborium::ser::into_writer(value, &mut size);
+    if let Some(error) = size.interruption {
+        return Err(error);
+    }
+    encoded.map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    super::read_session::admitted_budget_checkpoint(budget)?;
+    Ok(size.bytes)
+}
+
+fn encode_projection(
+    value: &impl Serialize,
+    checked_size: Option<usize>,
+    access: &DslAccess<'_, impl AsRef<Path>>,
+) -> Result<(Vec<u8>, Option<MemoryLease>), NativeUdsError> {
+    let size = match checked_size {
+        Some(size) => size,
+        None => projection_payload_size(value, MAX_PROJECTION_OBJECT_BYTES, access.budget)?,
+    };
     let memory = access
-        .reserve(u64::try_from(size.0).map_err(|_| protocol("Native DSL payload length"))?)?;
+        .reserve(u64::try_from(size).map_err(|_| protocol("Native DSL payload length"))?)?;
     let mut payload = Vec::new();
     payload
-        .try_reserve_exact(size.0)
+        .try_reserve_exact(size)
         .map_err(|_| protocol("Native DSL payload allocation"))?;
     ciborium::ser::into_writer(value, &mut payload)
         .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;

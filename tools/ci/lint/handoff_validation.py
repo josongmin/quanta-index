@@ -32,8 +32,10 @@ SCHEMA_PATH = ROOT / "tools/ci/lane-handoff.schema.json"
 PROOF_REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 
 
-# Fixed handoff authority, deliberately independent from the operational proof
-# registry. The single-handoff CLI and chain checker share this one table.
+# Historical SEP-21 handoff authority. P02A/P02I remain here so recorded
+# handoffs are checked against the proof registry committed at result_sha;
+# they are not current release dependencies after RepoMap retirement. The
+# single-handoff CLI and historical chain checker share this one table.
 HANDOFF_POLICIES: dict[str, dict[str, Any]] = {
     "P00": {"ticket": "S21-00+S21-13A", "required": ["p00-authority-freeze"]},
     "P01": {"ticket": "S21-01", "required": ["p01-canonical-identity"]},
@@ -402,6 +404,32 @@ def _git_blob_sha256(root: Path, result_sha: str, path: str) -> str:
     candidate = Path(path)
     if candidate.is_absolute() or ".." in candidate.parts or candidate.as_posix() != path:
         raise ValueError(f"exported contract path is not canonical: {path!r}")
+    entry = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            result_sha,
+            "--",
+            f":(literal){path}",
+        ],
+        check=False,
+        capture_output=True,
+    )
+    expected_path = path.encode("utf-8", errors="surrogateescape")
+    records = [record.partition(b"\t") for record in entry.stdout.split(b"\0") if record]
+    if (
+        entry.returncode != 0
+        or len(records) != 1
+        or records[0][1] != b"\t"
+        or records[0][2] != expected_path
+    ):
+        raise ValueError(f"exported contract is absent from result commit: {path}")
+    if records[0][0].split(b" ", 2)[:2] not in ([b"100644", b"blob"], [b"100755", b"blob"]):
+        raise ValueError(f"exported contract is not a regular file in result commit: {path}")
     completed = subprocess.run(
         ["git", "-C", str(root), "show", f"{result_sha}:{path}"],
         check=False,

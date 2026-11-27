@@ -600,18 +600,23 @@ mod empty_status_tests {
         let candidate = LexicalCandidate {
             source_repo_id: file.source_repo_id.clone(),
             source: None,
+            native_source: None,
             preview: None,
             candidate_id: "a-1".to_string(),
             repo_id: pin.repo_id.clone(),
             revision_id: pin.revision_id.clone(),
             manifest_generation: pin.manifest_generation,
             repo_relative_path: file.repo_relative_path.clone(),
-            start_line: 1,
-            end_line: 1,
+            lines: Some(quanta_index_contract::LexicalLineRange {
+                start_line: 1,
+                end_line: 1,
+            }),
+            excerpt: Some(quanta_index_contract::LexicalMatchExcerpt {
+                snippet: String::new(),
+                snippet_hit_offset: None,
+                highlights: Vec::new(),
+            }),
             score: 1.0,
-            snippet: String::new(),
-            snippet_hit_offset: None,
-            highlights: Vec::new(),
         };
         let bounded = |returned| {
             QueryResultWindowV2::new(
@@ -830,6 +835,25 @@ mod empty_status_tests {
             "SEM_NOT_READY"
         );
         assert_eq!(classify_sdk_error(&remote("QUERY_TIMEOUT")).0, "timeout");
+        let native_timeout =
+            SdkError::Native(Box::new(quanta_index_sdk::NativeQueryError::Transport(
+                quanta_index_sdk::native_uds::NativeUdsError::QueryRejected {
+                    code: SearchPlaneErrorCodeV2::from_wire_str("QUERY_TIMEOUT")
+                        .expect("known timeout code"),
+                    message: "native timeout".to_string(),
+                },
+            )));
+        assert_eq!(
+            classify_sdk_error(&native_timeout),
+            (
+                "timeout",
+                "QUERY_TIMEOUT".to_string(),
+                "native timeout".to_string()
+            )
+        );
+        let native_local =
+            SdkError::Native(Box::new(quanta_index_sdk::NativeQueryError::MissingOpenKey));
+        assert_eq!(classify_sdk_error(&native_local).1, "native_query");
         // Any code outside the timeout/unavailable tables is a typed error,
         // never silently downgraded to empty or success.
         let other = SearchPlaneErrorCodeV2::ALL
@@ -1600,7 +1624,37 @@ impl QueryOutcome {
     }
 }
 
-fn lexical_hit(candidate: &LexicalCandidate) -> RankedHit {
+/// The chunk position a ranked benchmark hit records; a row whose producer
+/// reports no lines or excerpt has none and is refused.
+fn hit_excerpt(
+    candidate: &LexicalCandidate,
+) -> Result<
+    (
+        quanta_index_contract::LexicalLineRange,
+        &quanta_index_contract::LexicalMatchExcerpt,
+    ),
+    String,
+> {
+    match (candidate.lines, candidate.excerpt.as_ref()) {
+        (Some(lines), Some(excerpt)) => Ok((lines, excerpt)),
+        _ => Err(format!(
+            "row {} carries no chunk lines and excerpt to record",
+            candidate.candidate_id
+        )),
+    }
+}
+
+fn unanchored_outcome(message: String, start: Instant) -> QueryOutcome {
+    QueryOutcome::SdkFailure {
+        status: "error",
+        code: "row_without_excerpt".to_string(),
+        message,
+        latency: start.elapsed(),
+    }
+}
+
+fn lexical_hit(candidate: &LexicalCandidate) -> Result<RankedHit, String> {
+    let (lines, excerpt) = hit_excerpt(candidate)?;
     let file_authority = match (&candidate.source, &candidate.preview) {
         (Some(source), Some(preview)) if candidate.candidate_id.starts_with("file:") => {
             Some(FileHitAuthority {
@@ -1614,25 +1668,26 @@ fn lexical_hit(candidate: &LexicalCandidate) -> RankedHit {
         }
         _ => None,
     };
-    RankedHit {
+    Ok(RankedHit {
         candidate_id: candidate.candidate_id.clone(),
         path: candidate.repo_relative_path.as_str().to_string(),
-        start_line: candidate.start_line,
-        end_line: candidate.end_line,
-        snippet: candidate.snippet.clone(),
+        start_line: lines.start_line,
+        end_line: lines.end_line,
+        snippet: excerpt.snippet.clone(),
         score: f64::from(candidate.score),
         file_authority,
         contributions: Vec::new(),
-    }
+    })
 }
 
-fn hybrid_hit(candidate: &HybridCandidateV1) -> RankedHit {
-    RankedHit {
+fn hybrid_hit(candidate: &HybridCandidateV1) -> Result<RankedHit, String> {
+    let (lines, excerpt) = hit_excerpt(&candidate.candidate)?;
+    Ok(RankedHit {
         candidate_id: candidate.candidate.candidate_id.clone(),
         path: candidate.candidate.repo_relative_path.as_str().to_string(),
-        start_line: candidate.candidate.start_line,
-        end_line: candidate.candidate.end_line,
-        snippet: candidate.candidate.snippet.clone(),
+        start_line: lines.start_line,
+        end_line: lines.end_line,
+        snippet: excerpt.snippet.clone(),
         score: candidate.fused_score,
         file_authority: None,
         contributions: candidate
@@ -1644,7 +1699,7 @@ fn hybrid_hit(candidate: &HybridCandidateV1) -> RankedHit {
                 raw_score: contribution.raw_score,
             })
             .collect(),
-    }
+    })
 }
 
 /// Convert one symbol candidate. The snippet is the engine's reference
@@ -1685,6 +1740,16 @@ pub fn classify_sdk_error(err: &SdkError) -> (&'static str, String, String) {
             let wire = code.as_wire_str().to_string();
             (remote_status(code), wire, message.clone())
         }
+        SdkError::Native(error) => match error.as_ref() {
+            quanta_index_sdk::NativeQueryError::Transport(
+                quanta_index_sdk::native_uds::NativeUdsError::QueryRejected { code, message },
+            ) => (
+                remote_status(code),
+                code.as_wire_str().to_string(),
+                message.clone(),
+            ),
+            _ => ("error", "native_query".to_string(), error.to_string()),
+        },
         SdkError::AfterPublish { source, .. } => {
             let (status, code, _) = classify_sdk_error(source);
             (status, code, err.to_string())
@@ -1990,8 +2055,14 @@ fn query_route_with_policy_observation(
                                 latency: start.elapsed(),
                             };
                         }
-                        let hits: Vec<RankedHit> =
-                            response.results.iter().map(lexical_hit).collect();
+                        let hits = match response.results.iter().map(lexical_hit).collect::<Result<
+                            Vec<RankedHit>,
+                            _,
+                        >>(
+                        ) {
+                            Ok(hits) => hits,
+                            Err(message) => return unanchored_outcome(message, start),
+                        };
                         let explanation = route_explanation(&response.explanation);
                         observed_response(
                             query.route,
@@ -2021,8 +2092,14 @@ fn query_route_with_policy_observation(
                 || builder.execute(),
                 |response| match response {
                     Ok(response) => {
-                        let hits: Vec<RankedHit> =
-                            response.results.iter().map(lexical_hit).collect();
+                        let hits = match response.results.iter().map(lexical_hit).collect::<Result<
+                            Vec<RankedHit>,
+                            _,
+                        >>(
+                        ) {
+                            Ok(hits) => hits,
+                            Err(message) => return unanchored_outcome(message, start),
+                        };
                         let explanation = route_explanation(&response.explanation);
                         observed_response(
                             query.route,
@@ -2051,8 +2128,14 @@ fn query_route_with_policy_observation(
                 || builder.execute(),
                 |response| match response {
                     Ok(response) => {
-                        let hits: Vec<RankedHit> =
-                            response.results.iter().map(hybrid_hit).collect();
+                        let hits = match response.results.iter().map(hybrid_hit).collect::<Result<
+                            Vec<RankedHit>,
+                            _,
+                        >>(
+                        ) {
+                            Ok(hits) => hits,
+                            Err(message) => return unanchored_outcome(message, start),
+                        };
                         let explanation = route_explanation(&response.explanation);
                         observed_response(
                             query.route,

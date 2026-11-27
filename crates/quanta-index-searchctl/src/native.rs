@@ -1,7 +1,9 @@
 //! Explicit native CLI route. It never opens a legacy `SearchPlane` client.
 
+pub(crate) mod code_search;
 mod dsl;
 mod history;
+mod matches;
 mod read_session;
 
 use std::{
@@ -142,9 +144,14 @@ fn parse(args: &[String]) -> CliResult<NativeOptions> {
         Some("search-text") => NativeCommand::SearchText,
         Some("query-repository-paths") => NativeCommand::QueryRepositoryPaths,
         Some("lexical") => {
-            return Err(CliError::unsupported(
-                quanta_index_sdk::LegacyQueryCapabilityV1::Text,
-            ));
+            let mut refusal =
+                CliError::unsupported(quanta_index_sdk::LegacyQueryCapabilityV1::Text);
+            refusal.message = format!(
+                "{}; {}",
+                refusal.message,
+                code_search::NATIVE_CODE_SEARCH_HINT
+            );
+            return Err(refusal);
         }
         Some("symbol") => {
             return Err(CliError::unsupported(
@@ -361,9 +368,7 @@ fn map_error(error: &NativeUdsError, socket: &Path) -> CliError {
             CliError::transport(detail)
         }
         NativeUdsError::Protocol(_) => CliError::protocol(detail),
-        NativeUdsError::Refused(_) | NativeUdsError::QueryRejected { .. } => {
-            CliError::remote(detail)
-        }
+        NativeUdsError::Refused(_) | NativeUdsError::QueryRejected { .. } => CliError::remote(detail),
         NativeUdsError::Unknown(_) => CliError {
             exit_code: EXIT_TRANSPORT,
             message: detail,
@@ -373,6 +378,18 @@ fn map_error(error: &NativeUdsError, socket: &Path) -> CliError {
 }
 
 pub(super) fn run(args: &[String], stdout: &mut dyn Write) -> CliResult<ExitCode> {
+    if args
+        .first()
+        .is_some_and(|command| code_search::handles(command))
+    {
+        return code_search::run(args, stdout);
+    }
+    if args
+        .first()
+        .is_some_and(|command| matches::handles(command))
+    {
+        return matches::run(args, stdout);
+    }
     if args.first().is_some_and(|command| dsl::handles(command)) {
         return dsl::run(args, stdout);
     }

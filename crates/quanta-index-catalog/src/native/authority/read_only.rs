@@ -51,7 +51,10 @@ use crate::{
 
 #[path = "read_only/history_pages.rs"]
 mod history_pages;
-pub use history_pages::{LegacyHistoryCheckpointPageV1, visit_legacy_history_checkpoint_pages_v1};
+pub use history_pages::{
+    LegacyHistoryCheckpointPageV1, visit_legacy_history_checkpoint_pages_all_v2,
+    visit_legacy_history_checkpoint_pages_v1,
+};
 #[path = "read_only/protected_native_snapshot.rs"]
 mod protected_native_snapshot;
 pub use protected_native_snapshot::{
@@ -64,6 +67,12 @@ pub(super) use protected_native_snapshot::{
 };
 #[path = "read_only/protected_native_install.rs"]
 mod protected_native_install;
+#[cfg(target_os = "linux")]
+#[path = "read_only/protected_fd.rs"]
+mod protected_fd;
+#[cfg(target_os = "macos")]
+#[path = "read_only/portable_snapshot.rs"]
+mod portable_snapshot;
 #[cfg(test)]
 pub(super) use protected_native_install::verify_imported_exact_views_v1;
 pub use protected_native_install::verify_native_protected_snapshot_install_v1;
@@ -74,6 +83,7 @@ pub struct NativeBootCatalogSnapshot {
     pub root_nonce: [u8; 32],
     pub selected: Option<NativeBootManifest>,
     pub namespace: Option<ObjectNamespaceBinding>,
+    retained_published_view: bool,
     history_predecessors: Vec<NativeBootManifest>,
     _history_allocation: Option<MemoryLease>,
     _allocation: Option<MemoryLease>,
@@ -282,6 +292,12 @@ impl NativeBootPublishedOperation {
     pub const fn publication_metadata(&self) -> &CatalogView {
         &self.publication
     }
+    /// Exact view and its root records, observed alongside the recovery's
+    /// Published operation. The held state-root lease spans physical reads.
+    #[must_use]
+    pub fn retained_publication_v1(&self) -> Option<&CatalogView> {
+        self.snapshot.retained_published_view.then_some(&self.publication)
+    }
     #[must_use]
     pub const fn snapshot(&self) -> &NativeBootCatalogSnapshot {
         &self.snapshot
@@ -482,7 +498,7 @@ pub fn require_legacy_repomap_inapplicable_v1(
 }
 
 fn verify_legacy_repomap_readback_catalog_v1(
-    connection: &Connection,
+    connection: &mut Connection,
     path: &Path,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
@@ -1283,6 +1299,74 @@ pub fn visit_legacy_history_generation_keys_v1(
     })
 }
 
+/// Visit every physical Legacy History generation across all repositories in
+/// the same primary-key order as the installed all-repo inventory verifier.
+/// The result is provisional until the held transaction and input checks close.
+pub fn visit_legacy_history_generation_keys_all_v2(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(&AuxiliaryGenerationKeyV1, &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<u64, IndexError> {
+    with_quiescent_legacy_history_all_v2(state_root, io, budget, |connection, _path, budget| {
+        scan_legacy_history_generation_rows_all_v2(connection, budget, |row, budget| {
+            let raw_repo = match row.get_ref(0).map_err(|error| sql(&error))? {
+                ValueRef::Text(bytes) => bytes,
+                _ => return Err(IndexError::DigestConflict),
+            };
+            let raw_revision = match row.get_ref(1).map_err(|error| sql(&error))? {
+                ValueRef::Text(bytes) => bytes,
+                _ => return Err(IndexError::DigestConflict),
+            };
+            let backing = std::mem::size_of::<AuxiliaryGenerationKeyV1>()
+                .checked_add(raw_repo.len())
+                .and_then(|bytes| bytes.checked_add(raw_revision.len()))
+                .ok_or(IndexError::ResourceLimited)?;
+            let backing = u64::try_from(backing).map_err(|_| IndexError::ResourceLimited)?;
+            budget.charge(WorkUsage { bytes: backing, ..WorkUsage::default() })?;
+            let _key_backing = budget.reserve_memory(backing, MemoryLifetime::Temporary)?
+                .ok_or(IndexError::ResourceLimited)?;
+            let repo = std::str::from_utf8(raw_repo).map_err(|_| IndexError::DigestConflict)?;
+            let revision = std::str::from_utf8(raw_revision).map_err(|_| IndexError::DigestConflict)?;
+            let generation = uint(row.get::<_, i64>(2).map_err(|error| sql(&error))?)?;
+            let key = AuxiliaryGenerationKeyV1 {
+                repo_id: RepoId::new(repo).map_err(|_| IndexError::DigestConflict)?,
+                revision_id: RevisionId::new(revision).map_err(|_| IndexError::DigestConflict)?,
+                generation: ManifestGeneration::new(generation),
+            };
+            visit(&key, budget)
+        })
+    })
+}
+
+/// Count or lend all physical History keys in canonical bootstrap order.
+/// The SQL cursor remains open only during the callback; no key is retained.
+fn scan_legacy_history_generation_rows_all_v2(
+    connection: &Connection,
+    budget: &mut WorkBudget,
+    mut visit: impl FnMut(&rusqlite::Row<'_>, &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<u64, IndexError> {
+    budget.charge(WorkUsage { reads: 1, bytes: 8, ..WorkUsage::default() })?;
+    let mut statement = connection
+        .prepare(
+            "SELECT repo_id, revision_id, generation FROM auxiliary_rows_v1
+             WHERE domain='history' GROUP BY repo_id, revision_id, generation
+             ORDER BY repo_id, revision_id, generation",
+        )
+        .map_err(|error| sql(&error))?;
+    let mut rows = statement.query([]).map_err(|error| sql(&error))?;
+    let mut count = 0_u64;
+    loop {
+        budget.charge(WorkUsage { reads: 1, bytes: 8, ..WorkUsage::default() })?;
+        let Some(row) = rows.next().map_err(|error| sql(&error))? else {
+            break;
+        };
+        count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        visit(row, budget)?;
+    }
+    Ok(count)
+}
+
 /// Count or lend physical keys through the same primary-key-ordered cursor.
 fn scan_legacy_history_generation_rows_v1(
     connection: &Connection,
@@ -1428,7 +1512,110 @@ pub fn verify_legacy_history_source_inventory_v1(
     })
 }
 
-type LegacyHistorySourceVerifier<'a> = dyn FnMut(
+/// Prove every physical Legacy History generation across all repositories in
+/// one held, quiescent Catalog snapshot. A History-only repository contributes
+/// to the physical count even if it has no active SearchCorpus head. The
+/// producer must lend one full Replay or Snapshot proof per generation in
+/// `(repo_id, revision_id, generation)` order. No proof is final until the
+/// transaction, SQLite close and physical input checks succeed.
+pub fn verify_legacy_history_source_inventory_all_v2(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    active_source_scope: (&RepoId, &RevisionId),
+    producer: LegacyHistoryProducerScopeV1<'_>,
+    budget: &mut WorkBudget,
+    sources: impl FnOnce(
+        &mut WorkBudget,
+        &mut LegacyHistorySourceVerifier<'_>,
+    ) -> Result<(), IndexError>,
+) -> Result<u64, IndexError> {
+    with_quiescent_legacy_history_all_v2(state_root, io, budget, |connection, path, budget| {
+        // The broadened census covers History. Runtime/Structural auxiliary
+        // state and tracks still belong to the selected Legacy Source scope.
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 8,
+            ..WorkUsage::default()
+        })?;
+        let (repo, revision) = active_source_scope;
+        let foreign_non_history: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM auxiliary_rows_v1
+                           WHERE domain<>'history' AND (repo_id<>?1 OR revision_id<>?2) LIMIT 1)
+                 OR EXISTS(SELECT 1 FROM auxiliary_tracks_v1
+                           WHERE repo_id<>?1 OR revision_id<>?2 LIMIT 1)",
+                params![repo.as_str(), revision.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql(&error))?;
+        if foreign_non_history {
+            return Err(IndexError::Conflict);
+        }
+        let retained_count =
+            scan_legacy_history_generation_rows_all_v2(connection, budget, |_, _| Ok(()))?;
+        let mut count = 0_u64;
+        let mut previous: Option<(AuxiliaryGenerationKeyV1, MemoryLease)> = None;
+        sources(budget, &mut |cut, input, budget| {
+            if count == retained_count
+                || previous
+                    .as_ref()
+                    .is_some_and(|(key, _)| key >= &cut.generation)
+            {
+                return Err(IndexError::DigestConflict);
+            }
+            drop(previous.take());
+            match input {
+                LegacyHistorySourceProofV1::Replay(input) => {
+                    verify_legacy_history_source_v1(
+                        connection, path, producer, cut, input, budget,
+                    )?;
+                }
+                LegacyHistorySourceProofV1::Snapshot {
+                    checkpoint,
+                    required,
+                } => {
+                    let legacy_root = state_root.to_str().ok_or(IndexError::DigestConflict)?;
+                    verify_legacy_history_checkpoint(
+                        connection,
+                        path,
+                        [
+                            producer.writer_state_root,
+                            producer.workspace_root,
+                            producer.contract_key,
+                            legacy_root,
+                        ],
+                        cut,
+                        checkpoint,
+                        required,
+                        budget,
+                    )?;
+                }
+            }
+            let repo = &cut.generation.repo_id;
+            let revision = &cut.generation.revision_id;
+            let backing = std::mem::size_of::<RepoId>()
+                .checked_add(std::mem::size_of::<RevisionId>())
+                .and_then(|bytes| bytes.checked_add(repo.as_str().len()))
+                .and_then(|bytes| bytes.checked_add(revision.as_str().len()))
+                .ok_or(IndexError::ResourceLimited)?;
+            let allocation = budget
+                .reserve_memory(
+                    u64::try_from(backing).map_err(|_| IndexError::ResourceLimited)?,
+                    MemoryLifetime::Retained,
+                )?
+                .ok_or(IndexError::ResourceLimited)?;
+            previous = Some((cut.generation.clone(), allocation));
+            count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            Ok(())
+        })?;
+        if count != retained_count {
+            return Err(IndexError::DigestConflict);
+        }
+        Ok(count)
+    })
+}
+
+pub type LegacyHistorySourceVerifier<'a> = dyn FnMut(
         &HistorySourceCutV1,
         LegacyHistorySourceProofV1<'_>,
         &mut WorkBudget,
@@ -1751,6 +1938,53 @@ fn with_quiescent_legacy_history_v1<T>(
     )
 }
 
+fn with_quiescent_legacy_history_all_v2<T>(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    budget: &mut WorkBudget,
+    inspect: impl FnOnce(&Connection, &Path, &mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        |error| error,
+        |connection, path, budget, _allocation| {
+            configure_read_connection(connection, budget)?;
+            budget.charge(WorkUsage {
+                reads: 16,
+                bytes: 4096,
+                ..WorkUsage::default()
+            })?;
+            idempotency::verify_installed_schema(connection, path).map_err(core)?;
+            crate::sequence::verify_installed_schema(connection, path).map_err(core)?;
+            crate::auxiliary::verify_installed_schema(connection, path).map_err(core)?;
+            crate::candidate::verify_installed_schema(connection, path).map_err(core)?;
+            if crate::candidate::has_unresolved_candidate_v1(connection, path).map_err(core)? {
+                return Err(IndexError::Conflict);
+            }
+            let _quiescent_journal = idempotency::visit_admitted_quiescent_journal_v1(
+                connection,
+                path,
+                budget,
+                &mut |_, _, _| Ok(()),
+            )
+            .map_err(journal_read_error)?;
+            crate::sequence::verify_allocator_exact(connection, path).map_err(core)?;
+            crate::integrity::verify_integrity_admitted(connection, path, budget).map_err(
+                |error| match error {
+                    crate::integrity::IntegrityCheckError::Admission(error) => error,
+                    crate::integrity::IntegrityCheckError::Integrity(error) => core(error),
+                },
+            )?;
+            let value = inspect(connection, path, budget)?;
+            connection.execute_batch("COMMIT").map_err(|error| engine(&error))?;
+            Ok(value)
+        },
+    )
+}
+
 #[derive(Clone, Copy)]
 enum RollbackCheck<'a> {
     None,
@@ -1775,6 +2009,10 @@ struct FileIdentity {
     bytes: u64,
     modified_seconds: i64,
     modified_nanos: i64,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    changed_seconds: i64,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    changed_nanos: i64,
 }
 
 fn input(path: &Path, optional: bool) -> Result<Option<FileIdentity>, IndexError> {
@@ -1802,6 +2040,10 @@ fn input(path: &Path, optional: bool) -> Result<Option<FileIdentity>, IndexError
         bytes: metadata.len(),
         modified_seconds: metadata.mtime(),
         modified_nanos: metadata.mtime_nsec(),
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        changed_seconds: metadata.ctime(),
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        changed_nanos: metadata.ctime_nsec(),
     }))
 }
 
@@ -2290,65 +2532,42 @@ pub fn verify_native_boot_current_candidate(
     )
 }
 
-/// Visit one workspace's charged current head under the exact selected BOOT.
-/// The callback cannot outlive this existing-only Catalog read transaction.
-/// Installation callers prove quiescence separately over their full route set.
-pub fn visit_native_boot_scope_current_view_v1<T>(
+/// Resolve History member custody under the caller's held state-root lease.
+pub fn verify_native_boot_history_member_view_v1(
     state_root: &Path,
     io: &dyn CatalogReadOnlyIoAdmission,
-    selected: &NativeBootManifest,
-    workspace: WorkspaceKey,
+    original: &CatalogView,
     budget: &mut WorkBudget,
-    visit: impl FnOnce(Option<&CatalogView>, &mut WorkBudget) -> Result<T, IndexError>,
-) -> Result<T, IndexError> {
+) -> Result<CatalogView, IndexError> {
     with_admitted_connection(
         state_root,
         io,
         budget,
-        0,
+        32_768,
         |error| error,
-        |connection, path, budget, allocation| {
-            let (snapshot, _, _, _) = inspect(
-                connection,
-                path,
-                None,
-                RollbackCheck::None,
-                None,
-                None,
-                budget,
-                allocation,
-            )?;
-            if snapshot.selected.as_ref() != Some(selected) {
-                return Err(IndexError::Conflict);
+        |connection, _path, budget, _allocation| {
+            configure_read_connection(connection, budget)?;
+            let expected = original.identity;
+            match boot_record::load_publication(connection, expected, budget) {
+                Ok(retained) if retained == *original => return Ok(retained),
+                Ok(_) => return Err(IndexError::DigestConflict),
+                Err(IndexError::SnapshotUnavailable) => {}
+                Err(error) => return Err(error),
             }
-            let current = retention::charged_current_view(connection, workspace, budget)?;
-            visit(current.as_ref(), budget)
-        },
-    )
-}
-
-/// Check the physically authenticated view of an active configured scope.
-/// A workspace head at another epoch leaves this scope inactive.
-pub fn verify_native_boot_scope_selected_view_v1(
-    state_root: &Path,
-    io: &dyn CatalogReadOnlyIoAdmission,
-    selected: &NativeBootManifest,
-    workspace: WorkspaceKey,
-    epoch: u64,
-    expected: Option<&CatalogView>,
-    budget: &mut WorkBudget,
-) -> Result<bool, IndexError> {
-    visit_native_boot_scope_current_view_v1(
-        state_root,
-        io,
-        selected,
-        workspace,
-        budget,
-        |current, _| match (current, expected) {
-            (Some(current), _) if current.identity.epoch != epoch => Ok(false),
-            (None, None) => Ok(false),
-            (Some(current), Some(expected)) if current == expected => Ok(true),
-            _ => Err(IndexError::Conflict),
+            let current = retention::charged_current_view(connection, expected.workspace, budget)?
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            if current.identity.workspace != expected.workspace
+                || current.identity.epoch != expected.epoch
+                || current.identity.sequence <= expected.sequence
+            {
+                return Err(IndexError::DigestConflict);
+            }
+            budget.charge(WorkUsage { reads: 2, bytes: 64, ..WorkUsage::default() })?;
+            let floor = retention::exact_floor_for_epoch(connection, expected.workspace, expected.epoch)?;
+            if expected.sequence >= floor {
+                return Err(IndexError::SnapshotUnavailable);
+            }
+            Ok(current)
         },
     )
 }
@@ -2906,7 +3125,7 @@ fn with_admitted_connection<T, E, F>(
 ) -> Result<T, E>
 where
     E: From<IndexError>,
-    F: FnOnce(&Connection, &Path, &mut WorkBudget, Option<MemoryLease>) -> Result<T, E>,
+    F: FnOnce(&mut Connection, &Path, &mut WorkBudget, Option<MemoryLease>) -> Result<T, E>,
 {
     budget.charge(WorkUsage {
         reads: 2,
@@ -2951,16 +3170,50 @@ where
     } else {
         budget.reserve_memory(retained_bytes, MemoryLifetime::Retained)?
     };
-    let _scope = crate::io_admission::ScopeLease::enter_read_only(
+    #[cfg(target_os = "linux")]
+    let (inspect, allocation) = match protected_fd::inspect_if_selected(
         io,
-        budget.request(),
-        main.bytes,
-        wal_bytes,
-    );
+        &path,
+        main,
+        wal,
+        budget,
+        map_close,
+        (inspect, allocation),
+    )? {
+        protected_fd::Outcome::Complete(result) => {
+            budget.checkpoint()?;
+            require_unchanged_inputs(&path, &wal_path, main, wal)?;
+            return result;
+        }
+        protected_fd::Outcome::Declined(inspect, allocation) => (inspect, allocation),
+    };
+    #[cfg(target_os = "macos")]
+    let (inspect, allocation) = match portable_snapshot::inspect_if_selected(
+        io,
+        &path,
+        main,
+        wal,
+        budget,
+        map_close,
+        (inspect, allocation),
+    )? {
+        portable_snapshot::Outcome::Complete(result) => {
+            budget.checkpoint()?;
+            require_unchanged_inputs(&path, &wal_path, main, wal)?;
+            return result;
+        }
+        portable_snapshot::Outcome::Declined(inspect, allocation) => (inspect, allocation),
+    };
+    let (vfs, scope) = io
+        .enter_named_read_only_scope(budget.request(), main.bytes, wal_bytes)
+        .ok_or_else(|| {
+            IndexError::BackendViolation("protected Catalog reader unavailable".into())
+        })?;
+    let _scope = crate::io_admission::ScopeLease::enter_read_only(scope);
     let main_only = wal_bytes == 0;
     let uri = main_only.then(|| main_only_uri(&path));
     let open_path = uri.as_ref().map_or(path.as_path(), |uri| Path::new(uri));
-    let connection = Connection::open_with_flags_and_vfs(
+    let mut connection = Connection::open_with_flags_and_vfs(
         open_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -2971,27 +3224,35 @@ where
             } else {
                 OpenFlags::empty()
             },
-        io.read_only_vfs_name(),
+        vfs,
     )
     .map_err(|error| engine(&error))?;
-    let result = inspect(&connection, &path, budget, allocation);
+    let result = inspect(&mut connection, &path, budget, allocation);
     // close() is explicit: no successful verification can hide a close error.
     let closed = connection
         .close()
         .map_err(|(_connection, error)| map_close(sql(&error)));
     budget.checkpoint()?;
-    if input(&path, false)? != Some(main) || input(&wal_path, true)? != wal {
-        return Err(
-            IndexError::Storage("Catalog inputs changed during verification".into()).into(),
-        );
-    }
+    require_unchanged_inputs(&path, &wal_path, main, wal)?;
     let value = result?;
     closed?;
     Ok(value)
 }
 
+fn require_unchanged_inputs(
+    path: &Path,
+    wal_path: &Path,
+    main: FileIdentity,
+    wal: Option<FileIdentity>,
+) -> Result<(), IndexError> {
+    if input(path, false)? != Some(main) || input(wal_path, true)? != wal {
+        return Err(IndexError::Storage("Catalog inputs changed during verification".into()));
+    }
+    Ok(())
+}
+
 fn inspect(
-    connection: &Connection,
+    connection: &mut Connection,
     path: &Path,
     candidate: Option<OperationKey>,
     rollback: RollbackCheck<'_>,
@@ -3115,6 +3376,20 @@ fn inspect(
     let published_operation = published_operation
         .map(|key| read_selected_published_operation(connection, key, selected.as_ref(), budget))
         .transpose()?;
+    let retained_published_view = match (&published_operation, rollback) {
+        (Some((_, publication)), RollbackCheck::Selected
+            | RollbackCheck::SelectedWithRoutes(_)
+            | RollbackCheck::SelectedWithHistory(_)
+            | RollbackCheck::SelectedWithHistoryRoutes(_, _)) => {
+            match boot_record::load_publication(connection, publication.identity, budget) {
+                Ok(retained) if retained == *publication => true,
+                Ok(_) => return Err(IndexError::DigestConflict),
+                Err(IndexError::SnapshotUnavailable) => false,
+                Err(cause) => return Err(cause),
+            }
+        }
+        _ => false,
+    };
     let additional_operation = additional_operation
         .map(|key| read_selected_published_operation(connection, key, selected.as_ref(), budget))
         .transpose()?;
@@ -3134,6 +3409,7 @@ fn inspect(
             root_nonce,
             selected,
             namespace,
+            retained_published_view,
             history_predecessors,
             _history_allocation: history_allocation,
             _allocation: allocation,
@@ -3145,7 +3421,7 @@ fn inspect(
 }
 
 fn configure_read_connection(
-    connection: &Connection,
+    connection: &mut Connection,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     // Every supported DDL statement comes from these schemas. A complete

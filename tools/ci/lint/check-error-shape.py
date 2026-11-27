@@ -8,7 +8,8 @@ ad-hoc `Box<dyn Error>` or — worse — silent fallback (`.ok()`, `unwrap_or`).
 
 Structural invariants (Rust AST, not a file-wide regex):
 
-  1. Every `pub enum *Error` (or `pub struct *Error`) in workspace source must
+  1. Every `pub enum *Error` (or `pub struct *Error`) in first-party workspace
+     source must
      satisfy ONE of:
        (a) an attached `#[derive(...)]` attribute includes
            `Error` (the thiserror derive form), OR
@@ -20,8 +21,13 @@ Structural invariants (Rust AST, not a file-wide regex):
      own `#[error("...")]` attribute. Form (b) hand-rolls Display, so
      per-variant attributes are not required.
 
-Tests directories are excluded. Sealed / non-public error types are out of
-scope; this is a public-surface gate.
+An exact complementary std/no_std pair with recognized Error trait paths is
+accepted. A single gated impl does not prove coverage across both branches.
+
+Tests directories and vendored dependency crates are excluded. Vendor crates
+have their own feature and MSRV contracts; this syntactic first-party policy
+cannot establish their Error trait aliases across configurations. Sealed /
+non-public error types are out of scope; this is a public-surface gate.
 
 Wire-protocol DTOs named `*Error` (carry-error-on-the-wire structs without
 Rust-side Error semantics) are explicitly allowlisted via WIRE_DTO_ERRORS.
@@ -29,6 +35,7 @@ Rust-side Error semantics) are explicitly allowlisted via WIRE_DTO_ERRORS.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -76,15 +83,32 @@ def workspace_members() -> list[Path]:
 
 def crate_source_files() -> list[Path]:
     files: list[Path] = []
+
+    def fail(error: OSError) -> None:
+        raise error
+
     for member in workspace_members():
+        if member.relative_to(ROOT).parts[:1] == ("vendor",):
+            continue
         src = member / "src"
+        if src.resolve() != src:
+            raise ValueError(f"cannot certify symlinked Rust source: {src}")
         if not src.is_dir():
             continue
-        for rs in sorted(src.rglob("*.rs")):
-            if any(part == "tests" for part in rs.parts):
-                continue
-            files.append(rs)
-    return files
+        for directory, directories, names in os.walk(src, onerror=fail):
+            directories[:] = [name for name in directories if name != "tests"]
+            for name in directories:
+                path = Path(directory) / name
+                if path.is_symlink():
+                    raise ValueError(f"cannot certify symlinked Rust source: {path}")
+            for name in names:
+                if not name.endswith(".rs"):
+                    continue
+                path = Path(directory) / name
+                if path.is_symlink():
+                    raise ValueError(f"cannot certify symlinked Rust source: {path}")
+                files.append(path)
+    return sorted(files)
 
 
 def node_text(source: bytes, node: Any) -> str:
@@ -104,6 +128,8 @@ def attached_attributes(node: Any) -> list[Any]:
     index = next(index for index, sibling in enumerate(siblings) if sibling.id == node.id)
     attributes: list[Any] = []
     for previous in reversed(siblings[:index]):
+        if previous.type in {"line_comment", "block_comment"}:
+            continue
         if previous.type != "attribute_item":
             break
         attributes.append(previous)
@@ -134,8 +160,98 @@ def has_error_derive(source: bytes, node: Any) -> bool:
     return False
 
 
+def cfg_guards(source: bytes, node: Any) -> set[tuple[str, ...]]:
+    """Compare Rust cfg token sequences without losing literal contents."""
+    guards: set[tuple[str, ...]] = set()
+
+    def leaves(current: Any):
+        if current.type in {"line_comment", "block_comment"}:
+            return
+        if current.type in {"string_literal", "raw_string_literal"}:
+            yield node_text(source, current)
+            return
+        if not current.children:
+            yield node_text(source, current)
+            return
+        for child in current.children:
+            yield from leaves(child)
+
+    for item in attached_attributes(node):
+        if attribute_name(source, item) not in {"cfg", "cfg_attr"}:
+            continue
+        guards.add(tuple(leaves(item)))
+    return guards
+
+
+def impl_covers_generics(source: bytes, declaration: Any, impl: Any, target: Any) -> bool:
+    """A concrete or repeated argument covers only part of a public generic type."""
+    declared = next(
+        (child for child in declaration.named_children if child.type == "type_parameters"), None
+    )
+    if declared is None:
+        return target.type != "generic_type"
+    if target.type != "generic_type":
+        return False
+    arguments = next(
+        (child for child in target.named_children if child.type == "type_arguments"), None
+    )
+    introduced = next(
+        (child for child in impl.named_children if child.type == "type_parameters"), None
+    )
+    if arguments is None or introduced is None:
+        return False
+    parameter_kinds = {
+        node_text(source, parameter.child_by_field_name("name")): parameter.type
+        for parameter in introduced.named_children
+        if parameter.child_by_field_name("name") is not None
+    }
+    declared_parameters = [
+        child
+        for child in declared.named_children
+        if child.type not in {"line_comment", "block_comment"}
+    ]
+    supplied_arguments = [
+        child
+        for child in arguments.named_children
+        if child.type not in {"line_comment", "block_comment"}
+    ]
+    if len(declared_parameters) != len(supplied_arguments):
+        return False
+    used: set[tuple[str, str]] = set()
+    for parameter, argument in zip(declared_parameters, supplied_arguments):
+        kind = parameter.type
+        if kind not in {"type_parameter", "lifetime_parameter", "const_parameter"}:
+            return False
+        if kind == "lifetime_parameter" and argument.type != "lifetime":
+            return False
+        if kind != "lifetime_parameter" and argument.type != "type_identifier":
+            return False
+        name = node_text(source, argument)
+        if parameter_kinds.get(name) != kind or (kind, name) in used:
+            return False
+        used.add((kind, name))
+    return True
+
+
 def manual_impls(source: bytes, declaration: Any, name: str) -> tuple[bool, bool]:
     error = display = False
+    declaration_guards = cfg_guards(source, declaration)
+    std_guard = ("#", "[", "cfg", "(", "feature", "=", '"std"', ")", "]")
+    no_std_guard = (
+        "#",
+        "[",
+        "cfg",
+        "(",
+        "not",
+        "(",
+        "feature",
+        "=",
+        '"std"',
+        ")",
+        ")",
+        "]",
+    )
+    std_error = no_std_error = False
     for sibling in declaration.parent.named_children:
         if sibling.type != "impl_item":
             continue
@@ -153,12 +269,38 @@ def manual_impls(source: bytes, declaration: Any, name: str) -> tuple[bool, bool
             target = target_name
         if node_text(source, target).removeprefix("r#") != name:
             continue
+        if not impl_covers_generics(
+            source, declaration, sibling, sibling.child_by_field_name("type")
+        ):
+            continue
         trait_name = node_text(source, trait).removeprefix("::")
-        if trait_name in {"std::error::Error", "core::error::Error"}:
+        error_trait = trait_name in {"std::error::Error", "core::error::Error"}
+        display_trait = trait_name in {
+            "Display",
+            "fmt::Display",
+            "std::fmt::Display",
+            "core::fmt::Display",
+        }
+        if not error_trait and not display_trait:
+            continue
+        impl_guards = cfg_guards(source, sibling)
+        # A production declaration cannot rely on a test-only (or otherwise
+        # narrower) impl. Equivalent declaration/impl gates are permitted.
+        if not impl_guards <= declaration_guards:
+            if trait_name == "std::error::Error" and impl_guards == declaration_guards | {
+                std_guard
+            }:
+                std_error = True
+            elif trait_name == "core::error::Error" and impl_guards == declaration_guards | {
+                no_std_guard
+            }:
+                no_std_error = True
+            continue
+        if error_trait:
             error = True
-        if trait_name in {"Display", "fmt::Display", "std::fmt::Display", "core::fmt::Display"}:
+        if display_trait:
             display = True
-    return error, display
+    return error or (std_error and no_std_error), display
 
 
 def audit_enum_variants(path: Path, source: bytes, declaration: Any, name: str) -> list[Violation]:
@@ -214,7 +356,8 @@ def audit_file(path: Path) -> list[Violation]:
                 Violation(
                     path,
                     node.start_point.row + 1,
-                    f"`pub {kind} {name}` does not implement `std::error::Error`. "
+                    f"`pub {kind} {name}` Error and Display coverage cannot be established "
+                    "for every enabled declaration configuration. "
                     "Either add an attached `#[derive(Debug, thiserror::Error)]` "
                     f"or typed Error and Display impls for {name} in the same module.",
                 )

@@ -1,7 +1,10 @@
 //! Independent, bounded reader for the P0 document-partitioned FULL wire.
 //! All decoded values are DATA. The selected Source ticket remains authority.
 
-use super::super::{TextReadContext, TextRecipe, ValidatedPostingHit, validate_segment_document};
+use super::super::{
+    PostingOccurrence, PostingStageSample, TextReadContext, TextRecipe, ValidatedPostingHit,
+    validate_segment_document, validate_universe_source_reference,
+};
 use super::wire::{self, Doc, SegmentEdge};
 use crate::native::text_path::PathIndex;
 use quanta_index_core::index::{
@@ -10,6 +13,7 @@ use quanta_index_core::index::{
 };
 
 mod read_v2;
+pub(in crate::native::text) use read_v2::TermFrequencies;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::native::text) struct Summary {
@@ -20,7 +24,7 @@ pub(in crate::native::text) struct Summary {
 
 struct Root {
     object: StoredObject,
-    source: SourceCut,
+    cut: wire::TextCut,
     rows: usize,
     row_start: usize,
     summary: Summary,
@@ -72,12 +76,20 @@ fn open_root(
         return Err(wire::corrupt("root identity"));
     }
     charge_decode(&object, budget)?;
+    if let Some(refusal) = super::retired::refuse_retired_root(
+        &object.payload,
+        recipe.output_policy(),
+        &object.registration.children,
+        expected_logical,
+    ) {
+        return Err(refusal);
+    }
     let mut d = Reader::new(&object.payload);
     if d.fixed::<8>()? != *wire::ROOT_MAGIC || d.fixed::<32>()? != recipe.output_policy().0 {
         return Err(wire::corrupt("root policy"));
     }
-    let source = d.source()?;
-    if exact_source.is_some_and(|expected| source != expected) {
+    let cut = d.text_cut()?;
+    if exact_source.is_some_and(|expected| wire::TextCut::of(expected) != cut) {
         return Err(IndexError::Conflict);
     }
     let count = usize::from(d.u16()?);
@@ -85,7 +97,7 @@ fn open_root(
         return Err(wire::corrupt("root segment count"));
     }
     let row_start = d.offset;
-    let source_count = wire::source_edges(source).count();
+    let source_count = cut.edges().count();
     if object.registration.children.len() != source_count + count
         || !object
             .registration
@@ -94,7 +106,7 @@ fn open_root(
             .ok_or_else(|| wire::corrupt("root source edges"))?
             .iter()
             .copied()
-            .eq(wire::source_edges(source))
+            .eq(cut.edges())
     {
         return Err(wire::corrupt("root source edges"));
     }
@@ -128,13 +140,13 @@ fn open_root(
         return Err(wire::corrupt("root trailing bytes"));
     }
     if expected_logical.is_some_and(|expected| {
-        expected != wire::logical_commitment(recipe.output_policy(), source, docs, tokens)
+        expected != wire::logical_commitment(recipe.output_policy(), cut, docs, tokens)
     }) {
         return Err(wire::corrupt("root logical commitment"));
     }
     Ok(Root {
         object,
-        source,
+        cut,
         rows: count,
         row_start,
         summary: Summary {
@@ -168,7 +180,7 @@ pub(in crate::native::text) fn root(
         objects,
         budget,
     )?;
-    if opened.source.owners != member.input.root {
+    if opened.cut.owners != member.input.root {
         return Err(IndexError::Conflict);
     }
     Ok(opened.summary)
@@ -196,7 +208,7 @@ pub(in crate::native::text) fn verify_full(
         objects,
         budget,
     )?;
-    if root.source.owners != member.input.root {
+    if root.cut.owners != member.input.root {
         return Err(IndexError::Conflict);
     }
     for slot in 0..root.rows {
@@ -649,7 +661,7 @@ fn load_document_root<'a>(
         )?);
     }
     root.as_ref()
-        .filter(|cached| cached.source == source)
+        .filter(|cached| cached.cut == wire::TextCut::of(source))
         .ok_or(IndexError::Conflict)
 }
 
@@ -771,7 +783,7 @@ impl<'a> Reader<'a> {
     fn reference(&mut self) -> Result<ObjectRef, IndexError> {
         Ok(ObjectRef(Digest(self.fixed()?)))
     }
-    fn source(&mut self) -> Result<SourceCut, IndexError> {
+    fn text_cut(&mut self) -> Result<wire::TextCut, IndexError> {
         fn one(d: &mut Reader<'_>) -> Result<quanta_index_core::index::MapRoot, IndexError> {
             match d.fixed::<1>()? {
                 [0] => Ok(quanta_index_core::index::MapRoot(None)),
@@ -779,10 +791,9 @@ impl<'a> Reader<'a> {
                 _ => Err(wire::corrupt("source tag")),
             }
         }
-        Ok(SourceCut {
+        Ok(wire::TextCut {
             owners: one(self)?,
             paths: one(self)?,
-            frontiers: one(self)?,
         })
     }
     fn key(&mut self) -> Result<&'a [u8], IndexError> {
@@ -831,8 +842,30 @@ fn inspect_page(
     route: &Route<'_>,
     term: Option<&[u8]>,
     segment: &Segment,
+    case_tokens: Option<&mut [[u64; wire::MAX_DOCS]; 2]>,
+    record_membership: bool,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<(StoredObject, Option<Fragment>, PageBoundary), IndexError> {
+    inspect_page_impl(
+        route,
+        term,
+        segment,
+        case_tokens,
+        record_membership,
+        None,
+        objects,
+        budget,
+    )
+}
+
+fn inspect_page_impl(
+    route: &Route<'_>,
+    term: Option<&[u8]>,
+    segment: &Segment,
     mut case_tokens: Option<&mut [[u64; wire::MAX_DOCS]; 2]>,
     record_membership: bool,
+    mut frequencies: Option<&mut [u32; wire::MAX_DOCS]>,
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
 ) -> Result<(StoredObject, Option<Fragment>, PageBoundary), IndexError> {
@@ -903,6 +936,12 @@ fn inspect_page(
                 || u64::try_from(tf).map_err(|_error| IndexError::ResourceLimited)? > doc_tokens
             {
                 return Err(wire::corrupt("posting term frequency"));
+            }
+            if select && let Some(frequencies) = frequencies.as_deref_mut() {
+                *frequencies
+                    .get_mut(doc_index)
+                    .ok_or_else(|| wire::corrupt("posting docID"))? =
+                    u32::try_from(tf).map_err(|_error| IndexError::ResourceLimited)?;
             }
             if let Some(counts) = case_tokens.as_deref_mut() {
                 let count = counts
@@ -1350,8 +1389,10 @@ impl V1TermCursor {
             owner: validated.owner,
             source_record: validated.source_record,
             doc_indexed_tokens: validated.doc_indexed_tokens,
-            occurrence: crate::native::text_occurrence::ScopedOccurrence::from_checked_positions(
-                positions, memory,
+            occurrence: PostingOccurrence::Positions(
+                crate::native::text_occurrence::ScopedOccurrence::from_checked_positions(
+                    positions, memory,
+                ),
             ),
         })
     }
@@ -1389,13 +1430,28 @@ impl TermCursor {
         }
     }
 
+    pub(in crate::native::text) fn take_stage_probe(&mut self) -> Option<PostingStageSample> {
+        match &mut self.0 {
+            TermCursorKind::Layered(cursor) => cursor.take_stage_probe(),
+            TermCursorKind::Physical(_) => None,
+        }
+    }
+
+    pub(in crate::native::text) const fn stage_probe_layout(&self) -> &'static str {
+        match &self.0 {
+            TermCursorKind::Layered(_) => "layered_v2",
+            TermCursorKind::Physical(_) => "segment_v1",
+        }
+    }
+
     pub(in crate::native::text) fn next_hit(
         &mut self,
         context: &mut TextReadContext<'_>,
+        positions_required: bool,
     ) -> Result<Option<ValidatedPostingHit>, IndexError> {
         match &mut self.0 {
             TermCursorKind::Physical(cursor) => cursor.next_hit(context),
-            TermCursorKind::Layered(cursor) => cursor.next_hit(context),
+            TermCursorKind::Layered(cursor) => cursor.next_hit(context, positions_required),
         }
     }
 }

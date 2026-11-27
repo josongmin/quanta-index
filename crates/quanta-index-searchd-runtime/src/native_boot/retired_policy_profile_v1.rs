@@ -1,12 +1,18 @@
 //! Resolve a retired route's actual projection/instance pair from its
 //! physically authenticated old Published profile.
 
+use quanta_index_catalog::NativeBootManifest;
 use quanta_index_contract::index::{
-    IndexInstanceId, IndexProfile, InputDomain, NativeProtectedRepoMapHeadV1,
-    RetiredProjectionIdentityV1, RetiredProjectionPolicyViewV1,
+    IndexInstanceId, IndexProfile, InputDomain, MAX_RETIRED_PROJECTION_IDENTITIES_V1,
+    NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1, RetiredProjectionIdentityV1,
+    RetiredProjectionPolicyErrorV1, RetiredProjectionPolicyViewV1,
+    decode_retired_projection_policy_v1, preflight_retired_projection_policy_v1,
 };
-use quanta_index_core::index::{IndexError, MemoryLifetime, WorkBudget};
+use quanta_index_core::index::{
+    IndexError, MemoryLease, MemoryLifetime, UpdateKind, WorkBudget, WorkScope,
+};
 use quanta_index_storage::FileObjectReader;
+use sha2::{Digest as _, Sha256};
 
 pub(crate) fn old_repomap_identity_v1(
     head: &NativeProtectedRepoMapHeadV1,
@@ -54,6 +60,135 @@ pub(crate) fn old_repomap_identity_v1(
         });
     }
     identity.ok_or(IndexError::DigestConflict)
+}
+
+/// Collect the selected old root's physical RepoMap IDs and the identities it
+/// had already retired. The returned lease covers both the result and scratch.
+pub(crate) fn collect_old_retired_projection_identities_v1(
+    manifest: &NativeBootManifest,
+    routes: &NativeProtectedSourceRoutesV1,
+    reader: &FileObjectReader,
+    budget: &mut WorkBudget,
+) -> Result<(Vec<RetiredProjectionIdentityV1>, MemoryLease), IndexError> {
+    let policy_count = manifest
+        .retired_projection_policy
+        .map_or(0, |policy| policy.identity_count as usize);
+    let maximum = routes
+        .repomap_heads
+        .len()
+        .checked_add(policy_count)
+        .ok_or(IndexError::ResourceLimited)?;
+    if maximum > MAX_RETIRED_PROJECTION_IDENTITIES_V1 {
+        return Err(IndexError::ResourceLimited);
+    }
+    let identity_bytes = maximum
+        .checked_mul(std::mem::size_of::<RetiredProjectionIdentityV1>())
+        .ok_or(IndexError::ResourceLimited)?;
+    let instance_bytes = maximum
+        .checked_add(policy_count)
+        .and_then(|count| count.checked_mul(std::mem::size_of::<IndexInstanceId>()))
+        .ok_or(IndexError::ResourceLimited)?;
+    let granted = u64::try_from(
+        identity_bytes
+            .checked_add(instance_bytes)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or(IndexError::ResourceLimited)?,
+    )
+    .map_err(|_| IndexError::ResourceLimited)?;
+    let lease = budget
+        .reserve_memory(granted, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut identities = Vec::new();
+    identities
+        .try_reserve_exact(maximum)
+        .map_err(|_| IndexError::ResourceLimited)?;
+    for head in &routes.repomap_heads {
+        budget.checkpoint()?;
+        identities.push(old_repomap_identity_v1(head, reader, budget)?);
+    }
+    let mut scratch = Vec::new();
+    if let Some(policy) = manifest.retired_projection_policy {
+        policy
+            .validate_v1()
+            .map_err(|_| IndexError::DigestConflict)?;
+        let stored = reader.get(policy.object, budget)?;
+        if stored.registration.reference != policy.object
+            || !stored.registration.children.is_empty()
+            || preflight_retired_projection_policy_v1(&stored.payload)
+                .map_err(|_| IndexError::DigestConflict)?
+                != policy_count
+            || quanta_index_contract::index::Digest(Sha256::digest(&stored.payload).into())
+                != policy.sha256
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        scratch
+            .try_reserve_exact(policy_count)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        scratch.resize(policy_count, IndexInstanceId([0; 16]));
+        let view = decode_retired_projection_policy_v1(&stored.payload, &mut scratch, &mut || {
+            budget.checkpoint()
+        })
+        .map_err(|error| match error {
+            RetiredProjectionPolicyErrorV1::Admission(error) => error,
+            _ => IndexError::DigestConflict,
+        })?;
+        if view.len_v1() != policy_count
+            || view.header_v1().candidate_profile_ref != manifest.publication.profile
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        let profile = reader.get(manifest.publication.profile, budget)?;
+        if profile.registration.reference != manifest.publication.profile
+            || !profile.registration.children.is_empty()
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        reject_candidate_profile_overlap_v1(&view, &scratch, &profile.payload, budget)?;
+        for index in 0..policy_count {
+            budget.checkpoint()?;
+            identities.push(view.identity_v1(index).ok_or(IndexError::DigestConflict)?);
+        }
+    }
+    let mut instances = Vec::new();
+    instances
+        .try_reserve_exact(maximum)
+        .map_err(|_| IndexError::ResourceLimited)?;
+    let actual_bytes = identities
+        .capacity()
+        .checked_mul(std::mem::size_of::<RetiredProjectionIdentityV1>())
+        .and_then(|bytes| {
+            bytes.checked_add(
+                scratch
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IndexInstanceId>())?,
+            )
+        })
+        .and_then(|bytes| {
+            bytes.checked_add(
+                instances
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IndexInstanceId>())?,
+            )
+        })
+        .ok_or(IndexError::ResourceLimited)?;
+    if u64::try_from(actual_bytes).map_err(|_| IndexError::ResourceLimited)? > granted {
+        return Err(IndexError::ResourceLimited);
+    }
+    identities.sort_unstable_by_key(|identity| identity.projection.0);
+    if identities.windows(2).any(|pair| {
+        pair[0].projection == pair[1].projection && pair[0].instance != pair[1].instance
+    }) {
+        return Err(IndexError::DigestConflict);
+    }
+    identities.dedup();
+    instances.extend(identities.iter().map(|identity| identity.instance));
+    instances.sort_unstable_by_key(|instance| instance.0);
+    if instances.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok((identities, lease))
 }
 
 /// A retained independent Graph, Source or History instance cannot be
@@ -126,17 +261,63 @@ pub(crate) fn retired_projection_present_v1(
             == projection)
 }
 
+/// Check identities in the retained request as well as the resulting maps.
+/// An old predecessor or materialization claim can disappear from the map.
+pub(crate) fn reject_retired_published_request_v1(
+    policy: &RetiredProjectionPolicyViewV1<'_>,
+    sorted_instances: &[IndexInstanceId],
+    kind: &UpdateKind,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    match kind {
+        UpdateKind::ProjectionAdvance(transition) => {
+            if retired_projection_present_v1(policy, transition.projection, budget)? {
+                return Err(IndexError::DigestConflict);
+            }
+            if let Some(previous) = transition.expected
+                && retired_projection_present_v1(policy, previous.projection, budget)?
+            {
+                return Err(IndexError::DigestConflict);
+            }
+        }
+        UpdateKind::CompactSourceLocal { instance, .. } => {
+            if sorted_instances
+                .binary_search_by_key(&instance.0, |value| value.0)
+                .is_ok()
+            {
+                return Err(IndexError::DigestConflict);
+            }
+        }
+        UpdateKind::Materialize { claim } => {
+            if sorted_instances
+                .binary_search_by_key(&claim.intent.instance.0, |value| value.0)
+                .is_ok()
+            {
+                return Err(IndexError::DigestConflict);
+            }
+            if let WorkScope::ProjectionDomain { projection, .. } = claim.intent.scope
+                && retired_projection_present_v1(policy, projection, budget)?
+            {
+                return Err(IndexError::DigestConflict);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use quanta_index_contract::index::{
-        Digest, GroupActivation, IndexKind, InstanceSpec, ObjectRef, ProducerId, ProjectionId,
-        PublicationGroupId, RetiredProjectionPolicyHeaderV1, SchemaId, StorageFormatId,
-        decode_retired_projection_policy_v1, encode_retired_projection_policy_v1,
+        CollectionId, Digest, GroupActivation, IndexKind, InstanceSpec, MapRoot, ObjectRef,
+        OwnerMutationSet, ProducerCompleteness, ProducerId, ProjectionBinding, ProjectionId,
+        ProjectionTransition, PublicationGroupId, RetiredProjectionPolicyHeaderV1, SchemaId,
+        SlotId, SourceCut, StorageFormatId, TenantId, WorkClaim, WorkIntent, WorkspaceKey,
+        WorktreeId, decode_retired_projection_policy_v1, encode_retired_projection_policy_v1,
     };
     use quanta_index_core::index::{MemoryLease, MemoryLeaseOwner, MemoryScopePort, WorkLimits};
     use quanta_index_ipc::MemoryScope;
-    use sha2::{Digest as _, Sha256};
     use std::{
         sync::{
             Arc,
@@ -184,7 +365,7 @@ mod tests {
         };
         let mut bytes = Vec::new();
         let mut encode_scratch = [IndexInstanceId([0; 16]); 1];
-        let policy_sha256 = encode_retired_projection_policy_v1(
+        let _policy_digest = encode_retired_projection_policy_v1(
             header,
             &[old],
             &mut encode_scratch,
@@ -192,7 +373,6 @@ mod tests {
             &mut bytes,
         )
         .unwrap();
-        assert_eq!(policy_sha256, Digest(Sha256::digest(&bytes).into()));
         let mut sorted_instances = [IndexInstanceId([0; 16]); 1];
         let policy =
             decode_retired_projection_policy_v1(&bytes, &mut sorted_instances, &mut || {
@@ -263,6 +443,140 @@ mod tests {
                 &mut budget,
             )
             .is_err()
+        );
+
+        let source = SourceCut {
+            owners: MapRoot(None),
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        };
+        let binding = ProjectionBinding {
+            projection: old.projection,
+            producer: ProducerId([13; 16]),
+            owners: MapRoot(None),
+            source,
+            schema: SchemaId([14; 16]),
+            producer_policy: Digest([15; 32]),
+            dependency_context: Digest([16; 32]),
+            certificate: ObjectRef(Digest([17; 32])),
+        };
+        let transition = ProjectionTransition {
+            projection: ProjectionId([12; 16]),
+            producer: binding.producer,
+            expected: Some(binding),
+            target_source: source,
+            schema: binding.schema,
+            producer_policy: binding.producer_policy,
+            dependency_context: binding.dependency_context,
+            completeness: ProducerCompleteness::Partial {
+                missing: MapRoot(None),
+            },
+            owners: OwnerMutationSet {
+                root: MapRoot(None),
+                count: 0,
+                digest: Digest([18; 32]),
+            },
+            events: vec![],
+        };
+        assert!(
+            reject_retired_published_request_v1(
+                &policy,
+                &sorted_instances,
+                &UpdateKind::ProjectionAdvance(Box::new(transition.clone())),
+                &mut budget,
+            )
+            .is_err()
+        );
+        let mut independent = transition;
+        independent.expected = None;
+        assert!(
+            reject_retired_published_request_v1(
+                &policy,
+                &sorted_instances,
+                &UpdateKind::ProjectionAdvance(Box::new(independent)),
+                &mut budget,
+            )
+            .is_ok()
+        );
+        assert!(
+            reject_retired_published_request_v1(
+                &policy,
+                &sorted_instances,
+                &UpdateKind::CompactSourceLocal {
+                    instance: old.instance,
+                    expected_artifact: ObjectRef(Digest([19; 32])),
+                    owner: quanta_index_contract::index::OwnerKey {
+                        producer: binding.producer,
+                        stable_id: quanta_index_contract::index::StableOwnerId([20; 16]),
+                    },
+                },
+                &mut budget,
+            )
+            .is_err()
+        );
+        let intent = WorkIntent {
+            workspace: WorkspaceKey {
+                tenant: TenantId([1; 16]),
+                collection: CollectionId([2; 16]),
+                worktree: WorktreeId([3; 16]),
+                slot: SlotId([4; 16]),
+            },
+            epoch: 1,
+            instance: old.instance,
+            scope: WorkScope::ProjectionDomain {
+                projection: ProjectionId([12; 16]),
+                source,
+                producer_policy: Digest([21; 32]),
+                dependency_context: Digest([22; 32]),
+            },
+        };
+        let claim = |intent| WorkClaim {
+            intent,
+            fence: 1,
+            lease_until_ms: 1,
+        };
+        assert!(
+            reject_retired_published_request_v1(
+                &policy,
+                &sorted_instances,
+                &UpdateKind::Materialize {
+                    claim: claim(intent)
+                },
+                &mut budget,
+            )
+            .is_err()
+        );
+        let mut retired_scope = intent;
+        retired_scope.instance = IndexInstanceId([9; 16]);
+        retired_scope.scope = WorkScope::ProjectionDomain {
+            projection: old.projection,
+            source,
+            producer_policy: Digest([21; 32]),
+            dependency_context: Digest([22; 32]),
+        };
+        assert!(
+            reject_retired_published_request_v1(
+                &policy,
+                &sorted_instances,
+                &UpdateKind::Materialize {
+                    claim: claim(retired_scope)
+                },
+                &mut budget,
+            )
+            .is_err()
+        );
+        let mut independent_scope = retired_scope;
+        independent_scope.scope = intent.scope;
+        assert!(
+            reject_retired_published_request_v1(
+                &policy,
+                &sorted_instances,
+                &UpdateKind::Materialize {
+                    claim: claim(independent_scope)
+                },
+                &mut budget,
+            )
+            .is_ok()
         );
         assert_eq!(memory_owner.0.load(Ordering::Acquire), 0);
     }

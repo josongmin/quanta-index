@@ -222,7 +222,9 @@ fn published_result_reads_one_sqlite_snapshot_across_length_and_decode() -> Test
         catalog.published_view_metadata(immutable.key, &mut work),
         Err(IndexError::Conflict)
     );
-    check_eq!(grants.load(Ordering::Acquire), 2);
+    // Key probe, bounded operation row, and Pending request-registration
+    // custody. The last grant still authenticates the pre-commit snapshot.
+    check_eq!(grants.load(Ordering::Acquire), 3);
     check!(committed.load(Ordering::Acquire));
     check_eq!(live.load(Ordering::Acquire), 0);
     check_eq!(
@@ -481,6 +483,7 @@ fn initial_full_single_event_operation_row_syntactic_upper_bound_fits_boot_cap()
         published_view: Some(publication),
         projection_replay: None,
         retirement_policy_sha256_v2: None,
+        retained_history_request_v1: None,
     };
     let payload = encode(&row)?;
     check!(

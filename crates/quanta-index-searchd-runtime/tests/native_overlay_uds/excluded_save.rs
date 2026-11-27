@@ -41,7 +41,8 @@ fn excluded_saved_source_cannot_retire_overlay_even_with_core_text_profile() -> 
         )?,
     )?;
 
-    let publisher = client.begin_interaction_publisher(Duration::from_secs(30), &budget())?;
+    let live = LivePublisher::begin(&client, Duration::from_secs(30))?;
+    let publisher = live.id();
     let session = NativeOverlaySession {
         workspace: workspace(),
         publisher,
@@ -64,6 +65,7 @@ fn excluded_saved_source_cannot_retire_overlay_even_with_core_text_profile() -> 
                 revision: 1,
                 text: Some(SAVED_SOURCE_TEXT.into()),
                 path: Some("src/excluded.rs".into()),
+                repository_witness: None,
             },
             &budget(),
         )? == NativeOverlayReply::Updated {
@@ -128,6 +130,7 @@ fn excluded_saved_source_cannot_retire_overlay_even_with_core_text_profile() -> 
         "excluded source save intent was not bound",
     )?;
     let selected = published(&client, key, &client.submit(request, &budget())?)?;
+    live.renew()?;
     let query = client.search_text(
         ViewSelection::Exact(selected),
         native_text_spec().instance,

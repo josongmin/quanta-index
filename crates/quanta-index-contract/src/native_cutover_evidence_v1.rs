@@ -14,6 +14,19 @@ pub use quanta_index_contract_base::NativeCutoverDigest64V1;
 #[path = "native_cutover_evidence_v1/before_selection_v1.rs"]
 mod before_selection_v1;
 pub use before_selection_v1::read_native_cutover_before_native_selector_v1;
+#[path = "native_cutover_evidence_v1/imported_native_wire_v1.rs"]
+mod imported_native_wire_v1;
+#[path = "native_cutover_evidence_v1/source_only_v6.rs"]
+mod source_only_v6;
+pub use source_only_v6::{
+    NativeCutoverEvidenceEnvelopeV1, NativeCutoverHistoricalRepoMapV6,
+    NativeCutoverHistoricalV5ArtifactV6, NativeCutoverHistoricalV5IdentityV6,
+    NativeCutoverPreviousNativeV6, NativeCutoverPreviousPublicationV6,
+    NativeCutoverPreviousSourceOnlyLineageV7,
+    NativeCutoverSourceOnlyEvidenceV6, NativeCutoverSourceOnlyPublicationV7,
+    NativeCutoverSourceOnlyWireV6, NativeCutoverWriterAckV7,
+    decode_native_cutover_evidence_envelope_v1,
+};
 pub(crate) mod source_binding;
 pub use source_binding::{
     NativeCutoverEvidenceSourcePublicationBindingV1, NativeCutoverEvidenceTargetV1,
@@ -676,12 +689,10 @@ crate::native_serde_enum!(NativeCutoverEvidenceSourceFactV1 {
             target: NativeCutoverEvidenceTargetV1,
             request: UpdateRequest
         },
-        AllocatorLease = 17 { stream_epoch: u64, next_operation_sequence: u64 },
-        ImportedNativeSource = 18 {
-            head: NativeImportedNativeSourceCompactV1,
-            target: NativeCutoverEvidenceTargetV1,
-            request: UpdateRequest
-        }
+        AllocatorLease = 17 { stream_epoch: u64, next_operation_sequence: u64 }
+    }
+    custom_records {
+        ImportedNativeSource = 18 { head, target, request } => imported_native_wire_v1
     }
 });
 
@@ -1494,90 +1505,135 @@ impl NativeCutoverEvidenceV1 {
         if self.header.format_version != Self::FORMAT_VERSION_V1 {
             return Err(NativeCutoverEvidenceSyntaxErrorV1::Unsupported);
         }
-        if self.source_facts.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1
-            || self.v5_artifacts.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1
-            || self.host_facts.deliveries.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1
-            || self.host_facts.prepared_authorities.len()
-                > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1
-            || self.host_facts.recovery_receipts.len()
-                > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1
-        {
+        if self.v5_artifacts.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1 {
             return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
         }
+        validate_fact_bounds_v1(&self.source_facts, &self.host_facts)?;
         for artifact in &self.v5_artifacts {
             artifact.validate_predecessor_pair_v1()?;
         }
-        if self.host_facts.recovery_receipts.iter().any(|receipt| {
-            receipt.tail_event_ids.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1
-        }) {
-            return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
-        }
-        for fact in &self.source_facts {
-            if let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding {
-                operation, ..
-            } = fact
-                && operation.workspace != self.header.selected_source.workspace
-            {
-                let imported = self.source_facts.iter().any(|other| {
-                    matches!(other,
-                    NativeCutoverEvidenceSourceFactV1::ImportedLegacySource { head, .. }
-                        if head.source_operation.key == *operation)
-                        || matches!(other,
-                        NativeCutoverEvidenceSourceFactV1::ImportedNativeSource { head, .. }
-                            if head.source_operation.key == *operation)
-                });
-                if !imported {
-                    return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
-                }
-                fact.validate_source_publication_v1(&NativeCutoverEvidenceSelectedSourceV1 {
-                    workspace: operation.workspace,
-                    workspace_epoch: operation.epoch,
-                    producer: operation.producer,
-                    stream: operation.stream,
-                    stream_epoch: operation.stream_epoch,
-                    text_admission: self.header.selected_source.text_admission,
-                })?;
-            } else {
-                fact.validate_source_publication_v1(&self.header.selected_source)?;
-            }
-        }
-        if let Some(legacy) = &self.legacy_publication {
-            legacy.repomap.validate_structure_v1()?;
-            if legacy.history.as_ref().is_some_and(|history| {
-                history.durable_sequence == 0
-                    || !crate::is_canonical_batch_digest_token_v1(&history.batch_digest)
-            }) {
-                return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
-            }
-        }
-        if self.before_selection.document.0.is_empty()
-            || self.before_selection.document.0.len() > 64 * 1024
-            || self.retained_terminal.as_ref().is_some_and(|wire| {
-                wire.0.is_empty() || wire.0.len() > MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1
-            })
-        {
-            return Err(NativeCutoverEvidenceSyntaxErrorV1::TooLarge);
-        }
-        let delivery_count = u64::try_from(self.host_facts.deliveries.len())
-            .map_err(|_error| NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge)?;
-        if self.host_facts.retained_delivery_count != delivery_count {
-            return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
-        }
-        if self.header.original_full_operation != self.baseline.operation
-            || self.header.canonical_workspace_root != self.header.host.canonical_workspace_root
-            || self.header.host.custody_mode != NativeCutoverHostCustodyModeV1::DurableInbox
-            || self.header.writer_state_root.is_empty()
-            || self.header.canonical_snapshot_namespace.is_empty()
-            || self.header.sdk_lock_path.is_empty()
-            || self.header.config_path.is_empty()
-        {
-            return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
-        }
-        Ok(())
+        validate_source_facts_v1(&self.header.selected_source, &self.source_facts, &self.host_facts)?;
+        validate_legacy_publication_v1(self.legacy_publication.as_ref())?;
+        validate_custody_shape_v1(
+            &self.header,
+            self.baseline.operation,
+            &self.before_selection,
+            self.retained_terminal.as_ref(),
+            &self.host_facts,
+        )
     }
 }
 
-fn canonical_digest64(digest: &NativeCutoverDigest64V1) -> bool {
+fn validate_fact_bounds_v1(
+    source: &[NativeCutoverEvidenceSourceFactV1],
+    host: &NativeCutoverEvidenceHostFactsV1,
+) -> Result<(), NativeCutoverEvidenceSyntaxErrorV1> {
+    if [
+        source.len(),
+        host.deliveries.len(),
+        host.prepared_authorities.len(),
+        host.recovery_receipts.len(),
+    ]
+    .into_iter()
+    .any(|len| len > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1)
+    {
+        return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
+    }
+    Ok(())
+}
+
+fn validate_source_facts_v1(
+    selected: &NativeCutoverEvidenceSelectedSourceV1,
+    facts: &[NativeCutoverEvidenceSourceFactV1],
+    host: &NativeCutoverEvidenceHostFactsV1,
+) -> Result<(), NativeCutoverEvidenceSyntaxErrorV1> {
+    if host
+        .recovery_receipts
+        .iter()
+        .any(|receipt| receipt.tail_event_ids.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1)
+    {
+        return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
+    }
+    for fact in facts {
+        if let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding { operation, .. } =
+            fact
+            && operation.workspace != selected.workspace
+        {
+            let imported = facts.iter().any(|other| {
+                matches!(other,
+                    NativeCutoverEvidenceSourceFactV1::ImportedLegacySource { head, .. }
+                        if head.source_operation.key == *operation)
+                    || matches!(other,
+                        NativeCutoverEvidenceSourceFactV1::ImportedNativeSource { head, .. }
+                            if head.source_operation.key == *operation)
+            });
+            if !imported {
+                return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
+            }
+            fact.validate_source_publication_v1(&NativeCutoverEvidenceSelectedSourceV1 {
+                workspace: operation.workspace,
+                workspace_epoch: operation.epoch,
+                producer: operation.producer,
+                stream: operation.stream,
+                stream_epoch: operation.stream_epoch,
+                text_admission: selected.text_admission,
+            })?;
+        } else {
+            fact.validate_source_publication_v1(selected)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_legacy_publication_v1(
+    legacy: Option<&NativeCutoverEvidenceLegacyPublicationV1>,
+) -> Result<(), NativeCutoverEvidenceSyntaxErrorV1> {
+    if let Some(legacy) = legacy {
+        legacy.repomap.validate_structure_v1()?;
+        if legacy.history.as_ref().is_some_and(|history| {
+            history.durable_sequence == 0
+                || !crate::is_canonical_batch_digest_token_v1(&history.batch_digest)
+        }) {
+            return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
+        }
+    }
+    Ok(())
+}
+
+fn validate_custody_shape_v1(
+    header: &NativeCutoverEvidenceHeaderV1,
+    baseline: OperationKey,
+    before: &NativeCutoverEvidenceBeforeSelectionV1,
+    retained_terminal: Option<&NativeCutoverByteStringV1>,
+    host: &NativeCutoverEvidenceHostFactsV1,
+) -> Result<(), NativeCutoverEvidenceSyntaxErrorV1> {
+    if before.document.0.is_empty()
+        || before.document.0.len() > 64 * 1024
+        || retained_terminal.is_some_and(|wire| {
+            wire.0.is_empty() || wire.0.len() > MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1
+        })
+    {
+        return Err(NativeCutoverEvidenceSyntaxErrorV1::TooLarge);
+    }
+    let delivery_count = u64::try_from(host.deliveries.len())
+        .map_err(|_error| NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge)?;
+    if host.retained_delivery_count != delivery_count {
+        return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
+    }
+    if header.original_full_operation != baseline
+        || header.canonical_workspace_root != header.host.canonical_workspace_root
+        || header.host.custody_mode != NativeCutoverHostCustodyModeV1::DurableInbox
+        || header.writer_state_root.is_empty()
+        || header.canonical_snapshot_namespace.is_empty()
+        || header.sdk_lock_path.is_empty()
+        || header.config_path.is_empty()
+    {
+        return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
+    }
+    Ok(())
+}
+
+pub(crate) fn canonical_digest64(digest: &NativeCutoverDigest64V1) -> bool {
     digest
         .0
         .iter()
@@ -2134,6 +2190,12 @@ pub fn decode_native_cutover_evidence_v1(
 ) -> Result<NativeCutoverEvidenceV1, NativeCutoverEvidenceDecodeErrorV1> {
     validate_native_cutover_evidence_cbor_v1(bytes)
         .map_err(NativeCutoverEvidenceDecodeErrorV1::Syntax)?;
+    decode_preflighted_v5_v1(bytes)
+}
+
+fn decode_preflighted_v5_v1(
+    bytes: &[u8],
+) -> Result<NativeCutoverEvidenceV1, NativeCutoverEvidenceDecodeErrorV1> {
     let decoded: NativeCutoverEvidenceV1 = ciborium::de::from_reader(std::io::Cursor::new(bytes))
         .map_err(NativeCutoverEvidenceDecodeErrorV1::Cbor)?;
     decoded

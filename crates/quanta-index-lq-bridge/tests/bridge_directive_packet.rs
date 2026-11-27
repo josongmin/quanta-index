@@ -5,10 +5,10 @@
 
 #![forbid(unsafe_code)]
 
-use quanta_index_contract::{
-    LQ_VERSION_TAG, LqDirective, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan,
-};
 use quanta_index_lq_bridge::{BridgeCandidate, TRANSLATOR_VERSION};
+use quanta_index_lq_norm::{
+    LQ_VERSION_TAG, LqDirective, LqExpr, LqLeaf, LqNormalizedQuery as LqQuery, LqOptions, LqSpan,
+};
 
 fn directive_query(directives: Vec<LqDirective>, source_syntax: &str) -> LqQuery {
     #[expect(

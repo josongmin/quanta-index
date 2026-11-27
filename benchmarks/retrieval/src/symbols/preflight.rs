@@ -1,7 +1,7 @@
 //! Complete admitted-file census. This report is diagnostic output, never an
 //! ingestible substitute for source bytes or a persisted coverage authority.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -14,8 +14,9 @@ use serde::ser::SerializeStruct;
 use sha2::{Digest, Sha256};
 
 use super::{
-    ExtractedSymbols, SYMBOL_PRODUCER_GRAMMARS, SYMBOL_PRODUCER_IDENTITY, SymbolExtractError,
-    SymbolLanguage, SymbolNameSpan, SymbolRecord, extract_parsed_symbols, parse_tree,
+    ExtractedSymbols, GoCandidateSymbols, LineIndex, SYMBOL_PRODUCER_GRAMMARS,
+    SYMBOL_PRODUCER_IDENTITY, SymbolExtractError, SymbolLanguage, SymbolNameSpan, SymbolRecord,
+    SyntaxCandidateSymbols, deterministic_symbol_id, extract_parsed_symbols, parse_tree,
 };
 use crate::corpus::SourceFile;
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -203,7 +204,7 @@ impl Serialize for SymbolFileReport {
 pub struct SymbolPreflightReport {
     pub schema: &'static str,
     pub producer_identity: &'static str,
-    pub grammar_identity: &'static str,
+    pub grammar_identity: String,
     pub lockfile_sha256: String,
     pub producer_policy_sha256: String,
     pub policy: SymbolPreflightPolicy,
@@ -211,6 +212,68 @@ pub struct SymbolPreflightReport {
     pub admitted_files: usize,
     pub incomplete_files: usize,
 }
+
+/// Source-bound candidate records and parser name captures for the product
+/// preflight contract. The candidate process must already have validated its
+/// helper and grammar artifacts before returning this inventory.
+pub struct CandidateSymbolInventory {
+    pub records: Vec<SymbolRecord>,
+    pub names: BTreeMap<String, SymbolNameSpan>,
+}
+
+strict_symbol_object!(CandidateSymbolInventory {
+    records: Vec<SymbolRecord>,
+    names: BTreeMap<String, SymbolNameSpan>,
+});
+
+impl From<GoCandidateSymbols> for CandidateSymbolInventory {
+    fn from(candidate: GoCandidateSymbols) -> Self {
+        Self {
+            records: candidate.records,
+            names: candidate.names,
+        }
+    }
+}
+
+impl From<SyntaxCandidateSymbols> for CandidateSymbolInventory {
+    fn from(candidate: SyntaxCandidateSymbols) -> Self {
+        Self {
+            records: candidate.records,
+            names: candidate.names,
+        }
+    }
+}
+
+type CandidateExtractor<'a> = dyn Fn(
+        &str,
+        &str,
+        Instant,
+        &dyn Fn() -> bool,
+    ) -> Result<CandidateSymbolInventory, SymbolExtractError>
+    + 'a;
+
+type CandidateBatch<'a> = dyn Fn(
+        &BTreeMap<String, SourceFile>,
+        &SymbolPreflightOptions<'_>,
+        Instant,
+    ) -> Result<
+        BTreeMap<String, Result<CandidateSymbolInventory, SymbolExtractError>>,
+        SymbolExtractError,
+    > + 'a;
+
+struct CandidatePreflight<'a> {
+    grammar_identity: &'a str,
+    manifest_sha256: &'a str,
+    extract: &'a CandidateExtractor<'a>,
+    prepare_batch: Option<&'a CandidateBatch<'a>>,
+}
+
+const CANDIDATE_FALLBACK_GRAMMARS: &str = concat!(
+    "rust@0.24.2;registry-checksum=",
+    env!("QI_RUST_GRAMMAR_SHA256"),
+    ";python@0.25.0;registry-checksum=",
+    env!("QI_PYTHON_GRAMMAR_SHA256"),
+);
 
 impl Serialize for SymbolPreflightReport {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -410,12 +473,17 @@ fn encode_hex(bytes: &[u8]) -> BenchResult<String> {
     Ok(encoded)
 }
 
-fn producer_policy(options: &SymbolPreflightOptions<'_>) -> [u8; 32] {
+fn producer_policy(
+    options: &SymbolPreflightOptions<'_>,
+    candidate: Option<&CandidatePreflight<'_>>,
+) -> [u8; 32] {
     let mut hash = Sha256::new();
+    let grammar_identity =
+        candidate.map_or(SYMBOL_PRODUCER_GRAMMARS, |value| value.grammar_identity);
     for part in [
         b"quanta-index:symbol-preflight:v1".as_slice(),
         SYMBOL_PRODUCER_IDENTITY.as_bytes(),
-        SYMBOL_PRODUCER_GRAMMARS.as_bytes(),
+        grammar_identity.as_bytes(),
         include_bytes!("../../../../Cargo.lock").as_slice(),
         include_bytes!("../symbols.rs").as_slice(),
         include_bytes!("preflight.rs").as_slice(),
@@ -425,6 +493,19 @@ fn producer_policy(options: &SymbolPreflightOptions<'_>) -> [u8; 32] {
         hash.update(part.len().to_string().as_bytes());
         hash.update([0]);
         hash.update(part);
+    }
+    if let Some(candidate) = candidate {
+        hash.update(b"quanta-index:candidate-artifact-manifest-sha256:v1\0");
+        hash.update(candidate.manifest_sha256.as_bytes());
+        for source in [
+            include_bytes!("official_candidate_process.rs").as_slice(),
+            include_bytes!("go_candidate_process.rs").as_slice(),
+            include_bytes!("syntax_candidate_process.rs").as_slice(),
+        ] {
+            hash.update(source.len().to_string().as_bytes());
+            hash.update([0]);
+            hash.update(source);
+        }
     }
     for limit in [
         options.max_file_bytes,
@@ -482,12 +563,78 @@ fn failure_report(path: &str, file: &SourceFile, error: &SymbolExtractError) -> 
     }
 }
 
+fn validate_candidate_inventory(
+    path: &str,
+    source: &str,
+    language: SymbolLanguage,
+    inventory: CandidateSymbolInventory,
+    control: &ExtractionControl<'_>,
+) -> Result<ExtractedSymbols, SymbolExtractError> {
+    let defect = || SymbolExtractError::ProducerDefect {
+        detail: format!("candidate symbol inventory differs from admitted source: {path}"),
+    };
+    if inventory.records.len() > control.max_symbols {
+        return Err(SymbolExtractError::ResourceLimit { path: path.into() });
+    }
+    if inventory.names.len() != inventory.records.len() {
+        return Err(defect());
+    }
+    let line_index = LineIndex::new(source);
+    let mut seen = BTreeSet::new();
+    let mut last_start = None;
+    for record in &inventory.records {
+        control.check()?;
+        let start = usize::try_from(record.definition_span.byte_start).map_err(|_| defect())?;
+        let end = usize::try_from(record.definition_span.byte_end).map_err(|_| defect())?;
+        let name = inventory
+            .names
+            .get(record.symbol_id.as_str())
+            .ok_or_else(|| defect())?;
+        if record.repo_relative_path.as_str() != path
+            || record.definition_span.path.as_ref() != path
+            || record.language.as_str() != language.language_code()
+            || record.relationship != super::SymbolRelationship::Def
+            || record.symbol_kind_family.is_some()
+            || record.signature.is_some()
+            || record.visibility.is_some()
+            || start >= end
+            || end > source.len()
+            || last_start.is_some_and(|previous| start < previous)
+            || !(start <= name.start_byte
+                && name.start_byte < name.end_byte
+                && name.end_byte <= end)
+            || source.get(name.start_byte..name.end_byte) != Some(name.name.as_str())
+            || record.local_name.as_ref() != name.name.as_str()
+            || line_index.line(start).map_err(|_| defect())? != record.definition_span.line_start
+            || line_index.line(end - 1).map_err(|_| defect())? != record.definition_span.line_end
+            || deterministic_symbol_id(
+                path,
+                &record.language,
+                &record.symbol_kind,
+                record.qualified_name.as_ref(),
+                start,
+                end,
+            ) != record.symbol_id.as_str()
+            || !seen.insert(record.symbol_id.as_str().to_string())
+        {
+            return Err(defect());
+        }
+        last_start = Some(start);
+    }
+    Ok(ExtractedSymbols {
+        records: inventory.records,
+        names: inventory.names,
+    })
+}
+
 fn inspect_file(
     path: &str,
     file: &SourceFile,
     options: &SymbolPreflightOptions<'_>,
     deadline: Instant,
     remaining_symbols: usize,
+    candidate: Option<&CandidatePreflight<'_>>,
+    prepared: Option<Result<CandidateSymbolInventory, SymbolExtractError>>,
 ) -> Result<(SymbolFileReport, ExtractedSymbols), SymbolExtractError> {
     let control = ExtractionControl {
         path,
@@ -510,6 +657,47 @@ fn inspect_file(
         SymbolLanguage::from_path(path).ok_or_else(|| SymbolExtractError::Unsupported {
             path: path.to_string(),
         })?;
+    if let Some(candidate) = candidate
+        && language.requires_projection()
+    {
+        let cancelled = || {
+            options
+                .cancellation
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        };
+        let inventory = match prepared {
+            Some(result) => result?,
+            None if candidate.prepare_batch.is_some()
+                && !matches!(language, SymbolLanguage::Go) =>
+            {
+                return Err(SymbolExtractError::ProducerDefect {
+                    detail: format!("candidate batch omitted admitted syntax file: {path}"),
+                });
+            }
+            None => (candidate.extract)(path, &file.text, control.deadline, &cancelled)?,
+        };
+        control.check()?;
+        let extracted =
+            validate_candidate_inventory(path, &file.text, language, inventory, &control)?;
+        let symbol_count = u64::try_from(extracted.records.len())
+            .map_err(|_| SymbolExtractError::ResourceLimit { path: path.into() })?;
+        return Ok((
+            SymbolFileReport {
+                path: path.into(),
+                source_sha256: file.sha256.clone(),
+                language: Some(language.coverage_identity()),
+                coverage: SymbolCoverage::Complete { symbol_count },
+                failure: None,
+                failure_detail: None,
+                failure_detail_truncated: false,
+                diagnostics: Vec::new(),
+                diagnostics_total: 0,
+                diagnostics_truncated: false,
+                diagnostics_complete: true,
+            },
+            extracted,
+        ));
+    }
     let tree = parse_tree(language, path, &file.text, Some(&control))?;
     let mut report = SymbolFileReport {
         path: path.to_string(),
@@ -604,15 +792,130 @@ fn inspect_file(
     }
 }
 
+/// Run census directly against the linked grammars. The benchmark CLI uses
+/// the verified projection pipeline for source languages requiring a helper.
 pub fn preflight_corpus_symbols(
     files: &BTreeMap<String, SourceFile>,
     options: &SymbolPreflightOptions<'_>,
 ) -> BenchResult<SymbolPreflight> {
-    let deadline = Instant::now()
-        .checked_add(options.timeout_total)
-        .ok_or_else(|| {
-            BenchError::Config("symbol total timeout exceeds clock range".to_string())
-        })?;
+    preflight_corpus_symbols_inner(files, options, None, Instant::now())
+}
+
+/// Explicit candidate admission through the same preflight and publication
+/// contract. The caller owns verification of the registry grammar and helper
+/// artifact manifest; this API never selects a candidate by default.
+pub fn preflight_corpus_symbols_with_candidate<F>(
+    files: &BTreeMap<String, SourceFile>,
+    options: &SymbolPreflightOptions<'_>,
+    candidate_grammar_identity: &str,
+    artifact_manifest_sha256: &str,
+    extract: &F,
+) -> BenchResult<SymbolPreflight>
+where
+    F: Fn(
+        &str,
+        &str,
+        Instant,
+        &dyn Fn() -> bool,
+    ) -> Result<CandidateSymbolInventory, SymbolExtractError>,
+{
+    preflight_corpus_symbols_with_candidate_inner(
+        files,
+        options,
+        candidate_grammar_identity,
+        artifact_manifest_sha256,
+        extract,
+        None,
+        Instant::now(),
+    )
+}
+
+pub(super) fn preflight_corpus_symbols_with_candidate_batch<F, B>(
+    files: &BTreeMap<String, SourceFile>,
+    options: &SymbolPreflightOptions<'_>,
+    candidate_grammar_identity: &str,
+    artifact_manifest_sha256: &str,
+    extract: &F,
+    prepare_batch: &B,
+    started: Instant,
+) -> BenchResult<SymbolPreflight>
+where
+    F: Fn(
+        &str,
+        &str,
+        Instant,
+        &dyn Fn() -> bool,
+    ) -> Result<CandidateSymbolInventory, SymbolExtractError>,
+    B: Fn(
+        &BTreeMap<String, SourceFile>,
+        &SymbolPreflightOptions<'_>,
+        Instant,
+    ) -> Result<
+        BTreeMap<String, Result<CandidateSymbolInventory, SymbolExtractError>>,
+        SymbolExtractError,
+    >,
+{
+    preflight_corpus_symbols_with_candidate_inner(
+        files,
+        options,
+        candidate_grammar_identity,
+        artifact_manifest_sha256,
+        extract,
+        Some(prepare_batch),
+        started,
+    )
+}
+
+fn preflight_corpus_symbols_with_candidate_inner<F>(
+    files: &BTreeMap<String, SourceFile>,
+    options: &SymbolPreflightOptions<'_>,
+    candidate_grammar_identity: &str,
+    artifact_manifest_sha256: &str,
+    extract: &F,
+    prepare_batch: Option<&CandidateBatch<'_>>,
+    started: Instant,
+) -> BenchResult<SymbolPreflight>
+where
+    F: Fn(
+        &str,
+        &str,
+        Instant,
+        &dyn Fn() -> bool,
+    ) -> Result<CandidateSymbolInventory, SymbolExtractError>,
+{
+    if !candidate_grammar_identity.starts_with("registry-")
+        || candidate_grammar_identity == SYMBOL_PRODUCER_GRAMMARS
+        || candidate_grammar_identity.len() > 4096
+        || artifact_manifest_sha256.len() != 64
+        || !artifact_manifest_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(BenchError::Config(
+            "candidate grammar or artifact manifest identity is invalid".into(),
+        ));
+    }
+    let grammar_identity = format!(
+        "{candidate_grammar_identity};fallback={CANDIDATE_FALLBACK_GRAMMARS};artifact-manifest-sha256={artifact_manifest_sha256}"
+    );
+    let candidate = CandidatePreflight {
+        grammar_identity: &grammar_identity,
+        manifest_sha256: artifact_manifest_sha256,
+        extract,
+        prepare_batch,
+    };
+    preflight_corpus_symbols_inner(files, options, Some(&candidate), started)
+}
+
+fn preflight_corpus_symbols_inner(
+    files: &BTreeMap<String, SourceFile>,
+    options: &SymbolPreflightOptions<'_>,
+    candidate: Option<&CandidatePreflight<'_>>,
+    started: Instant,
+) -> BenchResult<SymbolPreflight> {
+    let deadline = started.checked_add(options.timeout_total).ok_or_else(|| {
+        BenchError::Config("symbol total timeout exceeds clock range".to_string())
+    })?;
     // Validate every admitted identity before starting the parser census.
     for (path, file) in files {
         let _validated_path =
@@ -634,11 +937,19 @@ pub fn preflight_corpus_symbols(
             });
         }
     }
-    let policy = producer_policy(options);
+    let mut prepared = candidate
+        .and_then(|candidate| candidate.prepare_batch)
+        .map(|prepare| prepare(files, options, deadline))
+        .transpose()
+        .map_err(|error| BenchError::Protocol(format!("candidate batch failed: {error}")))?;
+    let policy = producer_policy(options, candidate);
     let mut report = SymbolPreflightReport {
         schema: "symbol-preflight-v1",
         producer_identity: SYMBOL_PRODUCER_IDENTITY,
-        grammar_identity: SYMBOL_PRODUCER_GRAMMARS,
+        grammar_identity: candidate.map_or_else(
+            || SYMBOL_PRODUCER_GRAMMARS.to_string(),
+            |value| value.grammar_identity.to_string(),
+        ),
         lockfile_sha256: sha256_hex(include_bytes!("../../../../Cargo.lock")),
         producer_policy_sha256: encode_hex(&policy)?,
         policy: options.into(),
@@ -657,6 +968,8 @@ pub fn preflight_corpus_symbols(
             options,
             deadline,
             options.max_symbols_total.saturating_sub(retained_symbols),
+            candidate,
+            prepared.as_mut().and_then(|rows| rows.remove(path)),
         ) {
             Ok(value) => value,
             Err(error) => (

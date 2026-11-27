@@ -22,19 +22,10 @@ use quanta_index_ipc::{
 };
 
 use crate::SdkError;
+use crate::diagnostic_attempt::DiagnosticAttemptSourceV1;
 
-/// Owned attempt scope returned by an explicitly injected diagnostic source.
-/// Dropping without `finish` represents an interrupted attempt.
-pub trait DiagnosticAttemptGuardV1: std::fmt::Debug + Send {
-    fn token(&self) -> DiagnosticAttemptTokenV1;
-    fn finish(self: Box<Self>, outcome: DiagnosticAttemptOutcomeV1);
-}
-
-/// Creates a fresh correlation token at each actual transport send boundary.
-/// Implementations own trace IDs and clocks; SDK callers do not synthesize IDs.
-pub trait DiagnosticAttemptSourceV1: std::fmt::Debug + Send + Sync {
-    fn begin_attempt(&self) -> Option<Box<dyn DiagnosticAttemptGuardV1>>;
-}
+#[cfg(test)]
+use crate::diagnostic_attempt::DiagnosticAttemptGuardV1;
 
 pub(crate) trait QueryTransport: Send + Sync {
     fn send(
@@ -83,6 +74,7 @@ pub(crate) trait ControlTransport: Send + Sync {
     ) -> Result<SearchPlaneControlIpcResponseEnvelope, SdkError> {
         send_with_attempt(request, source, false, |request| self.send(request))
     }
+
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +158,7 @@ impl ControlTransport for UdsControlTransport {
             self.inner.send_negotiated(plain, linked)
         })
     }
+
 }
 
 /// QI-SDK-01: typed ingest transport.
@@ -307,6 +300,7 @@ impl<'a> DiagnosticAttemptEnvelope for BorrowedAuxiliaryIngestIpcRequestEnvelope
         &self.payload
     }
 }
+
 
 fn send_with_attempt<Envelope, Response>(
     mut request: Envelope,

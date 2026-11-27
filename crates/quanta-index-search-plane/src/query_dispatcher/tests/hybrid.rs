@@ -32,8 +32,14 @@ fn go_file_candidate(
 ) -> quanta_index_contract::LexicalCandidate {
     let mut row = candidate(id, score);
     row.repo_relative_path = RepoRelativePath::new(path);
-    row.start_line = line;
-    row.end_line = line;
+    row.lines
+        .as_mut()
+        .expect("fixture row carries match lines")
+        .start_line = line;
+    row.lines
+        .as_mut()
+        .expect("fixture row carries match lines")
+        .end_line = line;
     row
 }
 
@@ -746,6 +752,7 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
@@ -942,6 +949,7 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
+
         | SearchPlaneQueryIpcResponse::Explain(_)
         | SearchPlaneQueryIpcResponse::Error(_)) => {
             return Err(format!("expected Hybrid response, got {other:?}").into());
@@ -1287,13 +1295,23 @@ fn go_test_trace_dispatch_ranks_files_without_chunk_fusion() -> TestResult {
         handler_lex.file_rank,
         handler_lex.chunk_rank,
         handler_lex.candidate.candidate_id.as_str(),
-        handler_lex.candidate.start_line,
+        handler_lex
+            .candidate
+            .lines
+            .as_ref()
+            .expect("fixture row carries match lines")
+            .start_line,
     ) != (1, 1, "shared-id", 42)
         || (
             handler_dense.file_rank,
             handler_dense.chunk_rank,
             handler_dense.candidate.candidate_id.as_str(),
-            handler_dense.candidate.start_line,
+            handler_dense
+                .candidate
+                .lines
+                .as_ref()
+                .expect("fixture row carries match lines")
+                .start_line,
         ) != (3, 3, "handler-dense", 41)
         || (
             helper_lex.file_rank,
@@ -1309,7 +1327,12 @@ fn go_test_trace_dispatch_ranks_files_without_chunk_fusion() -> TestResult {
             other_dense.file_rank,
             other_dense.chunk_rank,
             other_dense.candidate.candidate_id.as_str(),
-            other_dense.candidate.start_line,
+            other_dense
+                .candidate
+                .lines
+                .as_ref()
+                .expect("fixture row carries match lines")
+                .start_line,
         ) != (1, 1, "shared-id", 9)
         || other.lexical.is_some()
     {

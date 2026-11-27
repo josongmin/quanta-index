@@ -55,7 +55,7 @@ impl NativeDispatcher {
         Ok(())
     }
 
-    fn with_selected_protected_routes_v1<T>(
+    pub(super) fn with_selected_protected_routes_v1<T>(
         &self,
         budget: &mut WorkBudget,
         visit: impl FnOnce(
@@ -114,6 +114,34 @@ impl NativeDispatcher {
                         revision_id,
                         budget,
                     )
+            })?;
+        Ok(NativeIndexResponse::RootScopedView(
+            quanta_index_contract::native_protocol::NativeRootScopedViewV1 {
+                view,
+                root_nonce: quanta_index_core::index::Digest(nonce),
+                root_device: before.device,
+                root_inode: before.inode,
+            },
+        ))
+    }
+
+    pub(super) fn resolve_protected_source_view_v1(
+        &self,
+        repo_id: &quanta_index_contract::RepoId,
+        revision_id: &quanta_index_contract::RevisionId,
+        expected_view: quanta_index_contract::index::ViewRef,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeIndexResponse, IndexError> {
+        let (view, before, nonce) =
+            self.with_selected_protected_routes_v1(budget, |selected, routes, budget| {
+                self.catalog.resolve_selected_native_protected_source_view_v1(
+                    selected,
+                    routes,
+                    repo_id,
+                    revision_id,
+                    expected_view,
+                    budget,
+                )
             })?;
         Ok(NativeIndexResponse::RootScopedView(
             quanta_index_contract::native_protocol::NativeRootScopedViewV1 {

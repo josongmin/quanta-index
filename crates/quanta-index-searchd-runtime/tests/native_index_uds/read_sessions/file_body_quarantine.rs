@@ -105,6 +105,234 @@ fn selected_file_body_symlink_is_quarantined_across_restart() -> TestResult {
     assert_file_body_quarantine(FileBodyFault::Symlink)
 }
 
+#[test]
+fn damaged_source_record_is_quarantined_without_blaming_its_healthy_body() -> TestResult {
+    const NEEDLE: &str = "recorddamagewitness";
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let bind = || file_body_service(root.path(), &socket);
+    let writer = NativeServiceGuard::start(bind()?);
+    let client = NativeUdsClient::new(&socket);
+    let configured = create_text_workspace(&client)?;
+    let (selected, source) =
+        publish_file_body_owner(&client, configured, 2, 1, "src/record.rs", NEEDLE)?;
+    writer.stop()?;
+
+    let store_root = root.path().join("native-objects");
+    let store = FileObjectStore::open(&store_root)?;
+    let mut work = WorkBudget::with_request(work_limits(), budget());
+    let record = store.get(source, &mut work)?;
+    let body =
+        SourceRecordOwner::decode_json(&record.payload, &mut work, MemoryLifetime::Temporary)?
+            .bytes;
+    assert_eq!(store.get(body, &mut work)?.payload, NEEDLE.as_bytes());
+    let body_path = native_object_files::object_file(&store_root, body)?;
+    let body_wire = fs::read(&body_path)?;
+    drop(store);
+    let object = native_object_files::object_file(&store_root, source)?;
+    let original_bytes = fs::read(&object)?;
+    let original_permissions = fs::metadata(&object)?.permissions();
+
+    let service = bind()?;
+    let maintenance = service.maintenance_handle();
+    let running = NativeServiceGuard::start(service);
+    let mut damaged = original_bytes.clone();
+    *damaged.last_mut().ok_or("empty Source record object")? ^= 1;
+    let mut replacement =
+        tempfile::NamedTempFile::new_in(object.parent().ok_or("no object parent")?)?;
+    replacement.write_all(&damaged)?;
+    replacement
+        .as_file()
+        .set_permissions(original_permissions.clone())?;
+    let _replaced = replacement.persist(&object)?;
+    assert_eq!(
+        scrub_source_body(&maintenance, selected, owner(1))?,
+        Some(source)
+    );
+    assert_eq!(fs::read(body_path)?, body_wire);
+    let query = || {
+        client.search_text_preview(
+            ViewSelection::Exact(selected),
+            native_text_spec().instance,
+            native_text_request(NEEDLE, 2),
+            &budget(),
+        )
+    };
+    assert!(matches!(query(), Err(NativeUdsError::Refused(ref error))
+        if error.code == NativeIndexErrorCode::CorruptObject));
+    drop(maintenance);
+    running.stop()?;
+
+    fs::remove_file(&object)?;
+    fs::write(&object, original_bytes)?;
+    fs::set_permissions(&object, original_permissions)?;
+    let service = bind()?;
+    let maintenance = service.maintenance_handle();
+    let restarted = NativeServiceGuard::start(service);
+    assert!(matches!(query(), Err(NativeUdsError::Refused(ref error))
+        if error.code == NativeIndexErrorCode::CorruptObject));
+    assert_eq!(
+        scrub_source_body(&maintenance, selected, owner(1))?,
+        Some(source)
+    );
+    drop(maintenance);
+    restarted.stop()?;
+    Ok(())
+}
+
+#[test]
+fn bounded_source_scrub_continues_past_first_quarantine_on_the_same_cut() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let service = file_body_service(root.path(), &socket)?;
+    let maintenance = service.maintenance_handle();
+    let running = NativeServiceGuard::start(service);
+    let client = NativeUdsClient::new(&socket);
+    let configured = create_text_workspace(&client)?;
+    let (first, source) =
+        publish_file_body_owner(&client, configured, 2, 1, "src/a.rs", "firstbody")?;
+    let (selected, _) = publish_file_body_owner(&client, first, 3, 2, "src/b.rs", "secondbody")?;
+
+    let source_file =
+        native_object_files::object_file(&root.path().join("native-objects"), source)?;
+    let original = fs::read(&source_file)?;
+    let permissions = fs::metadata(&source_file)?.permissions();
+    let mut damaged = original;
+    *damaged.last_mut().ok_or("empty Source record")? ^= 1;
+    let mut replacement =
+        tempfile::NamedTempFile::new_in(source_file.parent().ok_or("no object parent")?)?;
+    replacement.write_all(&damaged)?;
+    replacement.as_file().set_permissions(permissions)?;
+    let _replaced = replacement.persist(&source_file)?;
+
+    let scrub_page = |after| -> Result<_, IndexError> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut work = WorkBudget::with_request(work_limits(), RequestBudgetV1::until(deadline));
+        loop {
+            match maintenance.scrub_source_body_page(selected, after, 1, &mut work) {
+                Err(IndexError::ResourceLimited)
+                    if work.first_denial().is_none()
+                        && work.usage() == WorkUsage::default()
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                result => return result,
+            }
+        }
+    };
+    let first_page = scrub_page(None)?;
+    assert_eq!((first_page.checked, first_page.damaged), (1, 1));
+    assert!(!first_page.previously_quarantined);
+    let cursor = first_page
+        .next
+        .ok_or("first scrub page has no continuation")?;
+
+    let mut foreign_work = WorkBudget::with_request(work_limits(), budget());
+    assert!(matches!(
+        maintenance.scrub_source_body_page(first, Some(cursor), 1, &mut foreign_work),
+        Err(IndexError::InvalidInput(_))
+    ));
+    let second_page = scrub_page(Some(cursor))?;
+    assert_eq!((second_page.checked, second_page.damaged), (1, 0));
+    assert!(second_page.previously_quarantined);
+    assert!(second_page.next.is_none());
+    let refused = client.search_text_preview(
+        ViewSelection::Exact(selected),
+        native_text_spec().instance,
+        native_text_request("secondbody", 2),
+        &budget(),
+    );
+    assert!(matches!(refused, Err(NativeUdsError::Refused(ref error))
+        if error.code == NativeIndexErrorCode::CorruptObject));
+    drop(maintenance);
+    running.stop()?;
+    Ok(())
+}
+
+#[test]
+fn durable_source_scrub_resumes_second_owner_after_service_restart() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let service = file_body_service(root.path(), &socket)?;
+    let maintenance = service.maintenance_handle();
+    let running = NativeServiceGuard::start(service);
+    let client = NativeUdsClient::new(&socket);
+    let configured = create_text_workspace(&client)?;
+    let (first, source) =
+        publish_file_body_owner(&client, configured, 2, 1, "src/a.rs", "firstbody")?;
+    let (selected, _) = publish_file_body_owner(&client, first, 3, 2, "src/b.rs", "secondbody")?;
+
+    let source_file =
+        native_object_files::object_file(&root.path().join("native-objects"), source)?;
+    let original = fs::read(&source_file)?;
+    let permissions = fs::metadata(&source_file)?.permissions();
+    let mut damaged = original;
+    *damaged.last_mut().ok_or("empty Source record")? ^= 1;
+    let mut replacement =
+        tempfile::NamedTempFile::new_in(source_file.parent().ok_or("no object parent")?)?;
+    replacement.write_all(&damaged)?;
+    replacement.as_file().set_permissions(permissions)?;
+    let _replaced = replacement.persist(&source_file)?;
+
+    let mut work = WorkBudget::with_request(work_limits(), budget());
+    maintenance.start_source_body_scrub_progress(selected, &mut work)?;
+    assert!(matches!(
+        maintenance.start_source_body_scrub_progress(
+            selected,
+            &mut WorkBudget::with_request(work_limits(), budget())
+        ),
+        Err(IndexError::Conflict)
+    ));
+    let first_page = maintenance
+        .scrub_source_body_progress_page(
+            selected,
+            1,
+            &mut WorkBudget::with_request(work_limits(), budget()),
+        )?
+        .ok_or("first durable scrub page is missing")?;
+    assert_eq!((first_page.checked, first_page.damaged), (1, 1));
+    assert!(first_page.next.is_some());
+    drop(maintenance);
+    running.stop()?;
+
+    let service = file_body_service(root.path(), &socket)?;
+    let maintenance = service.maintenance_handle();
+    let restarted = NativeServiceGuard::start(service);
+    let second_page = maintenance
+        .scrub_source_body_progress_page(
+            selected,
+            1,
+            &mut WorkBudget::with_request(work_limits(), budget()),
+        )?
+        .ok_or("second durable scrub page is missing")?;
+    assert_eq!((second_page.checked, second_page.damaged), (1, 0));
+    assert!(second_page.previously_quarantined);
+    assert!(second_page.next.is_none());
+    assert!(
+        maintenance
+            .scrub_source_body_progress_page(
+                selected,
+                1,
+                &mut WorkBudget::with_request(work_limits(), budget())
+            )?
+            .is_none()
+    );
+    let refused = client.search_text_preview(
+        ViewSelection::Exact(selected),
+        native_text_spec().instance,
+        native_text_request("secondbody", 2),
+        &budget(),
+    );
+    assert!(matches!(refused, Err(NativeUdsError::Refused(ref error))
+        if error.code == NativeIndexErrorCode::CorruptObject));
+    drop(maintenance);
+    restarted.stop()?;
+    Ok(())
+}
+
 fn assert_file_body_quarantine(fault: FileBodyFault) -> TestResult {
     const NEEDLE: &str = "filebodywitness";
     const PATH: &str = "src/filebody.rs";

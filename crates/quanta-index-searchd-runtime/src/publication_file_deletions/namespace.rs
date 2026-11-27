@@ -17,6 +17,8 @@ use super::{PendingOperation, PublicationFileDeletions, busy, contract};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Kind {
     Link,
+    #[cfg(feature = "legacy-semantic-adapter")]
+    CopyOverwrite,
     MoveOverwrite,
     SidecarMoveOverwrite,
     StagedMove,
@@ -156,6 +158,44 @@ impl PublicationFileDeletions {
             self.binder
                 .begin_link(from, to)
                 .map(|ticket| (Kind::Link, NamespaceOperation::Path(ticket)))
+        })
+    }
+
+    /// Retain both phases of an overwrite copy in the same namespace ticket.
+    #[cfg(feature = "legacy-semantic-adapter")]
+    pub(crate) fn begin_copy_overwrite(
+        self: &Arc<Self>,
+        from: &Path,
+        to: &Path,
+    ) -> Result<OwnedNamespaceTicket, CoreError> {
+        self.begin_namespace(&[Kind::CopyOverwrite], from, Some(to), || {
+            self.binder
+                .begin_copy_overwrite(from, to)
+                .map(|ticket| (Kind::CopyOverwrite, NamespaceOperation::Path(ticket)))
+        })
+    }
+
+    /// Stage object renames are regular-file operations even when a supplied
+    /// pathname happens to name a directory.
+    #[cfg(feature = "legacy-semantic-adapter")]
+    pub(crate) fn begin_file_move(
+        self: &Arc<Self>,
+        from: &Path,
+        to: &Path,
+        overwrite: bool,
+    ) -> Result<OwnedNamespaceTicket, CoreError> {
+        let kind = if overwrite {
+            Kind::MoveOverwrite
+        } else {
+            Kind::MoveCreate
+        };
+        self.begin_namespace(&[kind], from, Some(to), || {
+            let ticket = if overwrite {
+                self.binder.begin_move(from, to)?
+            } else {
+                self.binder.begin_move_if_absent(from, to)?
+            };
+            Ok((kind, NamespaceOperation::Path(ticket)))
         })
     }
 
@@ -369,6 +409,26 @@ impl PublicationFileDeletions {
         } else {
             reconcile_pending_namespace(self, &mut pending).map(|_changed| ())
         }
+    }
+
+    /// Reconcile mutations owned by this generation before inspecting its
+    /// namespace. A foreign operation keeps its original retry ticket.
+    #[cfg(any(test, feature = "legacy-semantic-adapter"))]
+    pub(crate) fn reconcile_pending_namespace_under(&self, scope: &Path) -> Result<(), CoreError> {
+        let scope = self.canonical_path(scope)?;
+        let mut pending = self.lock_pending()?;
+        let in_scope = match pending.as_ref() {
+            None => true,
+            Some(PendingOperation::Delete(prior)) => prior.path.starts_with(&scope),
+            Some(PendingOperation::Namespace(prior)) => {
+                prior.from.starts_with(&scope)
+                    && prior.to.as_ref().is_none_or(|to| to.starts_with(&scope))
+            }
+        };
+        if !in_scope {
+            return Err(busy(pending.as_ref()));
+        }
+        self.reconcile_pending(&mut pending)
     }
 
     /// Recover matching move or prior source cleanup without a new path probe.

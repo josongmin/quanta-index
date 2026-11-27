@@ -57,6 +57,288 @@ fn write_catalog(io: &NativeScratchIo, root: &Path, sql: &str) -> TestResult {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn retirement_precheck_returns_unknown_for_an_unadmitted_resume() -> TestResult {
+    use crate::{native::NativeRetirementAuthorityV2, native_product::retirement_approval_v2};
+    use quanta_index_contract::index::{
+        Digest, HistoryAppendV1, ObjectRef, RetiredProjectionPolicyRefV1, UpdateKind,
+        UpdateRequest, ViewRef,
+    };
+    use quanta_index_core::index::{IndexError, OWNED_WORK_PRODUCER, SubmitOutcome, WorkBudget};
+
+    let root = private_root()?;
+    let service = NativeIndexService::bind_with_registry(
+        root.path(),
+        &root.path().join("native.sock"),
+        limits(),
+        AdapterRegistry::new(),
+        &resources(),
+    )?;
+    // Exercise the Runtime gate with a real catalog using the non-Linux
+    // capability type. Installed Linux signature verification is upstream.
+    let retirement = NativeRetirementAuthorityV2 {
+        approval: retirement_approval_v2::VerifiedApprovalV2,
+        retired_projections: Vec::new(),
+        retired_instances: vec![fixture::spec().instance],
+        _index_memory: service.dispatcher.resources.reserve_response_memory(1)?,
+        policy_ref: RetiredProjectionPolicyRefV1 {
+            object: ObjectRef(Digest([1; 32])),
+            sha256: Digest([2; 32]),
+            identity_count: 1,
+        },
+    };
+    let mut budget = WorkBudget::with_request(limits(), RequestBudgetV1::unbounded());
+    let key = fixture::operation(1);
+    let reply = service.dispatcher.check_retired_request_v2(
+        &retirement,
+        &NativeIndexRequest::Resume(key),
+        &mut budget,
+    )?;
+    assert!(matches!(reply, Some(NativeIndexResponse::Submitted(reply))
+        if reply.operation == key && reply.payload == SubmitOutcome::Unknown(key)));
+
+    let reserved = fixture::operation(2);
+    let reserved = quanta_index_contract::index::OperationKey {
+        producer: OWNED_WORK_PRODUCER,
+        ..reserved
+    };
+    let rejected = service.dispatcher.check_retired_request_v2(
+        &retirement,
+        &NativeIndexRequest::Resume(reserved),
+        &mut budget,
+    );
+    assert!(matches!(rejected, Err(IndexError::InvalidInput(message))
+        if message == "reserved owned work producer"));
+    let cut = serde_json::from_value(serde_json::json!({
+        "generation": {"repo_id": "repo-a", "revision_id": "rev-a", "generation": 1},
+        "durable_epoch": 2,
+        "snapshot_digest": vec![7_u8; 32],
+        "replay_start": vec![8_u8; 32]
+    }))?;
+    let history = UpdateRequest {
+        operation: fixture::operation(3),
+        expected_view: ViewRef {
+            workspace: workspace(),
+            epoch: 1,
+            sequence: 0,
+            digest: Digest([0; 32]),
+        },
+        kind: UpdateKind::HistoryAppend(HistoryAppendV1 {
+            instance: fixture::spec().instance,
+            expected: cut,
+            input: ObjectRef(Digest([3; 32])),
+            profile: ObjectRef(Digest([4; 32])),
+        }),
+    };
+    let denied = service.dispatcher.check_retired_request_v2(
+        &retirement,
+        &NativeIndexRequest::Submit(history),
+        &mut budget,
+    );
+    assert!(matches!(denied, Err(IndexError::InvalidInput(message))
+        if message == "retired projection or instance identity"));
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn retired_source_terminal_replays_after_request_retirement_and_checks_published_profile()
+-> TestResult {
+    use crate::{native::NativeRetirementAuthorityV2, native_product::retirement_approval_v2};
+    use quanta_index_contract::index::{
+        Digest, ObjectRef, ProjectionId, RetiredProjectionPolicyRefV1, SourceOperationMode,
+    };
+    use quanta_index_core::index::{
+        IndexError, WorkBudget, effort::ReservationGuard, ports::OperationJournalPort,
+    };
+
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let (entered, _observed) = mpsc::sync_channel(2);
+    let gate = Arc::new(ProviderGate {
+        entered,
+        cancellation_notice: None,
+        released: Mutex::new(true),
+        wake: Condvar::new(),
+        calls: AtomicUsize::new(0),
+    });
+    let service = NativeIndexService::bind_with_registry(
+        root.path(),
+        &socket,
+        limits(),
+        registry(&gate)?,
+        &resources(),
+    )?;
+    let dispatcher = Arc::clone(&service.dispatcher);
+    let io = Arc::clone(&dispatcher.io);
+    let shutdown = service.shutdown_handle();
+    let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+    let runner = thread::spawn(move || {
+        let _sent = finished_tx.send(service.run(Duration::from_millis(100)));
+    });
+    let mut guard = ServiceThreadGuard {
+        shutdown,
+        runner: Some(runner),
+    };
+    let client = NativeUdsClient::new(socket);
+    let configured = configure(&client)?;
+    let published = advance(&client, configured, 2, 1)?;
+    let key = fixture::operation(2);
+    let saved = dispatcher.catalog.operation_request(
+        key,
+        &WorkBudget::with_request(limits(), RequestBudgetV1::unbounded()),
+    )?;
+    assert_eq!(saved.source_mode, SourceOperationMode::Advance);
+
+    let request_hex: String = saved
+        .request
+        .0
+        .0
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    write_catalog(
+        &io,
+        root.path(),
+        &format!(
+            "DELETE FROM native_operation_object_v1 WHERE object=x'{request_hex}';
+         DELETE FROM native_object_edge_v1 WHERE parent=x'{request_hex}';
+         DELETE FROM native_object_v1 WHERE object=x'{request_hex}';"
+        ),
+    )?;
+    std::fs::remove_file(
+        root.path()
+            .join("native-objects")
+            .join("objects")
+            .join(&request_hex[..2])
+            .join(&request_hex),
+    )?;
+
+    let retirement = |retired_instances| -> TestResult<NativeRetirementAuthorityV2> {
+        Ok(NativeRetirementAuthorityV2 {
+            approval: retirement_approval_v2::VerifiedApprovalV2,
+            retired_projections: vec![ProjectionId([99; 16])],
+            retired_instances,
+            _index_memory: dispatcher.resources.reserve_response_memory(1)?,
+            policy_ref: RetiredProjectionPolicyRefV1 {
+                object: ObjectRef(Digest([1; 32])),
+                sha256: Digest([2; 32]),
+                identity_count: 1,
+            },
+        })
+    };
+    let reservation = ReservationGuard::try_acquire(
+        Arc::clone(&dispatcher.control_scheduler),
+        dispatcher.control_need,
+    )
+    .ok_or("control admission refused")?;
+    let mut work = WorkBudget::with_request(limits(), RequestBudgetV1::unbounded());
+    work.bind_memory_scope(reservation.memory_scope());
+    let permitted = dispatcher.check_retired_request_v2(
+        &retirement(Vec::new())?,
+        &NativeIndexRequest::Resume(key),
+        &mut work,
+    )?;
+    assert!(
+        matches!(permitted, Some(NativeIndexResponse::Submitted(reply))
+        if reply.operation == key && reply.payload == quanta_index_contract::index::SubmitOutcome::Terminal(
+            quanta_index_contract::index::OperationStatus::Published(published)
+        ))
+    );
+    let denied = dispatcher.check_retired_request_v2(
+        &retirement(vec![fixture::spec().instance])?,
+        &NativeIndexRequest::Resume(key),
+        &mut work,
+    );
+    assert!(matches!(denied, Err(IndexError::InvalidInput(message))
+        if message == "retired projection or instance identity"));
+
+    // A refused standalone History request also retains its exact target
+    // instance after the request body is gone. The refusal published no view.
+    let history_key = fixture::operation(3);
+    let ingress = client.begin_input(history_key, &RequestBudgetV1::unbounded())?;
+    let input = client.stage_projection_output_with_children(
+        ingress,
+        b"{}",
+        &[],
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let profile = client.read_view(
+        quanta_index_contract::index::ViewSelection::Exact(published),
+        &RequestBudgetV1::unbounded(),
+    )?.profile;
+    let cut = serde_json::from_value(serde_json::json!({
+        "generation": {"repo_id": "repo-a", "revision_id": "rev-a", "generation": 1},
+        "durable_epoch": 2,
+        "snapshot_digest": vec![7_u8; 32],
+        "replay_start": vec![8_u8; 32]
+    }))?;
+    let outcome = client.submit(
+        quanta_index_contract::index::UpdateRequest {
+            operation: history_key,
+            expected_view: published,
+            kind: quanta_index_contract::index::UpdateKind::HistoryAppend(
+                quanta_index_contract::index::HistoryAppendV1 {
+                    instance: fixture::spec().instance,
+                    expected: cut,
+                    input,
+                    profile,
+                },
+            ),
+        },
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let quanta_index_contract::index::SubmitOutcome::Terminal(history_status) = outcome else {
+        return Err("standalone History refusal was not terminal".into());
+    };
+    assert!(matches!(history_status, quanta_index_contract::index::OperationStatus::Refused(_)));
+    assert_eq!(
+        dispatcher.catalog.authenticated_terminal_history_request_v1(
+            history_key, &history_status, &mut work,
+        )?,
+        Some(fixture::spec().instance)
+    );
+    let saved_history = dispatcher.catalog.operation_request(history_key, &work)?;
+    let history_hex: String = saved_history.request.0.0.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    write_catalog(
+        &io,
+        root.path(),
+        &format!(
+            "DELETE FROM native_operation_object_v1 WHERE object=x'{history_hex}';
+             DELETE FROM native_object_edge_v1 WHERE parent=x'{history_hex}';
+             DELETE FROM native_object_v1 WHERE object=x'{history_hex}';"
+        ),
+    )?;
+    std::fs::remove_file(
+        root.path().join("native-objects").join("objects")
+            .join(&history_hex[..2]).join(&history_hex),
+    )?;
+    let replay = dispatcher.check_retired_request_v2(
+        &retirement(Vec::new())?,
+        &NativeIndexRequest::Resume(history_key),
+        &mut work,
+    )?;
+    assert!(matches!(replay, Some(NativeIndexResponse::Submitted(reply))
+        if reply.operation == history_key && reply.payload == quanta_index_contract::index::SubmitOutcome::Terminal(history_status)));
+    let denied = dispatcher.check_retired_request_v2(
+        &retirement(vec![fixture::spec().instance])?,
+        &NativeIndexRequest::Resume(history_key),
+        &mut work,
+    );
+    assert!(matches!(denied, Err(IndexError::InvalidInput(message))
+        if message == "retired projection or instance identity"));
+    drop(work);
+    drop(reservation);
+    drop(io);
+    drop(dispatcher);
+    guard.stop()?;
+    finished_rx.recv_timeout(Duration::from_secs(5))??;
+    Ok(())
+}
+
 #[test]
 fn owned_renewal_storage_failure_returns_error_after_provider_quiescence() -> TestResult {
     let root = private_root()?;

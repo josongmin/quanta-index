@@ -1,25 +1,15 @@
 //! File-store reads retain the actual FD under the common physical authority.
 
-use std::{
-    fmt,
-    fs::{File, OpenOptions},
-    os::unix::fs::OpenOptionsExt as _,
-    path::Path,
-    sync::Arc,
-};
+use std::{fmt, fs::File, path::Path, sync::Arc};
 
 use crate::owned_fd_close::close_owned_file;
+use crate::publication_file_capacity::{InodeObservation, NativeReaderLease, PublicationFileCapacity};
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::{
     CoreError,
     index::{
         IndexError, MemoryLease, MemoryLifetime, ObjectReadFile, ObjectReadIoPort, WorkBudget,
     },
-};
-use rustix::fs::OFlags;
-
-use crate::publication_file_capacity::{
-    InodeObservation, NativeReaderLease, PublicationFileCapacity,
 };
 
 #[derive(Clone)]
@@ -39,6 +29,30 @@ impl NativeObjectReadIo {
     #[must_use]
     pub fn new(common: Arc<PublicationFileCapacity>) -> Self {
         Self { common }
+    }
+
+    fn open_retained(
+        &self,
+        path: &Path,
+        expected: Option<InodeObservation>,
+        budget: &mut WorkBudget,
+    ) -> Result<Box<dyn ObjectReadFile>, IndexError> {
+        let memory = budget.reserve_memory(read_file_memory_bytes()?, MemoryLifetime::Temporary)?;
+        let mut opening = self
+            .common
+            .begin_native_reader_open_with_expected(path, expected)
+            .map_err(|error| {
+                index_error_at(&error, budget, "object_read.begin_native_reader_open")
+            })?;
+        let (file, reader) = opening
+            .open_file()
+            .map_err(|error| index_error_at(&error, budget, "object_read.opened_witness"))?;
+        Ok(Box::new(ReadFile {
+            file: Some(file),
+            reader: Some(reader),
+            common: Arc::clone(&self.common),
+            _memory: memory,
+        }))
     }
 }
 
@@ -65,10 +79,7 @@ impl Drop for ReadFile {
                 return;
             }
             if let Some(reader) = self.reader.take()
-                && reader
-                    .retire()
-                    .and_then(|()| self.common.sweep_retired())
-                    .is_err()
+                && reader.retire_and_sweep().is_err()
             {
                 self.common.mark_close_unwitnessed();
             }
@@ -109,6 +120,7 @@ fn reader_path_corruption(error: &CoreError) -> bool {
         .any(|expected| *errno == expected.raw_os_error()),
         CoreError::InvalidContract(message) => [
             "anchored entry is not a regular file",
+            "owned FD is not a regular file",
             "native reader pathname absent",
             "native reader inode absent from sealed authority",
             "native pin witness and anchored path differ",
@@ -157,55 +169,17 @@ impl ObjectReadIoPort for NativeObjectReadIo {
         path: &Path,
         budget: &mut WorkBudget,
     ) -> Result<Box<dyn ObjectReadFile>, IndexError> {
-        let memory = budget.reserve_memory(read_file_memory_bytes()?, MemoryLifetime::Temporary)?;
-        let mut opening = self
-            .common
-            .begin_native_reader_open(path)
-            .map_err(|error| {
-                index_error_at(&error, budget, "object_read.begin_native_reader_open")
-            })?;
-        let nofollow = i32::try_from(OFlags::NOFOLLOW.bits())
-            .map_err(|error| IndexError::Storage(format!("object reader nofollow: {error}")))?;
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(nofollow)
-            .open(path)
-            .map_err(|error| {
-                if matches!(
-                    error.raw_os_error(),
-                    Some(errno)
-                        if [
-                            rustix::io::Errno::NOENT,
-                            rustix::io::Errno::NOTDIR,
-                            rustix::io::Errno::LOOP,
-                        ]
-                        .iter()
-                        .any(|expected| errno == expected.raw_os_error())
-                ) {
-                    IndexError::CorruptObject(format!(
-                        "referenced object is absent or not a regular file: {error}"
-                    ))
-                } else {
-                    IndexError::Storage(format!("open admitted object reader: {error}"))
-                }
-            })?;
-        let admitted = InodeObservation::from_file(&file)
-            .and_then(|observed| opening.opened_witness(observed));
-        let reader = match admitted {
-            Ok(reader) => reader,
-            Err(error) => {
-                if close_owned_file(file).is_err() {
-                    self.common.mark_close_unwitnessed();
-                }
-                return Err(index_error_at(&error, budget, "object_read.opened_witness"));
-            }
-        };
-        Ok(Box::new(ReadFile {
-            file: Some(file),
-            reader: Some(reader),
-            common: Arc::clone(&self.common),
-            _memory: memory,
-        }))
+        self.open_retained(path, None, budget)
+    }
+
+    fn open_after_path_metadata(
+        &self,
+        path: &Path,
+        expected: &std::fs::Metadata,
+        budget: &mut WorkBudget,
+    ) -> Result<Box<dyn ObjectReadFile>, IndexError> {
+        let expected = InodeObservation::from_metadata(expected).map_err(|error| index_error(&error))?;
+        self.open_retained(path, Some(expected), budget)
     }
 }
 
@@ -215,7 +189,12 @@ mod tests {
     use crate::publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity};
     use quanta_index_core::{RequestBudgetV1, publication_capacity::PublicationCapacity};
     use quanta_index_searchd::app::runtime::StateRootLease;
-    use std::{fs, io::Read as _, os::unix::fs::PermissionsExt as _, path::PathBuf};
+    use std::{
+        fs::{self, OpenOptions},
+        io::Read as _,
+        os::unix::fs::PermissionsExt as _,
+        path::PathBuf,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
     type Fixture = (
@@ -391,6 +370,160 @@ mod tests {
             capacity.snapshot()?.used_bytes == after.used_bytes,
             "reader cleanup refunded twice",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_opening_reservation_transfers_to_one_pin() -> TestResult {
+        let (_directory, path, _capacity, common) = fixture()?;
+        let mut opening = common.begin_native_reader_open(&path)?;
+        let (file, reader) = opening.open_file()?;
+        let observed = InodeObservation::from_file(&file)?;
+        require(
+            matches!(
+                opening.opened_witness(observed),
+                Err(CoreError::InvalidContract(message))
+                    if message == "publication file capacity: native reader opening already finished"
+            ),
+            "completed opening admitted a second pin or damaged the opening ledger",
+        )?;
+        let io = NativeObjectReadIo::new(Arc::clone(&common));
+        require(
+            matches!(
+                io.open(&path, &mut budget()?),
+                Err(IndexError::ResourceLimited)
+            ),
+            "opening-to-pin transfer lost the single admitted handle",
+        )?;
+        close_owned_file(file)?;
+        reader.retire_and_sweep()?;
+        drop(io.open(&path, &mut budget()?)?);
+        Ok(())
+    }
+
+    #[test]
+    fn native_object_open_rejects_stale_path_metadata_and_releases_the_slot() -> TestResult {
+        let (_directory, path, _capacity, common) = fixture()?;
+        let io = NativeObjectReadIo::new(common);
+        let retained = path.with_extension("retained");
+        let replaced = path.with_extension("replaced");
+        fs::rename(&path, &retained)?;
+        fs::write(&path, b"replaced-bytes")?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        let stale = fs::symlink_metadata(&path)?;
+        fs::rename(&path, &replaced)?;
+        fs::rename(&retained, &path)?;
+
+        require(
+            matches!(
+                io.open_after_path_metadata(&path, &stale, &mut budget()?),
+                Err(IndexError::CorruptObject(_))
+            ),
+            "stale pathname metadata admitted a different retained inode",
+        )?;
+        let current = fs::symlink_metadata(&path)?;
+        let owner = io.open_after_path_metadata(&path, &current, &mut budget()?)?;
+        let mut bytes = [0; 14];
+        owner.file()?.read_exact(&mut bytes)?;
+        require(
+            bytes == *b"physical-bytes",
+            "the same reader slot failed to reopen the retained inode",
+        )
+    }
+
+    #[test]
+    fn owned_reader_opening_and_pin_share_the_native_ceiling() -> TestResult {
+        let (_directory, path, _capacity, common) = fixture()?;
+        let io = NativeObjectReadIo::new(Arc::clone(&common));
+        let opening = common.begin_reader_open(&path)?;
+        require(
+            matches!(
+                io.open(&path, &mut budget()?),
+                Err(IndexError::ResourceLimited)
+            ),
+            "owned opening failed to reserve the only reader slot",
+        )?;
+        let reader = opening.opened_owned(File::open(&path)?)?;
+        require(
+            matches!(
+                io.open(&path, &mut budget()?),
+                Err(IndexError::ResourceLimited)
+            ),
+            "owned opening-to-pin transfer released the occupied slot",
+        )?;
+        reader.retire()?;
+        drop(io.open(&path, &mut budget()?)?);
+        Ok(())
+    }
+
+    #[test]
+    fn native_opening_rejects_leaf_replaced_by_fifo() -> TestResult {
+        let (_directory, path, _capacity, common) = fixture()?;
+        let io = NativeObjectReadIo::new(Arc::clone(&common));
+        let initial = io.open(&path, &mut budget()?)?;
+        let flags = rustix::fs::fcntl_getfl(initial.file()?)?;
+        drop(initial);
+        require(
+            flags.contains(rustix::fs::OFlags::NONBLOCK),
+            "object reader can block on a substituted FIFO",
+        )?;
+
+        let mut opening = common.begin_native_reader_open(&path)?;
+        let original = path.with_extension("original");
+        fs::rename(&path, &original)?;
+        require(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()?
+                .success(),
+            "mkfifo fixture setup failed",
+        )?;
+        match opening.open_file() {
+            Err(error) if matches!(index_error(&error), IndexError::CorruptObject(_)) => {}
+            Err(error) => return Err(error.into()),
+            Ok((file, reader)) => {
+                close_owned_file(file)?;
+                reader.retire_and_sweep()?;
+                return Err(
+                    std::io::Error::other("object reader admitted a substituted FIFO").into(),
+                );
+            }
+        }
+        drop(opening);
+        fs::remove_file(&path)?;
+        fs::rename(original, &path)?;
+        drop(io.open(&path, &mut budget()?)?);
+        Ok(())
+    }
+
+    #[test]
+    fn native_opening_rechecks_root_lock_before_pin() -> TestResult {
+        use quanta_index_searchd::app::state_format::STATE_ROOT_LEASE_FILE_NAME;
+
+        let (_directory, path, _capacity, common) = fixture()?;
+        let root = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("fixture requires a state root"))?;
+        let lock = root.join(STATE_ROOT_LEASE_FILE_NAME);
+        let mut opening = common.begin_native_reader_open(&path)?;
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o640))?;
+        let outcome = opening.open_file();
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o600))?;
+        match outcome {
+            Err(CoreError::InvalidContract(message))
+                if message.contains("held lock entry identity or security changed") => {}
+            Err(error) => return Err(error.into()),
+            Ok((file, reader)) => {
+                close_owned_file(file)?;
+                reader.retire_and_sweep()?;
+                return Err(
+                    std::io::Error::other("object reader pinned under an unsafe lock").into(),
+                );
+            }
+        }
+        drop(opening);
+        let io = NativeObjectReadIo::new(common);
+        drop(io.open(&path, &mut budget()?)?);
         Ok(())
     }
 

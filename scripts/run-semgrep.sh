@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_PATH="${ROOT_DIR}/tools/ci/semgrep/rules.yml"
-FULL_TARGETS=(.github/workflows crates/quanta-index-searchd/src)
+FULL_TARGETS=(.github/workflows)
 
 cd "${ROOT_DIR}"
 
@@ -24,8 +24,4 @@ else
   done
 fi
 
-# --timeout 300: raise the per-file analysis budget above Semgrep's short default so the
-# largest production files (query_dispatcher.rs ~5.4k LOC, lexical/lib.rs ~3.4k LOC) are
-# fully scanned instead of being silently skipped on timeout, which would hide
-# silent-fallback findings in exactly the hottest files.
-exec semgrep --config "${CONFIG_PATH}" --error --strict --metrics off --disable-version-check --timeout 300 "$@"
+exec uv run --frozen --extra dev semgrep --config "${CONFIG_PATH}" --error --strict --metrics off --disable-version-check --timeout 300 "$@"

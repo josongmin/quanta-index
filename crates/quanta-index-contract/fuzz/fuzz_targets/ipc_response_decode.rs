@@ -14,9 +14,9 @@ use libfuzzer_sys::fuzz_target;
 
 use quanta_index_contract::{
     BatchPublishReceipt, GenerationSnapshot, GenerationStatusReport, HybridQueryResponse,
-    HybridSeedQueryResponse, RepoMapTerminalReceiptV2,
-    SearchPlaneControlIpcResponse, SearchPlaneControlIpcResponseEnvelope,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcResponse,
+    HybridSeedQueryResponse, RepoMapTerminalReceiptV2, SearchPlaneControlIpcResponse,
+    SearchPlaneControlIpcResponseEnvelope, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneIpcError, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,

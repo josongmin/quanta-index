@@ -83,7 +83,14 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_and_explain_truth() -> Te
         || lexical_select_content_match
             .results
             .iter()
-            .any(|candidate| !candidate.snippet.contains("sphinx"))
+            .any(|candidate| {
+                !candidate
+                    .excerpt
+                    .as_ref()
+                    .expect("fixture row carries a match excerpt")
+                    .snippet
+                    .contains("sphinx")
+            })
     {
         return Err(format!(
             "unexpected select:content.match lexical response: {lexical_select_content_match:?}"
@@ -143,7 +150,14 @@ fn sdk_search_frontdoor_routes_lexical_semantic_hybrid_and_explain_truth() -> Te
         || lexical_native_select_content_match
             .results
             .iter()
-            .any(|candidate| !candidate.snippet.contains("sphinx"))
+            .any(|candidate| {
+                !candidate
+                    .excerpt
+                    .as_ref()
+                    .expect("fixture row carries a match excerpt")
+                    .snippet
+                    .contains("sphinx")
+            })
     {
         return Err(format!(
             "unexpected native select:content.match lexical response: \

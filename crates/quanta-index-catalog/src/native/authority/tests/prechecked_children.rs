@@ -107,11 +107,11 @@ fn begin_registration_reads(catalog: &SqliteCatalog) -> TestResult {
     RESERVATION_PROBES.with(|counter| counter.set((0, 0, 0)));
     FENCE_READS.with(|counter| counter.set(0));
     FENCE_WRITES.with(|counter| counter.set(0));
-    let guard = catalog.lock().map_err(|error| error.to_string())?;
+    let mut guard = catalog.lock().map_err(|error| error.to_string())?;
     guard.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(observe_registration_reads),
-    );
+    )?;
     drop(guard);
     Ok(())
 }
@@ -119,8 +119,8 @@ fn begin_registration_reads(catalog: &SqliteCatalog) -> TestResult {
 fn end_registration_reads(
     catalog: &SqliteCatalog,
 ) -> Result<(u64, u64, u64, u64), Box<dyn std::error::Error>> {
-    let guard = catalog.lock().map_err(|error| error.to_string())?;
-    guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+    guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
     drop(guard);
     Ok(REGISTRATION_READS.with(std::cell::Cell::get))
 }
@@ -191,11 +191,11 @@ fn ingress_internal_child_avoids_gc_queue_under_durable_intent() -> TestResult {
 
     GC_QUEUE_WRITES.with(|counter| counter.set((0, 0)));
     {
-        let guard = catalog.lock().map_err(|error| error.to_string())?;
+        let mut guard = catalog.lock().map_err(|error| error.to_string())?;
         guard.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
             Some(observe_gc_queue_writes),
-        );
+        )?;
     }
     catalog.reserve_managed(scope, &batch, &mut admission_budget())?;
     let first_writes = GC_QUEUE_WRITES.with(std::cell::Cell::get);
@@ -203,8 +203,8 @@ fn ingress_internal_child_avoids_gc_queue_under_durable_intent() -> TestResult {
     catalog.reserve_managed(scope, &batch, &mut admission_budget())?;
     let replay_writes = GC_QUEUE_WRITES.with(std::cell::Cell::get);
     {
-        let guard = catalog.lock().map_err(|error| error.to_string())?;
-        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        let mut guard = catalog.lock().map_err(|error| error.to_string())?;
+        guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
     }
     // Intent custody already protects both objects. Initial and replayed
     // reservation must not create work for GC to dequeue with another COMMIT.
@@ -1218,7 +1218,7 @@ fn fence_sequence_preserves_exact_scalar_order_and_one_final_update() -> TestRes
     guard.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(observe_registration_reads),
-    );
+    )?;
     {
         let tx = begin(&mut guard)?;
         fence_counter::ReservationSequence::run(&tx, 256, &mut work, |sequence, budget| {
@@ -1249,7 +1249,7 @@ fn fence_sequence_preserves_exact_scalar_order_and_one_final_update() -> TestRes
         check_eq!(FENCE_WRITES.with(std::cell::Cell::get), 256);
         tx.rollback()?;
     }
-    guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None::<fn(rusqlite::trace::TraceEvent<'_>)>)?;
     check_eq!(actual, scalar);
     check_eq!(actual.first().copied(), Some(u64::try_from(start)?));
     check_eq!(
