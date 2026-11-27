@@ -283,6 +283,15 @@ fn assert_selected_native_source_export_v1(
     use sha2::{Digest as _, Sha256};
     use std::{os::unix::fs::PermissionsExt as _, process::Command};
 
+    // The stopped in-process writer did not run the daemon's umask setup.
+    let catalog_name = quanta_index_catalog::CATALOG_FILE_NAME;
+    let catalog = quanta_index_catalog::catalog_dir(root).join(catalog_name);
+    let wal = catalog.with_file_name(format!("{catalog_name}-wal"));
+    std::fs::set_permissions(catalog, std::fs::Permissions::from_mode(0o600))?;
+    if wal.try_exists()? {
+        std::fs::set_permissions(wal, std::fs::Permissions::from_mode(0o600))?;
+    }
+
     let controls = private_root()?;
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
     let config = controls.path().join("old-native-config.json");
