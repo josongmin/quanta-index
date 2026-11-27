@@ -2292,6 +2292,7 @@ pub fn verify_native_boot_current_candidate(
 
 /// Visit one workspace's charged current head under the exact selected BOOT.
 /// The callback cannot outlive this existing-only Catalog read transaction.
+/// Installation callers prove quiescence separately over their full route set.
 pub fn visit_native_boot_scope_current_view_v1<T>(
     state_root: &Path,
     io: &dyn CatalogReadOnlyIoAdmission,
@@ -2321,9 +2322,6 @@ pub fn visit_native_boot_scope_current_view_v1<T>(
                 return Err(IndexError::Conflict);
             }
             let current = retention::charged_current_view(connection, workspace, budget)?;
-            if let Some(current) = current.as_ref() {
-                check_quiescent_rows(connection, workspace, current.identity, budget)?;
-            }
             visit(current.as_ref(), budget)
         },
     )

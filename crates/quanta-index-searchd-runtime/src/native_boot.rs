@@ -499,9 +499,7 @@ fn authenticate_with_legacy_history_v1(
             manifest.publication.identity.workspace,
             budget,
             |current, budget| {
-                let Some(current) = current else {
-                    return Ok(());
-                };
+                let current = current.ok_or(IndexError::SnapshotUnavailable)?;
                 let current_profile = reader.get(current.profile, budget)?;
                 let Some(instance) =
                     quanta_index_kernel::verify_native_boot_current_tree_profile_v20(

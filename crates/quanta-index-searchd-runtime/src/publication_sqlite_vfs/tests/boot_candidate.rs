@@ -5,6 +5,7 @@ use quanta_index_catalog::{
     catalog_dir, verify_native_boot_candidate, verify_native_boot_current_candidate,
     verify_native_boot_scope_selected_view_v1,
     verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
+    visit_native_boot_scope_current_view_v1,
 };
 use quanta_index_core::index::ports::{
     CatalogExactHistoryPort as _, CatalogGenesisPort as _, CatalogPublicationPort as _,
@@ -72,6 +73,39 @@ fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> Tes
         "current scope without a selected view was accepted",
     )?;
     require(files(&fixture.root)? == before, "scope read changed Catalog bytes")?;
+    fixture.vfs.drain_retirements()?;
+    let catalog = quanta_index_catalog::SqliteCatalog::open(
+        &fixture.root,
+        Duration::from_millis(100),
+    )?;
+    let _ingress = catalog.open_ingress(key(36))?;
+    drop(catalog);
+    let with_ingress = files(&fixture.root)?;
+    let live_head = visit_native_boot_scope_current_view_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        selected,
+        boot.identity.workspace,
+        &mut work,
+        |current, _| Ok(current.map(|view| view.identity)),
+    )?;
+    require(
+        live_head == Some(boot.identity),
+        "live head inspection requires pending ingress to be discarded",
+    )?;
+    require(
+        matches!(
+            verify_native_boot_current_candidate(
+                &fixture.root, fixture.vfs.as_ref(), key(35), &mut read_budget()?,
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "candidate verification accepted pending ingress",
+    )?;
+    require(
+        files(&fixture.root)? == with_ingress,
+        "live scope read did not preserve pending ingress",
+    )?;
     fixture.vfs.drain_retirements()?;
     Ok(())
 }
