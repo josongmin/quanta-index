@@ -2140,7 +2140,6 @@ mod tests {
             let wire = json!({
                 "request_id": 12,
                 "payload": {"kind": legacy_kind, "payload": {}},
-                "diagnostic_attempt": DiagnosticAttemptFieldV1::Absent,
             });
             let mut old_cbor = Vec::new();
             ciborium::ser::into_writer(&wire, &mut old_cbor).expect("legacy fixture encodes");
@@ -2180,7 +2179,6 @@ mod tests {
         let wire = json!({
             "request_id": 12,
             "payload": {"kind": "RepoMapQuery", "payload": serde_json::to_value(old_request).expect("old request encodes")},
-            "diagnostic_attempt": DiagnosticAttemptFieldV1::Absent,
         });
         let mut old_cbor = Vec::new();
         ciborium::ser::into_writer(&wire, &mut old_cbor).expect("legacy fixture encodes");

@@ -430,7 +430,7 @@ impl NativeRepoMapResultRef<'_> {
     }
 }
 
-impl super::super::NativeIndexResponse {
+impl crate::native_protocol::NativeIndexResponse {
     /// Serialize the canonical result without copying its retained hit buffers.
     pub fn serialize_repomap_ranked_ref<S: Serializer>(
         result: &NativeRepoMapResultRef<'_>,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::index::{CollectionId, Digest, IndexInstanceId, SlotId, TenantId, WorktreeId};
+use crate::index::{CollectionId, Digest, SlotId, TenantId, WorktreeId};
 
 fn fixture() -> Result<NativeRootScopedViewV1, Box<dyn std::error::Error>> {
     let mut view = CatalogView {

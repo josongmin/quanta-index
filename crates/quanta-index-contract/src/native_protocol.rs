@@ -52,7 +52,7 @@ mod stub;
 mod stub_certificate;
 mod stub_schema;
 #[cfg(test)]
-use graph::ranking::NativeRepoMapQuery;
+use graph::NativeRepoMapQuery;
 pub use graph::{
     GraphEdge, GraphNode, GraphOwnerOutput, GraphProjectionRow, MAX_NATIVE_GRAPH_EDGES,
     MAX_NATIVE_GRAPH_ITEMS, MAX_NATIVE_GRAPH_OUTPUT_BYTES, MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2,
