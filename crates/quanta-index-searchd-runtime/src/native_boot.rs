@@ -1378,9 +1378,14 @@ pub(super) fn execute(
                     // once from the receipt snapshot under the same root lease.
                     let writes_selection = writes_native_selection(command.mode);
                     if writes_selection {
-                        // A mutable selection cannot preserve a presealed Source route.
-                        // Refuse before the ordinary Catalog writer drops that custody.
-                        if manifest.protected_source_routes.is_some() {
+                        // Plain Select cannot preserve a presealed Source route or a
+                        // selected retirement policy. Refuse before the ordinary
+                        // Catalog writer drops that custody. An explicit candidate
+                        // selection may retain the policy it names.
+                        if manifest.protected_source_routes.is_some()
+                            || (matches!(command.mode, NativeCommandModeV1::Select)
+                                && manifest.retired_projection_policy.is_some())
+                        {
                             return Err(IndexError::DigestConflict.into());
                         }
                         authenticate(
