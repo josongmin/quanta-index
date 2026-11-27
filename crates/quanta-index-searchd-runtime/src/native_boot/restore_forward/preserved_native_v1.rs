@@ -592,16 +592,15 @@ pub(super) fn verify_preserved_native_v1(
                         return Err(IndexError::DigestConflict.into());
                     }
                 }
-                let witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
+                // Validate the old Catalog rows without reading synthetic snapshot
+                // objects that are staged only in the candidate root.
+                let _witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
                     &previous.selected_config_v1().state_root,
                     previous.catalog_io_v1(),
                     old_manifest,
                     old_routes,
                     budget,
                 )?;
-                for reference in witness.object_references_v1() {
-                    old_reader.verify_object(reference, budget)?;
-                }
                 if joined.imported_native_source_count_v1() != old_routes.heads.len() {
                     return Err(IndexError::DigestConflict.into());
                 }

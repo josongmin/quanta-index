@@ -270,16 +270,15 @@ pub(super) fn export_v1(
         let mut retired_count = 0_u64;
         if let Some(route) = route {
             held.with_protected_routes_v1(budget, |routes, reader, budget| {
-                let witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
+                // The snapshot witness is derived from old Catalog rows; its objects
+                // are staged only in the candidate root, not read from this root.
+                let _witness = quanta_index_catalog::read_native_protected_snapshot_witness_v1(
                     &held.selected_config_v1().state_root,
                     held.catalog_io_v1(),
                     selected,
                     routes,
                     budget,
                 )?;
-                for reference in witness.object_references_v1() {
-                    reader.verify_object(reference, budget)?;
-                }
                 for head in &routes.heads {
                     let file_count =
                         reader.source_file_count_v1(&head.source_publication.source, budget)?;
