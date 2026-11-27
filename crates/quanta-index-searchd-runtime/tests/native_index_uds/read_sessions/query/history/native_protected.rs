@@ -323,6 +323,12 @@ fn assert_selected_native_source_export_v1(
         !refused.status.success(),
         "mutable Select accepted a presealed route"
     );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("operation digest conflicts with retained admission"),
+        "mutable Select failed before its presealed route guard: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     assert!(!receipt.try_exists()?, "refused Select published a receipt");
     {
         let mut catalog = SqliteCatalog::open(root, Duration::from_secs(2))?;
@@ -536,6 +542,143 @@ fn assert_selected_native_source_export_v1(
         before,
         "Source exporter changed old protected root"
     );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_policy_only_boot_refuses_mutable_same_operation_select() -> TestResult {
+    use quanta_index_contract::index::{
+        RetiredProjectionPolicyHeaderV1, RetiredProjectionPolicyRefV1,
+        encode_retired_projection_policy_v1,
+    };
+    use quanta_index_searchd_harness::native_index::native_dsl_history_config;
+    use sha2::{Digest as _, Sha256};
+    use std::{os::unix::fs::PermissionsExt as _, process::Command};
+
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let controls = private_root()?;
+    let config = controls.path().join("native-config.json");
+    let receipt = controls.path().join("native-receipt.json");
+    let config_bytes = serde_json::to_vec(&native_dsl_history_config(root.path(), &socket)?)?;
+    std::fs::write(&config, &config_bytes)?;
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
+    let config_hash = Sha256::digest(&config_bytes);
+    let config_sha256 = format!("{config_hash:x}");
+    let config_digest = Digest(config_hash.into());
+
+    let running = NativeServiceGuard::start(read_session_service_with_retention(
+        root.path(),
+        &socket,
+        Duration::from_secs(30),
+        None,
+    )?);
+    let client = NativeUdsClient::new(&socket);
+    let configured = sdk_phase("policy-only configure", create_text_workspace(&client))?;
+    let (published, _) = sdk_phase(
+        "policy-only publish primary",
+        publish_text_owner(&client, configured, 2, 1, "primary.rs", "policy-only"),
+    )?;
+    let NativeIndexResponse::RootScopedView(observed) = sdk_phase(
+        "policy-only observe root",
+        client.request(
+            NativeIndexRequest::ObserveRootView(ViewSelection::Exact(published)),
+            &budget(),
+        ),
+    )?
+    else {
+        return Err("policy-only root observation absent".into());
+    };
+    // The old-root fields are installation data; this seal authenticates the
+    // candidate fields and the immutable policy body.
+    let header = RetiredProjectionPolicyHeaderV1 {
+        format_version: RetiredProjectionPolicyHeaderV1::FORMAT_VERSION_V1,
+        old_selection_sha256: Digest([1; 32]),
+        old_root_nonce: Digest([2; 32]),
+        old_routes_ref: None,
+        old_source_head_count: 0,
+        candidate_root_nonce: observed.root_nonce,
+        candidate_config_sha256: config_digest,
+        candidate_profile_ref: observed.view.profile,
+    };
+    let mut bytes = Vec::new();
+    let digest = encode_retired_projection_policy_v1(
+        header,
+        &[],
+        &mut [],
+        &mut || Ok::<(), std::io::Error>(()),
+        &mut bytes,
+    )?;
+    let ingress = sdk_phase(
+        "policy-only begin input",
+        client.begin_input(operation(50), &budget()),
+    )?;
+    let object = stage_object(&client, ingress, bytes, Vec::new())?;
+    let policy = RetiredProjectionPolicyRefV1 {
+        object,
+        sha256: digest,
+        identity_count: 0,
+    };
+    let NativeIndexResponse::RootScopedView(selected) = sdk_phase(
+        "policy-only seal BOOT",
+        client.request(
+            NativeIndexRequest::SealCandidateWithRetiredPolicyOnlyV1 {
+                primary: operation(2),
+                ingress,
+                retired_policy: policy,
+            },
+            &budget(),
+        ),
+    )?
+    else {
+        return Err("policy-only BOOT was not sealed".into());
+    };
+    assert_eq!(selected.view, observed.view);
+    running.stop()?;
+
+    // The in-process service did not run the product daemon's umask setup.
+    let catalog_name = quanta_index_catalog::CATALOG_FILE_NAME;
+    let catalog = quanta_index_catalog::catalog_dir(root.path()).join(catalog_name);
+    let wal = catalog.with_file_name(format!("{catalog_name}-wal"));
+    std::fs::set_permissions(catalog, std::fs::Permissions::from_mode(0o600))?;
+    if wal.try_exists()? {
+        std::fs::set_permissions(wal, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let result = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        .args([
+            "select-native-state",
+            "--config",
+            config.to_str().ok_or("Native config path is not UTF-8")?,
+            "--config-digest",
+            &config_sha256,
+            "--manifest-operation",
+            &serde_json::to_string(&operation(2))?,
+            "--receipt",
+            receipt.to_str().ok_or("Native receipt path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        !result.status.success(),
+        "mutable Select accepted a retired policy"
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("operation digest conflicts with retained admission"),
+        "mutable Select failed before its retired policy guard: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!receipt.try_exists()?, "refused Select published a receipt");
+    let mut catalog = SqliteCatalog::open(root.path(), Duration::from_secs(2))?;
+    let mut work = WorkBudget::with_request(work_limits(), budget());
+    let manifest = catalog
+        .native_boot_manifest(&mut work)?
+        .ok_or("refused Select discarded the BOOT manifest")?;
+    assert_eq!(manifest.operation.key, operation(2));
+    assert_eq!(manifest.publication, selected.view);
+    assert_eq!(manifest.protected_source_routes, None);
+    assert_eq!(manifest.retired_projection_policy, Some(policy));
+    catalog.close_checked()?;
     Ok(())
 }
 
