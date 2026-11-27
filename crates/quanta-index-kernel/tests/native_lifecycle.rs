@@ -14,6 +14,8 @@ mod lexical_cold_source_advance;
 mod native_catalog_profile;
 #[path = "native_lifecycle/searchable_preparation.rs"]
 mod searchable_preparation;
+#[path = "native_lifecycle/previous_tree_reconfigure.rs"]
+mod previous_tree_reconfigure;
 use futures::executor::block_on;
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_core::index::{

@@ -85,6 +85,7 @@ pub struct TextRecipe {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TextLayout {
     Tree,
+    PreviousTree,
     SegmentFullV1,
     SegmentLayeredV2,
 }
@@ -96,6 +97,22 @@ impl TextRecipe {
             admission_policy,
             layout: TextLayout::Tree,
         }
+    }
+
+    /// The direct term-map Tree recipe written before term dictionary pages.
+    #[must_use]
+    pub const fn previous_tree(admission_policy: Digest) -> Self {
+        Self {
+            admission_policy,
+            layout: TextLayout::PreviousTree,
+        }
+    }
+
+    /// Exact prior Tree policy admitted only for retained v20 source views.
+    #[must_use]
+    pub fn retained_source_tree_policy_v20(self) -> Option<Digest> {
+        (self.layout == TextLayout::Tree)
+            .then(|| Self::previous_tree(self.admission_policy).output_policy())
     }
 
     /// Select the isolated immutable-segment FULL format.
@@ -138,6 +155,12 @@ impl TextRecipe {
         hash.update(MAX_TERM_KEY_BYTES.to_le_bytes());
         hash.update(b"sensitive+folded;indexed-runs-only;u32-positions");
         match self.layout {
+            TextLayout::PreviousTree => {
+                hash.update(entry_map::LAYOUT_POLICY);
+                hash.update(contribution::LAYOUT_POLICY);
+                hash.update(super::text_occurrence::block::LAYOUT_POLICY);
+                hash.update(small_posting_block::LAYOUT_POLICY);
+            }
             TextLayout::Tree => {
                 hash.update(entry_map::LAYOUT_POLICY);
                 hash.update(contribution::LAYOUT_POLICY);
@@ -154,32 +177,6 @@ impl TextRecipe {
             }
         }
         Digest(hash.finalize().into())
-    }
-
-    /// Authenticate a retained v20 Tree Source witness from before the
-    /// dictionary and path-postings recipe change. This policy is never used
-    /// to construct an index or admit a live reader.
-    #[must_use]
-    pub fn retained_source_tree_policy_v20(self) -> Option<Digest> {
-        if self.layout != TextLayout::Tree {
-            return None;
-        }
-        let mut hash = Sha256::new();
-        hash.update(b"qidx.native.text.token-only.v1\0");
-        hash.update(self.admission_policy.0);
-        hash.update(TEXT_NORMALIZER_VERSION.major.to_le_bytes());
-        hash.update(TEXT_NORMALIZER_VERSION.minor.to_le_bytes());
-        hash.update(MAX_SOURCE_BYTES.to_le_bytes());
-        hash.update(MAX_NFC_BYTES.to_le_bytes());
-        hash.update(MAX_NFC_WORK_BYTES.to_le_bytes());
-        hash.update(MAX_POSITIONS_PER_TERM.to_le_bytes());
-        hash.update(MAX_TERM_KEY_BYTES.to_le_bytes());
-        hash.update(b"sensitive+folded;indexed-runs-only;u32-positions");
-        hash.update(entry_map::LAYOUT_POLICY);
-        hash.update(contribution::LAYOUT_POLICY);
-        hash.update(super::text_occurrence::block::LAYOUT_POLICY);
-        hash.update(small_posting_block::LAYOUT_POLICY);
-        Some(Digest(hash.finalize().into()))
     }
 }
 
@@ -1451,6 +1448,85 @@ mod tests {
         let canonical_term = fixture.term.clone();
         seed_fixture_term_dictionary(&mut fixture, &[(canonical_term, posting_ref)])?;
         Ok(fixture)
+    }
+
+    #[test]
+    fn previous_tree_reads_direct_term_map_and_four_field_root() -> Result<(), IndexError> {
+        use quanta_index_contract::{LqExpr, LqLeaf};
+
+        let mut fixture = visitor_fixture()?;
+        fixture.recipe = TextRecipe::previous_tree(fixture.recipe.admission_policy);
+        let terms = MapRoot(Some(reference(4)));
+        let old = PreviousRoot {
+            owners: MapRoot(Some(reference(3))),
+            terms,
+            docs: 1,
+            indexed_tokens: 2,
+        };
+        let payload = encode(&old)?;
+        fixture.objects.add(
+            fixture.member.artifact,
+            payload.clone(),
+            TextChildren::roots([old.owners.0, old.terms.0, None])
+                .as_slice()
+                .to_vec(),
+        )?;
+        fixture.member.input.policy = fixture.recipe.output_policy();
+        fixture.member.logical_commitment = Digest(Sha256::digest(&payload).into());
+        fixture.objects.add(
+            fixture.member_ref,
+            encode(&fixture.member)?,
+            vec![fixture.member.artifact, reference(1)],
+        )?;
+        let _old_page = fixture.maps.roots.remove(&reference(4));
+        fixture
+            .maps
+            .add(terms, fixture.term.clone(), fixture.posting_ref)?;
+
+        let hit = planned_phrase_query(LqExpr::Leaf(LqLeaf::Keyword("one".into())))?;
+        let miss = planned_phrase_query(LqExpr::Leaf(LqLeaf::Keyword("absent".into())))?;
+        let ranked = search_phrase_plan(&fixture, &hit, 2)?;
+        check_eq!(ranked.matched, 1);
+        check!(matches!(ranked.hits.as_slice(), [one] if one.owner == fixture.owner));
+        check_eq!(search_phrase_plan(&fixture, &miss, 2)?.matched, 0);
+        check!(matches!(
+            SelectedTextRoot::PreviousTree(old.into()).path_field(),
+            Err(IndexError::RebuildRequired)
+        ));
+        check!(matches!(
+            NativeTextIndex::new(TextRecipe::new(fixture.recipe.admission_policy)).search_content(
+                &fixture.member,
+                &hit,
+                &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                2,
+                super::super::text_query::Bm25Policy { k1: 1.2, b: 0.75 },
+                TextReadContext {
+                    ticket: &fixture.ticket,
+                    objects: &fixture.objects,
+                    maps: &fixture.maps,
+                    budget: &mut budget()?,
+                },
+            ),
+            Err(IndexError::Conflict)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn previous_tree_writer_requires_current_recipe_reconfigure() -> Result<(), IndexError> {
+        let recipe = TextRecipe::previous_tree(Digest([21; 32]));
+        let index = NativeTextIndex::new(recipe);
+        let source = MapRoot(Some(reference(1)));
+        check!(matches!(
+            index.plan(
+                BaseMember::Absent,
+                DeltaInput::Bootstrap,
+                &context(recipe, source),
+                &mut budget()?,
+            ),
+            Ok(PlanDecision::RebuildRequired)
+        ));
+        Ok(())
     }
 
     #[test]
@@ -8546,6 +8622,33 @@ pub(super) struct Root {
     path_docs: u64,
     path_indexed_tokens: u64,
 }
+
+/// The signed prior Tree root predates the path-posting index.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PreviousRoot {
+    owners: MapRoot,
+    terms: MapRoot,
+    docs: u64,
+    indexed_tokens: u64,
+}
+quanta_index_contract::native_serde_struct!(PreviousRoot {
+    owners: MapRoot,
+    terms: MapRoot,
+    docs: u64,
+    indexed_tokens: u64,
+});
+
+impl From<PreviousRoot> for Root {
+    fn from(prior: PreviousRoot) -> Self {
+        Self {
+            owners: prior.owners,
+            terms: prior.terms,
+            docs: prior.docs,
+            indexed_tokens: prior.indexed_tokens,
+            ..Self::default()
+        }
+    }
+}
 impl Root {
     pub(super) fn owner_universe(self) -> (MapRoot, u64, u64) {
         (self.owners, self.docs, self.indexed_tokens)
@@ -8566,6 +8669,7 @@ impl Root {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SelectedTextRoot {
     Tree(Root),
+    PreviousTree(Root),
     Segment {
         artifact: ObjectRef,
         statistics: TextStatistics,
@@ -8576,7 +8680,7 @@ pub(super) enum SelectedTextRoot {
 impl SelectedTextRoot {
     pub(super) fn statistics(self) -> TextStatistics {
         match self {
-            Self::Tree(root) => TextStatistics {
+            Self::Tree(root) | Self::PreviousTree(root) => TextStatistics {
                 docs: root.docs,
                 indexed_tokens: root.indexed_tokens,
             },
@@ -8593,6 +8697,7 @@ impl SelectedTextRoot {
                 let path = root.path_index();
                 Ok((path.postings, path.statistics, PathPostingValue::Object))
             }
+            Self::PreviousTree(_) => Err(IndexError::RebuildRequired),
             Self::Segment {
                 path: Some(path), ..
             } => Ok((
@@ -8608,7 +8713,7 @@ impl SelectedTextRoot {
 
     pub(super) fn tree(self) -> Result<Root, IndexError> {
         match self {
-            Self::Tree(root) => Ok(root),
+            Self::Tree(root) | Self::PreviousTree(root) => Ok(root),
             Self::Segment { .. } => Err(IndexError::InvalidInput(
                 "native text FULL segment candidate requires an anchored term or phrase".into(),
             )),
@@ -8641,7 +8746,9 @@ pub(super) struct OverlayPriorReader {
 impl OverlayPriorReader {
     pub(super) fn new(root: SelectedTextRoot, recipe: TextRecipe) -> Self {
         let layout = match root {
-            SelectedTextRoot::Tree(root) => OverlayPriorLayout::Tree(root),
+            SelectedTextRoot::Tree(root) | SelectedTextRoot::PreviousTree(root) => {
+                OverlayPriorLayout::Tree(root)
+            }
             SelectedTextRoot::Segment { artifact, .. } => OverlayPriorLayout::Segment(
                 text_segment::read::DocumentLookup::new(artifact, recipe),
             ),
@@ -8749,9 +8856,11 @@ impl<'a> OverlayTermMembership<'a> {
     ) -> Result<Self, IndexError> {
         check_term_key(key)?;
         let backend = match root {
-            SelectedTextRoot::Tree(root) => OverlayMembershipBackend::Tree(
-                TreeOverlayTermMembership::new(root, recipe, key, context)?,
-            ),
+            SelectedTextRoot::Tree(root) | SelectedTextRoot::PreviousTree(root) => {
+                OverlayMembershipBackend::Tree(TreeOverlayTermMembership::new(
+                    root, recipe, key, context,
+                )?)
+            }
             SelectedTextRoot::Segment { .. } => OverlayMembershipBackend::Segment(
                 text_segment::read::TermMembership::new(recipe, key),
             ),
@@ -8793,15 +8902,9 @@ impl<'a> TreeOverlayTermMembership<'a> {
         key: &'a [u8],
         context: &mut TextReadContext<'_>,
     ) -> Result<Self, IndexError> {
-        let posting = term_dictionary::lookup(
-            context.objects,
-            context.maps,
-            root.terms,
-            key,
-            context.budget,
-        )?
-        .map(|reference| read_posting(key, reference, context.objects, context.budget))
-        .transpose()?;
+        let posting = lookup_posting_value(recipe, root.terms, key, context)?
+            .map(|reference| read_posting(key, reference, context.objects, context.budget))
+            .transpose()?;
         Ok(Self {
             root,
             recipe,
@@ -9783,6 +9886,25 @@ fn read_root(
     Ok(root)
 }
 
+fn read_previous_root(
+    member: &MemberBinding,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<Root, IndexError> {
+    let stored = objects.get(member.artifact, budget)?;
+    let root = super::metadata::decode_fixed::<PreviousRoot>(&stored.payload, budget)?;
+    if stored.registration.reference != member.artifact
+        || stored.registration.children.as_slice()
+            != TextChildren::roots([root.owners.0, root.terms.0, None]).as_slice()
+        || Digest(Sha256::digest(&stored.payload).into()) != member.logical_commitment
+    {
+        return Err(IndexError::CorruptObject(
+            "previous native text root commitment or edges mismatch".into(),
+        ));
+    }
+    Ok(root.into())
+}
+
 fn read_contribution(
     value: impl Into<MapValue>,
     objects: &dyn ImmutableObjectPort,
@@ -9903,6 +10025,20 @@ fn read_posting(
         }
     }
     Ok(value)
+}
+
+fn lookup_posting_value(
+    recipe: TextRecipe,
+    terms: MapRoot,
+    key: &[u8],
+    context: &mut TextReadContext<'_>,
+) -> Result<Option<MapValue>, IndexError> {
+    check_term_key(key)?;
+    if recipe.layout == TextLayout::PreviousTree {
+        context.maps.lookup(terms, key, context.budget)
+    } else {
+        term_dictionary::lookup(context.objects, context.maps, terms, key, context.budget)
+    }
 }
 
 pub(super) struct ValidatedPostingHit {
@@ -13946,6 +14082,9 @@ impl IndexBuildPort for NativeTextIndex {
         budget: &mut WorkBudget,
     ) -> Result<PlanDecision<TextPlan>, IndexError> {
         budget.checkpoint()?;
+        if self.recipe.layout == TextLayout::PreviousTree {
+            return Ok(PlanDecision::RebuildRequired);
+        }
         self.validate_instance(&context.instance)?;
         if context.input.policy != context.instance.policy {
             return Err(IndexError::InvalidInput(
@@ -14366,7 +14505,10 @@ impl NativeTextIndex {
         member: &MemberBinding,
         context: &mut TextReadContext<'_>,
     ) -> Result<SelectedTextRoot, IndexError> {
-        if self.recipe.layout != TextLayout::Tree {
+        if !matches!(
+            self.recipe.layout,
+            TextLayout::Tree | TextLayout::PreviousTree
+        ) {
             let summary = text_segment::read::root(
                 member,
                 self.recipe,
@@ -14383,7 +14525,12 @@ impl NativeTextIndex {
                 path: self.recipe.is_layered().then_some(summary.path),
             });
         }
-        read_root(member, context.objects, context.budget).map(SelectedTextRoot::Tree)
+        if self.recipe.layout == TextLayout::PreviousTree {
+            read_previous_root(member, context.objects, context.budget)
+                .map(SelectedTextRoot::PreviousTree)
+        } else {
+            read_root(member, context.objects, context.budget).map(SelectedTextRoot::Tree)
+        }
     }
 
     /// Inspect exact live statistics from a pinned member. This is not a
@@ -14469,15 +14616,11 @@ impl NativeTextIndex {
             });
         }
         let root = root.tree()?;
-        let posting = term_dictionary::lookup(
-            context.objects,
-            context.maps,
-            root.terms,
-            key.as_slice(),
-            context.budget,
-        )?
-        .map(|reference| read_posting(key.as_slice(), reference, context.objects, context.budget))
-        .transpose()?;
+        let posting = lookup_posting_value(self.recipe, root.terms, key.as_slice(), context)?
+            .map(|reference| {
+                read_posting(key.as_slice(), reference, context.objects, context.budget)
+            })
+            .transpose()?;
         if posting.is_some_and(|posting| posting.df > root.docs) {
             return Err(IndexError::CorruptObject(
                 "text document frequency exceeds corpus document count".into(),
@@ -14525,13 +14668,8 @@ impl NativeTextIndex {
             .df());
         }
         let root = root.tree()?;
-        let reference = term_dictionary::lookup(
-            context.objects,
-            context.maps,
-            root.terms,
-            key.as_slice(),
-            context.budget,
-        )?;
+        let reference =
+            lookup_posting_value(self.recipe, root.terms, key.as_slice(), &mut context)?;
         reference
             .map(|reference| {
                 read_posting(key.as_slice(), reference, context.objects, context.budget)?

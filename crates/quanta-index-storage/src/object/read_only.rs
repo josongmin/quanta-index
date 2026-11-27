@@ -14,6 +14,8 @@ use quanta_index_core::index::{
 
 use super::{namespace::NamespaceLease, read_io};
 
+use quanta_index_core::index::{ObjectBatchInput, ports::{ImmutableObjectPort, ObjectWriteSink}};
+
 mod source_files;
 
 pub struct FileObjectReader {
@@ -21,6 +23,49 @@ pub struct FileObjectReader {
     namespace: NamespaceLease,
     io: Arc<dyn ObjectReadIoPort>,
     _allocation: Option<MemoryLease>,
+}
+
+impl ImmutableObjectPort for FileObjectReader {
+    fn identify(
+        &self,
+        payload: &[u8],
+        children: &[ObjectRef],
+        budget: &mut WorkBudget,
+    ) -> Result<RegisteredObject, IndexError> {
+        FileObjectReader::identify(self, payload, children, budget)
+    }
+
+    fn put(
+        &self,
+        _payload: &[u8],
+        _children: &[ObjectRef],
+        _budget: &mut WorkBudget,
+    ) -> Result<RegisteredObject, IndexError> {
+        Err(IndexError::BackendViolation("read-only object port cannot write".into()))
+    }
+
+    fn install(
+        &self,
+        _payload: &[u8],
+        _children: &[ObjectRef],
+        _sink: &dyn ObjectWriteSink,
+        _budget: &mut WorkBudget,
+    ) -> Result<RegisteredObject, IndexError> {
+        Err(IndexError::BackendViolation("read-only object port cannot write".into()))
+    }
+
+    fn install_batch(
+        &self,
+        _inputs: &[ObjectBatchInput],
+        _sink: &dyn ObjectWriteSink,
+        _budget: &mut WorkBudget,
+    ) -> Result<quanta_index_core::index::RegisteredObjectBatch, IndexError> {
+        Err(IndexError::BackendViolation("read-only object port cannot write".into()))
+    }
+
+    fn get(&self, reference: ObjectRef, budget: &mut WorkBudget) -> Result<StoredObject, IndexError> {
+        FileObjectReader::get(self, reference, budget)
+    }
 }
 
 impl FileObjectReader {

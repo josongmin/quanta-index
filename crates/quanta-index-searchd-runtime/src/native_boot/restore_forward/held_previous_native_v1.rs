@@ -183,18 +183,14 @@ impl HeldPreviousNativeV1 {
         if identity(observed.snapshot.root_nonce, selected)? != expected {
             return Err(IndexError::DigestConflict.into());
         }
-        if let Some(previous) = config.text_recipe.retained_source_tree_policy_v20() {
+        if let Some(tree) = config.retained_tree() {
             authenticate_retained_source_v20(
                 authority,
                 &observed.snapshot,
                 selected,
                 registry,
                 config.resources.physical.inventory.max_entries,
-                quanta_index_kernel::RetainedSourceTreePolicyV20 {
-                    descriptor: config.text,
-                    previous,
-                    current: config.text_recipe.output_policy(),
-                },
+                tree,
                 budget,
             )?;
         } else {

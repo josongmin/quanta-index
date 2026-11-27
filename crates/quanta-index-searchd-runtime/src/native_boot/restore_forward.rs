@@ -21,6 +21,124 @@ mod preserved_sources_v1;
 
 pub(crate) use held_previous_native_v1::HeldPreviousNativeV1;
 
+/// Refuse a selection whose configured Semantic writers would reopen an
+/// incompatible ANN directory. All reads use the held, existing-only Q root.
+fn require_lance_recovery_candidate_v1(
+    authority: &NativeBootAuthority,
+    candidate: &quanta_index_catalog::NativeBootPublishedOperation,
+    config: &ValidatedConfig,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    let Some(semantic) = config.semantic.as_ref() else {
+        return Ok(());
+    };
+    let recipe = semantic.boot_recipe()?;
+    let selected = candidate
+        .snapshot()
+        .selected
+        .as_ref()
+        .ok_or(IndexError::SnapshotUnavailable)?;
+    let root = authority.lease.state_root_identity_v1();
+    let objects = root.join("native-objects");
+    let io = Arc::new(NativeObjectReadIo::new(Arc::clone(&authority.physical)));
+    let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
+    let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
+    if candidate.snapshot().namespace != Some(reader.namespace_binding()?) {
+        return Err(IndexError::DigestConflict.into());
+    }
+    let check_view = |view: &quanta_index_core::index::CatalogView,
+                      budget: &mut WorkBudget|
+     -> Result<(), IndexError> {
+        quanta_index_kernel::with_loaded_profile_v1(
+            view.profile,
+            &reader,
+            budget,
+            |profile, budget| {
+                for instance in &profile.instances {
+                    if instance.kind != semantic.descriptor.kind {
+                        continue;
+                    }
+                    if instance.schema != semantic.descriptor.schema
+                        || instance.format != semantic.descriptor.format
+                    {
+                        return Err(IndexError::InvalidInput(
+                            "selected instance differs from the configured async writer".into(),
+                        ));
+                    }
+                    let mut read = quanta_index_semantic::native::ReadContext {
+                        objects: &reader,
+                        maps: &reader,
+                        budget,
+                    };
+                    quanta_index_semantic::native::require_lance_writable(
+                        view, instance, &recipe, &mut read,
+                    )?;
+                }
+                Ok(())
+            },
+        )??;
+        Ok(())
+    };
+    let check_scopes = |routes: Option<&quanta_index_contract::index::NativeProtectedSourceRoutesV1>,
+                        budget: &mut WorkBudget|
+     -> Result<(), IndexError> {
+        for scope in semantic.scopes.iter() {
+            let mut selected_view = (selected.publication.identity.workspace == scope.workspace
+                && selected.publication.identity.epoch == scope.epoch)
+                .then_some(&selected.publication);
+            if let Some(routes) = routes {
+                for view in routes
+                    .heads
+                    .iter()
+                    .map(|head| &head.publication)
+                    .chain(routes.repomap_heads.iter().map(|head| &head.publication))
+                {
+                    if view.identity.workspace == scope.workspace
+                        && view.identity.epoch == scope.epoch
+                    {
+                        if selected_view.is_some_and(|prior| prior != view) {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        selected_view = Some(view);
+                    }
+                }
+            }
+            let present = quanta_index_catalog::verify_native_boot_scope_selected_view_v1(
+                root,
+                authority.io.as_ref(),
+                selected,
+                scope.workspace,
+                selected_view,
+                budget,
+            )?;
+            if present {
+                check_view(selected_view.ok_or(IndexError::DigestConflict)?, budget)?;
+            }
+        }
+        Ok(())
+    };
+    if let Some(route) = selected.protected_source_routes {
+        let stored = reader.get(route.object, budget)?;
+        quanta_index_core::index::with_native_protected_source_routes_v1(
+            route.object,
+            Some(route.count),
+            stored,
+            budget,
+            |routes, budget| {
+                quanta_index_catalog::verify_native_protected_source_routes_v1(
+                    root, authority.io.as_ref(), selected, routes, budget,
+                )?;
+                check_scopes(Some(routes), budget)
+            },
+        )?;
+    } else {
+        check_scopes(None, budget)?;
+    }
+    authority.lease.require_state_root_v1(root)?;
+    budget.checkpoint()?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(crate) enum RestoreForwardSourceRefusalV1 {
     MissingCurrentLegacyPublication,
@@ -427,6 +545,7 @@ fn publish_previous_native_v1(
         {
             return Err(IndexError::DigestConflict.into());
         }
+        require_lance_recovery_candidate_v1(&authority, &candidate, config, budget)?;
         verify_candidate_install_attestation_v1(&authority, command, locked, budget)?;
         preserved_native_v1::verify_preserved_native_v1(
             &held,
@@ -629,6 +748,7 @@ pub(in crate::native_product) fn publish_v1(
         {
             return Err(IndexError::DigestConflict.into());
         }
+        require_lance_recovery_candidate_v1(&authority, &candidate, config, budget)?;
         legacy.retire_catalog(budget)?;
         let publication = source
             .legacy_publication

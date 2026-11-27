@@ -45,7 +45,7 @@ impl TextOwnerCursor {
         let statistics = root.statistics();
         Self::check_statistics(statistics)?;
         let source = match root {
-            SelectedTextRoot::Tree(root) => {
+            SelectedTextRoot::Tree(root) | SelectedTextRoot::PreviousTree(root) => {
                 let (owners, _, _) = root.owner_universe();
                 OwnerSource::Tree(TreeOwnerCursor {
                     root,

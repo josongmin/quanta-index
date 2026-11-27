@@ -2290,6 +2290,73 @@ pub fn verify_native_boot_current_candidate(
     )
 }
 
+/// Visit one workspace's charged current head under the exact selected BOOT.
+/// The callback cannot outlive this existing-only Catalog read transaction.
+pub fn visit_native_boot_scope_current_view_v1<T>(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    selected: &NativeBootManifest,
+    workspace: WorkspaceKey,
+    budget: &mut WorkBudget,
+    visit: impl FnOnce(Option<&CatalogView>, &mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        |error| error,
+        |connection, path, budget, allocation| {
+            let (snapshot, _, _, _) = inspect(
+                connection,
+                path,
+                None,
+                RollbackCheck::None,
+                None,
+                None,
+                budget,
+                allocation,
+            )?;
+            if snapshot.selected.as_ref() != Some(selected) {
+                return Err(IndexError::Conflict);
+            }
+            let current = retention::charged_current_view(connection, workspace, budget)?;
+            if let Some(current) = current.as_ref() {
+                check_quiescent_rows(connection, workspace, current.identity, budget)?;
+            }
+            visit(current.as_ref(), budget)
+        },
+    )
+}
+
+/// `false` proves that a configured workspace has no head. A present head must
+/// equal the physically authenticated caller view before it can be used.
+pub fn verify_native_boot_scope_selected_view_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    selected: &NativeBootManifest,
+    workspace: WorkspaceKey,
+    expected: Option<&CatalogView>,
+    budget: &mut WorkBudget,
+) -> Result<bool, IndexError> {
+    visit_native_boot_scope_current_view_v1(
+        state_root,
+        io,
+        selected,
+        workspace,
+        budget,
+        |current, _| {
+            match (current, expected) {
+                (None, None) => Ok(false),
+                (Some(current), Some(expected)) if current == expected => {
+                    Ok(true)
+                }
+                _ => Err(IndexError::Conflict),
+            }
+        },
+    )
+}
+
 /// Inspect only the retained operation row using the existing read-only
 /// connection, authenticated VFS and Original budget. No old request/view
 /// object is required for an already Published operation.

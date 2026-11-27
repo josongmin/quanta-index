@@ -23,5 +23,6 @@ pub use embedding::{
     SemanticLexicalEligibleSource, SemanticOverlayChunk, SemanticOverlayDocument,
     SemanticOverlayHit, SemanticReadRequest, SemanticSourceFile, SemanticSourceFileHitParts,
     TextEmbeddingBridge, TicketSearchQuery, chunk_owner_memory_envelope,
-    max_chunk_owner_artifact_json_bytes, search_exact_acquired, validate_semantic_recipe_instance,
+    max_chunk_owner_artifact_json_bytes, require_lance_writable, search_exact_acquired,
+    validate_semantic_recipe_instance,
 };

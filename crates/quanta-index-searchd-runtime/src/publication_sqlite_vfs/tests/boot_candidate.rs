@@ -3,6 +3,7 @@
 use super::*;
 use quanta_index_catalog::{
     catalog_dir, verify_native_boot_candidate, verify_native_boot_current_candidate,
+    verify_native_boot_scope_selected_view_v1,
     verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
 };
 use quanta_index_core::index::ports::{
@@ -29,6 +30,50 @@ use std::{
 struct PublicationReadMeter {
     live: AtomicU64,
     limit: AtomicU64,
+}
+
+#[test]
+fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> TestResult {
+    let mut seeded = None;
+    let fixture = fixture_with_boot_input(|root| {
+        seeded = Some(seed_current_native_pair(root)?);
+        Ok(16 * 1024 * 1024)
+    })?;
+    let (_, _, boot) = seeded.ok_or("paired Catalog fixture absent")?;
+    let candidate = verify_native_boot_current_candidate(
+        &fixture.root, fixture.vfs.as_ref(), key(35), &mut read_budget()?,
+    )?;
+    let selected = candidate.manifest();
+    let before = files(&fixture.root)?;
+    let mut work = read_budget()?;
+    require(
+        verify_native_boot_scope_selected_view_v1(
+            &fixture.root, fixture.vfs.as_ref(), selected,
+            boot.identity.workspace, Some(&boot), &mut work,
+        )?,
+        "selected current scope was not observed",
+    )?;
+    let mut absent = boot.identity.workspace;
+    absent.slot = SlotId([9; 16]);
+    require(
+        !verify_native_boot_scope_selected_view_v1(
+            &fixture.root, fixture.vfs.as_ref(), selected, absent, None, &mut work,
+        )?,
+        "absent configured scope appeared present",
+    )?;
+    require(
+        matches!(
+            verify_native_boot_scope_selected_view_v1(
+                &fixture.root, fixture.vfs.as_ref(), selected,
+                boot.identity.workspace, None, &mut work,
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "current scope without a selected view was accepted",
+    )?;
+    require(files(&fixture.root)? == before, "scope read changed Catalog bytes")?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
 }
 
 impl MemoryLeaseOwner for PublicationReadMeter {

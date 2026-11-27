@@ -362,6 +362,7 @@ impl PreviewRead {
 /// Clients cannot switch models or request unbounded results through this port.
 pub struct NativeTextReader {
     index: NativeTextIndex,
+    previous_tree: Option<NativeTextIndex>,
     policy: Bm25Policy,
     need: ResourceNeed,
 }
@@ -438,9 +439,42 @@ impl NativeTextReader {
         }
         Ok(Self {
             index: NativeTextIndex::new(recipe),
+            previous_tree: None,
             policy,
             need,
         })
+    }
+
+    /// Admit the exact prior Tree recipe for retained, ticket-bound reads.
+    /// The selected instance and member must still carry that policy.
+    #[must_use]
+    pub fn with_previous_tree(mut self) -> Self {
+        if self
+            .index
+            .recipe()
+            .retained_source_tree_policy_v20()
+            .is_some()
+        {
+            self.previous_tree = Some(NativeTextIndex::new(TextRecipe::previous_tree(
+                self.index.recipe().admission_policy,
+            )));
+        }
+        self
+    }
+
+    fn index_for_instance(
+        &self,
+        instance: &quanta_index_core::index::InstanceSpec,
+    ) -> Result<NativeTextIndex, IndexError> {
+        if instance.policy == self.index.recipe().output_policy() {
+            self.index.validate_instance(instance)?;
+            return Ok(self.index);
+        }
+        let previous = self.previous_tree.ok_or_else(|| {
+            IndexError::InvalidInput("native text instance has an unsupported recipe".into())
+        })?;
+        previous.validate_instance(instance)?;
+        Ok(previous)
     }
 
     fn source_path(
@@ -715,9 +749,9 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         source: Option<ObjectRef>,
         context: &mut QueryReadContext<'_>,
     ) -> Result<(), IndexError> {
-        self.validate_instance(context.instance)?;
+        let index = self.index_for_instance(context.instance)?;
         let member = context.source_member_binding()?;
-        self.index.validate_searchable_owner(
+        index.validate_searchable_owner(
             &member,
             owner,
             source,
@@ -735,7 +769,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         &self,
         instance: &quanta_index_core::index::InstanceSpec,
     ) -> Result<(), IndexError> {
-        self.index.validate_instance(instance)
+        self.index_for_instance(instance).map(|_index| ())
     }
 
     fn reservation(&self, request: &PlannedTextRead) -> Result<ResourceNeed, IndexError> {
@@ -780,6 +814,12 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
     ) -> Result<QueryOutcome<TextReadResult>, IndexError> {
         self.validate_instance(context.instance)?;
         let _need = self.reservation(request)?;
+        let selected = Self {
+            index: self.index_for_instance(context.instance)?,
+            previous_tree: None,
+            policy: self.policy,
+            need: self.need,
+        };
         let bound = BoundTextMember::from_context(context)?;
         let member = bound.member();
         let mut overlay_input_memory = None;
@@ -847,7 +887,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                         (Cow::Borrowed(path), None)
                     } else {
                         let (path, memory) =
-                            self.source_path(document.owner, None, true, context)?;
+                            selected.source_path(document.owner, None, true, context)?;
                         (Cow::Owned(path), memory)
                     };
                     overlay_paths.push(OverlayPath {
@@ -891,7 +931,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                     context,
                 )?;
             }
-            Some(self.index.prepare_overlay_corpus(
+            Some(selected.index.prepare_overlay_corpus(
                 member,
                 &overlay_inputs,
                 &mut TextReadContext {
@@ -905,7 +945,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         let mut preview_read = None;
         let mut visit_preview = |selection: &PreviewSelection<'_>,
                                  ctx: &mut TextReadContext<'_>| {
-            preview_read = Some(self.project_previews(
+            preview_read = Some(selected.project_previews(
                 selection,
                 request.plan.filters.surface == ResultSurface::Path,
                 ctx,
@@ -917,7 +957,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         } else {
             None
         };
-        let mut ranked = self.index.search_content_with_bound_member(
+        let mut ranked = selected.index.search_content_with_bound_member(
             &bound,
             &request.plan,
             &request.constraints,
@@ -994,7 +1034,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         for hit in ranked.hits.drain(..) {
             let score = hit_score(hit.score)?;
             let (path, path_memory, path_group_repository) = match hit.source {
-                NativeTextHitSource::Durable(source) => self.source_hit(
+                NativeTextHitSource::Durable(source) => selected.source_hit(
                     hit.owner,
                     source,
                     request.plan.filters.surface == ResultSurface::Path,
@@ -1404,10 +1444,19 @@ mod tests {
             ]),
             ..valid
         };
+        // Historical direct-term Tree policy from the prior v20 writer.
+        check!(recipe.retained_source_tree_policy_v20() == Some(prior_term_map_layout.policy));
         check!(matches!(
             port.validate_instance(&prior_term_map_layout),
             Err(IndexError::InvalidInput(_))
         ));
+        NativeTextReader::new(
+            recipe,
+            super::super::Bm25Policy { k1: 1.2, b: 0.75 },
+            need(),
+        )?
+        .with_previous_tree()
+        .validate_instance(&prior_term_map_layout)?;
         check!(matches!(
             crate::native::NativeTextIndex::new(recipe).validate_instance(&prior_term_map_layout),
             Err(IndexError::InvalidInput(_))
