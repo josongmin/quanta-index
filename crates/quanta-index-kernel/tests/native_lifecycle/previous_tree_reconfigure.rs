@@ -202,6 +202,16 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
             previous: previous.output_policy(),
             current: current.output_policy(),
         }));
+    let stage_replacement = |sequence| {
+        live.stage_source_text(
+            live.begin_input(operation(sequence))?,
+            "old.rs",
+            b"beta stable",
+            SourceTextAdmission::Utf8 { policy: admission },
+            &mut scoped_budget(),
+        )
+    };
+    let refused_source = stage_replacement(3)?;
     let refused = block_on(live.submit(
         request(
             &live,
@@ -211,7 +221,11 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
             old_ticket.view().source,
             3,
             2,
-            vec![],
+            vec![OwnerMutation {
+                owner: owner(1),
+                expected: Some(first_source),
+                next: Some(refused_source),
+            }],
         )?,
         &mut scoped_budget(),
     ))?;
@@ -266,13 +280,9 @@ fn previous_tree_reconfigure_keeps_old_view_and_enables_delta() -> TestResult {
     };
     assert_eq!(df(rebuilt)?, 1);
 
-    let next_source = live.stage_source_text(
-        live.begin_input(operation(5))?,
-        "old.rs",
-        b"beta stable",
-        SourceTextAdmission::Utf8 { policy: admission },
-        &mut scoped_budget(),
-    )?;
+    // The refused event's identity and payload stay fixed across Reconfigure.
+    let next_source = stage_replacement(5)?;
+    assert_eq!(next_source, refused_source);
     let next = published(block_on(live.submit(
         request(
             &live,
