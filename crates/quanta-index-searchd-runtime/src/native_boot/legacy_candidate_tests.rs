@@ -218,7 +218,7 @@ fn text_spec() -> InstanceSpec {
 fn published(outcome: SubmitOutcome) -> TestResult<ViewRef> {
     match outcome {
         SubmitOutcome::Terminal(OperationStatus::Published(view)) => Ok(view),
-        _ => Err("actual fixture publication failed".into()),
+        outcome => Err(format!("actual fixture publication failed: {outcome:?}").into()),
     }
 }
 fn sha_file(path: &Path) -> TestResult<Digest> {
@@ -321,12 +321,16 @@ fn prepare_native_fixture_with_tree(
     fs::write(&config_path, &config_bytes)?;
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
     let config_digest = Digest(Sha256::digest(&config_bytes).into());
-    let config = read_config_checked(&config_path, Some(config_digest))?;
+    let mut config = read_config_checked(&config_path, Some(config_digest))?;
+    let current_tree_recipe = config.text_recipe;
     let mut composition = compose(&config)?;
     if historical_tree {
         composition.capabilities.builders = retained_tree_v20_registry(&config)?;
+        // The fixture writes a v20 root before the current runtime reads it.
+        config.text_recipe = TextRecipe::previous_tree(Digest([31; 32]));
     }
     let service = bind(&config, config_digest, composition, None, &request(), false)?;
+    config.text_recipe = current_tree_recipe;
     let shutdown = service.shutdown_handle();
     let running = RunningFixture {
         shutdown,
