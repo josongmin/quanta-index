@@ -279,6 +279,7 @@ fn assert_selected_native_source_export_v1(
     selected: quanta_index_contract::native_protocol::NativeRootScopedViewV1,
 ) -> TestResult {
     use quanta_index_contract::index::NativeSourceSnapshotExportFrameV1 as Frame;
+    use quanta_index_contract::native_boot_source_cut_digest_v1;
     use quanta_index_searchd_harness::native_index::native_dsl_history_config;
     use sha2::{Digest as _, Sha256};
     use std::{
@@ -303,11 +304,24 @@ fn assert_selected_native_source_export_v1(
     let config_bytes = serde_json::to_vec(&native_dsl_history_config(root, socket)?)?;
     std::fs::write(&config, &config_bytes)?;
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
+    let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
+    let hex_digest =
+        |digest: Digest| format!("{:x}", sha2::digest::Output::<Sha256>::from(digest.0));
+    let source_cut = native_boot_source_cut_digest_v1(&selected.view.source)?;
+    // The service has already sealed and selected this protected route set.
     let selected_output = Command::new(binary)
         .args([
-            "select-native-state",
+            "select-native-candidate",
             "--config",
             config.to_str().ok_or("Native config path is not UTF-8")?,
+            "--config-digest",
+            &config_sha256,
+            "--root-nonce",
+            &hex_digest(selected.root_nonce),
+            "--source-cut-digest",
+            &hex_digest(source_cut),
+            "--protected-source-routes",
+            &hex_digest(route_ref.0),
             "--manifest-operation",
             &serde_json::to_string(&operation(2))?,
             "--receipt",
@@ -325,7 +339,6 @@ fn assert_selected_native_source_export_v1(
     let copied_bytes = std::io::copy(&mut binary_file, &mut binary_hash)?;
     assert!(copied_bytes > 0, "Native binary is empty");
     let binary_sha256 = format!("{:x}", binary_hash.finalize());
-    let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
     let mut selected_bytes = serde_json::to_vec(&serde_json::json!({
         "schema_version": 2,
         "mode": "native",
