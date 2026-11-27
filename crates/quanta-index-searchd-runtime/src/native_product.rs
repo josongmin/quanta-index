@@ -61,10 +61,10 @@ use crate::deployment_selection::{
     DeploymentSelectionErrorV1, DeploymentSelectionPublishedV1, LockedDeploymentSelectionV1,
 };
 use crate::native::{
-    FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativePumpConfig, NativePumpScope,
-    NativeReclaimConfig, NativeResourcePlan, NativeRetentionConfig, NativeRetentionScope,
-    NativeServiceCapabilities, NativeServiceResources, NativeWalReclaimPolicy,
-    validate_automatic_reclaim,
+    FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativeProductStartup,
+    NativePumpConfig, NativePumpScope, NativeReclaimConfig, NativeResourcePlan,
+    NativeRetentionConfig, NativeRetentionScope, NativeSemanticStartup, NativeServiceCapabilities,
+    NativeServiceResources, NativeWalReclaimPolicy, validate_automatic_reclaim,
 };
 use crate::native_effort::NativeEffortConfiguration;
 
@@ -1541,6 +1541,20 @@ struct ValidatedConfig {
     stub_ast: Option<Vec<crate::native::StubGrammarPolicy>>,
 }
 
+impl ValidatedConfig {
+    fn retained_tree(&self) -> Option<quanta_index_kernel::RetainedSourceTreePolicyV20> {
+        self.text_recipe
+            .retained_source_tree_policy_v20()
+            .map(
+                |previous| quanta_index_kernel::RetainedSourceTreePolicyV20 {
+                    descriptor: self.text,
+                    previous,
+                    current: self.text_recipe.output_policy(),
+                },
+            )
+    }
+}
+
 native_json_unit_enum!(TextLayoutConfig {
     "tree-v1" => TreeV1,
     "segmented-full-v1" => SegmentedFullV1,
@@ -2238,11 +2252,11 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
         })
         .transpose()?;
     let mut text = QueryAdapterRegistry::<PlannedTextRead, TextReadResult>::new();
-    text.register(
-        config.text,
-        config.text_need,
-        NativeTextReader::new(config.text_recipe, config.bm25, config.text_need)?,
-    )?;
+    let mut text_reader = NativeTextReader::new(config.text_recipe, config.bm25, config.text_need)?;
+    if config.retained_tree().is_some() {
+        text_reader = text_reader.with_previous_tree();
+    }
+    text.register(config.text, config.text_need, text_reader)?;
     let reader_need = ResourceNeed {
         provider_units: 0,
         ..config.resources.execution.interactive
@@ -2345,6 +2359,17 @@ fn bind(
     } else {
         config.retention.clone()
     };
+    let semantic_startup = config
+        .semantic
+        .as_ref()
+        .map(|semantic| -> Result<_> {
+            Ok(NativeSemanticStartup {
+                scopes: semantic.scopes.as_ref(),
+                descriptor: semantic.descriptor,
+                recipe: semantic.boot_recipe()?,
+            })
+        })
+        .transpose()?;
     let service = NativeIndexService::bind_with_boot_authority(
         authority,
         crate::native::NativeSocketBinding {
@@ -2366,6 +2391,10 @@ fn bind(
                 .map(Arc::new)
             })
             .transpose()?,
+        Some(NativeProductStartup {
+            retained_tree: config.retained_tree(),
+            semantic: semantic_startup,
+        }),
     )?;
     if let Some(read_sessions) = config.read_sessions {
         service.configure_read_sessions(read_sessions)?;

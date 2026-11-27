@@ -1609,6 +1609,62 @@ impl crate::FileObjectReader {
     }
 }
 
+impl PersistentMapPort for crate::FileObjectReader {
+    fn lookup(
+        &self,
+        root: MapRoot,
+        key: &[u8],
+        budget: &mut WorkBudget,
+    ) -> Result<Option<MapValue>, IndexError> {
+        self.lookup_map_value_v1(root, key, budget)
+    }
+
+    fn scan(
+        &self,
+        root: MapRoot,
+        after: Option<&[u8]>,
+        limit: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<MapPage, IndexError> {
+        self.scan_map(root, after, limit, budget)
+    }
+
+    fn apply(
+        &self,
+        _base: MapRoot,
+        _edits: &[MapEdit],
+        _sink: &dyn ObjectWriteSink,
+        _budget: &mut WorkBudget,
+    ) -> Result<MapWrite, IndexError> {
+        Err(IndexError::BackendViolation(
+            "read-only map port cannot write".into(),
+        ))
+    }
+
+    fn apply_batch(
+        &self,
+        _requests: &[MapBatchRequest],
+        _sink: &dyn ObjectWriteSink,
+        _budget: &mut WorkBudget,
+    ) -> Result<MapBatchWrite, IndexError> {
+        Err(IndexError::BackendViolation(
+            "read-only map port cannot write".into(),
+        ))
+    }
+
+    fn apply_stream(
+        &self,
+        _bases: &[MapRoot],
+        _edits: &mut dyn MapEditCursor,
+        _sink: &dyn ObjectWriteSink,
+        _budget: &mut WorkBudget,
+    ) -> Result<StagedMapRoots, IndexError> {
+        Err(IndexError::BackendViolation(
+            "read-only map port cannot write".into(),
+        ))
+    }
+}
+
 impl FileObjectStore {
     fn materialize_root(
         &self,

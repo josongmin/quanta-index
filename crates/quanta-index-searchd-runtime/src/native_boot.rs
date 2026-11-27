@@ -450,7 +450,17 @@ fn authenticate_with_legacy_history_v1(
             },
         )?;
     }
-    let historical_tree = if candidate_profile {
+    let _historical_tree = if candidate_profile && let Some(tree) = retained_tree {
+        quanta_index_kernel::verify_native_boot_live_tree_inputs_v20(
+            &manifest.operation,
+            &manifest.publication,
+            &request,
+            &profile,
+            registry,
+            tree,
+            budget,
+        )?
+    } else if candidate_profile {
         quanta_index_kernel::verify_native_boot_candidate_inputs(
             &manifest.operation,
             &manifest.publication,
@@ -481,35 +491,60 @@ fn authenticate_with_legacy_history_v1(
         )?;
         None
     };
-    if let Some(instance) = historical_tree {
-        let tree = retained_tree.ok_or(IndexError::BackendViolation(
-            "retained Tree identity lost".into(),
-        ))?;
-        let reference = reader
-            .lookup_map_object(
-                manifest.publication.members,
-                &quanta_index_core::index::member_map_key(instance),
-                budget,
-            )?
-            .ok_or(IndexError::SnapshotUnavailable)?;
-        let stored = reader.get(reference, budget)?;
-        let member = quanta_index_core::index::decode_member_binding(&stored.payload, budget)?;
-        if stored.registration.reference != reference
-            || member.instance != instance
-            || member.format != tree.descriptor.format
-            || member.input.schema != tree.descriptor.schema
-            || member.input.policy != tree.previous
-            || member.input.root != manifest.publication.source.owners
-            || member.input.context != manifest.publication.source.input_context_digest()?
-            || !stored.registration.children.iter().copied().eq([
-                Some(member.artifact),
-                member.input.root.0,
-            ]
-            .into_iter()
-            .flatten())
-        {
-            return Err(IndexError::DigestConflict.into());
-        }
+    if let Some(tree) = retained_tree {
+        quanta_index_catalog::visit_native_boot_scope_current_view_v1(
+            root,
+            authority.io.as_ref(),
+            manifest,
+            manifest.publication.identity.workspace,
+            budget,
+            |current, budget| {
+                let current = current.ok_or(IndexError::SnapshotUnavailable)?;
+                let current_profile = reader.get(current.profile, budget)?;
+                let Some(instance) =
+                    quanta_index_kernel::verify_native_boot_current_tree_profile_v20(
+                        current,
+                        &current_profile,
+                        registry,
+                        tree,
+                        candidate_profile,
+                        budget,
+                    )?
+                else {
+                    return Ok(());
+                };
+                let reference = reader
+                    .lookup_map_object(
+                        current.members,
+                        &quanta_index_core::index::member_map_key(instance),
+                        budget,
+                    )?
+                    .ok_or(IndexError::SnapshotUnavailable)?;
+                let stored = reader.get(reference, budget)?;
+                let member =
+                    quanta_index_core::index::decode_member_binding(&stored.payload, budget)?;
+                let context = current.source.input_context_digest().map_err(|error| {
+                    IndexError::InvalidInput(format!("source context encoding: {error}"))
+                })?;
+                if stored.registration.reference != reference
+                    || member.instance != instance
+                    || member.format != tree.descriptor.format
+                    || member.input.schema != tree.descriptor.schema
+                    || member.input.policy != tree.previous
+                    || member.input.root != current.source.owners
+                    || member.input.context != context
+                    || !stored.registration.children.iter().copied().eq([
+                        Some(member.artifact),
+                        member.input.root.0,
+                    ]
+                    .into_iter()
+                    .flatten())
+                {
+                    return Err(IndexError::DigestConflict);
+                }
+                Ok(())
+            },
+        )?;
     }
     let installed_history = if let Some(capture) = recovery {
         authenticate_recovery_capture(
@@ -1527,17 +1562,37 @@ pub(super) fn execute(
                 if Some(identity(snapshot.root_nonce, selected)?) != command.identity {
                     return Err(IndexError::DigestConflict.into());
                 }
-                authenticate(
-                    &authority,
-                    snapshot,
-                    selected,
-                    registry,
-                    maximum,
-                    None,
-                    verify_current,
-                    true,
-                    &mut budget,
-                )?;
+                if matches!(
+                    command.mode,
+                    NativeCommandModeV1::Serve | NativeCommandModeV1::Verify
+                ) {
+                    let _installed_history = authenticate_with_legacy_history_v1(
+                        &authority,
+                        snapshot,
+                        selected,
+                        registry,
+                        maximum,
+                        None,
+                        None,
+                        None,
+                        ProtectedRouteCheckV1::Retained,
+                        true,
+                        config.retained_tree(),
+                        &mut budget,
+                    )?;
+                } else {
+                    authenticate(
+                        &authority,
+                        snapshot,
+                        selected,
+                        registry,
+                        maximum,
+                        None,
+                        verify_current,
+                        true,
+                        &mut budget,
+                    )?;
+                }
                 if let Some(expected) = command.install_catalog_digest {
                     let io = NativeObjectReadIo::new(Arc::clone(&authority.physical));
                     if catalog_digest::catalog_content_digest(&root, &io, &mut budget)? != expected

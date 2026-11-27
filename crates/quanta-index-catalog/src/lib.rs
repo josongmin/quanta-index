@@ -60,7 +60,8 @@ pub use native::{
     verify_legacy_active_repomap_receipts_with_siblings_v1, verify_legacy_catalog_quiescence_v1,
     verify_legacy_history_source_inventory_v1, verify_legacy_history_sources_v1,
     verify_legacy_terminal_batch_receipt, verify_native_boot_candidate, verify_native_boot_catalog,
-    verify_native_boot_current_candidate, verify_native_legacy_history_recovery_publications_v1,
+    verify_native_boot_current_candidate, verify_native_boot_scope_selected_view_v1,
+    verify_native_legacy_history_recovery_publications_v1,
     verify_native_legacy_history_recovery_publications_with_routes_v1,
     verify_native_protected_snapshot_install_v1,
     verify_native_protected_source_routes_for_candidate_resume_v1,
@@ -73,7 +74,8 @@ pub use native::{
     verify_native_source_root_quiescence_with_routes_v1, visit_legacy_active_catalog_heads_v1,
     visit_legacy_history_checkpoint_pages_v1, visit_legacy_history_checkpoint_rows_v1,
     visit_legacy_history_generation_keys_v1, visit_legacy_history_snapshot_rows_v1,
-    visit_native_protected_snapshot_rows_v1, with_legacy_active_repomap_receipts_with_siblings_v1,
+    visit_native_boot_scope_current_view_v1, visit_native_protected_snapshot_rows_v1,
+    with_legacy_active_repomap_receipts_with_siblings_v1,
 };
 pub use ticket_diagnostics::{TicketValidationObservation, TicketValidationTimings};
 pub use writer_cache::{

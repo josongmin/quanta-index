@@ -2,6 +2,7 @@
 //! existing daemon routes or write the legacy index formats.
 
 use std::{
+    collections::BTreeSet,
     ffi::{OsStr, OsString},
     fs::{self, OpenOptions},
     io::{ErrorKind, Read as _, Write as _},
@@ -69,7 +70,10 @@ use quanta_index_searchd::app::{
     runtime::{RuntimeRetirementPort, StateRootLease},
     state_format::STATE_ROOT_LEASE_FILE_NAME,
 };
-use quanta_index_semantic::native::{SearchResult, SemanticReadRequest};
+use quanta_index_semantic::native::{
+    EmbeddingRecipe, ReadContext as SemanticReadContext, SearchResult, SemanticReadRequest,
+    require_lance_writable,
+};
 use quanta_index_storage::{
     FileObjectStore, FileScratchSpace, ManagedObjectIo, ObjectIoObservation,
 };
@@ -1925,6 +1929,52 @@ pub struct NativeServiceCapabilities {
     pub provider_attempt_pool: Option<Arc<quanta_index_embed::ProviderAttemptPool>>,
 }
 
+pub(super) struct NativeSemanticStartup<'a> {
+    pub(super) scopes: &'a BTreeSet<NativePumpScope>,
+    pub(super) descriptor: AdapterDescriptor,
+    pub(super) recipe: EmbeddingRecipe,
+}
+
+pub(super) struct NativeProductStartup<'a> {
+    pub(super) retained_tree: Option<quanta_index_kernel::RetainedSourceTreePolicyV20>,
+    pub(super) semantic: Option<NativeSemanticStartup<'a>>,
+}
+
+impl NativeSemanticStartup<'_> {
+    fn validate(
+        &self,
+        catalog: &SqliteCatalog,
+        kernel: &Kernel<SqliteCatalog>,
+        budget: &mut WorkBudget,
+    ) -> std::result::Result<(), IndexError> {
+        for scope in self.scopes {
+            let Some(head) = catalog.native_current_view_for_startup(scope.workspace, budget)?
+            else {
+                continue;
+            };
+            if head.epoch != scope.epoch {
+                continue;
+            }
+            let mut session = kernel.begin_query_session(ViewSelection::Exact(head), budget)?;
+            let validated = session.validate_selected_async_coverage(self.descriptor, |context| {
+                require_lance_writable(
+                    &context.ticket.view,
+                    context.instance,
+                    &self.recipe,
+                    &mut SemanticReadContext {
+                        objects: context.objects,
+                        maps: context.maps,
+                        budget: &mut *context.budget,
+                    },
+                )
+            });
+            let closed = session.close();
+            validated.and(closed)?;
+        }
+        Ok(())
+    }
+}
+
 impl NativeServiceCapabilities {
     /// Pure startup validation, shared by in-process and product composition.
     /// No state root, socket, worker or catalog is opened here.
@@ -2427,6 +2477,7 @@ impl NativeIndexService {
             maintenance,
             retention,
             process_memory_admission,
+            None,
         )
     }
 
@@ -2439,6 +2490,7 @@ impl NativeIndexService {
         maintenance: Option<NativeReclaimConfig>,
         retention: Option<NativeRetentionConfig>,
         process_memory_admission: Option<Arc<NativeProcessMemoryAdmission>>,
+        product_startup: Option<NativeProductStartup<'_>>,
     ) -> Result<Self> {
         let NativeSocketBinding {
             path: socket_path,
@@ -2598,6 +2650,23 @@ impl NativeIndexService {
         .with_projection_validator(Arc::new(
             crate::native_read_session_transport::NativeDslCommitValidator,
         ));
+        let kernel = Arc::new(
+            Kernel::new(services, registry).with_retained_tree(
+                product_startup
+                    .as_ref()
+                    .and_then(|product| product.retained_tree),
+            ),
+        );
+        if let Some(semantic) = product_startup.and_then(|product| product.semantic) {
+            let scheduler = ledger.scheduler(NativeResourceClass::Control);
+            let reservation =
+                ReservationGuard::try_acquire(Arc::clone(&scheduler), resources.execution.control)
+                    .ok_or_else(|| scheduler.denial())?;
+            startup.bind_memory_scope(reservation.memory_scope());
+            let validated = semantic.validate(&catalog, &kernel, &mut startup);
+            startup.bind_memory_scope(None);
+            validated.context("authenticate selected Semantic coverage before enabling writes")?;
+        }
         drop(boot_funding);
         let read_sessions = Arc::new(OnceLock::new());
         let dispatcher = Arc::new(NativeDispatcher {
@@ -2606,7 +2675,7 @@ impl NativeIndexService {
             dsl_corpus_cache: crate::native_read_session_transport::NativeDslCorpusCache::new(
                 dsl_cache_bytes,
             ),
-            kernel: Arc::new(Kernel::new(services, registry)),
+            kernel,
             catalog,
             literal_queries,
             path_queries,

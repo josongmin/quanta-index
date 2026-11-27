@@ -298,6 +298,22 @@ pub(super) fn charged_current_view(
     current_view(connection, workspace)
 }
 
+impl SqliteCatalog {
+    /// Resolve a current head before an exclusive startup owner pins it.
+    /// A workspace without a head is distinct from a broken view ledger.
+    pub fn native_current_view_for_startup(
+        &self,
+        workspace: WorkspaceKey,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ViewRef>, IndexError> {
+        let _scratch = budget.reserve_memory(64 * 1024, MemoryLifetime::Temporary)?;
+        let connection = self.lock_native_budget(budget)?;
+        let view = charged_current_view(&connection, workspace, budget)?;
+        budget.checkpoint()?;
+        Ok(view.map(|view| view.identity))
+    }
+}
+
 fn next_retire_candidate(
     connection: &Connection,
     workspace: WorkspaceKey,

@@ -428,7 +428,7 @@ fn held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> T
 
 #[test]
 #[cfg(target_os = "linux")]
-fn retained_v20_tree_boot_is_a_source_witness_but_not_a_current_candidate() -> TestResult {
+fn retained_v20_tree_boot_supports_selected_serve_but_not_a_current_candidate() -> TestResult {
     let mut old = prepare_native_fixture_with_tree(true, true)?;
     let mut fresh = prepare_native_fixture_with_tree(false, true)?;
     old.running.stop()?;
@@ -467,6 +467,29 @@ fn retained_v20_tree_boot_is_a_source_witness_but_not_a_current_candidate() -> T
                 );
                 anyhow::ensure!(strict.is_err(), "old Tree policy passed current BOOT");
             }
+            let previous = old
+                .config
+                .text_recipe
+                .retained_source_tree_policy_v20()
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            let _live = boot::authenticate_with_legacy_history_v1(
+                &authority,
+                &snapshot,
+                selected,
+                &current_registry,
+                old.config.resources.physical.inventory.max_entries,
+                None,
+                None,
+                None,
+                boot::ProtectedRouteCheckV1::Retained,
+                true,
+                Some(quanta_index_kernel::RetainedSourceTreePolicyV20 {
+                    descriptor: old.config.text,
+                    previous,
+                    current: old.config.text_recipe.output_policy(),
+                }),
+                budget,
+            )?;
             let wrong_history = boot::authenticate_retained_source_v20(
                 &authority,
                 &snapshot,

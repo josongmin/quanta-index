@@ -231,6 +231,7 @@ impl<C: ControlCatalog + 'static> KernelServices<C> {
 pub struct Kernel<C: ControlCatalog + 'static> {
     services: KernelServices<C>,
     registry: AdapterRegistry,
+    retained_tree: Option<crate::RetainedSourceTreePolicyV20>,
 }
 
 struct IngressSink<'a> {
@@ -491,6 +492,41 @@ impl<'a, C: ControlCatalog + 'static> PinnedQuerySession<'a, C> {
     #[must_use]
     pub fn view(&self) -> ViewRef {
         self.ticket.view().identity
+    }
+
+    /// Validate every instance of a configured async writer in the pinned
+    /// profile before exposing that writer to requests.
+    pub fn validate_selected_async_coverage(
+        &mut self,
+        descriptor: crate::AdapterDescriptor,
+        mut validate: impl FnMut(
+            &mut quanta_index_core::index::QueryReadContext<'_>,
+        ) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        self.ticket.validate_for_request(self.budget)?;
+        for instance in &self.profile.instances {
+            self.budget.checkpoint()?;
+            if instance.kind != descriptor.kind {
+                continue;
+            }
+            if instance.activation != GroupActivation::AsyncCoverage
+                || instance.schema != descriptor.schema
+                || instance.format != descriptor.format
+            {
+                return Err(IndexError::InvalidInput(
+                    "selected instance differs from the configured async writer".into(),
+                ));
+            }
+            validate(&mut quanta_index_core::index::QueryReadContext {
+                ticket: self.ticket.record(),
+                instance,
+                objects: self.kernel.services.objects.as_ref(),
+                maps: self.kernel.services.maps.as_ref(),
+                budget: &mut *self.budget,
+            })?;
+        }
+        self.ticket.validate_for_request(self.budget)?;
+        self.budget.checkpoint()
     }
 
     /// Resolve the unique compatible reader in this session's selected profile.
@@ -1024,7 +1060,18 @@ fn finish_pinned_query<T>(
 impl<C: ControlCatalog + 'static> Kernel<C> {
     #[must_use]
     pub fn new(services: KernelServices<C>, registry: AdapterRegistry) -> Self {
-        Self { services, registry }
+        Self {
+            services,
+            registry,
+            retained_tree: None,
+        }
+    }
+
+    /// Recognize one historical Tree member for an explicit Source rebuild.
+    #[must_use]
+    pub fn with_retained_tree(mut self, tree: Option<crate::RetainedSourceTreePolicyV20>) -> Self {
+        self.retained_tree = tree;
+        self
     }
 
     /// Starts or fences a durable, operation-scoped input stage. The returned
@@ -2885,65 +2932,23 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             } => Some((*instance, *expected_artifact, *owner)),
             _ => None,
         };
-        let (next_source, target_profile, delta, mut events, expected_source) = match &request.kind
-        {
+        let target_profile = match &request.kind {
             UpdateKind::SourceAdvance(_)
             | UpdateKind::SourceHistoryAdvance(_)
             | UpdateKind::SourceResync { .. }
             | UpdateKind::SourceHistoryResync { .. } => {
-                let transition =
-                    source.ok_or_else(|| IndexError::BackendViolation("source dispatch".into()))?;
-                let delta = source::apply_source(
-                    base.identity,
-                    base.source,
-                    transition,
-                    request.kind.source_mode(),
-                    self.services.catalog.as_ref(),
-                    &reads,
-                    &mut context,
-                )?;
-                (
-                    delta.delta().next,
-                    generation_advance.map_or(base.profile, |advance| advance.profile),
-                    Some(delta),
-                    PreparedEvents::copy(&transition.events, context.budget)?,
-                    Some(transition.expected_source),
-                )
+                generation_advance.map_or(base.profile, |advance| advance.profile)
             }
-            UpdateKind::Reconfigure { profile } => (
-                base.source,
-                *profile,
-                None,
-                PreparedEvents::copy(&[], context.budget)?,
-                None,
-            ),
-            UpdateKind::CompactSourceLocal { .. } => (
-                base.source,
-                base.profile,
-                None,
-                PreparedEvents::copy(&[], context.budget)?,
-                None,
-            ),
-            UpdateKind::HistoryAdvance(transition) => (
-                base.source,
-                transition.profile,
-                None,
-                PreparedEvents::copy(&[], context.budget)?,
-                None,
-            ),
+            UpdateKind::Reconfigure { profile } => *profile,
+            UpdateKind::CompactSourceLocal { .. } => base.profile,
+            UpdateKind::HistoryAdvance(transition) => transition.profile,
             UpdateKind::HistoryAppend(append) => {
                 if append.profile != base.profile {
                     return Err(IndexError::InvalidInput(
                         "History append must preserve the published profile".into(),
                     ));
                 }
-                (
-                    base.source,
-                    append.profile,
-                    None,
-                    PreparedEvents::copy(&[], context.budget)?,
-                    None,
-                )
+                append.profile
             }
             UpdateKind::Materialize { .. } => {
                 return Err(IndexError::BackendViolation("materialize dispatch".into()));
@@ -2955,8 +2960,34 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let profile = self.load_profile(target_profile, &mut context)?;
         let prior_profile = if target_profile == base.profile {
             profile.clone()
+        } else if matches!(&request.kind, UpdateKind::Reconfigure { .. }) {
+            self.load_profile_preserving_tree(base, &mut context)?
         } else {
             self.load_profile(base.profile, &mut context)?
+        };
+        let (next_source, delta, mut events, expected_source) = if let Some(transition) = source {
+            let delta = source::apply_source(
+                base.identity,
+                base.source,
+                transition,
+                request.kind.source_mode(),
+                self.services.catalog.as_ref(),
+                &reads,
+                &mut context,
+            )?;
+            (
+                delta.delta().next,
+                Some(delta),
+                PreparedEvents::copy(&transition.events, context.budget)?,
+                Some(transition.expected_source),
+            )
+        } else {
+            (
+                base.source,
+                None,
+                PreparedEvents::copy(&[], context.budget)?,
+                None,
+            )
         };
         let sequence = base
             .identity
@@ -3101,8 +3132,58 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
     ) -> Result<LoadedProfile, IndexError> {
         let profile = load_profile_object(reference, context.objects, context.budget)?;
         reject_retired_repomap_profile(&profile, context.budget)?;
-        self.registry
-            .validate_profile(&profile.instances, context.budget)?;
+        if crate::boot::validate_profile_with_retained_tree_v20(
+            &self.registry,
+            &profile,
+            self.retained_tree,
+            context.budget,
+        )?
+        .is_some()
+        {
+            return Err(IndexError::RebuildRequired);
+        }
+        Ok(profile)
+    }
+
+    /// Validate a previous Text member for operations that preserve it or
+    /// rebuild from Source without feeding its artifact to the current writer.
+    fn load_profile_preserving_tree(
+        &self,
+        base: &CatalogView,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<LoadedProfile, IndexError> {
+        let profile = load_profile_object(base.profile, context.objects, context.budget)?;
+        reject_retired_repomap_profile(&profile, context.budget)?;
+        if let Some(instance) = crate::boot::validate_profile_with_retained_tree_v20(
+            &self.registry,
+            &profile,
+            self.retained_tree,
+            context.budget,
+        )? {
+            let spec = profile
+                .instances
+                .iter()
+                .find(|spec| spec.instance == instance)
+                .ok_or_else(|| {
+                    IndexError::BackendViolation("validated Tree instance absent".into())
+                })?;
+            let reference = context
+                .maps
+                .lookup_object(base.members, &member_key(instance), context.budget)?
+                .ok_or_else(|| IndexError::CorruptObject("selected Tree member absent".into()))?;
+            let member = load_member(reference, instance, context)?;
+            let input = InputBinding {
+                root: base.source.owners,
+                schema: spec.schema,
+                policy: spec.policy,
+                context: identity::source_context(base.source)?,
+            };
+            if member.format != spec.format || member.input != input {
+                return Err(IndexError::CorruptObject(
+                    "selected Tree predecessor differs from its Source view".into(),
+                ));
+            }
+        }
         Ok(profile)
     }
 
@@ -3834,7 +3915,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         transition: &ProjectionTransition,
         context: &mut AttemptContext<'_>,
     ) -> Result<OperationStatus, IndexError> {
-        let profile = self.load_profile(base.profile, context)?;
+        let profile = self.load_profile_preserving_tree(base, context)?;
         for spec in &profile.instances {
             if spec.activation != GroupActivation::AsyncCoverage
                 || !matches!(spec.input_domain, InputDomain::Projection { projection, producer }
@@ -4209,7 +4290,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 "projection-domain materialization is unsupported".into(),
             ));
         };
-        let profile = self.load_profile(base.profile, context)?;
+        let profile = self.load_profile_preserving_tree(base, context)?;
         let spec = profile
             .instances
             .iter()

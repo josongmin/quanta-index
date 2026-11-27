@@ -2290,6 +2290,69 @@ pub fn verify_native_boot_current_candidate(
     )
 }
 
+/// Visit one workspace's charged current head under the exact selected BOOT.
+/// The callback cannot outlive this existing-only Catalog read transaction.
+/// Installation callers prove quiescence separately over their full route set.
+pub fn visit_native_boot_scope_current_view_v1<T>(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    selected: &NativeBootManifest,
+    workspace: WorkspaceKey,
+    budget: &mut WorkBudget,
+    visit: impl FnOnce(Option<&CatalogView>, &mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        |error| error,
+        |connection, path, budget, allocation| {
+            let (snapshot, _, _, _) = inspect(
+                connection,
+                path,
+                None,
+                RollbackCheck::None,
+                None,
+                None,
+                budget,
+                allocation,
+            )?;
+            if snapshot.selected.as_ref() != Some(selected) {
+                return Err(IndexError::Conflict);
+            }
+            let current = retention::charged_current_view(connection, workspace, budget)?;
+            visit(current.as_ref(), budget)
+        },
+    )
+}
+
+/// Check the physically authenticated view of an active configured scope.
+/// A workspace head at another epoch leaves this scope inactive.
+pub fn verify_native_boot_scope_selected_view_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    selected: &NativeBootManifest,
+    workspace: WorkspaceKey,
+    epoch: u64,
+    expected: Option<&CatalogView>,
+    budget: &mut WorkBudget,
+) -> Result<bool, IndexError> {
+    visit_native_boot_scope_current_view_v1(
+        state_root,
+        io,
+        selected,
+        workspace,
+        budget,
+        |current, _| match (current, expected) {
+            (Some(current), _) if current.identity.epoch != epoch => Ok(false),
+            (None, None) => Ok(false),
+            (Some(current), Some(expected)) if current == expected => Ok(true),
+            _ => Err(IndexError::Conflict),
+        },
+    )
+}
+
 /// Inspect only the retained operation row using the existing read-only
 /// connection, authenticated VFS and Original budget. No old request/view
 /// object is required for an already Published operation.

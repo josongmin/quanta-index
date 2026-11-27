@@ -12,6 +12,8 @@
 mod lexical_cold_source_advance;
 #[path = "common/native_catalog_profile.rs"]
 mod native_catalog_profile;
+#[path = "native_lifecycle/previous_tree_reconfigure.rs"]
+mod previous_tree_reconfigure;
 #[path = "native_lifecycle/searchable_preparation.rs"]
 mod searchable_preparation;
 use futures::executor::block_on;

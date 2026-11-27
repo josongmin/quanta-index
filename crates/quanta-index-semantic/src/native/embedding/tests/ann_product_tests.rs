@@ -307,6 +307,216 @@ fn ann_budget() -> Result<WorkBudget, Box<dyn std::error::Error>> {
     ))
 }
 
+fn preflight_view(
+    store: &MemoryStore,
+    maps: &GraphMap<'_>,
+    recipe: &EmbeddingRecipe,
+    spec: &InstanceSpec,
+    owners: MapRoot,
+    searchable: Option<ObjectRef>,
+    status: CoverageStatus,
+) -> Result<CatalogView, Box<dyn std::error::Error>> {
+    let profile = store.insert(
+        serde_json::to_vec(&IndexProfile {
+            instances: vec![spec.clone()],
+        })?,
+        vec![],
+    )?;
+    let desired = InputBinding {
+        root: owners,
+        schema: spec.schema,
+        policy: recipe.fingerprint(),
+        context: Digest([0; 32]),
+    };
+    let coverage = CoverageBinding {
+        instance: spec.instance,
+        desired,
+        covered: (!matches!(status, CoverageStatus::Pending { .. })).then_some(desired),
+        searchable,
+        status,
+        owners,
+    };
+    let children = ObjectChildren::from_references([
+        desired.root.0,
+        coverage.owners.0,
+        None,
+        coverage.searchable,
+    ]);
+    let coverage_ref =
+        store.insert(serde_json::to_vec(&coverage)?, children.as_slice().to_vec())?;
+    let coverage_root = maps.seed(BTreeMap::from([(
+        member_map_key(spec.instance).to_vec(),
+        coverage_ref,
+    )]))?;
+    let mut view = CatalogView {
+        identity: ViewRef {
+            workspace: attempt().operation.workspace,
+            epoch: 1,
+            sequence: 1,
+            digest: Digest([0; 32]),
+        },
+        profile,
+        source: SourceCut {
+            owners,
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        },
+        projections: MapRoot(None),
+        members: MapRoot(None),
+        coverage: coverage_root,
+    };
+    view.identity.digest = view.identity_digest()?;
+    Ok(view)
+}
+
+#[test]
+fn lance_writer_preflight_checks_selected_directory_before_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (backend, should_rebuild) in [
+        (None, false),
+        (Some(ann_directory::AnnBackend::Graph), true),
+        (Some(ann_directory::AnnBackend::LanceDb), false),
+    ] {
+        let store = MemoryStore::default();
+        let maps = GraphMap::new(&store);
+        let custody = TestCustody;
+        let recipe = recipe();
+        let spec = instance(&recipe);
+        let mut work = ann_budget()?;
+        let searchable = backend
+            .map(|backend| {
+                ann_directory::AnnDirectory::empty_with_backend(
+                    recipe.fingerprint(),
+                    MapRoot(None),
+                    backend,
+                )
+                .save(&mut AttemptContext {
+                    attempt: attempt(),
+                    objects: &store,
+                    maps: &maps,
+                    custody: &custody,
+                    scratch: &NoScratch,
+                    budget: &mut work,
+                })
+            })
+            .transpose()?;
+        let view = preflight_view(
+            &store,
+            &maps,
+            &recipe,
+            &spec,
+            MapRoot(None),
+            searchable,
+            CoverageStatus::Complete,
+        )?;
+        let before = work.usage();
+        let result = require_lance_writable(
+            &view,
+            &spec,
+            &recipe,
+            &mut ReadContext {
+                objects: &store,
+                maps: &maps,
+                budget: &mut work,
+            },
+        );
+        if should_rebuild {
+            check!(matches!(result, Err(IndexError::RebuildRequired)));
+        } else {
+            check!(result.is_ok());
+        }
+        check_eq!(work.usage().writes, before.writes);
+        check_eq!(work.usage().mutations, before.mutations);
+    }
+    Ok(())
+}
+
+#[test]
+fn lance_writer_preflight_preserves_legacy_and_corrupt_coverage_refusals()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (searchable, corrupt) in [(true, false), (false, true)] {
+        let store = MemoryStore::default();
+        let maps = GraphMap::new(&store);
+        let recipe = recipe();
+        let spec = instance(&recipe);
+        let owners = MapRoot(Some(ObjectRef(Digest([0x45; 32]))));
+        let view = preflight_view(
+            &store,
+            &maps,
+            &recipe,
+            &spec,
+            owners,
+            searchable.then_some(owners.0.ok_or("owner root absent")?),
+            CoverageStatus::Complete,
+        )?;
+        let mut work = ann_budget()?;
+        let result = require_lance_writable(
+            &view,
+            &spec,
+            &recipe,
+            &mut ReadContext {
+                objects: &store,
+                maps: &maps,
+                budget: &mut work,
+            },
+        );
+        if corrupt {
+            check!(matches!(result, Err(IndexError::CorruptObject(_))));
+        } else {
+            check!(matches!(result, Err(IndexError::RebuildRequired)));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn lance_writer_preflight_accepts_pending_projection_before_query_ready()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryStore::default();
+    let maps = GraphMap::new(&store);
+    let projection = ProjectionId([41; 16]);
+    let producer = ProducerId([42; 16]);
+    let schema = SchemaId([43; 16]);
+    let mut recipe = recipe();
+    recipe.input_policy = EmbeddingInputPolicy::ProjectionUtf8 {
+        projection,
+        producer,
+        schema,
+    };
+    let mut spec = instance(&recipe);
+    spec.input_domain = InputDomain::Projection {
+        projection,
+        producer,
+    };
+    spec.schema = schema;
+    let view = preflight_view(
+        &store,
+        &maps,
+        &recipe,
+        &spec,
+        MapRoot(None),
+        None,
+        CoverageStatus::Pending {
+            previous_missing: MapRoot(None),
+        },
+    )?;
+    let mut work = ann_budget()?;
+    let before = work.usage();
+    let mut read = ReadContext {
+        objects: &store,
+        maps: &maps,
+        budget: &mut work,
+    };
+    check!(require_lance_writable(&view, &spec, &recipe, &mut read).is_ok());
+    check!(matches!(
+        load_selected_search(&view, &spec, spec.format, &recipe, &mut read),
+        Err(IndexError::SnapshotUnavailable)
+    ));
+    check_eq!(work.usage().writes, before.writes);
+    check_eq!(work.usage().mutations, before.mutations);
+    Ok(())
+}
+
 // Search runs with a real, bounded memory authority so zero-row results do
 // not mask a positive reservation that was previously bypassed by WorkBudget.
 #[derive(Default)]

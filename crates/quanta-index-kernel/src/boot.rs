@@ -2,14 +2,16 @@
 //! The caller authenticates their physical object bytes and selected catalog row.
 
 use quanta_index_core::index::{
-    CatalogView, Digest, HistoryTransition, ImmutableOperation, IndexError, IndexInstanceId,
-    InputDomain, InstanceSpec, MemoryLifetime, StoredObject, UpdateKind, WorkBudget,
+    CatalogView, Digest, GroupActivation, HistoryTransition, ImmutableOperation, IndexError,
+    IndexInstanceId, IndexProfile, InputDomain, InstanceSpec, MemoryLifetime, StoredObject,
+    UpdateKind, WorkBudget,
 };
 
 use crate::{AdapterDescriptor, AdapterRegistry, profile, request_decode, request_preparation};
 
-/// One historical Tree identity accepted only while authenticating a held
-/// predecessor as a Source witness. Candidate and listener profiles stay live.
+/// The exact earlier v20 Tree policy, bound to the installed Text descriptor.
+/// It can authenticate a held predecessor or an already selected live view;
+/// new candidate publications retain the current policy.
 #[derive(Clone, Copy)]
 pub struct RetainedSourceTreePolicyV20 {
     pub descriptor: AdapterDescriptor,
@@ -109,6 +111,56 @@ pub fn verify_native_boot_retained_source_inputs_v20(
     )
 }
 
+/// Authenticate an already selected live Native Tree view written with the
+/// earlier v20 policy. The immutable request and every other profile member
+/// retain the candidate BOOT rules; the caller must verify the old Text member
+/// binding and provide a reader for its persisted layout before serving.
+pub fn verify_native_boot_live_tree_inputs_v20(
+    operation: &ImmutableOperation,
+    publication: &CatalogView,
+    request: &StoredObject,
+    profile: &StoredObject,
+    registry: &AdapterRegistry,
+    tree: RetainedSourceTreePolicyV20,
+    budget: &mut WorkBudget,
+) -> Result<Option<IndexInstanceId>, IndexError> {
+    verify_native_boot_inputs_with_policy(
+        operation,
+        publication,
+        request,
+        profile,
+        registry,
+        true,
+        Some(tree),
+        budget,
+    )
+}
+
+/// Validate the profile of the Catalog's currently selected workspace head.
+/// The BOOT publication may be historical and its member map may be retired;
+/// callers must obtain this view from a held read-only Catalog transaction and
+/// verify the returned old instance against that view's physical member map.
+pub fn verify_native_boot_current_tree_profile_v20(
+    view: &CatalogView,
+    profile: &StoredObject,
+    registry: &AdapterRegistry,
+    tree: RetainedSourceTreePolicyV20,
+    live: bool,
+    budget: &mut WorkBudget,
+) -> Result<Option<IndexInstanceId>, IndexError> {
+    budget.checkpoint()?;
+    if profile.registration.reference != view.profile || !profile.registration.children.is_empty() {
+        return Err(IndexError::CorruptObject(
+            "current Tree profile reference or edges mismatch".into(),
+        ));
+    }
+    let loaded = profile::decode_payload(&profile.payload, budget)?;
+    if live {
+        crate::update::reject_retired_repomap_profile(&loaded, budget)?;
+    }
+    validate_profile_with_retained_tree_v20(registry, &loaded, Some(tree), budget)
+}
+
 /// Authenticate a new candidate's selected BOOT. A retained predecessor uses
 /// `verify_native_boot_inputs` so its historical RepoMap profile can be read.
 pub fn verify_native_boot_candidate_inputs(
@@ -160,17 +212,33 @@ fn verify_native_boot_inputs_with_policy(
     if candidate {
         crate::update::reject_retired_repomap_profile(&loaded, budget)?;
     }
+    let historical =
+        validate_profile_with_retained_tree_v20(registry, &loaded, retained_tree, budget)?;
+    budget.checkpoint()?;
+    Ok(historical)
+}
+
+/// Validate one fixed previous Tree instance without changing persisted profile
+/// data. The caller must independently authenticate the member's input binding
+/// and restrict which operation is allowed to retain this old profile.
+pub(crate) fn validate_profile_with_retained_tree_v20(
+    registry: &AdapterRegistry,
+    profile: &IndexProfile,
+    retained_tree: Option<RetainedSourceTreePolicyV20>,
+    budget: &mut WorkBudget,
+) -> Result<Option<IndexInstanceId>, IndexError> {
     let historical = if let Some(tree) = retained_tree {
-        if candidate || tree.previous == tree.current {
+        if tree.previous == tree.current {
             return Err(IndexError::InvalidInput(
                 "invalid retained Tree policy gate".into(),
             ));
         }
         let mut found = None;
-        for instance in &loaded.instances {
+        for instance in &profile.instances {
             if instance.kind == tree.descriptor.kind && instance.policy == tree.previous {
                 if instance.schema != tree.descriptor.schema
                     || instance.format != tree.descriptor.format
+                    || instance.activation != GroupActivation::CoreRequired
                     || instance.input_domain != InputDomain::SourceLocal
                     || found.replace(instance.instance).is_some()
                 {
@@ -181,7 +249,14 @@ fn verify_native_boot_inputs_with_policy(
             }
         }
         if let Some(instance_id) = found {
-            let bytes = loaded
+            if profile.instances.iter().any(|instance| {
+                instance.kind == tree.descriptor.kind && instance.instance != instance_id
+            }) {
+                return Err(IndexError::InvalidInput(
+                    "retained Tree profile has another Text instance".into(),
+                ));
+            }
+            let bytes = profile
                 .instances
                 .len()
                 .checked_mul(std::mem::size_of::<InstanceSpec>())
@@ -194,9 +269,9 @@ fn verify_native_boot_inputs_with_policy(
                 .ok_or(IndexError::ResourceLimited)?;
             let mut validation = Vec::new();
             validation
-                .try_reserve_exact(loaded.instances.len())
+                .try_reserve_exact(profile.instances.len())
                 .map_err(|_| IndexError::ResourceLimited)?;
-            validation.extend(loaded.instances.iter().cloned());
+            validation.extend(profile.instances.iter().cloned());
             let item = validation
                 .iter_mut()
                 .find(|item| item.instance == instance_id)
@@ -206,11 +281,11 @@ fn verify_native_boot_inputs_with_policy(
             item.policy = tree.current;
             registry.validate_profile(&validation, budget)?;
         } else {
-            registry.validate_profile(&loaded.instances, budget)?;
+            registry.validate_profile(&profile.instances, budget)?;
         }
         found
     } else {
-        registry.validate_profile(&loaded.instances, budget)?;
+        registry.validate_profile(&profile.instances, budget)?;
         None
     };
     budget.checkpoint()?;
@@ -508,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_v20_tree_profile_is_only_a_prior_source_witness()
+    fn retained_v20_tree_profile_authenticates_predecessor_and_selected_views()
     -> Result<(), Box<dyn std::error::Error>> {
         let request = request_rows()
             .into_iter()
@@ -592,6 +667,56 @@ mod tests {
                 &mut admitted_budget,
             )? == Some(instance.instance),
         )?;
+        let (mut live_budget, _) = scoped(1_000_000, false)?;
+        require(
+            verify_native_boot_live_tree_inputs_v20(
+                &operation,
+                &publication,
+                &stored_request,
+                &stored_profile,
+                &registry,
+                gate,
+                &mut live_budget,
+            )? == Some(instance.instance),
+        )?;
+        let (mut current_budget, _) = scoped(1_000_000, false)?;
+        require(
+            verify_native_boot_current_tree_profile_v20(
+                &publication,
+                &stored_profile,
+                &registry,
+                gate,
+                true,
+                &mut current_budget,
+            )? == Some(instance.instance),
+        )?;
+        // A later Reconfigure may retire the old member map while its BOOT
+        // request/profile stay protected. The current head then has no old
+        // Text member to open during restart.
+        let mut reconfigured_view = publication.clone();
+        reconfigured_view.profile = ObjectRef(Digest([99; 32]));
+        let reconfigured_profile = object(
+            reconfigured_view.profile,
+            serde_json::to_vec(&IndexProfile {
+                instances: vec![InstanceSpec {
+                    policy: current,
+                    ..instance.clone()
+                }],
+            })?,
+            Vec::new(),
+        )?;
+        let (mut current_budget, _) = scoped(1_000_000, false)?;
+        require(
+            verify_native_boot_current_tree_profile_v20(
+                &reconfigured_view,
+                &reconfigured_profile,
+                &registry,
+                gate,
+                true,
+                &mut current_budget,
+            )?
+            .is_none(),
+        )?;
         for wrong in [Digest([13; 32]), Digest([0; 32])] {
             let invalid = object(
                 publication.profile,
@@ -613,6 +738,19 @@ mod tests {
                     &registry,
                     gate,
                     &mut admitted_budget,
+                )
+                .is_err(),
+            )?;
+            let (mut live_budget, _) = scoped(1_000_000, false)?;
+            require(
+                verify_native_boot_live_tree_inputs_v20(
+                    &operation,
+                    &publication,
+                    &stored_request,
+                    &invalid,
+                    &registry,
+                    gate,
+                    &mut live_budget,
                 )
                 .is_err(),
             )?;

@@ -33,7 +33,7 @@ impl MemoryScopePort for MemoryReservation {
     }
 }
 
-fn scoped_budget() -> WorkBudget {
+pub(super) fn scoped_budget() -> WorkBudget {
     let mut work = budget();
     work.bind_memory_scope(Some(MemoryScope::new(Arc::new(MemoryReservation(
         Arc::new(MemoryLedger(AtomicU64::new(0))),

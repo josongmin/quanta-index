@@ -3,7 +3,8 @@
 use super::*;
 use quanta_index_catalog::{
     catalog_dir, verify_native_boot_candidate, verify_native_boot_current_candidate,
-    verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
+    verify_native_boot_scope_selected_view_v1, verify_native_rollback_with_source_publications,
+    verify_native_source_root_publications_v1, visit_native_boot_scope_current_view_v1,
 };
 use quanta_index_core::index::ports::{
     CatalogExactHistoryPort as _, CatalogGenesisPort as _, CatalogPublicationPort as _,
@@ -29,6 +30,119 @@ use std::{
 struct PublicationReadMeter {
     live: AtomicU64,
     limit: AtomicU64,
+}
+
+#[test]
+fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> TestResult {
+    let mut seeded = None;
+    let fixture = fixture_with_boot_input(|root| {
+        seeded = Some(seed_current_native_pair(root)?);
+        Ok(16 * 1024 * 1024)
+    })?;
+    let (_, _, boot) = seeded.ok_or("paired Catalog fixture absent")?;
+    let candidate = verify_native_boot_current_candidate(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(35),
+        &mut read_budget()?,
+    )?;
+    let selected = candidate.manifest();
+    let before = files(&fixture.root)?;
+    let mut work = read_budget()?;
+    require(
+        verify_native_boot_scope_selected_view_v1(
+            &fixture.root,
+            fixture.vfs.as_ref(),
+            selected,
+            boot.identity.workspace,
+            boot.identity.epoch,
+            Some(&boot),
+            &mut work,
+        )?,
+        "selected current scope was not observed",
+    )?;
+    let mut absent = boot.identity.workspace;
+    absent.slot = SlotId([9; 16]);
+    require(
+        !verify_native_boot_scope_selected_view_v1(
+            &fixture.root,
+            fixture.vfs.as_ref(),
+            selected,
+            absent,
+            boot.identity.epoch,
+            None,
+            &mut work,
+        )?,
+        "absent configured scope appeared present",
+    )?;
+    let inactive_epoch = boot.identity.epoch.checked_add(1).ok_or("epoch overflow")?;
+    require(
+        !verify_native_boot_scope_selected_view_v1(
+            &fixture.root,
+            fixture.vfs.as_ref(),
+            selected,
+            boot.identity.workspace,
+            inactive_epoch,
+            None,
+            &mut work,
+        )?,
+        "a head at another epoch activated the configured scope",
+    )?;
+    require(
+        matches!(
+            verify_native_boot_scope_selected_view_v1(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                selected,
+                boot.identity.workspace,
+                boot.identity.epoch,
+                None,
+                &mut work,
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "current scope without a selected view was accepted",
+    )?;
+    require(
+        files(&fixture.root)? == before,
+        "scope read changed Catalog bytes",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    let catalog =
+        quanta_index_catalog::SqliteCatalog::open(&fixture.root, Duration::from_millis(100))?;
+    let _ingress = catalog.open_ingress(key(36))?;
+    drop(catalog);
+    let with_ingress = files(&fixture.root)?;
+    let live_head = visit_native_boot_scope_current_view_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        selected,
+        boot.identity.workspace,
+        &mut work,
+        |current, _| Ok(current.map(|view| view.identity)),
+    )?;
+    require(
+        live_head == Some(boot.identity),
+        "live head inspection requires pending ingress to be discarded",
+    )?;
+    require(
+        matches!(
+            verify_native_boot_current_candidate(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(35),
+                &mut read_budget()?,
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "candidate verification accepted pending ingress",
+    )?;
+    require(
+        files(&fixture.root)? == with_ingress,
+        "live scope read did not preserve pending ingress",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
 }
 
 impl MemoryLeaseOwner for PublicationReadMeter {

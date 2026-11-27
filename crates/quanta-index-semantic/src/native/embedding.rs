@@ -13,8 +13,8 @@ use quanta_index_contract::{
     },
 };
 use quanta_index_core::index::{
-    AttemptContext, CoverageBinding, CoverageStatus, Digest, GroupActivation, IndexError,
-    IndexInstanceId, IndexProfile, IndexQueryPort, InputDomain, InstanceSpec,
+    AttemptContext, CatalogView, CoverageBinding, CoverageStatus, Digest, GroupActivation,
+    IndexError, IndexInstanceId, IndexProfile, IndexQueryPort, InputDomain, InstanceSpec,
     MAX_SOURCE_PATH_BYTES, MapRoot, MemoryLease, MemoryLifetime, ObjectChildren, ObjectRef,
     OwnerInputBinding, OwnerKey, OwnerMemberBinding, ProducerId, ProjectionBinding, ProjectionId,
     ProjectionOwnerContribution, QueryOutcome, QueryReadContext, ReadSessionLease, SchemaId,
@@ -2304,6 +2304,27 @@ struct SelectedSearch {
     directory: Option<ann_directory::AnnDirectory>,
 }
 
+/// Check whether the registered Lance writer can update this pinned selection.
+/// The caller retains the selected view ticket and its read budget throughout
+/// this check; a missing or malformed coverage binding remains its typed error.
+pub fn require_lance_writable(
+    view: &CatalogView,
+    instance: &InstanceSpec,
+    recipe: &EmbeddingRecipe,
+    read: &mut ReadContext<'_>,
+) -> Result<(), IndexError> {
+    validate_semantic_recipe_instance(recipe, instance)?;
+    let (coverage, directory) =
+        load_selected_coverage_and_directory(view, instance, instance.format, recipe, read)?;
+    ann_directory::validate_coverage_layout(&coverage)?;
+    if let Some(directory) = directory.as_ref()
+        && directory.backend()? != ann_directory::AnnBackend::LanceDb
+    {
+        return Err(IndexError::RebuildRequired);
+    }
+    read.budget.checkpoint()
+}
+
 /// Resolve only the selected ticket's coverage and producer provenance. The
 /// kernel already resolved the stored profile for a registered read port.
 fn load_selected_search(
@@ -2313,60 +2334,8 @@ fn load_selected_search(
     recipe: &EmbeddingRecipe,
     context: &mut ReadContext<'_>,
 ) -> Result<SelectedSearch, IndexError> {
-    context.budget.checkpoint()?;
-    if view
-        .identity_digest()
-        .map_err(|error| IndexError::CorruptObject(format!("view identity encoding: {error}")))?
-        != view.identity.digest
-    {
-        return Err(IndexError::CorruptObject(
-            "catalog view identity mismatch".into(),
-        ));
-    }
-    if spec.activation != GroupActivation::AsyncCoverage
-        || spec.format != format
-        || spec.policy != recipe.fingerprint()
-    {
-        return Err(IndexError::InvalidInput(
-            "semantic instance differs from ticket profile".into(),
-        ));
-    }
-    let key = member_map_key(spec.instance);
-    let coverage_ref = context
-        .maps
-        .lookup_object(view.coverage, &key, context.budget)?
-        .ok_or(IndexError::SnapshotUnavailable)?;
-    let stored = context.objects.get(coverage_ref, context.budget)?;
-    if stored.registration.reference != coverage_ref {
-        return Err(IndexError::CorruptObject(
-            "coverage reference mismatch".into(),
-        ));
-    }
-    let coverage =
-        quanta_index_core::index::decode_coverage_binding(&stored.payload, context.budget)?;
-    let missing = match coverage.status {
-        CoverageStatus::Partial { missing } => missing.0,
-        CoverageStatus::Pending { previous_missing } => previous_missing.0,
-        CoverageStatus::Complete => None,
-    };
-    let children = ObjectChildren::from_references([
-        coverage.desired.root.0,
-        coverage.owners.0,
-        missing,
-        coverage.searchable,
-    ]);
-    // Pending provenance can refer to an older source cut, but the coverage
-    // envelope must still match the selected profile and immutable object.
-    if coverage.instance != spec.instance
-        || coverage.desired.schema != spec.schema
-        || coverage.desired.policy != spec.policy
-        || stored.registration.children.as_slice() != children.as_slice()
-    {
-        return Err(IndexError::CorruptObject(
-            "ticket coverage binding mismatch".into(),
-        ));
-    }
-    let directory = ann_directory::AnnDirectory::load_for_coverage(&coverage, recipe, context)?;
+    let (coverage, directory) =
+        load_selected_coverage_and_directory(view, spec, format, recipe, context)?;
     let projection = match (recipe.input_policy, spec.input_domain) {
         (EmbeddingInputPolicy::SourceUtf8, InputDomain::SourceLocal) => None,
         (
@@ -2452,6 +2421,70 @@ fn load_selected_search(
         projection,
         directory,
     })
+}
+
+fn load_selected_coverage_and_directory(
+    view: &quanta_index_core::index::CatalogView,
+    spec: &InstanceSpec,
+    format: StorageFormatId,
+    recipe: &EmbeddingRecipe,
+    context: &mut ReadContext<'_>,
+) -> Result<(CoverageBinding, Option<ann_directory::AnnDirectory>), IndexError> {
+    context.budget.checkpoint()?;
+    if view
+        .identity_digest()
+        .map_err(|error| IndexError::CorruptObject(format!("view identity encoding: {error}")))?
+        != view.identity.digest
+    {
+        return Err(IndexError::CorruptObject(
+            "catalog view identity mismatch".into(),
+        ));
+    }
+    if spec.activation != GroupActivation::AsyncCoverage
+        || spec.format != format
+        || spec.policy != recipe.fingerprint()
+    {
+        return Err(IndexError::InvalidInput(
+            "semantic instance differs from ticket profile".into(),
+        ));
+    }
+    let key = member_map_key(spec.instance);
+    let coverage_ref = context
+        .maps
+        .lookup_object(view.coverage, &key, context.budget)?
+        .ok_or(IndexError::SnapshotUnavailable)?;
+    let stored = context.objects.get(coverage_ref, context.budget)?;
+    if stored.registration.reference != coverage_ref {
+        return Err(IndexError::CorruptObject(
+            "coverage reference mismatch".into(),
+        ));
+    }
+    let coverage =
+        quanta_index_core::index::decode_coverage_binding(&stored.payload, context.budget)?;
+    let missing = match coverage.status {
+        CoverageStatus::Partial { missing } => missing.0,
+        CoverageStatus::Pending { previous_missing } => previous_missing.0,
+        CoverageStatus::Complete => None,
+    };
+    let children = ObjectChildren::from_references([
+        coverage.desired.root.0,
+        coverage.owners.0,
+        missing,
+        coverage.searchable,
+    ]);
+    // Pending provenance can refer to an older source cut, but the coverage
+    // envelope must still match the selected profile and immutable object.
+    if coverage.instance != spec.instance
+        || coverage.desired.schema != spec.schema
+        || coverage.desired.policy != spec.policy
+        || stored.registration.children.as_slice() != children.as_slice()
+    {
+        return Err(IndexError::CorruptObject(
+            "ticket coverage binding mismatch".into(),
+        ));
+    }
+    let directory = ann_directory::AnnDirectory::load_for_coverage(&coverage, recipe, context)?;
+    Ok((coverage, directory))
 }
 
 #[derive(Debug)]
