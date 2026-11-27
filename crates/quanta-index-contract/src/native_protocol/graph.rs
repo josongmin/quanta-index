@@ -15,7 +15,7 @@ use crate::bounded_cluster_members::BoundedVecV1;
 
 mod prior_file;
 mod producer;
-pub(super) mod ranking;
+mod ranking;
 pub use prior_file::{
     MAX_NATIVE_REPOMAP_ENDPOINT_OWNERS_V2, NativeRepoMapEndpointOwnerV2,
     NativeRepoMapEndpointOwnersResultV2, NativeRepoMapPriorAffectedV1,
