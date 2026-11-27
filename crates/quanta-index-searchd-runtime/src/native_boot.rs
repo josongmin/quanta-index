@@ -523,13 +523,16 @@ fn authenticate_with_legacy_history_v1(
                 let stored = reader.get(reference, budget)?;
                 let member =
                     quanta_index_core::index::decode_member_binding(&stored.payload, budget)?;
+                let context = current.source.input_context_digest().map_err(|error| {
+                    IndexError::InvalidInput(format!("source context encoding: {error}"))
+                })?;
                 if stored.registration.reference != reference
                     || member.instance != instance
                     || member.format != tree.descriptor.format
                     || member.input.schema != tree.descriptor.schema
                     || member.input.policy != tree.previous
                     || member.input.root != current.source.owners
-                    || member.input.context != current.source.input_context_digest()?
+                    || member.input.context != context
                     || !stored.registration.children.iter().copied().eq([
                         Some(member.artifact),
                         member.input.root.0,
