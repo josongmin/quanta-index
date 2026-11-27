@@ -1378,6 +1378,11 @@ pub(super) fn execute(
                     // once from the receipt snapshot under the same root lease.
                     let writes_selection = writes_native_selection(command.mode);
                     if writes_selection {
+                        // A mutable selection cannot preserve a presealed Source route.
+                        // Refuse before the ordinary Catalog writer drops that custody.
+                        if manifest.protected_source_routes.is_some() {
+                            return Err(IndexError::DigestConflict.into());
+                        }
                         authenticate(
                             &authority,
                             candidate.snapshot(),

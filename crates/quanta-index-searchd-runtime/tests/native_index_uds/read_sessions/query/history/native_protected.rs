@@ -303,15 +303,60 @@ fn assert_selected_native_source_export_v1(
     let config_bytes = serde_json::to_vec(&native_dsl_history_config(root, socket)?)?;
     std::fs::write(&config, &config_bytes)?;
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
+    let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
+    let manifest_operation = serde_json::to_string(&operation(2))?;
+    let common_arguments = [
+        "--config",
+        config.to_str().ok_or("Native config path is not UTF-8")?,
+        "--config-digest",
+        &config_sha256,
+        "--manifest-operation",
+        &manifest_operation,
+        "--receipt",
+        receipt.to_str().ok_or("Native receipt path is not UTF-8")?,
+    ];
+    let refused = Command::new(binary)
+        .arg("select-native-state")
+        .args(common_arguments)
+        .output()?;
+    assert!(
+        !refused.status.success(),
+        "mutable Select accepted a presealed route"
+    );
+    assert!(!receipt.try_exists()?, "refused Select published a receipt");
+    {
+        let mut catalog = SqliteCatalog::open(root, Duration::from_secs(2))?;
+        let mut work = WorkBudget::with_request(work_limits(), budget());
+        let manifest = catalog
+            .native_boot_manifest(&mut work)?
+            .ok_or("refused Select discarded the BOOT manifest")?;
+        assert_eq!(manifest.operation.key, operation(2));
+        assert_eq!(manifest.publication, selected.view);
+        assert_eq!(
+            manifest.protected_source_routes.map(|route| route.object),
+            Some(route_ref)
+        );
+        catalog.close_checked()?;
+    }
+
+    let hex = |bytes: [u8; 32]| {
+        bytes
+            .into_iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let source_cut =
+        quanta_index_contract::native_boot_source_cut_digest_v1(&selected.view.source)?;
     let selected_output = Command::new(binary)
+        .arg("select-native-candidate")
+        .args(common_arguments)
         .args([
-            "select-native-state",
-            "--config",
-            config.to_str().ok_or("Native config path is not UTF-8")?,
-            "--manifest-operation",
-            &serde_json::to_string(&operation(2))?,
-            "--receipt",
-            receipt.to_str().ok_or("Native receipt path is not UTF-8")?,
+            "--root-nonce",
+            &hex(selected.root_nonce.0),
+            "--source-cut-digest",
+            &hex(source_cut.0),
+            "--protected-source-routes",
+            &hex(route_ref.0.0),
         ])
         .output()?;
     assert!(
@@ -325,7 +370,6 @@ fn assert_selected_native_source_export_v1(
     let copied_bytes = std::io::copy(&mut binary_file, &mut binary_hash)?;
     assert!(copied_bytes > 0, "Native binary is empty");
     let binary_sha256 = format!("{:x}", binary_hash.finalize());
-    let config_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
     let mut selected_bytes = serde_json::to_vec(&serde_json::json!({
         "schema_version": 2,
         "mode": "native",
