@@ -281,7 +281,10 @@ fn assert_selected_native_source_export_v1(
     use quanta_index_contract::index::NativeSourceSnapshotExportFrameV1 as Frame;
     use quanta_index_searchd_harness::native_index::native_dsl_history_config;
     use sha2::{Digest as _, Sha256};
-    use std::{os::unix::fs::PermissionsExt as _, process::Command};
+    use std::{
+        os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
+        process::Command,
+    };
 
     // The stopped in-process writer did not run the daemon's umask setup.
     let catalog_name = quanta_index_catalog::CATALOG_FILE_NAME;
@@ -337,6 +340,15 @@ fn assert_selected_native_source_export_v1(
     selected_bytes.push(b'\n');
     std::fs::write(&selection, &selected_bytes)?;
     std::fs::set_permissions(&selection, std::fs::Permissions::from_mode(0o600))?;
+    // Export opens the lock created when a deployment selection is published.
+    drop(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(controls.path().join(".quanta-index-deployment.lock"))?,
+    );
     let before = native_regular_files(root)?;
     let selection_sha256 = format!("{:x}", Sha256::digest(&selected_bytes));
     let export = |selected_sha: &str| -> TestResult<std::process::Output> {
