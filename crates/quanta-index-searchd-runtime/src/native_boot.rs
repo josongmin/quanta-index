@@ -1052,6 +1052,18 @@ fn writes_native_selection(mode: NativeCommandModeV1) -> bool {
     )
 }
 
+/// The plain selector has no field that could carry retained policy custody.
+/// Candidate selection may carry that same policy explicitly.
+fn refuses_mutable_retained_selection_v1(
+    mode: NativeCommandModeV1,
+    protected_source_routes: Option<ObjectRef>,
+    retired_projection_policy: Option<RetiredProjectionPolicyRefV1>,
+) -> bool {
+    writes_native_selection(mode)
+        && (protected_source_routes.is_some()
+            || (matches!(mode, NativeCommandModeV1::Select) && retired_projection_policy.is_some()))
+}
+
 /// The original Control reservation and its one WorkBudget precede the
 /// deployment lock and Q root lease; this is the only runtime ledger for the
 /// complete offline transaction.
@@ -1377,17 +1389,15 @@ pub(super) fn execute(
                     // the Catalog write. A presealed route is authenticated
                     // once from the receipt snapshot under the same root lease.
                     let writes_selection = writes_native_selection(command.mode);
+                    // Refuse before the ordinary Catalog writer drops retained custody.
+                    if refuses_mutable_retained_selection_v1(
+                        command.mode,
+                        manifest.protected_source_routes.map(|route| route.object),
+                        manifest.retired_projection_policy,
+                    ) {
+                        return Err(IndexError::DigestConflict.into());
+                    }
                     if writes_selection {
-                        // Plain Select cannot preserve a presealed Source route or a
-                        // selected retirement policy. Refuse before the ordinary
-                        // Catalog writer drops that custody. An explicit candidate
-                        // selection may retain the policy it names.
-                        if manifest.protected_source_routes.is_some()
-                            || (matches!(command.mode, NativeCommandModeV1::Select)
-                                && manifest.retired_projection_policy.is_some())
-                        {
-                            return Err(IndexError::DigestConflict.into());
-                        }
                         authenticate(
                             &authority,
                             candidate.snapshot(),
@@ -2228,3 +2238,44 @@ fn publish_rollback_with_source_capture_v1(
 #[cfg(test)]
 #[path = "native_boot/legacy_candidate_tests.rs"]
 mod legacy_candidate_tests;
+
+#[cfg(test)]
+mod selection_guard_tests {
+    use super::*;
+
+    #[test]
+    fn plain_select_refuses_retained_policy_without_blocking_explicit_candidate() {
+        let policy = RetiredProjectionPolicyRefV1 {
+            object: ObjectRef(Digest([1; 32])),
+            sha256: Digest([2; 32]),
+            identity_count: 1,
+        };
+        let candidate = NativeCommandModeV1::SelectCandidate {
+            root_nonce: [3; 32],
+            source_cut_digest: Digest([4; 32]),
+            protected_source_routes: None,
+            retired_projection_policy: Some(policy),
+        };
+
+        assert!(!refuses_mutable_retained_selection_v1(
+            NativeCommandModeV1::Select,
+            None,
+            None,
+        ));
+        assert!(refuses_mutable_retained_selection_v1(
+            NativeCommandModeV1::Select,
+            None,
+            Some(policy),
+        ));
+        assert!(!refuses_mutable_retained_selection_v1(
+            candidate,
+            None,
+            Some(policy),
+        ));
+        assert!(refuses_mutable_retained_selection_v1(
+            NativeCommandModeV1::Select,
+            Some(ObjectRef(Digest([5; 32]))),
+            None,
+        ));
+    }
+}
