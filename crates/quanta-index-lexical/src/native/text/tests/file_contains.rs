@@ -179,6 +179,20 @@ fn search_with_constraints(
     )
 }
 
+fn regex_budget() -> Result<WorkBudget, IndexError> {
+    Ok(WorkBudget::new(
+        WorkLimits {
+            reads: 100,
+            writes: 100,
+            bytes: 40_000_000,
+            mutations: 100,
+        },
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .ok_or(IndexError::ResourceLimited)?,
+    ))
+}
+
 #[test]
 fn file_contains_skips_body_of_ineligible_exact_path_owner() -> Result<(), IndexError> {
     let (mut fixture, _) = substring_fixture()?;
@@ -229,17 +243,7 @@ fn regex_skips_bodies_of_ineligible_paths() -> Result<(), IndexError> {
     ] {
         // This case can compile a content regex and a path regex. Fund both
         // admissions so the assertion measures source filtering.
-        let mut work = WorkBudget::new(
-            WorkLimits {
-                reads: 100,
-                writes: 100,
-                bytes: 40_000_000,
-                mutations: 100,
-            },
-            Instant::now()
-                .checked_add(Duration::from_secs(30))
-                .ok_or(IndexError::ResourceLimited)?,
-        );
+        let mut work = regex_budget()?;
         let result = search_with_constraints(&fixture, query, 1, constraints, &mut work)?;
         if result.matched != 1
             || result
@@ -253,6 +257,136 @@ fn regex_skips_bodies_of_ineligible_paths() -> Result<(), IndexError> {
             )));
         }
     }
+    Ok(())
+}
+
+#[test]
+fn regex_boolean_queries_ignore_corrupt_bodies_outside_the_exact_path() -> Result<(), IndexError> {
+    let (mut fixture, _) = substring_fixture()?;
+    let second = fixture
+        .objects
+        .stored
+        .get(&reference(71))
+        .ok_or(IndexError::ResourceLimited)?;
+    let second: SourceRecord = decode(&second.payload)?;
+    let invalid_length = usize::try_from(second.byte_len)
+        .map_err(|_error| IndexError::ResourceLimited)?
+        .checked_add(1)
+        .ok_or(IndexError::ResourceLimited)?;
+    fixture
+        .objects
+        .add(second.bytes, vec![b'x'; invalid_length], Vec::new())?;
+    fixture.objects.counted_body = Some(second.bytes);
+
+    // The unrestricted query proves that the selected corpus contains a
+    // malformed body. Exact-path selection must exclude that candidate before
+    // regex evaluation, including under Boolean composition.
+    let unrestricted = search_with_constraints(
+        &fixture,
+        "/foo_bar/",
+        2,
+        &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        &mut regex_budget()?,
+    );
+    assert!(matches!(unrestricted, Err(IndexError::CorruptObject(_))));
+    fixture.objects.body_reads.store(0, Ordering::Relaxed);
+
+    let selected = quanta_index_contract::ExactRepoRelativePathV1::new("src/lib.rs")
+        .map_err(|error| IndexError::InvalidInput(error.into()))?;
+    let constraints =
+        quanta_index_contract::QueryConstraintSetV1::from_exact_repo_relative_path(selected);
+    for query in [
+        "/foo_bar/",
+        "one AND /foo_bar/",
+        "one OR /foo_bar/",
+        "one AND NOT /absent/",
+    ] {
+        let result =
+            search_with_constraints(&fixture, query, 1, &constraints, &mut regex_budget()?)?;
+        assert_eq!(result.matched, 1, "{query}");
+        assert_eq!(result.hits.len(), 1, "{query}");
+        assert_eq!(
+            result.hits.first().map(|hit| hit.owner),
+            Some(fixture.owner),
+            "{query}"
+        );
+        assert_eq!(
+            fixture.objects.body_reads.load(Ordering::Relaxed),
+            0,
+            "{query}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn regex_path_filter_skips_corrupt_body_before_boolean_evaluation() -> Result<(), IndexError> {
+    let (mut fixture, other) = substring_fixture()?;
+    let baseline = search_with_constraints(
+        &fixture,
+        "/foo_bar/",
+        2,
+        &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        &mut regex_budget()?,
+    )?;
+    assert_eq!(baseline.matched, 1);
+    assert_eq!(
+        baseline.hits.first().map(|hit| hit.owner),
+        Some(fixture.owner)
+    );
+    let first = fixture_record(&fixture)?;
+    let invalid_length = usize::try_from(first.byte_len)
+        .map_err(|_error| IndexError::ResourceLimited)?
+        .checked_add(1)
+        .ok_or(IndexError::ResourceLimited)?;
+    fixture
+        .objects
+        .add(first.bytes, vec![b'x'; invalid_length], Vec::new())?;
+    fixture.objects.counted_body = Some(first.bytes);
+
+    // The first owner supplied the only baseline match, but its path fails the
+    // filter. A rejected path must not open its corrupt body or contribute a
+    // positive regex term to an OR branch.
+    for (query, expected_matched, expected_owners) in [
+        ("file:other[.]rs /foo_bar/", 0, Vec::new()),
+        ("file:other[.]rs (one OR /foo_bar/)", 1, vec![other]),
+    ] {
+        let result = search_with_constraints(
+            &fixture,
+            query,
+            2,
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            &mut regex_budget()?,
+        )?;
+        assert_eq!(result.matched, expected_matched, "{query}");
+        assert_eq!(
+            result.hits.iter().map(|hit| hit.owner).collect::<Vec<_>>(),
+            expected_owners,
+            "{query}"
+        );
+        assert_eq!(
+            fixture.objects.body_reads.load(Ordering::Relaxed),
+            0,
+            "{query}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn regex_selected_body_preserves_cancellation_after_read() -> Result<(), IndexError> {
+    let (mut fixture, _) = substring_fixture()?;
+    let first = fixture_record(&fixture)?;
+    fixture.objects.cancel_after_get = Some(first.bytes);
+    fixture.objects.counted_body = Some(first.bytes);
+    let selected = quanta_index_contract::ExactRepoRelativePathV1::new("src/lib.rs")
+        .map_err(|error| IndexError::InvalidInput(error.into()))?;
+    let constraints =
+        quanta_index_contract::QueryConstraintSetV1::from_exact_repo_relative_path(selected);
+    let result =
+        search_with_constraints(&fixture, "/foo_bar/", 1, &constraints, &mut regex_budget()?);
+    assert!(matches!(result, Err(IndexError::Cancelled)));
+    assert_eq!(fixture.objects.body_reads.load(Ordering::Relaxed), 1);
     Ok(())
 }
 

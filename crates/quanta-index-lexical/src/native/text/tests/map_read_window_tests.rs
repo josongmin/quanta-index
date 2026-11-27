@@ -6,11 +6,18 @@ struct WindowProbe {
     factories: AtomicUsize,
     scoped_lookups: AtomicUsize,
     drops: AtomicUsize,
+    path_streams: AtomicUsize,
 }
+
+/// One edit of a map stream: root ordinal, key, expected and next value.
+type StreamEdit = (u32, Vec<u8>, Option<MapValue>, Option<MapValue>);
 
 struct WindowMaps<'a> {
     inner: &'a TestMaps,
     probe: &'a WindowProbe,
+    // The only nonempty stream this fixture may stage; empty streams keep
+    // their bases.
+    path_edits: &'a [StreamEdit],
     enabled: bool,
     refuse: bool,
     cancel: bool,
@@ -73,22 +80,65 @@ impl ImmutableObjectPort for WindowObjects<'_> {
 struct ScopedWindow<'a> {
     inner: &'a TestMaps,
     probe: &'a WindowProbe,
+    path_edits: &'a [StreamEdit],
 }
 
-// The excluded-owner success fixture has an empty original CAS stream. Its
-// independent map oracle preserves every base only after checking real EOF.
-// It deliberately cannot implement or skip any nonempty edit.
-fn empty_map_stream(
+/// The staged path-posting root this fixture's map oracle returns.
+fn staged_path_root() -> MapRoot {
+    MapRoot(Some(reference(97)))
+}
+
+/// The Tree path postings of an excluded Source whose path is `a`.
+///
+/// Path postings cover every Source owner whatever its text admission. `a`
+/// is one indexed run kept under both case surfaces (sensitive `0`, folded
+/// `1`), keyed `be16 tagged-term length | surface | term | owner` and valued
+/// by the Source object. The case-tagged term is the surface byte followed
+/// by the term, so its length counts the tag: `2` for `a`.
+fn excluded_path_edits(owner: OwnerKey, source: ObjectRef) -> Vec<StreamEdit> {
+    [0_u8, 1]
+        .into_iter()
+        .map(|surface| {
+            let mut key = vec![0, 2, surface, b'a'];
+            key.extend_from_slice(&owner.producer.0);
+            key.extend_from_slice(&owner.stable_id.0);
+            (0, key, None, Some(MapValue::Object(source)))
+        })
+        .collect()
+}
+
+// The excluded-owner fixture's independent map oracle reads every stream to
+// its real EOF. An empty stream keeps its bases; the only nonempty stream it
+// can stage is exactly `path_edits` over one empty base, which it stages as
+// `staged_path_root()`. It cannot implement or skip any other edit.
+fn excluded_map_stream(
     bases: &[MapRoot],
     edits: &mut dyn MapEditCursor,
+    path_edits: &[StreamEdit],
+    probe: &WindowProbe,
     budget: &mut WorkBudget,
 ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
     budget.checkpoint()?;
-    check!(edits.next_edit(budget)?.is_none());
-    let mut roots = quanta_index_core::index::StagedMapRoots::prepare(bases.len(), budget)?;
-    for base in bases {
-        roots.push(*base)?;
+    let mut observed = Vec::new();
+    while let Some(edit) = edits.next_edit(budget)? {
+        observed.push((
+            edit.root(),
+            edit.key().to_vec(),
+            edit.expected()?,
+            edit.next()?,
+        ));
     }
+    let mut roots = quanta_index_core::index::StagedMapRoots::prepare(bases.len(), budget)?;
+    if observed.is_empty() {
+        for base in bases {
+            roots.push(*base)?;
+        }
+        return roots.finish();
+    }
+    check_eq!(observed.as_slice(), path_edits);
+    check_eq!(bases, [MapRoot(None)].as_slice());
+    let _previous = probe.path_streams.fetch_add(1, Ordering::SeqCst);
+    roots.push(staged_path_root())?;
     roots.finish()
 }
 
@@ -115,6 +165,7 @@ impl PersistentMapPort for WindowMaps<'_> {
             let window: Box<dyn PersistentMapPort + 'a> = Box::new(ScopedWindow {
                 inner: self.inner,
                 probe: self.probe,
+                path_edits: self.path_edits,
             });
             Some(window)
         } else {
@@ -178,7 +229,7 @@ impl PersistentMapPort for WindowMaps<'_> {
         _sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
-        empty_map_stream(bases, edits, budget)
+        excluded_map_stream(bases, edits, self.path_edits, self.probe, budget)
     }
 }
 
@@ -229,7 +280,7 @@ impl PersistentMapPort for ScopedWindow<'_> {
         _sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
-        empty_map_stream(bases, edits, budget)
+        excluded_map_stream(bases, edits, self.path_edits, self.probe, budget)
     }
 }
 
@@ -250,6 +301,7 @@ fn changed_prepare_mounts_one_window_and_drops_it_on_object_error() -> Result<()
         let maps = WindowMaps {
             inner: &fixture.maps,
             probe: &probe,
+            path_edits: &[],
             enabled,
             refuse: false,
             cancel: false,
@@ -298,12 +350,14 @@ fn excluded_change_drops_window_before_root_install() -> Result<(), IndexError> 
     let index = NativeTextIndex::new(fixture.recipe);
     let scratch = TestScratch::default();
     let custody = TestCustody;
+    let path_edits = excluded_path_edits(fixture.owner, fixture.source_ref);
     let mut results = Vec::new();
     for enabled in [false, true] {
         let probe = WindowProbe::default();
         let maps = WindowMaps {
             inner: &fixture.maps,
             probe: &probe,
+            path_edits: &path_edits,
             enabled,
             refuse: false,
             cancel: false,
@@ -331,6 +385,8 @@ fn excluded_change_drops_window_before_root_install() -> Result<(), IndexError> 
             usize::from(enabled)
         );
         check_eq!(probe.drops.load(Ordering::SeqCst), usize::from(enabled));
+        // The excluded Source's path is indexed exactly once.
+        check_eq!(probe.path_streams.load(Ordering::SeqCst), 1);
         results.push((candidate.binding, work.usage()));
     }
     check_eq!(results.first(), results.get(1));
@@ -353,6 +409,7 @@ fn window_factory_refusal_and_cancellation_keep_typed_errors() -> Result<(), Ind
         let maps = WindowMaps {
             inner: &fixture.maps,
             probe: &probe,
+            path_edits: &[],
             enabled: true,
             refuse: !cancel,
             cancel,
@@ -391,6 +448,7 @@ fn empty_bootstrap_and_noop_patch_skip_window_factory() -> Result<(), IndexError
     let maps = WindowMaps {
         inner: &fixture.maps,
         probe: &probe,
+        path_edits: &[],
         enabled: true,
         refuse: false,
         cancel: false,
@@ -434,6 +492,7 @@ fn empty_bootstrap_and_noop_patch_skip_window_factory() -> Result<(), IndexError
     let maps = WindowMaps {
         inner: &fixture.maps,
         probe: &probe,
+        path_edits: &[],
         enabled: true,
         refuse: false,
         cancel: false,

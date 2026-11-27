@@ -1084,6 +1084,7 @@ mod tests {
             installs: AtomicUsize::new(0),
             reads: AtomicUsize::new(0),
             cancel_after_read: false,
+            rows: Vec::new(),
         })
     }
 
@@ -1099,6 +1100,363 @@ mod tests {
                 .checked_add(Duration::from_secs(30))
                 .ok_or(IndexError::ResourceLimited)?,
         ))
+    }
+
+    struct LiteralSearchFixture {
+        ticket: TicketRecord,
+        member: MemberBinding,
+        objects: NoWriteObjects,
+        maps: NoWriteMaps,
+    }
+
+    fn literal_search_fixture(packed: bool) -> Result<LiteralSearchFixture, IndexError> {
+        use super::super::literal_blocks::{LiteralBlockBuilder, PushResult, literal_key};
+        use super::super::literal_contribution::Contribution;
+        use quanta_index_core::index::{
+            CatalogView, InputBinding, ReadSessionRef, ReadTicketLease, StableOwnerId, TicketId,
+            ViewRef,
+        };
+
+        let reference = |byte| ObjectRef(Digest([byte; 32]));
+        let source_root = MapRoot(Some(reference(20)));
+        let owner_root = MapRoot(Some(reference(21)));
+        let gram_root = MapRoot(Some(reference(22)));
+        let first_posting_root = MapRoot(Some(reference(23)));
+        let second_posting_root = MapRoot(Some(reference(24)));
+        let block_root = MapRoot(Some(reference(25)));
+        let member_root = MapRoot(Some(reference(26)));
+        let mut objects = posting_objects(reference(120), Vec::new(), b"")?;
+        objects.artifact = reference(120);
+        let mut sources = Vec::new();
+        let mut owners = Vec::new();
+        let mut postings = Vec::new();
+        let mut block_keys = Vec::new();
+        // Owners 2 and 6 have both query trigrams without contiguous "abcX".
+        // Owner 6 follows the final true hit and tests empty terminal continuation.
+        const BODIES: [&[u8]; 6] = [b"abcX", b"abcYbcX", b"abcX", b"zzz", b"abcX", b"abcYbcX"];
+        for (ordinal, body) in (1u8..).zip(BODIES) {
+            let owner = OwnerKey {
+                producer: ProducerId([1; 16]),
+                stable_id: StableOwnerId([ordinal; 16]),
+            };
+            let source_ref = reference(
+                40_u8
+                    .checked_add(ordinal)
+                    .ok_or(IndexError::ResourceLimited)?,
+            );
+            let contribution_ref = reference(
+                60_u8
+                    .checked_add(ordinal)
+                    .ok_or(IndexError::ResourceLimited)?,
+            );
+            let body_ref = reference(
+                80_u8
+                    .checked_add(ordinal)
+                    .ok_or(IndexError::ResourceLimited)?,
+            );
+            let record = SourceRecord {
+                path: format!("src/{ordinal}.rs"),
+                bytes: body_ref,
+                byte_len: u64::try_from(body.len()).map_err(|_| IndexError::ResourceLimited)?,
+                text: quanta_index_core::index::SourceTextAdmission::Excluded,
+                source_repo_id: None,
+                language: None,
+            };
+            let contribution = Contribution {
+                record: source_ref,
+                grams: Vec::new(),
+            };
+            for (reference, payload, children) in [
+                (body_ref, body.to_vec(), Vec::new()),
+                (source_ref, encode(&record)?, vec![body_ref]),
+                (contribution_ref, encode(&contribution)?, vec![source_ref]),
+            ] {
+                objects.rows.push((
+                    reference,
+                    StoredObject::new(
+                        RegisteredObject::unscoped(
+                            reference,
+                            u64::try_from(payload.len())
+                                .map_err(|_| IndexError::ResourceLimited)?,
+                            children,
+                        ),
+                        payload,
+                        None,
+                    ),
+                ));
+            }
+            sources.push((owner_map_key(owner).to_vec(), source_ref));
+            owners.push((owner_key(owner).to_vec(), contribution_ref));
+            if ordinal != 4 {
+                postings.push((owner_key(owner).to_vec(), source_ref));
+                for gram in [*b"abc", *b"bcX"] {
+                    block_keys.push(literal_key(gram, owner_key(owner)));
+                }
+            }
+        }
+        block_keys.sort_unstable();
+        let mut block_budget = posting_budget()?;
+        let mut block = LiteralBlockBuilder::new(&block_budget, None)?;
+        for key in block_keys {
+            if block.try_push(key, &mut block_budget)? != PushResult::Added {
+                return Err(IndexError::BackendViolation(
+                    "literal fixture block filled".into(),
+                ));
+            }
+        }
+        let block = block.finish()?;
+        let block_last = block.last_key;
+        let (block_input, _memory) = block.into_batch_input();
+        objects.rows.push((
+            reference(110),
+            StoredObject::new(
+                RegisteredObject::unscoped(
+                    reference(110),
+                    u64::try_from(block_input.payload.len())
+                        .map_err(|_| IndexError::ResourceLimited)?,
+                    Vec::new(),
+                ),
+                block_input.payload,
+                None,
+            ),
+        ));
+        let mut maps = NoWriteMaps {
+            rows: vec![
+                (source_root, sources),
+                (owner_root, owners),
+                (first_posting_root, postings.clone()),
+                (second_posting_root, postings),
+                (block_root, vec![(block_last.to_vec(), reference(110))]),
+                (
+                    member_root,
+                    vec![(
+                        member_map_key(IndexInstanceId([2; 16])).to_vec(),
+                        reference(120),
+                    )],
+                ),
+            ],
+            ..NoWriteMaps::default()
+        };
+        let artifact = if packed {
+            reference(122)
+        } else {
+            reference(121)
+        };
+        let payload = if packed {
+            let mut payload = b"QLITBLK2".to_vec();
+            for root in [source_root, block_root] {
+                payload.push(1);
+                payload.extend_from_slice(&root.0.ok_or(IndexError::ResourceLimited)?.0.0);
+            }
+            payload
+        } else {
+            let posting = |root| Posting { root, count: 5 };
+            for (reference, root) in [
+                (reference(100), first_posting_root),
+                (reference(101), second_posting_root),
+            ] {
+                let payload = encode(&posting(root))?;
+                objects.rows.push((
+                    reference,
+                    StoredObject::new(
+                        RegisteredObject::unscoped(
+                            reference,
+                            u64::try_from(payload.len())
+                                .map_err(|_| IndexError::ResourceLimited)?,
+                            vec![root.0.ok_or(IndexError::ResourceLimited)?],
+                        ),
+                        payload,
+                        None,
+                    ),
+                ));
+            }
+            maps.rows.push((
+                gram_root,
+                vec![
+                    (b"abc".to_vec(), reference(100)),
+                    (b"bcX".to_vec(), reference(101)),
+                ],
+            ));
+            encode(&Root {
+                owners: owner_root,
+                grams: gram_root,
+            })?
+        };
+        let member = MemberBinding {
+            instance: IndexInstanceId([2; 16]),
+            format: StorageFormatId([3; 16]),
+            artifact,
+            input: InputBinding {
+                root: source_root,
+                schema: SchemaId([4; 16]),
+                policy: Digest([5; 32]),
+                context: Digest([6; 32]),
+            },
+            logical_commitment: Digest(Sha256::digest(&payload).into()),
+        };
+        let children = if packed {
+            vec![
+                source_root.0.ok_or(IndexError::ResourceLimited)?,
+                block_root.0.ok_or(IndexError::ResourceLimited)?,
+            ]
+        } else {
+            vec![
+                owner_root.0.ok_or(IndexError::ResourceLimited)?,
+                gram_root.0.ok_or(IndexError::ResourceLimited)?,
+            ]
+        };
+        objects.rows.push((
+            artifact,
+            StoredObject::new(
+                RegisteredObject::unscoped(
+                    artifact,
+                    u64::try_from(payload.len()).map_err(|_| IndexError::ResourceLimited)?,
+                    children,
+                ),
+                payload,
+                None,
+            ),
+        ));
+        let member_payload = encode(&member)?;
+        objects.stored = StoredObject::new(
+            RegisteredObject::unscoped(
+                reference(120),
+                u64::try_from(member_payload.len()).map_err(|_| IndexError::ResourceLimited)?,
+                vec![artifact],
+            ),
+            member_payload,
+            None,
+        );
+        let workspace = WorkspaceKey {
+            tenant: TenantId([10; 16]),
+            collection: CollectionId([11; 16]),
+            worktree: WorktreeId([12; 16]),
+            slot: SlotId([13; 16]),
+        };
+        let mut view = CatalogView {
+            identity: ViewRef {
+                workspace,
+                epoch: 1,
+                sequence: 1,
+                digest: Digest([0; 32]),
+            },
+            profile: reference(30),
+            source: SourceCut {
+                owners: source_root,
+                paths: MapRoot(None),
+                frontiers: MapRoot(None),
+            },
+            projections: MapRoot(None),
+            members: member_root,
+            coverage: MapRoot(None),
+        };
+        view.identity.digest = view
+            .identity_digest()
+            .map_err(|error| IndexError::CorruptObject(error.to_string()))?;
+        Ok(LiteralSearchFixture {
+            ticket: TicketRecord {
+                lease: ReadTicketLease {
+                    id: TicketId([14; 16]),
+                    session: ReadSessionRef { id: 1, fence: 1 },
+                    fence: 1,
+                    expires_at_ms: 10_000,
+                },
+                view,
+            },
+            member,
+            objects,
+            maps,
+        })
+    }
+
+    #[test]
+    fn packed_and_legacy_literal_pages_follow_independent_byte_oracle() -> Result<(), IndexError> {
+        use quanta_index_core::index::StableOwnerId;
+
+        for packed in [false, true] {
+            let fixture = literal_search_fixture(packed)?;
+            for (literal, expected) in [
+                (b"abcX".as_slice(), &[1_u8, 3, 5][..]),
+                (b"a".as_slice(), &[1_u8, 2, 3, 5, 6][..]),
+            ] {
+                for limit in [1, 2] {
+                    let mut after = None;
+                    let mut found = Vec::new();
+                    let mut terminal = false;
+                    for _page in 0..=expected.len() {
+                        let page = NativeLiteralIndex.search(
+                            &fixture.member,
+                            LiteralQuery {
+                                literal,
+                                after: after.as_deref(),
+                                limit,
+                            },
+                            LiteralReadContext {
+                                ticket: &fixture.ticket,
+                                input: fixture.member.input,
+                                objects: &fixture.objects,
+                                maps: &fixture.maps,
+                                budget: &mut posting_budget()?,
+                            },
+                        )?;
+                        if (page.has_more && page.hits.is_empty())
+                            || page.hits.len()
+                                > usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?
+                        {
+                            return Err(IndexError::BackendViolation(
+                                "literal fixture page size differs".into(),
+                            ));
+                        }
+                        found.extend(page.hits.iter().map(|hit| hit.owner));
+                        if page.has_more {
+                            if after.as_deref().is_some_and(|prior| {
+                                page.after.as_deref().is_none_or(|next| next <= prior)
+                            }) {
+                                return Err(IndexError::BackendViolation(
+                                    "literal fixture cursor failed to advance".into(),
+                                ));
+                            }
+                            if page.after.as_deref()
+                                != page
+                                    .hits
+                                    .last()
+                                    .map(|hit| owner_key(hit.owner))
+                                    .as_ref()
+                                    .map(<[u8; 32]>::as_slice)
+                            {
+                                return Err(IndexError::BackendViolation(
+                                    "literal fixture cursor differs from last hit".into(),
+                                ));
+                            }
+                            after = page.after;
+                        } else {
+                            if page.after.is_some() {
+                                return Err(IndexError::BackendViolation(
+                                    "terminal literal fixture page has a cursor".into(),
+                                ));
+                            }
+                            terminal = true;
+                            break;
+                        }
+                    }
+                    if !terminal {
+                        return Err(IndexError::BackendViolation(
+                            "literal fixture never reached a terminal page".into(),
+                        ));
+                    }
+                    let expected = expected.iter().copied().map(|ordinal| OwnerKey {
+                        producer: ProducerId([1; 16]),
+                        stable_id: StableOwnerId([ordinal; 16]),
+                    });
+                    if !found.into_iter().eq(expected) {
+                        return Err(IndexError::BackendViolation(format!(
+                            "literal fixed byte oracle differs for packed={packed}, limit={limit}"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -1428,6 +1786,7 @@ mod tests {
     struct NoWriteObjects {
         artifact: ObjectRef,
         stored: StoredObject,
+        rows: Vec<(ObjectRef, StoredObject)>,
         installs: AtomicUsize,
         reads: AtomicUsize,
         cancel_after_read: bool,
@@ -1502,12 +1861,20 @@ mod tests {
             budget: &mut WorkBudget,
         ) -> Result<StoredObject, IndexError> {
             budget.checkpoint()?;
-            if reference == self.artifact {
+            let stored = if reference == self.artifact {
+                Some(&self.stored)
+            } else {
+                self.rows
+                    .iter()
+                    .find(|(key, _)| *key == reference)
+                    .map(|(_, stored)| stored)
+            };
+            if let Some(stored) = stored {
                 let _previous = self.reads.fetch_add(1, Ordering::Relaxed);
                 if self.cancel_after_read {
                     budget.request().cancel_handle().cancel();
                 }
-                Ok(self.stored.clone())
+                Ok(stored.clone())
             } else {
                 Err(IndexError::CorruptObject("unexpected test object".into()))
             }
@@ -1518,6 +1885,7 @@ mod tests {
     struct NoWriteMaps {
         applies: AtomicUsize,
         empty_diff: Option<(MapRoot, MapRoot)>,
+        rows: Vec<(MapRoot, Vec<(Vec<u8>, ObjectRef)>)>,
     }
 
     impl PersistentMapPort for NoWriteMaps {
@@ -1544,11 +1912,21 @@ mod tests {
 
         fn lookup_object(
             &self,
-            _: MapRoot,
-            _: &[u8],
-            _: &mut WorkBudget,
+            root: MapRoot,
+            key: &[u8],
+            budget: &mut WorkBudget,
         ) -> Result<Option<ObjectRef>, IndexError> {
-            Err(IndexError::BackendViolation("unexpected map lookup".into()))
+            budget.checkpoint()?;
+            let entries = self
+                .rows
+                .iter()
+                .find(|(candidate, _)| *candidate == root)
+                .ok_or_else(|| IndexError::BackendViolation("unexpected map lookup".into()))?;
+            Ok(entries
+                .1
+                .iter()
+                .find(|(candidate, _)| candidate == key)
+                .map(|(_, reference)| *reference))
         }
         fn lookup(
             &self,
@@ -1563,11 +1941,28 @@ mod tests {
         fn scan(
             &self,
             root: MapRoot,
-            _: Option<&[u8]>,
-            _: u32,
+            after: Option<&[u8]>,
+            limit: u32,
             budget: &mut WorkBudget,
         ) -> Result<MapPage, IndexError> {
             budget.checkpoint()?;
+            if let Some((_, entries)) = self.rows.iter().find(|(candidate, _)| *candidate == root) {
+                let limit = usize::try_from(limit).map_err(|_| IndexError::ResourceLimited)?;
+                let mut remaining = entries
+                    .iter()
+                    .filter(|(key, _)| after.is_none_or(|cursor| key.as_slice() > cursor));
+                let page = remaining
+                    .by_ref()
+                    .take(limit)
+                    .map(|(key, reference)| (key.clone(), (*reference).into()))
+                    .collect();
+                return Ok(MapPage::new(
+                    page,
+                    remaining.next().is_some(),
+                    Vec::new(),
+                    None,
+                ));
+            }
             if root.0.is_some() {
                 return Err(IndexError::BackendViolation("unexpected map scan".into()));
             }
@@ -1701,6 +2096,7 @@ mod tests {
             installs: AtomicUsize::new(0),
             reads: AtomicUsize::new(0),
             cancel_after_read: false,
+            rows: Vec::new(),
         };
         let index = NativeLiteralIndex;
         let changed = OwnerMutationSet {
