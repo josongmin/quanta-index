@@ -2327,13 +2327,14 @@ pub fn visit_native_boot_scope_current_view_v1<T>(
     )
 }
 
-/// `false` proves that a configured workspace has no head. A present head must
-/// equal the physically authenticated caller view before it can be used.
+/// Check the physically authenticated view of an active configured scope.
+/// A workspace head at another epoch leaves this scope inactive.
 pub fn verify_native_boot_scope_selected_view_v1(
     state_root: &Path,
     io: &dyn CatalogReadOnlyIoAdmission,
     selected: &NativeBootManifest,
     workspace: WorkspaceKey,
+    epoch: u64,
     expected: Option<&CatalogView>,
     budget: &mut WorkBudget,
 ) -> Result<bool, IndexError> {
@@ -2344,6 +2345,7 @@ pub fn verify_native_boot_scope_selected_view_v1(
         workspace,
         budget,
         |current, _| match (current, expected) {
+            (Some(current), _) if current.identity.epoch != epoch => Ok(false),
             (None, None) => Ok(false),
             (Some(current), Some(expected)) if current == expected => Ok(true),
             _ => Err(IndexError::Conflict),

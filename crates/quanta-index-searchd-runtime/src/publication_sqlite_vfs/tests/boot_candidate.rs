@@ -55,6 +55,7 @@ fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> Tes
             fixture.vfs.as_ref(),
             selected,
             boot.identity.workspace,
+            boot.identity.epoch,
             Some(&boot),
             &mut work,
         )?,
@@ -68,10 +69,24 @@ fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> Tes
             fixture.vfs.as_ref(),
             selected,
             absent,
+            boot.identity.epoch,
             None,
             &mut work,
         )?,
         "absent configured scope appeared present",
+    )?;
+    let inactive_epoch = boot.identity.epoch.checked_add(1).ok_or("epoch overflow")?;
+    require(
+        !verify_native_boot_scope_selected_view_v1(
+            &fixture.root,
+            fixture.vfs.as_ref(),
+            selected,
+            boot.identity.workspace,
+            inactive_epoch,
+            None,
+            &mut work,
+        )?,
+        "a head at another epoch activated the configured scope",
     )?;
     require(
         matches!(
@@ -80,6 +95,7 @@ fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> Tes
                 fixture.vfs.as_ref(),
                 selected,
                 boot.identity.workspace,
+                boot.identity.epoch,
                 None,
                 &mut work,
             ),

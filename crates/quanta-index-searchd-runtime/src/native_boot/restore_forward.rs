@@ -110,6 +110,7 @@ fn require_lance_recovery_candidate_v1(
                 authority.io.as_ref(),
                 selected,
                 scope.workspace,
+                scope.epoch,
                 selected_view,
                 budget,
             )?;
