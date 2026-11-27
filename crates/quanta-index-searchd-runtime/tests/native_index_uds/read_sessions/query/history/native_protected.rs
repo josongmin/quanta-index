@@ -271,6 +271,16 @@ fn actual_snapshot_from_sql(
 }
 
 #[cfg(target_os = "linux")]
+fn protected_manifest_budget_v1() -> WorkBudget {
+    let mut work = WorkBudget::with_request(work_limits(), budget());
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(
+        std::sync::Arc::new(crate::CountedNativeTestMemory(active)),
+    )));
+    work
+}
+
+#[cfg(target_os = "linux")]
 fn assert_selected_native_source_export_v1(
     root: &std::path::Path,
     socket: &std::path::Path,
@@ -332,10 +342,12 @@ fn assert_selected_native_source_export_v1(
     assert!(!receipt.try_exists()?, "refused Select published a receipt");
     {
         let mut catalog = SqliteCatalog::open(root, Duration::from_secs(2))?;
-        let mut work = WorkBudget::with_request(work_limits(), budget());
-        let manifest = catalog
-            .native_boot_manifest(&mut work)?
-            .ok_or("refused Select discarded the BOOT manifest")?;
+        let mut work = protected_manifest_budget_v1();
+        let manifest = sdk_phase(
+            "read presealed BOOT after refused Select",
+            catalog.native_boot_manifest(&mut work),
+        )?
+        .ok_or("refused Select discarded the BOOT manifest")?;
         assert_eq!(manifest.operation.key, operation(2));
         assert_eq!(manifest.publication, selected.view);
         assert_eq!(
@@ -686,10 +698,12 @@ fn native_policy_only_boot_refuses_mutable_same_operation_select() -> TestResult
     );
     assert!(!receipt.try_exists()?, "refused Select published a receipt");
     let mut catalog = SqliteCatalog::open(root.path(), Duration::from_secs(2))?;
-    let mut work = WorkBudget::with_request(work_limits(), budget());
-    let manifest = catalog
-        .native_boot_manifest(&mut work)?
-        .ok_or("refused Select discarded the BOOT manifest")?;
+    let mut work = protected_manifest_budget_v1();
+    let manifest = sdk_phase(
+        "read policy-only BOOT after refused Select",
+        catalog.native_boot_manifest(&mut work),
+    )?
+    .ok_or("refused Select discarded the BOOT manifest")?;
     assert_eq!(manifest.operation.key, operation(2));
     assert_eq!(manifest.publication, selected.view);
     assert_eq!(manifest.protected_source_routes, None);
