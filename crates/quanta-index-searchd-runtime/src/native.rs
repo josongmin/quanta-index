@@ -2651,8 +2651,11 @@ impl NativeIndexService {
             crate::native_read_session_transport::NativeDslCommitValidator,
         ));
         let kernel = Arc::new(
-            Kernel::new(services, registry)
-                .with_retained_tree(product_startup.as_ref().and_then(|product| product.retained_tree)),
+            Kernel::new(services, registry).with_retained_tree(
+                product_startup
+                    .as_ref()
+                    .and_then(|product| product.retained_tree),
+            ),
         );
         if let Some(semantic) = product_startup.and_then(|product| product.semantic) {
             let scheduler = ledger.scheduler(NativeResourceClass::Control);

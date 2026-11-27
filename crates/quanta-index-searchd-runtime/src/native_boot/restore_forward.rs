@@ -79,7 +79,9 @@ fn require_lance_recovery_candidate_v1(
         )??;
         Ok(())
     };
-    let check_scopes = |routes: Option<&quanta_index_contract::index::NativeProtectedSourceRoutesV1>,
+    let check_scopes = |routes: Option<
+        &quanta_index_contract::index::NativeProtectedSourceRoutesV1,
+    >,
                         budget: &mut WorkBudget|
      -> Result<(), IndexError> {
         for scope in semantic.scopes.iter() {
@@ -126,7 +128,11 @@ fn require_lance_recovery_candidate_v1(
             budget,
             |routes, budget| {
                 quanta_index_catalog::verify_native_protected_source_routes_v1(
-                    root, authority.io.as_ref(), selected, routes, budget,
+                    root,
+                    authority.io.as_ref(),
+                    selected,
+                    routes,
+                    budget,
                 )?;
                 check_scopes(Some(routes), budget)
             },

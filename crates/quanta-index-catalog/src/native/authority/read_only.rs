@@ -2343,14 +2343,10 @@ pub fn verify_native_boot_scope_selected_view_v1(
         selected,
         workspace,
         budget,
-        |current, _| {
-            match (current, expected) {
-                (None, None) => Ok(false),
-                (Some(current), Some(expected)) if current == expected => {
-                    Ok(true)
-                }
-                _ => Err(IndexError::Conflict),
-            }
+        |current, _| match (current, expected) {
+            (None, None) => Ok(false),
+            (Some(current), Some(expected)) if current == expected => Ok(true),
+            _ => Err(IndexError::Conflict),
         },
     )
 }

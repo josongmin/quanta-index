@@ -1636,7 +1636,9 @@ impl PersistentMapPort for crate::FileObjectReader {
         _sink: &dyn ObjectWriteSink,
         _budget: &mut WorkBudget,
     ) -> Result<MapWrite, IndexError> {
-        Err(IndexError::BackendViolation("read-only map port cannot write".into()))
+        Err(IndexError::BackendViolation(
+            "read-only map port cannot write".into(),
+        ))
     }
 
     fn apply_batch(
@@ -1645,7 +1647,9 @@ impl PersistentMapPort for crate::FileObjectReader {
         _sink: &dyn ObjectWriteSink,
         _budget: &mut WorkBudget,
     ) -> Result<MapBatchWrite, IndexError> {
-        Err(IndexError::BackendViolation("read-only map port cannot write".into()))
+        Err(IndexError::BackendViolation(
+            "read-only map port cannot write".into(),
+        ))
     }
 
     fn apply_stream(
@@ -1655,7 +1659,9 @@ impl PersistentMapPort for crate::FileObjectReader {
         _sink: &dyn ObjectWriteSink,
         _budget: &mut WorkBudget,
     ) -> Result<StagedMapRoots, IndexError> {
-        Err(IndexError::BackendViolation("read-only map port cannot write".into()))
+        Err(IndexError::BackendViolation(
+            "read-only map port cannot write".into(),
+        ))
     }
 }
 

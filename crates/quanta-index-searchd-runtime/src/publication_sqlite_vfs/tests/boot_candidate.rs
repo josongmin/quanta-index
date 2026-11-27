@@ -3,9 +3,8 @@
 use super::*;
 use quanta_index_catalog::{
     catalog_dir, verify_native_boot_candidate, verify_native_boot_current_candidate,
-    verify_native_boot_scope_selected_view_v1,
-    verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
-    visit_native_boot_scope_current_view_v1,
+    verify_native_boot_scope_selected_view_v1, verify_native_rollback_with_source_publications,
+    verify_native_source_root_publications_v1, visit_native_boot_scope_current_view_v1,
 };
 use quanta_index_core::index::ports::{
     CatalogExactHistoryPort as _, CatalogGenesisPort as _, CatalogPublicationPort as _,
@@ -42,15 +41,22 @@ fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> Tes
     })?;
     let (_, _, boot) = seeded.ok_or("paired Catalog fixture absent")?;
     let candidate = verify_native_boot_current_candidate(
-        &fixture.root, fixture.vfs.as_ref(), key(35), &mut read_budget()?,
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(35),
+        &mut read_budget()?,
     )?;
     let selected = candidate.manifest();
     let before = files(&fixture.root)?;
     let mut work = read_budget()?;
     require(
         verify_native_boot_scope_selected_view_v1(
-            &fixture.root, fixture.vfs.as_ref(), selected,
-            boot.identity.workspace, Some(&boot), &mut work,
+            &fixture.root,
+            fixture.vfs.as_ref(),
+            selected,
+            boot.identity.workspace,
+            Some(&boot),
+            &mut work,
         )?,
         "selected current scope was not observed",
     )?;
@@ -58,26 +64,36 @@ fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> Tes
     absent.slot = SlotId([9; 16]);
     require(
         !verify_native_boot_scope_selected_view_v1(
-            &fixture.root, fixture.vfs.as_ref(), selected, absent, None, &mut work,
+            &fixture.root,
+            fixture.vfs.as_ref(),
+            selected,
+            absent,
+            None,
+            &mut work,
         )?,
         "absent configured scope appeared present",
     )?;
     require(
         matches!(
             verify_native_boot_scope_selected_view_v1(
-                &fixture.root, fixture.vfs.as_ref(), selected,
-                boot.identity.workspace, None, &mut work,
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                selected,
+                boot.identity.workspace,
+                None,
+                &mut work,
             ),
             Err(IndexError::Conflict)
         ),
         "current scope without a selected view was accepted",
     )?;
-    require(files(&fixture.root)? == before, "scope read changed Catalog bytes")?;
-    fixture.vfs.drain_retirements()?;
-    let catalog = quanta_index_catalog::SqliteCatalog::open(
-        &fixture.root,
-        Duration::from_millis(100),
+    require(
+        files(&fixture.root)? == before,
+        "scope read changed Catalog bytes",
     )?;
+    fixture.vfs.drain_retirements()?;
+    let catalog =
+        quanta_index_catalog::SqliteCatalog::open(&fixture.root, Duration::from_millis(100))?;
     let _ingress = catalog.open_ingress(key(36))?;
     drop(catalog);
     let with_ingress = files(&fixture.root)?;
@@ -96,7 +112,10 @@ fn selected_scope_read_distinguishes_empty_from_mismatched_current_head() -> Tes
     require(
         matches!(
             verify_native_boot_current_candidate(
-                &fixture.root, fixture.vfs.as_ref(), key(35), &mut read_budget()?,
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(35),
+                &mut read_budget()?,
             ),
             Err(IndexError::Conflict)
         ),

@@ -2314,9 +2314,8 @@ pub fn require_lance_writable(
     read: &mut ReadContext<'_>,
 ) -> Result<(), IndexError> {
     validate_semantic_recipe_instance(recipe, instance)?;
-    let (coverage, directory) = load_selected_coverage_and_directory(
-        view, instance, instance.format, recipe, read,
-    )?;
+    let (coverage, directory) =
+        load_selected_coverage_and_directory(view, instance, instance.format, recipe, read)?;
     ann_directory::validate_coverage_layout(&coverage)?;
     if let Some(directory) = directory.as_ref()
         && directory.backend()? != ann_directory::AnnBackend::LanceDb

@@ -61,10 +61,10 @@ use crate::deployment_selection::{
     DeploymentSelectionErrorV1, DeploymentSelectionPublishedV1, LockedDeploymentSelectionV1,
 };
 use crate::native::{
-    FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativePumpConfig, NativePumpScope,
-    NativeProductStartup, NativeReclaimConfig, NativeResourcePlan, NativeRetentionConfig, NativeRetentionScope,
-    NativeSemanticStartup, NativeServiceCapabilities, NativeServiceResources,
-    NativeWalReclaimPolicy, validate_automatic_reclaim,
+    FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativeProductStartup,
+    NativePumpConfig, NativePumpScope, NativeReclaimConfig, NativeResourcePlan,
+    NativeRetentionConfig, NativeRetentionScope, NativeSemanticStartup, NativeServiceCapabilities,
+    NativeServiceResources, NativeWalReclaimPolicy, validate_automatic_reclaim,
 };
 use crate::native_effort::NativeEffortConfiguration;
 
@@ -1543,13 +1543,15 @@ struct ValidatedConfig {
 
 impl ValidatedConfig {
     fn retained_tree(&self) -> Option<quanta_index_kernel::RetainedSourceTreePolicyV20> {
-        self.text_recipe.retained_source_tree_policy_v20().map(|previous| {
-            quanta_index_kernel::RetainedSourceTreePolicyV20 {
-                descriptor: self.text,
-                previous,
-                current: self.text_recipe.output_policy(),
-            }
-        })
+        self.text_recipe
+            .retained_source_tree_policy_v20()
+            .map(
+                |previous| quanta_index_kernel::RetainedSourceTreePolicyV20 {
+                    descriptor: self.text,
+                    previous,
+                    current: self.text_recipe.output_policy(),
+                },
+            )
     }
 }
 
@@ -2254,11 +2256,7 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
     if config.retained_tree().is_some() {
         text_reader = text_reader.with_previous_tree();
     }
-    text.register(
-        config.text,
-        config.text_need,
-        text_reader,
-    )?;
+    text.register(config.text, config.text_need, text_reader)?;
     let reader_need = ResourceNeed {
         provider_units: 0,
         ..config.resources.execution.interactive

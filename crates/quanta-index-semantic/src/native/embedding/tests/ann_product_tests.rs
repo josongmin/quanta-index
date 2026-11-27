@@ -342,10 +342,8 @@ fn preflight_view(
         None,
         coverage.searchable,
     ]);
-    let coverage_ref = store.insert(
-        serde_json::to_vec(&coverage)?,
-        children.as_slice().to_vec(),
-    )?;
+    let coverage_ref =
+        store.insert(serde_json::to_vec(&coverage)?, children.as_slice().to_vec())?;
     let coverage_root = maps.seed(BTreeMap::from([(
         member_map_key(spec.instance).to_vec(),
         coverage_ref,
@@ -403,7 +401,12 @@ fn lance_writer_preflight_checks_selected_directory_before_mutation()
             })
             .transpose()?;
         let view = preflight_view(
-            &store, &maps, &recipe, &spec, MapRoot(None), searchable,
+            &store,
+            &maps,
+            &recipe,
+            &spec,
+            MapRoot(None),
+            searchable,
             CoverageStatus::Complete,
         )?;
         let before = work.usage();
