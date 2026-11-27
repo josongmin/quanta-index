@@ -528,6 +528,22 @@ fn assert_selected_native_source_export_v1(
     assert_ne!(transcript_sha256.0, [0; 32]);
     assert_ne!(file_census_sha256.0, [0; 32]);
 
+    if let Some(origin) = &routes.native_origin {
+        assert_ne!(origin.source_root_nonce, selected.root_nonce);
+        let snapshot = crate::native_object_file(root, origin.snapshot)?;
+        let withheld_snapshot = controls.path().join("withheld-origin-snapshot");
+        std::fs::rename(&snapshot, &withheld_snapshot)?;
+        let refused = export(&selection_sha256);
+        std::fs::rename(&withheld_snapshot, &snapshot)?;
+        let refused = refused?;
+        assert!(!refused.status.success() && refused.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("referenced object is absent"),
+            "Source export did not reject the missing imported snapshot: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+
     let mut stale = selection_sha256.into_bytes();
     stale[0] = if stale[0] == b'0' { b'1' } else { b'0' };
     let stale = String::from_utf8(stale)?;
@@ -1041,6 +1057,14 @@ fn native_protected_two_source_heads_import_seal_and_reopen() -> TestResult {
     };
     assert_eq!(selected.view.identity, new_primary);
     retry_running.stop()?;
+    #[cfg(target_os = "linux")]
+    assert_selected_native_source_export_v1(
+        new_root.path(),
+        &new_socket,
+        &imported_routes,
+        imported_ref,
+        selected.clone(),
+    )?;
     drop(old_objects);
     drop(old_root);
 
